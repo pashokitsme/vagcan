@@ -69,7 +69,7 @@ pub const STORED_MASK: u8 = dtc::CONFIRMED;
 /// holds). A list that makes the walk longer than this is not a car's but the block's — a
 /// gateway answering garbage, or a bitmap with every bit set, which is 150 addressable ids —
 /// and asking every id of it is a sweep of the block with nobody watching, which `CLAUDE.md`
-/// guards as it guards `survey`. Refused whole: [`Outcome::TooMany`], the board's badge a `?`.
+/// guards as it guards any sweep. Refused whole: [`Outcome::TooMany`], the board's badge a `?`.
 pub const MAX_UNITS: usize = crate::guard::MAX_UNITS;
 
 /// What to do next.

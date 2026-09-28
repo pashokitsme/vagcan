@@ -358,8 +358,8 @@ pub fn parse(text: &str) -> Result<UnitAddress, String> {
 
 /// Parse a comma-separated list of units, e.g. `01,713,70E`.
 ///
-/// Every token is checked, and one bad token fails the whole list: the callers
-/// (`faults --ecu`, `survey --only`) use this to validate before they open the
+/// Every token is checked, and one bad token fails the whole list: the caller
+/// (`faults --ecu`) uses this to validate before it opens the
 /// adapter, which is a single-user resource — opening it and then failing on a
 /// typo leaves the port held while the user retypes.
 #[cfg(feature = "std")]

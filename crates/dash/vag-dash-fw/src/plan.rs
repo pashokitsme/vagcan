@@ -3,8 +3,9 @@
 //! There is no plan in the checkout and there never will be one. What is
 //! `include!`d here is written at **build time** by `build.rs`, which runs the
 //! generator (`vag_cli_core::dash::build_for_car`) against
-//! `~/.vagcan/dash/<VIN>/dash.toml`, the car's survey and the project's
-//! catalog cache, and puts the result under `~/.vagcan/dash/<VIN>/plan.rs`.
+//! `~/.vagcan/dash/<VIN>/dash.toml`, the car's record of its units
+//! (`~/.vagcan/cars/<VIN>/units.json`) and the project's catalog cache, and
+//! puts the result under `~/.vagcan/dash/<VIN>/plan.rs`.
 //! The car is `VAGCAN_DASH_VIN`; unset, it is the one car under
 //! `~/.vagcan/dash/`, and with none or several there the build stops rather
 //! than pick. (`VAGCAN_DASH_NO_CAR` builds an empty plan instead — for CI, which

@@ -58,7 +58,7 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> S
 		);
 	}
 	// The ids and the words, because they are the half of this the reader can
-	// act on without a survey: what a row of their own label files has to carry
+	// act on from their desk: what a row of their own label files has to carry
 	// to be found — one of the text ids, or the words in its name with no id of
 	// its own — in the role's unit of measure.
 	for m in missing.iter().filter(|m| !m.tried.is_empty()) {
@@ -134,9 +134,7 @@ pub fn no_barometer() -> String {
      fit, and every power figure computed from it afterwards carries the same 6 %.\n\n\
      So the next two questions are worth answering if you can. A forecast, a weather\n\
      app or an airport METAR has both numbers; press Enter twice if you have neither\n\
-     and the standard atmosphere will be used and recorded as such.\n\n\
-     If this car does answer those readings under other names, this will find them:\n    \
-     vagcan dev survey --out parked.jsonl"
+     and the standard atmosphere will be used and recorded as such."
 		.to_string()
 }
 
@@ -288,7 +286,7 @@ mod tests {
 	fn ends_with_something_to_do(text: &str) -> bool {
 		// An instruction, not a verdict: either a command to run, a key to
 		// press, a thing to try, or a state to wait in.
-		["vagcan ", "[s] save", "Try ", "Waiting", "do it again"]
+		["vagcan ", "[s] save", "press Enter", "Try ", "Waiting", "do it again"]
 			.iter()
 			.any(|hint| text.contains(hint))
 	}
@@ -426,8 +424,8 @@ mod tests {
 
 	#[test]
 	fn the_refusal_goes_all_the_way_to_the_channels_rather_than_to_a_list_of_hex() {
-		// It used to end at `survey --diff`, which finds the identifiers and
-		// says nothing about what to do with them, and then at a drive and
+		// It used to end at a sweep, which finds identifiers and says nothing
+		// about what to do with them, and then at a drive and
 		// `calibrate`, which is gone (owner, 2026-09-28). Since that day `setup`
 		// brings the channels from either source, and the one path is quoted
 		// verbatim, not as a list of substrings: substrings are what let this

@@ -11,7 +11,7 @@
 //! **Everything here is evidence, not a catalog** (design §4.5). A row proven on
 //! the actual car in front of the tool always wins; an extracted row fills in
 //! only what no drive has established yet. [`merge`] is where that is enforced,
-//! once, so that nothing downstream — `watch`, `scan`, `survey`, `properties` —
+//! once, so that nothing downstream — `watch`, `measure`, the dash build —
 //! ever has to ask which source a row came from.
 //!
 //! ## The gear conflict is not settled here, and must not be
@@ -330,7 +330,8 @@ impl Extracted {
 
 	/// The channels one kind of source alone declares for a unit.
 	///
-	/// For [`declared_for_unit`], which must not hear the other sources.
+	/// For a reader that must hear one kind of source alone: the registry
+	/// read's check of what an ODIS variant describes.
 	pub fn for_unit_from(&self, kind: &str, odx_name: Option<&str>, version: Option<&str>) -> Vec<MeasurementDef> {
 		self
 			.described_from(Some(kind), odx_name, version)
@@ -533,28 +534,6 @@ pub fn for_unit(
 	version: Option<&str>,
 ) -> Vec<MeasurementDef> {
 	merge(store.for_unit(part_number, odx_name), extracted.for_unit(odx_name, version))
-}
-
-/// What a sweep may ask one unit: what a drive proved on it and what its ODIS
-/// variant declares.
-///
-/// Not [`for_unit`], which adds a VCDS install's measurement list. That list
-/// comes from whichever of a family's platform files read first — a Škoda's
-/// gateway gets `EV_GatewNF_AU37` — not from this unit's own variant, and
-/// whether it may widen what a sweep asks is the owner's decision, not yet made
-/// (2026-09-28). Until then a sweep asks exactly what it asked before VCDS rows
-/// were read.
-pub fn declared_for_unit(
-	store: &vag_data_labels::catalog::CatalogStore,
-	extracted: &Extracted,
-	part_number: Option<&str>,
-	odx_name: Option<&str>,
-	version: Option<&str>,
-) -> Vec<MeasurementDef> {
-	merge(
-		store.for_unit(part_number, odx_name),
-		extracted.for_unit_from(vag_data_db::ODIS, odx_name, version),
-	)
 }
 
 #[cfg(test)]

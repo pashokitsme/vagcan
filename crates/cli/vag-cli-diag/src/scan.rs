@@ -1,25 +1,25 @@
 //! Asking ONE control unit what it will actually give us.
 //!
-//! The machinery a sweep is made of, and nothing that drives one: `vagcan dev
-//! survey` is the only command built on this, and `--only` aims it at a single
-//! unit. There used to be a second spelling — `vagcan scan`, one unit at a time
-//! — whose flags matched `survey`'s field for field and which `survey` was
-//! itself built on. A driver had two commands to learn and the tool had two
-//! places for a guard to be forgotten in, which is exactly how `properties`
-//! came to have none.
+//! The machinery a sweep is made of, and nothing that drives one: `vagcan units
+//! --identify <unit>` is the one command built on this, and it walks a unit's
+//! identification block, `F100`–`F1FF`. The whole-car sweep that was built on it
+//! too, `dev survey`, is gone (owner, 2026-09-28): the car's units are recorded
+//! by the live commands, and their channels come from a source `setup` reads.
+//! There used to be a second spelling — `vagcan scan`, one unit at a time — and
+//! a driver had two commands to learn and the tool had two places for a guard
+//! to be forgotten in, which is exactly how `properties` came to have none.
 //!
-//! A sweep finds values no label file mentions, and it is also *a fuzz test of a
-//! diagnostic server*: a path with a defect in it crashes the server, and the
-//! server here is a control unit the car is relying on. So the default is no
-//! longer a sweep of anything. A unit is asked the identifiers some source
-//! **declares** it answers — its ODIS variant, resolved through what the unit
-//! itself reports, or a catalog proven on a car; see [`crate::declared`].
-//! Sweeping identifier space nothing vouches for is `--blind`, aimed by hand at
-//! units named one at a time, and it says what it costs.
+//! A sweep is *a fuzz test of a diagnostic server*: a path with a defect in it
+//! crashes the server, and the server here is a control unit the car is relying
+//! on. So what is asked is bounded — one unit, one block — and it is refused on
+//! a moving car.
 //!
-//! And every sweep, declared or blind, carries [`Guard`]: the moment a unit
-//! that had been answering stops, or goes back on an identifier it already
-//! answered, the run ends. See [`crate::anomaly`].
+//! And the sweep carries [`Guard`]: the moment a unit that had been answering
+//! stops, or goes back on an identifier it already answered, the run ends. See
+//! [`crate::anomaly`]. The guard's witness — a known-good identifier re-read
+//! every so many requests — is a path with no caller today: the one sweep left
+//! runs with `witness: None`, since nothing is established as known-good before
+//! an identification block is read.
 //!
 //! Read-only by construction: the only service issued is `0x22`, which the UDS
 //! client's allowlist already restricts us to.
@@ -75,11 +75,6 @@ pub fn parse_ranges(spec: &str) -> Result<Vec<RangeInclusive<u16>>, String> {
 	Ok(out)
 }
 
-/// How many identifiers a range list covers.
-pub fn total_dids(ranges: &[RangeInclusive<u16>]) -> usize {
-	ranges.iter().map(|r| *r.end() as usize - *r.start() as usize + 1).sum()
-}
-
 /// The safety half of a sweep: the watchdog it carries with it.
 ///
 /// A sweep is the most invasive thing this tool does, and it used to run
@@ -113,12 +108,13 @@ impl Guard<'_> {
 /// Read one identifier, count what came back, report it, and say whether the
 /// sweep must stop.
 ///
-/// **Both sweeps do exactly this, and each had its own copy.** What the copies
-/// held is a *classification* — which UDS answer is a hit, which is the ordinary
-/// refusal an unimplemented identifier gives, and which is a failure worth
-/// counting as one — and two copies of a classification is two sets of numbers
-/// that can disagree about the same car with nothing on screen saying which
-/// sweep you were on.
+/// **The two sweeps there used to be did exactly this, and each had its own
+/// copy.** What the copies held is a *classification* — which UDS answer is a
+/// hit, which is the ordinary refusal an unimplemented identifier gives, and
+/// which is a failure worth counting as one — and two copies of a classification
+/// is two sets of numbers that can disagree about the same car with nothing on
+/// screen saying which sweep you were on. One sweep is left, and this is still
+/// the one place its classification lives.
 ///
 /// `true` means [`anomaly::Monitor`] saw the unit change under the sweep and the
 /// caller must return the statistics gathered so far. The monitor is asked
@@ -190,138 +186,6 @@ where
 	Ok(stats)
 }
 
-/// Identifiers per presence probe.
-///
-/// Measured on the reference car: 8 identifiers in one request are answered,
-/// 12 are refused outright with `0x31` — so the limit sits between, and asking
-/// for more than the unit accepts makes every batch look empty. That failure
-/// is silent and total, which is why [`probe_batching`] tests a full-size
-/// batch rather than a token pair.
-pub const BATCH: usize = 8;
-
-/// Sweep by group testing — the fast path.
-///
-/// Most of the identifier space is unimplemented, and this control unit family
-/// answers a multi-identifier request by returning only the identifiers it
-/// supports, refusing (`0x31`) exactly when it supports none of them. That
-/// makes one request a presence test for a whole batch: a refusal skips the
-/// whole batch at once, and a positive answer is halved until responders are
-/// isolated and read individually for their bytes.
-///
-/// Verified against the reference car before being relied on: a request mixing
-/// a supported and an unsupported identifier returns just the supported one.
-/// A control unit that refused the whole mixed request instead would make this
-/// unsound — hence [`probe_batching`], which the command runs first.
-///
-/// **Returns early when `guard` fires**, exactly as [`scan_dids`] does, and with
-/// the same obligation on the caller.
-pub async fn scan_dids_fast<T, F>(
-	uds: &mut AsyncUdsClient<T>,
-	ranges: &[RangeInclusive<u16>],
-	delay: Duration,
-	guard: &mut Guard<'_>,
-	mut on_hit: F,
-) -> std::io::Result<ScanStats>
-where
-	T: AsyncIsoTpTransport,
-	F: FnMut(&DidHit) -> std::io::Result<()>,
-{
-	let mut stats = ScanStats::default();
-
-	// Work items are (first, last) inclusive spans, processed depth-first so a
-	// hit is isolated and reported before moving on.
-	let mut work: Vec<(u16, u16)> = Vec::new();
-	for range in ranges.iter().rev() {
-		let (start, end) = (*range.start(), *range.end());
-		let mut at = start;
-		loop {
-			let last = at.saturating_add(BATCH as u16 - 1).min(end);
-			work.push((at, last));
-			if last >= end {
-				break;
-			}
-			at = last + 1;
-		}
-	}
-	work.reverse();
-
-	while let Some((first, last)) = work.pop() {
-		if !delay.is_zero() {
-			tokio::time::sleep(delay).await;
-		}
-		if stats.asked > 0 && stats.asked % anomaly::WITNESS_EVERY == 0 && guard.check(uds).await {
-			return Ok(stats);
-		}
-		if first == last {
-			if read_one(uds, first, &mut stats, guard, &mut on_hit).await? {
-				return Ok(stats);
-			}
-			continue;
-		}
-
-		let dids: Vec<u16> = (first..=last).collect();
-		stats.asked += 1;
-		let split_span = |work: &mut Vec<(u16, u16)>| {
-			let mid = first + (last - first) / 2;
-			work.push((mid + 1, last));
-			work.push((first, mid));
-		};
-		// A group answer is about the span, not about any one identifier in it,
-		// so nothing here is recorded *against* an identifier — a positive reply
-		// does not say which member answered, and writing `first` down as
-		// answered would make the single read of `first` two steps later look
-		// like a unit going back on itself. `heard` says only that the unit is
-		// still talking, which is all a batch reply proves.
-		match uds.read_data_by_identifiers(&dids).await {
-			// Something in this span answers — split and find out what.
-			Ok(_) => {
-				guard.monitor.heard();
-				split_span(&mut work)
-			}
-			// ONLY requestOutOfRange means "none of these is implemented".
-			// Any other refusal says something about the request, not about
-			// the identifiers — responseTooLong or busyRepeatRequest on a
-			// batch full of real values would otherwise write all of them off
-			// as unimplemented, silently, since a refusal is the expected
-			// answer. Fall back to probing the span in halves.
-			Err(UdsError::NegativeResponse { nrc: 0x31, .. }) => {
-				guard.monitor.heard();
-				stats.refused += dids.len();
-			}
-			Err(UdsError::NegativeResponse { .. }) => {
-				guard.monitor.heard();
-				split_span(&mut work)
-			}
-			// A transport failure is not evidence either; the slow path loses
-			// one identifier to a timeout, so this must not lose eight. It is
-			// evidence about the *unit*, though: a span that times out and then
-			// times out again in halves is a unit that has stopped talking.
-			Err(_) => {
-				if guard.monitor.silent_span(first).is_some() {
-					return Ok(stats);
-				}
-				split_span(&mut work)
-			}
-		}
-	}
-	Ok(stats)
-}
-
-/// Check that group testing is sound on this control unit.
-///
-/// Asks for one identifier known to answer, padded out to a **full batch** with
-/// identifiers that cannot, and reports whether the unit returned the supported
-/// one anyway. Two failure modes are ruled out at once: a unit that refuses any
-/// mixed request, and a unit whose per-request limit is below [`BATCH`]. Either
-/// would make a refusal stop meaning "none supported", and the sweep would skip
-/// real identifiers while reporting success.
-pub async fn probe_batching<T: AsyncIsoTpTransport>(uds: &mut AsyncUdsClient<T>, known_good: u16) -> bool {
-	let mut dids = vec![known_good];
-	// 0x0000.. are not valid data identifiers on these units.
-	dids.extend((0..BATCH as u16 - 1).map(|i| i + 1));
-	uds.read_data_by_identifiers(&dids).await.is_ok()
-}
-
 #[cfg(test)]
 mod tests {
 	// `&[0x2000..=0x20FF]` is one range inside a slice of ranges, which is what
@@ -362,7 +226,6 @@ mod tests {
 	fn ranges_parse_from_hex_spans() {
 		assert_eq!(parse_ranges("7400-7402").unwrap(), vec![0x7400..=0x7402]);
 		assert_eq!(parse_ranges("A058, F190-F19A").unwrap(), vec![0xA058..=0xA058, 0xF190..=0xF19A]);
-		assert_eq!(total_dids(&parse_ranges("0000-FFFF").unwrap()), 65_536);
 		assert!(parse_ranges("F200-F100").is_err(), "backwards range");
 		assert!(parse_ranges("zz").is_err(), "not hex");
 		assert!(parse_ranges("").is_err(), "empty");
@@ -478,12 +341,11 @@ mod tests {
 
 	#[tokio::test]
 	async fn a_sweep_asks_only_what_it_was_given_and_nothing_in_between() {
-		// `declared` hands the sweep spans built from the identifiers a source
-		// vouched for. The mock panics on any PDU not in its script, so this is
-		// the end-to-end statement: the gap between 0x2001 and 0x3800 is never
-		// asked for, where the old default asked 2,300 identifiers around it.
-		let declared: std::collections::BTreeSet<u16> = [0x2000, 0x2001, 0x3800].into_iter().collect();
-		let ask = crate::declared::ask(&declared, None);
+		// The sweep asks the spans it is given and nothing between them. The mock
+		// panics on any PDU not in its script, so this is the end-to-end
+		// statement: the gap between 0x2001 and 0x3800 is never asked for, where
+		// the old whole-car default asked 2,300 identifiers around it.
+		let ranges = vec![0x2000..=0x2001, 0x3800..=0x3800];
 		let script = vec![
 			(req(0x2000), resp(0x2000, &[0x01])),
 			(req(0x2001), refused()),
@@ -493,7 +355,7 @@ mod tests {
 		let mut monitor = anomaly::Monitor::new(0x7E1);
 
 		let mut asked = Vec::new();
-		let stats = scan_dids(&mut uds, &ask.ranges, Duration::ZERO, 0, &mut unwatched(&mut monitor), |hit| {
+		let stats = scan_dids(&mut uds, &ranges, Duration::ZERO, 0, &mut unwatched(&mut monitor), |hit| {
 			asked.push(hit.did);
 			Ok(())
 		})

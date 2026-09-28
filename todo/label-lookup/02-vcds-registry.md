@@ -212,7 +212,9 @@ offset, unit, rate and ODX id. What differs:
 1. **Which platform file a unit reads.** It is the first readable in name order, so the gateway
    reads `EV_GatewNF_AU37`, not `_SK37`. Measured on the gateway and park assist, the brands'
    lists differ by 1–5 rows of the same identifiers. The fix is to choose by the car:
-   `chassis.clb`, as VCDS does, or the identifiers the unit answered in its survey.
+   `chassis.clb`, as VCDS does. (Choosing by the identifiers the unit answered in its survey
+   is no longer possible: the survey was removed on 2026-09-28, and the car's record holds
+   what each unit is, not which identifiers it answers.)
 2. **`measure` finds its roles by name**, and VCDS words the gear, boost and shaft speeds
    differently from ODIS. With the owner's proven rows nothing changes. A VCDS-only owner with
    no drive gets speed, engine speed, pedal and a gear — the engine's `210F`, the unsettled
@@ -264,13 +266,17 @@ offset, unit, rate and ODX id. What differs:
    row drops from about one in 1,300 to about one in 5,000: not zero, so the owner's call.
 8. **A lighter way to learn a car's units than a survey.** `units --identify` reads `F187`
    and `F197` and files nothing. If it read `F19E`/`F1A2` and filed them beside the car, setup
-   could read a car's channels without the survey. Not built; the owner's call.
+   could read a car's channels without the survey. **Done 2026-09-28**
+   ([`03`](03-units-without-survey.md)): `watch`, `measure` and `units --identify` record the
+   units under `cars/<VIN>/units.json`; `setup` reads the record, and the first of those three
+   with the car — or `dev dash build`, offline — reads the channels of a car not yet read.
 9. **The owner's decision: may a VCDS list widen what a sweep asks?** Until it is made,
    `declared_for_unit` joins the proven rows and ODIS alone, and `dev survey` asks what it
    asked before VCDS rows existed. Asking the VCDS lists would have taken the reference car
    from the proven rows' units to 2,067 identifiers with VCDS alone, and 120 more beside
    ODIS, 44 of them on the airbag unit — each one an identifier the unit's own VCDS list
-   names, from whichever of the family's platform files read first.
+   names, from whichever of the family's platform files read first. **Moot 2026-09-28**: the
+   sweep went with `dev survey`, and `declared_for_unit` with it.
 
 ## Out of scope
 

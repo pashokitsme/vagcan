@@ -38,7 +38,7 @@ and the commands are written bare for readability.
 | Standard OBD-II sensors | `vagcan sensors --ecu 01` |
 | Monitor for N seconds | `vagcan watch --did "01:2029,202A" --for 20 --hz 10` |
 | One instantaneous sample | `vagcan watch --did "01:2029" --for 1 --hz 2` |
-| Everything one unit exposes | `vagcan dev survey --only 01 --out unit01.jsonl` |
+| What a unit's data declares it answers | `vagcan watch` — one tab per unit |
 | Time an acceleration run | `vagcan measure` |
 | Open a saved run as a chart page | `vagcan measure view` (offline) |
 
@@ -87,7 +87,6 @@ happen.
 vagcan faults                    # named, whole car — the form to prefer
 vagcan faults --ecu 01            # one unit
 vagcan faults --ecu 01,02,713     # several
-vagcan faults --from unit01.jsonl # offline: name the faults in a recorded survey
 ```
 
 **Run `vagcan setup` once, and faults come out named.** Without it the output is
@@ -140,36 +139,30 @@ Sessions live under `~/.vagcan/cars/<VIN>/measures/`.
 
 ## Finding out what a unit exposes
 
-`vagcan units --identify` names every unit the gateway lists. To learn what one of
-them actually answers:
+`vagcan units --identify` names every unit the gateway lists, the gateway and the
+powertrain, and records what each said about itself under
+`~/.vagcan/cars/<VIN>/units.json` — the list `setup` and `dev dash build` work from
+without the car. With a VCDS installation it then reads the channels of the units it
+recorded, the first time: minutes when a key has to be searched for, and the command
+says so before it starts. What a unit answers comes from a source `setup` read: `vagcan watch`
+lists every channel the project describes for it, one tab per unit, and a unit nothing
+describes has nothing to show and is named in the summary. There is no sweep to
+discover identifiers nothing declares: `dev survey` was removed on 2026-09-28.
 
-```bash
-vagcan dev survey --only 713 --out unit713.jsonl
-```
-
-This is the expensive, invasive one — see below. Scope it with `--only` whenever you
-can, and prefer an existing survey file over a fresh run. (`--range` narrows only a
-`--blind` sweep and is refused without one — and `--blind` is a fuzz test; do not reach
-for it to answer a question.)
-
-Two surveys, one parked and one after a drive, name the live measurements without any
-label file:
-
-```bash
-vagcan dev survey --diff parked.jsonl driving.jsonl   # offline, no car
-```
+`vagcan units --identify 713` reads one unit's whole identification block — 256 reads,
+refused on a moving car and never through the dash board.
 
 ## Never
 
-- **Never pass `--while-driving`.** A sweep is thousands of requests a unit may never
+- **Never pass `--while-driving`.** A sweep is hundreds of requests a unit may never
   have handled, and a unit that mishandles one can stop doing its job while the car is
   in motion. The tool refuses by default by reading road speed; a car that will not
   report speed counts as moving.
 - **Never pass `--extended` casually.** The extended diagnostic session is workshop
   mode, and a unit that assists the driver may stop assisting while it is in one.
-- **Never run a full `survey` to answer a small question.** It is about eight minutes
-  and it is the most invasive thing in the tool. `units --identify 01`, `faults --ecu`,
-  or a scoped `dev survey --only` answer most questions.
+- **Never reach for a sweep to answer a small question.** `units --identify 01` is the
+  one sweep left — 256 reads of one unit. `vagcan units --identify`, `faults --ecu` and
+  `watch` answer most questions with four reads a unit, or none.
 - **Never suggest adding a write service** — coding, adaptation, clearing faults,
   flashing. `CLAUDE.md` forbids it outright.
 - **Never hardcode a car's identifier, scaling or unit name into the code** to make a
@@ -187,7 +180,8 @@ vagcan dev survey --diff parked.jsonl driving.jsonl   # offline, no car
 - **Silence on the bus is not evidence of a fault** on this platform. The OBD-II
   diagnostic line is nearly idle — about 46 frames in 8 seconds, all one periodic id
   from the gateway.
-- **A unit that answers nothing after identifying** is normal; the survey skips it.
+- **A unit that identifies itself and shows nothing in `watch`** is normal: nothing on
+  this machine describes its identifiers, and the summary names it.
 - **`watch` never returns** — output that is not a terminal already gets the CSV mode,
   but without `--for SECONDS` it runs until interrupted. Pass `--for`.
 

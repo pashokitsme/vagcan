@@ -16,7 +16,6 @@
 //! ```toml
 //! vin = "XW8AD4NE9JH008917"
 //! language = "ru"                 # optional: the labels' and the board's; the settings' otherwise
-//! survey = "…/survey.jsonl"        # optional; ~/.vagcan/cars/<VIN>/survey.jsonl otherwise
 //!
 //! [[channel]]
 //! ref = "01:IDE00025"              # <unit>:<text id>, or <unit>:<DID>[@<bit offset>]
@@ -80,8 +79,10 @@
 //! request id — and a channel by the text id the row carries (stable across
 //! variants, and the key the glossary is written under) or by identifier and
 //! bit offset when it has none. Which unit *variant* the car has is not
-//! written here: it comes from the survey, from what the unit said about
-//! itself, exactly as `watch` finds it.
+//! written here: it comes from the car's record of its units
+//! (`~/.vagcan/cars/<VIN>/units.json`, [`crate::units`]) — what each unit said
+//! about itself to `vagcan units --identify` or `vagcan watch`, exactly as
+//! `watch` finds it.
 //!
 //! # Refusals
 //!
@@ -335,7 +336,6 @@ mod action_name {
 pub struct Input {
 	pub vin: String,
 	pub language: Option<Language>,
-	pub survey: Option<PathBuf>,
 	pub channels: Vec<ChannelInput>,
 	pub pages: Vec<PageInput>,
 	/// In the file's order, which is priority.
@@ -354,6 +354,22 @@ pub struct Input {
 pub fn parse_input(text: &str) -> Result<Input, Error> {
 	let doc = Document::parse(text).map_err(|e| Error::Parse(format!("dash.toml: {e}")))?;
 	let top = Reader::new(text, doc.as_table(), String::new());
+	// The key that named the survey the units were read from. The units come from
+	// the car's record now, so an input that still has it is told what to do —
+	// not read as if the key were absent, which would build from a different list
+	// than the owner believes, and not refused as a typo, which is what the strict
+	// check below would make of a key it no longer knows.
+	if doc.get("survey").is_some() {
+		return Err(
+			top.refuse(
+				"survey",
+				"`survey` is no longer read — delete the line. The car's units come from ~/.vagcan/cars/<VIN>/units.json, \
+			 which `vagcan units --identify` or `vagcan watch` writes when connected to the car."
+					.to_string(),
+			),
+		);
+	}
+
 	top.takes(&strict::TOP)?;
 	let string = |item: Option<&Item>, what: &str| -> Result<String, Error> {
 		item
@@ -369,8 +385,6 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 		}
 		None => None,
 	};
-	let survey = top.string("survey", "a string, a file path")?.map(PathBuf::from);
-
 	let mut channels = Vec::new();
 	if let Some(tables) = doc.get("channel").and_then(Item::as_array_of_tables) {
 		for (i, table) in tables.iter().enumerate() {
@@ -594,7 +608,6 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 	Ok(Input {
 		vin,
 		language,
-		survey,
 		channels,
 		pages,
 		alarms,
@@ -778,7 +791,8 @@ fn parse_stopwatch(
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
 	Parse(String),
-	/// The car reported nothing about this unit — no survey line for it.
+	/// The car's record has nothing about this unit — it was not among the
+	/// units that answered the command that wrote it.
 	UnknownUnit(u16),
 	/// A request id in neither of the blocks this tool knows the response rule for.
 	NoResponseRule(u16),
@@ -791,11 +805,9 @@ pub enum Error {
 	/// The same channel twice in `[[channel]]` — the second would be dropped
 	/// with its label, and dropping silently is how a wrong label ships.
 	Duplicate(Reference),
-	/// The car's own survey put this identifier to the unit and it was silent.
-	NotAnswered(Reference),
 	/// A factor or offset that is not a number the device can multiply by.
 	NotFinite(Reference),
-	/// The survey has no `F187` for this unit, so the firmware could never
+	/// The car's record has no `F187` for this unit, so the firmware could never
 	/// confirm it is talking to the unit the plan was built for.
 	NoPartNumber(u16),
 	/// A page names a channel the input's `[[channel]]` list does not carry.
@@ -833,8 +845,8 @@ impl fmt::Display for Error {
 			Error::Parse(why) => write!(f, "{why}"),
 			Error::UnknownUnit(r) => write!(
 				f,
-				"unit {:03X} is not in the survey — the car has not said what it is, so nothing can be resolved for it",
-				r
+				"unit {r:03X} is not in the car's record of its units — it has not said what it is, so nothing can be resolved for it; \
+				 `vagcan units --identify` with the car records every unit that answers"
 			),
 			Error::NoResponseRule(r) => write!(f, "unit {r:03X}: no rule for which id it answers on"),
 			Error::Undeclared(r) => write!(f, "{r}: the car's variant does not declare this channel and nothing has proven it"),
@@ -850,11 +862,10 @@ impl fmt::Display for Error {
 				f,
 				"{first} and {second} are the same row — one unit, identifier, bits and scaling written two ways; keep one [[channel]]"
 			),
-			Error::NotAnswered(r) => write!(f, "{r}: the survey asked the unit for this identifier and it did not answer"),
 			Error::NotFinite(r) => write!(f, "{r}: its scaling is not a finite number the board's 32-bit float holds"),
 			Error::NoPartNumber(r) => write!(
 				f,
-				"unit {r:03X}: the survey has no part number (F187) for it, and the firmware checks the unit against the plan by that"
+				"unit {r:03X}: the car's record has no part number (F187) for it, and the firmware checks the unit against the plan by that"
 			),
 			Error::PageRefersToUnknown { page, reference } => write!(f, "page #{page}: {reference} is not in the [[channel]] list"),
 			Error::Page(n, why) => write!(f, "page #{n}: {why}"),
@@ -1224,7 +1235,6 @@ fn index_by_row(
 	declared: usize,
 	index_of: &BTreeMap<Reference, u16>,
 	offered: &[poll::Channel],
-	answered: Option<&poll::Answered>,
 	units: &[UnitIdentity],
 ) -> Named {
 	let named = |at: usize| match at {
@@ -1242,7 +1252,7 @@ fn index_by_row(
 		hz: None,
 		setpoint: None,
 	};
-	let Ok(resolved) = resolve_channel(&probe, offered, answered, units, &mut Vec::new()) else {
+	let Ok(resolved) = resolve_channel(&probe, offered, units, &mut Vec::new()) else {
 		return Named::Unknown;
 	};
 	match channels.iter().position(|c| read_of(c) == read_of(&resolved)) {
@@ -1253,13 +1263,7 @@ fn index_by_row(
 
 /// One `[[channel]]` against what the car reported and what the project knows: the same rules
 /// for a channel the owner named and for a specified value it paired with (`todo/dash/18`).
-fn resolve_channel(
-	wanted: &ChannelInput,
-	offered: &[poll::Channel],
-	answered: Option<&poll::Answered>,
-	units: &[UnitIdentity],
-	notes: &mut Vec<String>,
-) -> Result<Channel, Error> {
+fn resolve_channel(wanted: &ChannelInput, offered: &[poll::Channel], units: &[UnitIdentity], notes: &mut Vec<String>) -> Result<Channel, Error> {
 	let request = wanted.reference.request();
 	if !units.iter().any(|u| u.request == request) {
 		return Err(Error::UnknownUnit(request));
@@ -1311,26 +1315,20 @@ fn resolve_channel(
 	if !fits_f32(factor) || !fits_f32(offset) || (factor != 0.0 && factor as f32 == 0.0) {
 		return Err(Error::NotFinite(wanted.reference.clone()));
 	}
-	// What the catalog declares is one thing; what the car answers is the
-	// survey's to say. Silence where the survey asked is a refusal to build
-	// on — an identifier that never comes back is a dash forever, and a
-	// plan is for showing numbers. Where the survey never asked, nothing
-	// is claimed either way (`Answered::saw`), and a standard OBD-II row
-	// says so in the log, because the standard mandates it and this car
-	// may still not carry it.
+	// What the catalog declares is one thing; what this car answers is another,
+	// and the record of its units says nothing about identifiers. A standard
+	// OBD-II row is the one case worth a word: the standard mandates it, and
+	// this car may still not carry it — nobody's description of this car says.
 	//
 	// The standard's row is asked of the row itself (`Channel::is_standard`),
 	// not inferred from a missing text id: a VCDS row gives up an id ODIS gives
 	// another field, and one from an install whose text table is shut carries
 	// none.
-	let standard = found.is_standard();
-	match answered.and_then(|a| a.saw(request, did)) {
-		Some(false) => return Err(Error::NotAnswered(wanted.reference.clone())),
-		None if standard => notes.push(format!(
-			"{}: a standard OBD-II row; the survey has no record of the car answering {did:04X}",
+	if found.is_standard() {
+		notes.push(format!(
+			"{}: a standard OBD-II row, which the standard mandates and this car may still not carry",
 			wanted.reference
-		)),
-		_ => {}
+		));
 	}
 	let (bit_offset, bit_length, signed, big_endian) = bits_of(def.raw_form);
 	let label = wanted.label.clone().unwrap_or_else(|| found.label());
@@ -1373,21 +1371,14 @@ fn row_name(c: &poll::Channel) -> String {
 
 /// Resolve an input against what the car reported and what the project knows.
 ///
-/// `units` are the car's own words about itself (from its survey); `store` and
+/// `units` are the car's own words about itself (from its record); `store` and
 /// `extracted` are the project — the same two `watch` opens. Pure: reads
 /// nothing but its arguments, writes nothing.
 ///
 /// **One language for the plan** (owner, 2026-09-27): the input's `language`, or
 /// `default_language` — `config.toml`'s — without one. It is the board's own words and the
 /// glossary column every label is taken from, whichever language `extracted` was opened in.
-pub fn build(
-	input: &Input,
-	store: &CatalogStore,
-	extracted: &Extracted,
-	units: &[UnitIdentity],
-	answered: Option<&poll::Answered>,
-	default_language: Language,
-) -> Result<Built, Error> {
+pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: &[UnitIdentity], default_language: Language) -> Result<Built, Error> {
 	let language = input.language.unwrap_or(default_language);
 	// A copy speaking the plan's language, only when the caller's does not: the caller's own
 	// stays as it was, for what it names in `config.toml`'s (`vagcan dev recording dash`
@@ -1409,7 +1400,7 @@ pub fn build(
 			return Err(Error::Duplicate(wanted.reference.clone()));
 		}
 		let mut resolution = Vec::new();
-		let resolved = resolve_channel(wanted, &offered, answered, units, &mut resolution)?;
+		let resolved = resolve_channel(wanted, &offered, units, &mut resolution)?;
 		// The same row under its other spelling is the same row: `01:IDE00191` and `01:202A`
 		// would otherwise both be added, both subscribed and both drawable (review,
 		// 2026-09-15).
@@ -1464,7 +1455,7 @@ pub fn build(
 		let resolved = match index_of.get(&reference) {
 			// Already a `[[channel]]`: the owner's own, with the rate they gave it.
 			Some(index) => channels[*index as usize].clone(),
-			None => resolve_channel(&hidden, &offered, answered, units, &mut resolution)?,
+			None => resolve_channel(&hidden, &offered, units, &mut resolution)?,
 		};
 		// The same read is refused whatever the scaling: one raw value scaled two ways and
 		// subtracted from itself is not a difference anyone asked for. The width is part of the
@@ -1518,7 +1509,7 @@ pub fn build(
 	let stopwatch = match &input.stopwatch {
 		None => None,
 		Some(wanted) => {
-			let speed = index_by_row(&wanted.speed, &channels, declared, &index_of, &offered, answered, units);
+			let speed = index_by_row(&wanted.speed, &channels, declared, &index_of, &offered, units);
 			Some(resolve_stopwatch(wanted, speed, &channels, &mut notes)?)
 		}
 	};
@@ -1530,7 +1521,6 @@ pub fn build(
 			wanted,
 			&mut channels,
 			&offered,
-			answered,
 			units,
 			Sources { store, extracted },
 			&mut notes,
@@ -1595,7 +1585,7 @@ pub fn build(
 	let mut pages = Vec::new();
 	for (i, page) in input.pages.iter().enumerate() {
 		let n = i + 1;
-		let index = |r: &Reference| match index_by_row(r, &channels, declared, &index_of, &offered, answered, units) {
+		let index = |r: &Reference| match index_by_row(r, &channels, declared, &index_of, &offered, units) {
 			Named::Channel(index) => Ok(index),
 			Named::Setpoint => Err(Error::Page(n, Named::setpoint_refusal(r))),
 			Named::Unknown => Err(Error::PageRefersToUnknown {
@@ -1654,7 +1644,7 @@ pub fn build(
 		let watched = wanted
 			.channels
 			.iter()
-			.map(|r| match index_by_row(r, &channels, declared, &index_of, &offered, answered, units) {
+			.map(|r| match index_by_row(r, &channels, declared, &index_of, &offered, units) {
 				Named::Channel(index) => Ok(index),
 				Named::Setpoint => Err(refuse(Named::setpoint_refusal(r))),
 				Named::Unknown => Err(refuse(format!("{r} is not in the [[channel]] list"))),
@@ -2007,7 +1997,6 @@ fn resolve_stalk(
 	wanted: &StalkInput,
 	channels: &mut Vec<Channel>,
 	offered: &[poll::Channel],
-	answered: Option<&poll::Answered>,
 	units: &[UnitIdentity],
 	sources: Sources<'_>,
 	notes: &mut Vec<String>,
@@ -2019,9 +2008,6 @@ fn resolve_stalk(
 	};
 	let identity_of = |request: u16| units.iter().find(|u| u.request == request).ok_or(Error::UnknownUnit(request));
 	let (lever_unit, cruise_unit) = (identity_of(wanted.request)?, identity_of(wanted.cruise.request())?);
-	if answered.and_then(|a| a.saw(wanted.request, wanted.did)) == Some(false) {
-		return Err(Error::NotAnswered(read));
-	}
 	let in_read = state_field(offered, wanted.request, |c| c.did == wanted.did);
 	if in_read.is_empty() {
 		return Err(Error::Stalk(format!("read {read}: the car's variant declares no such identifier")));
@@ -2091,11 +2077,6 @@ fn resolve_stalk(
 			 identifier is one answer; name the cruise status the unit that runs cruise control reports",
 			wanted.cruise
 		)));
-	}
-	if let Some(ReadId::Uds(did)) = cruise.def.as_ref().map(|d| d.address)
-		&& answered.and_then(|a| a.saw(cruise_request, did)) == Some(false)
-	{
-		return Err(Error::NotAnswered(wanted.cruise.clone()));
 	}
 	states_keep_their_bands("cruise", cruise, cruise_unit, sources)?;
 	let cruise_levels = levels_of(cruise).expect("picked on levels");
@@ -2389,8 +2370,9 @@ pub struct Written {
 	pub json: PathBuf,
 	pub rust: PathBuf,
 	/// Everything the build read, for a build script to watch: the input, the
-	/// survey, the project's cache and proven rows, the name table, and the
-	/// settings and glossary that decide the labels' language and wording.
+	/// car's record of its units, the project's cache and proven rows, the name
+	/// table, and the settings and glossary that decide the labels' language
+	/// and wording.
 	pub inputs: Vec<PathBuf>,
 }
 
@@ -2403,9 +2385,8 @@ pub struct Resolved {
 	pub dir: PathBuf,
 	/// Everything the build read — see [`Written::inputs`].
 	pub inputs: Vec<PathBuf>,
-	/// The survey the build read, as text.
-	pub survey: String,
-	/// What each unit said about itself in that survey: what the catalogs were looked up by.
+	/// What each unit said about itself, out of the car's record: what the catalogs were
+	/// looked up by.
 	pub units: Vec<UnitIdentity>,
 	pub store: CatalogStore,
 	/// The project, naming channels in `config.toml`'s language, as `watch` does — not
@@ -2413,12 +2394,34 @@ pub struct Resolved {
 	pub extracted: Extracted,
 }
 
-/// [`build_for_car`] short of writing anything: read the input, the survey and the
-/// project, and build. For a command that reads the plan and keeps nothing
-/// (`vagcan dev recording dash`).
+/// A car's build input, read and checked, and the car's record of its units — everything
+/// a build needs that is not the project. Read first, before anything slow: `dev dash build`
+/// reads the VCDS registry for the units on record before it builds, and a typo in the
+/// input or a VIN that does not match must be refused before that read, not after it.
+#[derive(Debug)]
+pub struct Inputs {
+	pub vin: String,
+	pub parsed: Input,
+	/// `~/.vagcan/dash/<VIN>/`, where the outputs go.
+	pub dir: PathBuf,
+	pub input_path: PathBuf,
+	/// `~/.vagcan/cars/<VIN>/units.json`.
+	pub record: PathBuf,
+	/// What each unit said about itself, out of the car's record.
+	pub units: Vec<UnitIdentity>,
+	/// Whether the caller has just tried to read the units' channels
+	/// (`dev dash build` does, through `registry::ensure`): a unit still unread
+	/// after that is not one the same command should be told to run.
+	pub read_attempted: bool,
+}
+
+/// Read and check the input and the car's record.
 ///
-/// `input` defaults to `dash.toml` under `~/.vagcan/dash/<VIN>/`.
-pub fn resolve_for_car(vin: &str, input: Option<&Path>) -> anyhow::Result<Resolved> {
+/// `input` defaults to `dash.toml` under `~/.vagcan/dash/<VIN>/`. The units are the
+/// car's record (`~/.vagcan/cars/<VIN>/units.json`), which `watch`, `measure` and
+/// `units --identify` write; with none the build refuses and says which command to
+/// connect to the car with.
+pub fn read_inputs(vin: &str, input: Option<&Path>) -> anyhow::Result<Inputs> {
 	use anyhow::Context as _;
 	let dir = crate::datadir::dash_dir(vin)?;
 	let input_path = input.map(Path::to_path_buf).unwrap_or_else(|| dir.join("dash.toml"));
@@ -2427,26 +2430,74 @@ pub fn resolve_for_car(vin: &str, input: Option<&Path>) -> anyhow::Result<Resolv
 	if !parsed.vin.eq_ignore_ascii_case(vin.trim()) {
 		anyhow::bail!("{} is for VIN {} but the build asked for {vin}", input_path.display(), parsed.vin);
 	}
-	let survey_path = match &parsed.survey {
-		Some(p) => p.clone(),
-		None => crate::datadir::survey_cache(vin)?,
-	};
-	let survey = std::fs::read_to_string(&survey_path).with_context(|| {
-		format!(
-			"no survey at {} — run `vagcan dev survey` on the car, or name one with `survey =`",
-			survey_path.display()
+	let record = crate::datadir::units_record(vin)?;
+	let units = crate::units::read_record(&record)?.ok_or_else(|| {
+		anyhow::anyhow!(
+			"no record of {vin}'s control units at {} — connect to the car once with `vagcan units --identify`, or `vagcan watch`, and it is written",
+			record.display()
 		)
 	})?;
-	let units = poll::identities_from_survey(&survey);
-	let answered = poll::answered_from_survey(&survey);
+	Ok(Inputs {
+		vin: vin.to_string(),
+		parsed,
+		dir,
+		input_path,
+		record,
+		units,
+		read_attempted: false,
+	})
+}
+
+/// [`build_for_car`] short of writing anything: read the input, the car's record of
+/// its units and the project, and build. For a command that reads the plan and keeps
+/// nothing (`vagcan dev recording dash`).
+///
+/// Every channel the project describes is `declared`: the record holds what the units
+/// are, nothing about which identifiers they answer.
+pub fn resolve_for_car(vin: &str, input: Option<&Path>) -> anyhow::Result<Resolved> {
+	resolve(read_inputs(vin, input)?)
+}
+
+/// [`resolve_for_car`] on inputs already read: the project, the check that the plan's
+/// units have had their channels read, and the build.
+///
+/// **A unit the plan uses whose channels a VCDS read has yet to bring is a refusal,
+/// not a build.** The project's VCDS channels come per unit, the first time a command
+/// with the car — or `dev dash build`, offline — reads them
+/// ([`crate::registry::unread`]); a plan built for a car before that read would refuse
+/// every channel of those units as "not declared", which is a false diagnosis of the
+/// input, and the firmware's build script would print it (found in review,
+/// 2026-09-28). So the build says the truth instead: which units, and what reads them.
+/// Only the units the input references ([`referenced_units`]): a unit the plan never
+/// reads — asleep at the first read, a new version after a software update, one named
+/// once with `--did` — must not block the build (found in the next review), least of
+/// all with the installation gone; it is a note.
+pub fn resolve(inputs: Inputs) -> anyhow::Result<Resolved> {
+	let Inputs {
+		vin,
+		parsed,
+		dir,
+		input_path,
+		record,
+		units,
+		read_attempted,
+	} = inputs;
 	let project = crate::project::current()?;
 	let store = CatalogStore::open(project.measurements_dir());
 	let extracted = crate::extracted::open(&project);
+	let referenced = referenced_units(&parsed);
+	let (used, unused): (Vec<UnitIdentity>, Vec<UnitIdentity>) = units.iter().cloned().partition(|u| referenced.contains(&u.request));
+	let unused_note = {
+		let described = crate::registry::described_by(&extracted);
+		refuse_unread(&vin, read_attempted, crate::registry::unread(&project, &used, &described)?)?;
+		unread_note(&vin, read_attempted, crate::registry::unread(&project, &unused, &described)?)
+	};
 	let language = crate::config::language(&crate::config::load());
-	let built = build(&parsed, &store, &extracted, &units, Some(&answered), language)?;
+	let mut built = build(&parsed, &store, &extracted, &units, language)?;
+	built.notes.extend(unused_note);
 	let inputs = vec![
 		input_path,
-		survey_path,
+		record,
 		project.cache(),
 		project.measurements_dir(),
 		project.names(),
@@ -2457,21 +2508,100 @@ pub fn resolve_for_car(vin: &str, input: Option<&Path>) -> anyhow::Result<Resolv
 		built,
 		dir,
 		inputs,
-		survey,
 		units,
 		store,
 		extracted,
 	})
 }
 
-/// The whole command: read the input, the survey and the project, build,
-/// write `plan.json` and `plan.rs` under `~/.vagcan/dash/<VIN>/`.
+/// The units a build input reads: its channels and their specified values, the stalk's
+/// read and its cruise status, the stopwatch's speed. A page or an alarm names a channel
+/// from that list, so the channels are the whole of it — what has to have had its
+/// channels read before the plan can be built, and nothing else.
+pub fn referenced_units(input: &Input) -> std::collections::BTreeSet<u16> {
+	let mut units: std::collections::BTreeSet<u16> = input
+		.channels
+		.iter()
+		.flat_map(|c| std::iter::once(c.reference.request()).chain(c.setpoint.as_ref().map(Reference::request)))
+		.collect();
+	if let Some(stalk) = &input.stalk {
+		units.insert(stalk.request);
+		units.insert(stalk.cruise.request());
+	}
+	if let Some(stopwatch) = &input.stopwatch {
+		units.insert(stopwatch.speed.request());
+	}
+	units
+}
+
+/// "the channels of N control unit(s) of this car have not been read from the VCDS
+/// installation (names)": the subject of the refusal and of the note.
+fn unread_subject(units: &std::collections::BTreeSet<(String, String)>) -> String {
+	let names: Vec<&str> = units.iter().map(|(odx, _)| odx.as_str()).collect();
+	format!(
+		"the channels of {} control unit{} of this car have not been read from the VCDS installation ({})",
+		units.len(),
+		if units.len() == 1 { "" } else { "s" },
+		names.join(", ")
+	)
+}
+
+/// What reads the channels of units still unread, for the refusal and the note:
+/// `dev dash build`, unless that is the command speaking — it has just tried, and
+/// the line it printed says what stopped the read.
+fn what_reads_them(vin: &str, read_attempted: bool, said_where: &str) -> String {
+	match read_attempted {
+		true => format!("{said_where} what stopped the read"),
+		false => format!("`vagcan dev dash build {vin}` reads them once, offline, or a command with the car does"),
+	}
+}
+
+/// Where `dev dash build`'s read said what stopped it, from where the refusal is
+/// printed — right under it — and from where the note is: after the plan's lines,
+/// twenty-odd of them (found in review, 2026-09-28).
+const ABOVE_THE_REFUSAL: &str = "the lines above say";
+const ABOVE_THE_NOTE: &str = "the first lines of this output say";
+
+/// The refusal behind [`resolve`]: the plan's units whose channels have not been read,
+/// and what reads them. Nothing when there are none.
+fn refuse_unread(vin: &str, read_attempted: bool, unread: crate::registry::Unread) -> anyhow::Result<()> {
+	use crate::registry::Unread;
+	match unread {
+		Unread::Nothing => Ok(()),
+		Unread::Readable { units, .. } => anyhow::bail!("{} — {}", unread_subject(&units), what_reads_them(vin, read_attempted, ABOVE_THE_REFUSAL)),
+		Unread::Unreadable { units, why } => anyhow::bail!("{}, and {why}", unread_subject(&units)),
+	}
+}
+
+/// The note behind [`resolve`] for the units the plan does not use: their channels are
+/// not read yet, and why — the build goes ahead without them, and says so once.
+fn unread_note(vin: &str, read_attempted: bool, unread: crate::registry::Unread) -> Option<String> {
+	use crate::registry::Unread;
+	match unread {
+		Unread::Nothing => None,
+		Unread::Readable { units, .. } => Some(format!(
+			"{}, which the plan does not use; {}",
+			unread_subject(&units),
+			what_reads_them(vin, read_attempted, ABOVE_THE_NOTE)
+		)),
+		Unread::Unreadable { units, why } => Some(format!("{}, which the plan does not use, and {why}", unread_subject(&units))),
+	}
+}
+
+/// The whole command: read the input, the car's record of its units and the
+/// project, build, write `plan.json` and `plan.rs` under `~/.vagcan/dash/<VIN>/`.
 ///
 /// `input` defaults to `dash.toml` in that directory. The firmware's build
 /// script calls this too, so `cargo build` of the firmware *is* the plan build.
 pub fn build_for_car(vin: &str, input: Option<&Path>) -> anyhow::Result<Written> {
+	build_inputs(read_inputs(vin, input)?)
+}
+
+/// [`build_for_car`] on inputs already read — for `dev dash build`, which reads the
+/// registry for the units on record between the two.
+pub fn build_inputs(inputs: Inputs) -> anyhow::Result<Written> {
 	use anyhow::Context as _;
-	let Resolved { built, dir, inputs, .. } = resolve_for_car(vin, input)?;
+	let Resolved { built, dir, inputs, .. } = resolve(inputs)?;
 	std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 	let json = dir.join("plan.json");
 	let rust = dir.join("plan.rs");
@@ -2551,6 +2681,116 @@ mod tests {
 		parse_input(&text).expect("the fixture parses")
 	}
 
+	#[test]
+	fn the_units_a_plan_reads_are_its_channels_setpoints_stalk_and_stopwatch_and_nothing_else() {
+		// Found in review (2026-09-28): the unread-channels refusal checked every
+		// recorded unit, so a unit the plan never reads — asleep at the first
+		// read, a new version after an update, named once with `--did` — blocked
+		// every build, and with the installation gone there was no way out.
+		let parse = |text: &str| Reference::parse(text).unwrap();
+		let input = Input {
+			vin: "TESTVIN0000000001".into(),
+			language: None,
+			channels: vec![ChannelInput {
+				reference: parse("01:IDE00025"),
+				label: None,
+				decimals: None,
+				hz: None,
+				setpoint: Some(parse("02:IDE00190")),
+			}],
+			pages: Vec::new(),
+			alarms: Vec::new(),
+			stalk: Some(StalkInput {
+				request: 0x70C,
+				did: 0x1105,
+				rocker: "r".into(),
+				switch: "s".into(),
+				next: "n".into(),
+				previous: "p".into(),
+				measure: "m".into(),
+				switch_off: "off".into(),
+				cruise: parse("713:IDE00001"),
+				cruise_off: "off".into(),
+			}),
+			stopwatch: Some(StopwatchInput {
+				speed: parse("7E1:F40D"),
+				km_h_per_unit: 1.0,
+				marks: Vec::new(),
+			}),
+			buttons: Vec::new(),
+		};
+		assert_eq!(referenced_units(&input), [ENGINE, GEARBOX, 0x70C, 0x713].into());
+		let smallest = self::input(&["01:F423"], &values_page(&["01:F423"]));
+		assert_eq!(referenced_units(&smallest), [ENGINE].into());
+
+		// The plan's units are refused; the rest are a note, with the cause.
+		use crate::registry::Unread;
+		let units = |names: &[&str]| names.iter().map(|n| (n.to_string(), "001".to_string())).collect();
+		assert!(refuse_unread("VIN", false, Unread::Nothing).is_ok());
+		assert_eq!(unread_note("VIN", false, Unread::Nothing), None);
+		let readable = Unread::Readable {
+			units: units(&["EV_Sixteenth"]),
+			root: PathBuf::from("/vcds"),
+		};
+		let refusal = refuse_unread("VIN", false, readable.clone()).unwrap_err().to_string();
+		assert!(
+			refusal.starts_with("the channels of 1 control unit of this car have not been read"),
+			"{refusal}"
+		);
+		assert!(
+			refusal.contains("(EV_Sixteenth)") && refusal.contains("`vagcan dev dash build VIN`"),
+			"{refusal}"
+		);
+		let note = unread_note("VIN", false, readable.clone()).unwrap();
+		assert!(note.contains("(EV_Sixteenth), which the plan does not use"), "{note}");
+		assert!(note.contains("`vagcan dev dash build VIN`"), "{note}");
+		// `dev dash build` itself has just tried to read them: it is not told to
+		// run itself (found in review, 2026-09-28).
+		let refusal = refuse_unread("VIN", true, readable.clone()).unwrap_err().to_string();
+		assert!(refusal.ends_with("the lines above say what stopped the read"), "{refusal}");
+		assert!(!refusal.contains("dev dash build"), "{refusal}");
+		// The note comes after the plan's lines, so it points at the top of the output.
+		let note = unread_note("VIN", true, readable).unwrap();
+		assert!(
+			note.ends_with("which the plan does not use; the first lines of this output say what stopped the read"),
+			"{note}"
+		);
+		let gone = Unread::Unreadable {
+			units: units(&["EV_A", "EV_B"]),
+			why: "the VCDS installation to read from is not on this machine any more".into(),
+		};
+		let refusal = refuse_unread("VIN", false, gone.clone()).unwrap_err().to_string();
+		assert!(
+			refusal.contains("2 control units") && refusal.contains("not on this machine any more"),
+			"{refusal}"
+		);
+		let note = unread_note("VIN", true, gone).unwrap();
+		assert!(
+			note.contains("(EV_A, EV_B), which the plan does not use, and the VCDS installation"),
+			"{note}"
+		);
+	}
+
+	#[test]
+	fn a_survey_key_is_refused_with_what_to_do_and_where_the_units_come_from_now() {
+		// `survey =` named the file the units were read from. The units come from
+		// the car's record now, written by the live commands, so an input that
+		// still has the key is refused — by line, with what to do — rather than
+		// read as if the key were absent or refused as a typo.
+		let text = "vin = \"TESTVIN0000000001\"\nlanguage = \"en\"\nsurvey = \"/somewhere/survey.jsonl\"\n[[channel]]\nref = \"01:IDE00025\"\n[[page]]\nkind = \"values\"\ntitle = \"T\"\ncells = [\"01:IDE00025\"]\n";
+		let Error::Parse(why) = parse_input(text).unwrap_err() else {
+			panic!("not a parse refusal");
+		};
+		assert!(why.contains("line 3"), "{why}");
+		assert!(why.contains("survey"), "{why}");
+		assert!(why.contains("delete the line"), "{why}");
+		assert!(why.contains("units.json"), "{why}");
+		assert!(why.contains("vagcan units --identify") && why.contains("vagcan watch"), "{why}");
+		assert!(!why.contains("did you mean"), "not a typo: {why}");
+		// Without it the same input parses.
+		assert!(parse_input(&text.replace("survey = \"/somewhere/survey.jsonl\"\n", "")).is_ok());
+	}
+
 	fn values_page(cells: &[&str]) -> String {
 		values_page_titled("T", cells)
 	}
@@ -2595,7 +2835,6 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(ENGINE, "PART1", "EV_Test")],
-			None,
 			Language::En,
 		)
 	}
@@ -2625,7 +2864,6 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(ENGINE, "PART1", "EV_Test")],
-			None,
 			Language::En,
 		)
 	}
@@ -2959,7 +3197,6 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(ENGINE, "PART1", "EV_Test")],
-			None,
 			Language::En,
 		)
 		.unwrap();
@@ -2999,7 +3236,6 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(GEARBOX, "PART2", "EV_Test")],
-			None,
 			Language::En,
 		)
 		.unwrap();
@@ -3044,7 +3280,6 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(GEARBOX, "PART2", "EV_Test")],
-			None,
 			Language::En,
 		)
 		.unwrap();
@@ -3084,7 +3319,6 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(ENGINE, "PART1", "EV_Test")],
-			None,
 			Language::En,
 		)
 		.unwrap();
@@ -3115,7 +3349,6 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(ENGINE, "PART1", "EV_Test")],
-			None,
 			Language::En,
 		)
 		.unwrap();
@@ -3144,7 +3377,6 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(ENGINE, "PART1", "EV_Test")],
-			None,
 			Language::En,
 		)
 		.unwrap_err();
@@ -3156,11 +3388,11 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(ENGINE, "PART1", "EV_Test")],
-			None,
 			Language::En,
 		)
 		.unwrap_err();
-		assert_eq!(err, Error::UnknownUnit(GEARBOX), "a unit the survey never saw");
+		assert_eq!(err, Error::UnknownUnit(GEARBOX), "a unit the car's record never saw");
+		assert!(err.to_string().contains("vagcan units --identify"), "and what writes the record: {err}");
 	}
 
 	#[test]
@@ -3177,7 +3409,6 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(GEARBOX, "PART2", "EV_Test")],
-			None,
 			Language::En,
 		)
 		.unwrap_err();
@@ -3200,7 +3431,6 @@ mod tests {
 			&store,
 			&extracted,
 			&units,
-			None,
 			Language::En,
 		)
 		.unwrap_err();
@@ -3210,7 +3440,6 @@ mod tests {
 			&store,
 			&extracted,
 			&units,
-			None,
 			Language::En,
 		)
 		.unwrap_err();
@@ -3239,7 +3468,6 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(ENGINE, "PART1", "EV_Test")],
-			None,
 			Language::En,
 		)
 		.unwrap();
@@ -3278,7 +3506,6 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(ENGINE, "PART1", "EV_Test")],
-			None,
 			Language::En,
 		)
 		.unwrap();
@@ -3286,11 +3513,10 @@ mod tests {
 		assert_eq!(built.plan.channels[0].factor, 0.002);
 	}
 
-	/// The survey is the car's own word on what answers. Silence where it
-	/// asked fails the build; a standard OBD-II row the survey never put to
-	/// the car builds, and the log says the survey has no record of it.
+	/// A standard OBD-II row builds — the standard mandates it — and the log says the car
+	/// may still not carry it; a row with no text id is not therefore the standard's.
 	#[test]
-	fn the_survey_decides_what_the_car_answers() {
+	fn a_standard_obd_row_builds_and_the_log_says_so() {
 		let here = tempfile::tempdir().unwrap();
 		let extracted = extracted_with(
 			here.path(),
@@ -3299,47 +3525,13 @@ mod tests {
 		);
 		let store = CatalogStore::open(here.path().join("proven"));
 		let units = [identity(ENGINE, "PART1", "EV_Test")];
-		let mut answered = poll::Answered::default();
-		answered.units.insert(ENGINE);
-		answered.asked.insert(ENGINE, vec![0x2000..=0x20FF, 0xF400..=0xF4FF]);
-		answered.dids.insert((ENGINE, 0xF405));
-
-		let err = build(
-			&input(&["01:IDE00191"], &values_page(&["01:IDE00191"])),
-			&store,
-			&extracted,
-			&units,
-			Some(&answered),
-			Language::En,
-		)
-		.unwrap_err();
-		assert_eq!(err, Error::NotAnswered(Reference::parse("01:IDE00191").unwrap()));
-
-		let built = build(
-			&input(&["01:F405"], &values_page(&["01:F405"])),
-			&store,
-			&extracted,
-			&units,
-			Some(&answered),
-			Language::En,
-		)
-		.unwrap();
-		assert_eq!(built.plan.channels[0].did, 0xF405, "a standard row the car was seen to answer");
-		assert!(!built.notes.iter().any(|n| n.contains("no record")), "{:?}", built.notes);
-
-		let mut never_asked = poll::Answered::default();
-		never_asked.units.insert(ENGINE);
-		let built = build(
-			&input(&["01:F423"], &values_page(&["01:F423"])),
-			&store,
-			&extracted,
-			&units,
-			Some(&never_asked),
-			Language::En,
-		)
-		.unwrap();
+		let built = build(&input(&["01:F423"], &values_page(&["01:F423"])), &store, &extracted, &units, Language::En).unwrap();
+		assert_eq!(built.plan.channels[0].did, 0xF423);
 		assert!(
-			built.notes.iter().any(|n| n.contains("no record of the car answering F423")),
+			built
+				.notes
+				.iter()
+				.any(|n| n.starts_with("01:F423: a standard OBD-II row") && n.contains("may still not carry") && !n.contains("record")),
 			"{:?}",
 			built.notes
 		);
@@ -3352,15 +3544,7 @@ mod tests {
 			&[("EV_Test_001", vec![reading(0x2029, "Boost", "", 0, 16, false, true, 0.001, 0.0)])],
 			&[],
 		);
-		let built = build(
-			&input(&["01:2029"], &values_page(&["01:2029"])),
-			&store,
-			&extracted,
-			&units,
-			Some(&never_asked),
-			Language::En,
-		)
-		.unwrap();
+		let built = build(&input(&["01:2029"], &values_page(&["01:2029"])), &store, &extracted, &units, Language::En).unwrap();
 		assert!(!built.notes.iter().any(|n| n.contains("standard OBD-II")), "{:?}", built.notes);
 	}
 
@@ -3382,7 +3566,6 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(ENGINE, "PART1", "EV_Test")],
-			None,
 			Language::En,
 		)
 		.unwrap_err();
@@ -3405,7 +3588,6 @@ mod tests {
 			&store,
 			&extracted,
 			&[nameless],
-			None,
 			Language::En,
 		)
 		.unwrap_err();
@@ -3417,7 +3599,6 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(ENGINE, "PART1", "EV_Test")],
-			None,
 			Language::En,
 		)
 		.unwrap_err();
@@ -3456,7 +3637,6 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(ENGINE, "PART1", "EV_Test")],
-			None,
 			Language::En,
 		)
 		.unwrap();
@@ -3664,7 +3844,6 @@ mod tests {
 				&store,
 				&extracted,
 				&[identity(ENGINE, "PART1", "EV_Test")],
-				None,
 				Language::Ru,
 			)
 			.unwrap()
@@ -3759,7 +3938,6 @@ mod tests {
 				&store,
 				&extracted,
 				&[identity(ENGINE, "PART1", "EV_Test")],
-				None,
 				Language::En,
 			)
 		};
@@ -3800,7 +3978,6 @@ mod tests {
 				&store,
 				&extracted,
 				&[identity(ENGINE, "PART1", "EV_Test")],
-				None,
 				Language::En,
 			)
 			.unwrap_err();
@@ -3912,9 +4089,7 @@ mod tests {
 
 	/// What a lever test adds to the fixture of [`build_with_lever_in`].
 	#[derive(Default)]
-	struct Extra<'a> {
-		/// What the car's survey saw; `None` is a survey that claims nothing.
-		answered: Option<&'a poll::Answered>,
+	struct Extra {
 		/// More rows, each on [`ENGINE`] or on [`STALK_UNIT`].
 		rows: Vec<(u16, Reading)>,
 	}
@@ -3922,7 +4097,7 @@ mod tests {
 	/// An engine with a speed, a speed with an offset, a cruise status and a quantity; a
 	/// steering column with a rocker, a switch and a voltage in one identifier. `input` is
 	/// the whole `[stalk]` / `[stopwatch]` part.
-	fn build_with_lever_in(dir: &Path, input: &str, extra: Extra<'_>, cache_written: impl FnOnce(&Path)) -> Result<Built, Error> {
+	fn build_with_lever_in(dir: &Path, input: &str, extra: Extra, cache_written: impl FnOnce(&Path)) -> Result<Built, Error> {
 		let more = |unit: u16| extra.rows.iter().filter(move |(u, _)| *u == unit).map(|(_, r)| r.clone());
 		let extracted = extracted_with(
 			dir,
@@ -3993,7 +4168,6 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(ENGINE, "PART1", "EV_Test"), identity(STALK_UNIT, "PART2", "EV_Stalk")],
-			extra.answered,
 			Language::En,
 		)
 	}
@@ -4002,7 +4176,7 @@ mod tests {
 		build_with_lever_and(input, Extra::default())
 	}
 
-	fn build_with_lever_and(input: &str, extra: Extra<'_>) -> Result<Built, Error> {
+	fn build_with_lever_and(input: &str, extra: Extra) -> Result<Built, Error> {
 		let here = tempfile::tempdir().unwrap();
 		build_with_lever_in(here.path(), input, extra, |_| {})
 	}
@@ -4133,7 +4307,6 @@ mod tests {
 					],
 				),
 			)],
-			..Extra::default()
 		};
 		let why = build_with_lever_and(&LEVER.replacen("\"Switch\"", "\"Split\"", 1), split)
 			.unwrap_err()
@@ -4149,7 +4322,7 @@ mod tests {
 	/// Rows whose ODIS names carry a space at one end, as nine enumerated fields of one real
 	/// project do: a rocker with a trailing one, a switch with a leading one, states with both,
 	/// and a cruise status whose off state ends in one.
-	fn spaced() -> Extra<'static> {
+	fn spaced() -> Extra {
 		Extra {
 			rows: vec![
 				(
@@ -4169,7 +4342,6 @@ mod tests {
 					),
 				),
 			],
-			..Extra::default()
 		}
 	}
 
@@ -4209,7 +4381,6 @@ mod tests {
 	fn two_fields_or_two_states_equal_once_trimmed_are_refused() {
 		let twin = Extra {
 			rows: vec![(STALK_UNIT, state_reading(STALK_DID, "Rocker ", "", 40, 8, ladder(&["a", "b"])))],
-			..Extra::default()
 		};
 		let why = build_with_lever_and(LEVER, twin).unwrap_err().to_string();
 		assert!(why.contains("rocker: 75A:4C21 has 2 fields named \"Rocker\""), "{why}");
@@ -4218,7 +4389,6 @@ mod tests {
 				STALK_UNIT,
 				state_reading(STALK_DID, "Twin", "", 40, 8, ladder(&["plus", "plus ", "minus", "limit"])),
 			)],
-			..Extra::default()
 		};
 		let why = build_with_lever_and(&LEVER.replacen("\"Rocker\"", "\"Twin\"", 1), twin)
 			.unwrap_err()
@@ -4226,46 +4396,19 @@ mod tests {
 		assert!(why.contains("next: \"plus\" names 2 bands of \"Twin\" (0–63, 64–127)"), "{why}");
 	}
 
-	/// A survey that asked `unit` for everything in `asked` and heard back only `heard`.
-	fn survey_of(unit: u16, asked: std::ops::RangeInclusive<u16>, heard: &[u16]) -> poll::Answered {
-		let mut answered = poll::Answered::default();
-		answered.units.insert(unit);
-		answered.asked.insert(unit, vec![asked]);
-		answered.dids.extend(heard.iter().map(|did| (unit, *did)));
-		answered
-	}
-
-	/// The refusals only a survey or a second row reaches, each one: the helper's survey claims
-	/// nothing, so none of them was ever exercised (review, 2026-09-27).
+	/// The refusals only a second row reaches, each one: the helper's fixture has one row
+	/// per name, so none of them was ever exercised (review, 2026-09-27).
 	#[test]
-	fn the_lever_refusals_a_survey_or_a_second_row_decides_are_each_reached() {
-		// A unit the survey has nothing about: the column's, then the cruise status's.
+	fn the_lever_refusals_a_second_row_decides_are_each_reached() {
+		// A unit the car's record has nothing about: the column's, then the cruise status's.
 		let why = build_with_lever(&LEVER.replacen("75A:4C21", "75B:4C21", 1)).unwrap_err();
 		assert_eq!(why, Error::UnknownUnit(0x75B));
 		let why = build_with_lever(&LEVER.replacen("01:2001", "02:2001", 1)).unwrap_err();
 		assert_eq!(why, Error::UnknownUnit(GEARBOX));
 
-		// Asked and silent: the lever's identifier, then the cruise status's. Asked and heard
-		// is no refusal.
-		let heard = survey_of(STALK_UNIT, 0x4C00..=0x4CFF, &[STALK_DID]);
-		let with = |answered| Extra {
-			answered: Some(answered),
-			..Extra::default()
-		};
-		build_with_lever_and(LEVER, with(&heard)).expect("the column answered");
-		let silent = survey_of(STALK_UNIT, 0x4C00..=0x4CFF, &[]);
-		let why = build_with_lever_and(LEVER, with(&silent)).unwrap_err();
-		assert_eq!(why, Error::NotAnswered(Reference::parse("75A:4C21").unwrap()));
-		let heard = survey_of(ENGINE, 0x2000..=0x20FF, &[0x2001]);
-		build_with_lever_and(LEVER, with(&heard)).expect("the engine answered");
-		let silent = survey_of(ENGINE, 0x2000..=0x20FF, &[]);
-		let why = build_with_lever_and(LEVER, with(&silent)).unwrap_err();
-		assert_eq!(why, Error::NotAnswered(Reference::parse("01:2001").unwrap()));
-
 		// A field name the identifier gives twice, exactly.
 		let twice = Extra {
 			rows: vec![(STALK_UNIT, state_reading(STALK_DID, "Switch", "", 40, 8, ladder(&["off", "on"])))],
-			..Extra::default()
 		};
 		let why = build_with_lever_and(LEVER, twice).unwrap_err().to_string();
 		assert!(why.contains("switch: 75A:4C21 has 2 fields named \"Switch\""), "{why}");
@@ -4279,7 +4422,7 @@ mod tests {
 	}
 
 	/// A second enumerated row under the cruise status's text id, on another identifier.
-	fn second_cruise_status() -> Extra<'static> {
+	fn second_cruise_status() -> Extra {
 		Extra {
 			rows: vec![(
 				ENGINE,
@@ -4292,7 +4435,6 @@ mod tests {
 					vec![Level::point(0, "off"), Level::point(1, "on")],
 				),
 			)],
-			..Extra::default()
 		}
 	}
 
@@ -4323,19 +4465,10 @@ mod tests {
 				STALK_UNIT,
 				state_reading(STALK_DID, "Also cruise", "IDE00030", 56, 8, ladder(&["off", "on"])),
 			)],
-			..Extra::default()
 		};
 		for cruise in ["75A:4C21@24", "75A:IDE00030"] {
 			let lever = LEVER.replacen("\"01:2001\"", &format!("{cruise:?}"), 1);
-			let why = build_with_lever_and(
-				&lever,
-				Extra {
-					rows: inside.rows.clone(),
-					..Extra::default()
-				},
-			)
-			.unwrap_err()
-			.to_string();
+			let why = build_with_lever_and(&lever, Extra { rows: inside.rows.clone() }).unwrap_err().to_string();
 			assert!(
 				why.starts_with(&format!("[stalk] cruise {cruise} is in read's own identifier 75A:4C21")),
 				"{cruise}: {why}"
@@ -4344,7 +4477,6 @@ mod tests {
 		// Another identifier on the same unit is another answer.
 		let beside = Extra {
 			rows: vec![(STALK_UNIT, state_reading(0x4C22, "Beside", "", 0, 8, ladder(&["off", "on"])))],
-			..Extra::default()
 		};
 		build_with_lever_and(&LEVER.replacen("01:2001", "75A:4C22", 1), beside).expect("another answer");
 	}
@@ -4774,7 +4906,6 @@ mod tests {
 		let at = |hz: &str| {
 			let another = Extra {
 				rows: vec![(ENGINE, reading(0x3005, "Speed too", "IDE00014", 0, 16, false, true, 1.0, 0.0))],
-				..Extra::default()
 			};
 			let watch = WATCH.replacen("IDE00010", "IDE00014", 1);
 			build_with_lever_and(&format!("{watch}[[channel]]\nref = \"01:IDE00014\"\nhz = {hz}\n"), another)
@@ -4805,7 +4936,6 @@ mod tests {
 		let builds = |hz: f64| {
 			let another = Extra {
 				rows: vec![(ENGINE, reading(0x3005, "Speed too", "IDE00014", 0, 16, false, true, 1.0, 0.0))],
-				..Extra::default()
 			};
 			let watch = WATCH.replacen("IDE00010", "IDE00014", 1);
 			build_with_lever_and(&format!("{watch}[[channel]]\nref = \"01:IDE00014\"\nhz = {hz:?}\n"), another).is_ok()
@@ -4839,7 +4969,7 @@ mod tests {
 
 	/// [`build_with_lever_in`] with `proven` written as the unit's catalog, `<key>.json`,
 	/// beside the cache.
-	fn build_with_proven(input: &str, extra: Extra<'_>, key: &str, proven: Vec<MeasurementDef>) -> Result<Built, Error> {
+	fn build_with_proven(input: &str, extra: Extra, key: &str, proven: Vec<MeasurementDef>) -> Result<Built, Error> {
 		let here = tempfile::tempdir().unwrap();
 		build_with_lever_in(here.path(), input, extra, |cache| {
 			let dir = cache.parent().unwrap().join("proven");
@@ -4878,7 +5008,6 @@ mod tests {
 		// The cruise status, on a declared ladder, proven as points.
 		let ladder_status = Extra {
 			rows: vec![(ENGINE, state_reading(0x2006, "Cruise ladder", "IDE00023", 0, 8, ladder(&["off", "on"])))],
-			..Extra::default()
 		};
 		let why = build_with_proven(
 			&LEVER.replacen("01:2001", "01:IDE00023", 1),

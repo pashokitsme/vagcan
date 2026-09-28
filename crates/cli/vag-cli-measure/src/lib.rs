@@ -37,7 +37,7 @@ use serde_json::{Map, Value, json};
 
 // `ui` is deliberately not re-exported: this crate has its own, the live
 // stopwatch screen, and core's shared widgets are reached by their own name.
-pub use vag_cli_core::{analyse, config, datadir, device, extracted, glossary, plan, progress, project, units, vcdslog};
+pub use vag_cli_core::{analyse, config, datadir, device, extracted, glossary, plan, progress, project, registry, units, vcdslog};
 
 pub mod args;
 pub mod carfile;
@@ -1013,10 +1013,20 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 	let bus = open().await?;
 
 	let mut progress = crate::progress::Line::new();
-	let (_, identities) = crate::units::identify(bus.clone(), &[crate::plan::ENGINE], &[], &mut progress).await;
+	let (_, identities) = crate::units::identify(bus.clone(), &[crate::plan::ENGINE], &mut progress).await;
 	progress.update("reading the vehicle identification number");
 	let (_, vin) = crate::units::read_vin(bus.clone()).await;
 	progress.finish();
+	// Written down for the commands that need this car's units without the car
+	// (`setup`'s registry step, the dash build); a write that fails is one line,
+	// and so is a car that gave no VIN to file it under.
+	match &vin {
+		Some(vin) => crate::units::record_quietly(vin, &identities),
+		None => eprintln!("{}", crate::units::NOT_RECORDED_WITHOUT_A_VIN),
+	}
+	// The channels of units nothing has read yet, out of the VCDS installation
+	// the project was set up from — before the project's rows are loaded below.
+	crate::registry::ensure_async(identities.clone()).await;
 
 	let prepared = prepare(&store, &crate::extracted::current(), &identities, vin.clone(), &opts)?;
 	if !prepared.banner.is_empty() {

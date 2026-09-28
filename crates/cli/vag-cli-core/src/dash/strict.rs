@@ -29,7 +29,7 @@ pub(super) const TOP: Keys = Keys {
 	section: "",
 	name: "the top level",
 	kind: None,
-	keys: &["vin", "language", "survey"],
+	keys: &["vin", "language"],
 };
 
 pub(super) const CHANNEL: Keys = Keys {
@@ -297,7 +297,6 @@ mod tests {
 	/// written against. Parsed only, so no name in it has to resolve.
 	const BASE: &str = r#"vin = "TESTVIN0000000001"
 language = "en"
-survey = "/nowhere/survey.jsonl"
 
 [[channel]]
 ref = "01:IDE00001"
@@ -407,7 +406,7 @@ marks = [60, 100]
 			(
 				"vin = \"TESTVIN0000000001\"",
 				"",
-				"The top level takes vin, language, survey, [[channel]], [[page]], [[alarm]], [[button]], [stalk], [stopwatch]",
+				"The top level takes vin, language, [[channel]], [[page]], [[alarm]], [[button]], [stalk], [stopwatch]",
 			),
 			(
 				"ref = \"01:IDE00001\"",
@@ -477,7 +476,7 @@ marks = [60, 100]
 				"unknown key \"foo\". The top level takes",
 			),
 			(
-				with("survey = \"/nowhere/survey.jsonl\"", "langauge = \"ru\"").0,
+				with("language = \"en\"", "langauge = \"ru\"").0,
 				"unknown key \"langauge\" — did you mean \"language\"?",
 			),
 		] {
@@ -525,10 +524,10 @@ marks = [60, 100]
 	fn a_key_under_the_wrong_header_says_where_it_belongs() {
 		// TOML gives a key to the header above it: a top-level key written at the bottom of the
 		// file is the last section's.
-		let text = format!("{BASE}survey = \"/elsewhere.jsonl\"\n");
+		let text = format!("{BASE}language = \"ru\"\n");
 		let why = refused(&text);
 		assert!(
-			why.contains("[stopwatch]: \"survey\" is a top-level key: write it above the first section. [stopwatch] takes"),
+			why.contains("[stopwatch]: \"language\" is a top-level key: write it above the first section. [stopwatch] takes"),
 			"{why}"
 		);
 		let (text, _) = with("title = \"A\"", "hz = 10");
@@ -576,11 +575,6 @@ marks = [60, 100]
 				"language = \"en\"",
 				"language = 1",
 				"language must be a string, \"en\" or \"ru\", not an integer",
-			),
-			(
-				"survey = \"/nowhere/survey.jsonl\"",
-				"survey = 5",
-				"survey must be a string, a file path, not an integer",
 			),
 			("title = \"A\"", "title = 5", "[[page]] 1: title must be a string, not an integer"),
 			("title = \"A\"", "title = [\"A\"]", "[[page]] 1: title must be a string, not an array"),

@@ -120,18 +120,18 @@ impl Anomaly {
 			 STOPPED: control unit {unit} ({:03X}) {what}.\n\
 			 The tool was asking it for identifier {:04X}.\n\
 			 \n\
-			 The run has ended here — every unit, not just this one. A control unit that\n\
-			 changes under a sweep may have stopped doing its job in the car, and a sweep\n\
-			 that carries on past that is how a recoverable fault becomes a lasting one.\n\
+			 The read has ended here. A control unit that changes under a sweep may have\n\
+			 stopped doing its job in the car, and a sweep that carries on past that is\n\
+			 how a recoverable fault becomes a lasting one.\n\
 			 \n\
 			 What to do now:\n\
 			 \n\
 			 1. Stop the car if it is moving.\n\
 			 2. Do NOT clear the faults. The freeze frame is the evidence.\n\
 			      vagcan faults --ecu {unit} --details\n\
-			 3. Snapshot the unit and compare it with the one you took before:\n\
-			      vagcan dev survey --only {unit} --out after.jsonl\n\
-			      vagcan dev survey --diff before.jsonl after.jsonl\n\
+			 3. See whether it answers at all. This asks every unit of the car the four\n\
+			    identifiers that name it, {unit} among them — no sweep:\n\
+			      vagcan units --identify\n\
 			 4. Try an ignition cycle: off, wait, on. A unit that crashed and restarted\n\
 			    often comes back. One that does not is a different problem.\n\
 			 5. Then stop, and take it to someone with the factory tool.\n",
@@ -315,7 +315,7 @@ mod tests {
 	#[test]
 	fn a_unit_that_never_spoke_is_absent_rather_than_changed() {
 		// Walking a car means asking addresses with nothing on them. Fifteen
-		// timeouts from an empty address must not stop a survey.
+		// timeouts from an empty address must not stop a walk of the car.
 		let mut m = Monitor::new(0x773);
 		for did in 0x2000..0x2010 {
 			assert!(m.saw(did, Answer::Silent).is_none(), "{did:04X} ended the run");
@@ -354,7 +354,7 @@ mod tests {
 	fn a_lost_group_request_is_not_read_as_the_unit_going_back_on_itself() {
 		// Group testing asks eight identifiers at once and the span often
 		// begins at one the unit answered during identification. A single lost
-		// frame there must not halt a whole-car survey — but three in a row
+		// frame there must not halt a sweep — but three in a row
 		// still must.
 		let mut m = Monitor::new(0x714);
 		m.seed(0xF187);
@@ -387,7 +387,7 @@ mod tests {
 		assert!(text.contains("STOPPED"), "{text}");
 		assert!(text.contains("22FF"), "it names what was being asked: {text}");
 		assert!(text.contains("Do NOT clear the faults"), "{text}");
-		assert!(text.contains("--diff"), "the snapshot comparison is the forensic tool: {text}");
+		assert!(text.contains("units --identify"), "whether it answers again is the next question: {text}");
 		assert!(text.contains("ignition cycle"), "{text}");
 	}
 

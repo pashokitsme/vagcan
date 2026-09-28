@@ -20,7 +20,9 @@ its identifier, layout and scaling — in a global registry, `RM.rod`, indexed b
 `MWB` row numbers (found 2026-09-28, [`research/vcds-registry/README.md`](research/vcds-registry/README.md)).
 This corrects a long-standing conclusion in the archive that the scaling was "live-only"; that
 was an off-by-one in reading `MWB` (its leading number is a registry **row number**, mistaken
-for a name pointer). `setup` reads it for the units of every surveyed car (step 5 below). About
+for a name pointer). `setup` reads it for the units of every car recorded on this machine (step 5
+below), and `watch`, `measure` or `units --identify` reads it for the car in front of it, the
+first time (`dev dash build` reads it offline, for a car already recorded). About
 40 % of VCDS's files are *shifted* — encrypted under a key only a running VCDS holds — and stay
 closed; ODIS covers those.
 
@@ -28,7 +30,7 @@ closed; ODIS covers those.
 declares, per control-unit variant, every identifier that unit answers together with the
 byte offset, the length, the byte order and the compu formula — the whole chain, for
 every variant the project covers, where VCDS's registry has it only for the units a
-surveyed car answered and not in its shifted files. It is a declaration by the manufacturer rather than a
+connected car answered and not in its shifted files. It is a declaration by the manufacturer rather than a
 measurement, so it ranks below a drive and above nothing; three rows this project had
 proved by driving came back identical out of the ODIS file, including a pair of
 engine-speed channels with opposite byte order that one wrong guess would have hidden.
@@ -39,21 +41,23 @@ So there are four sources and they are not interchangeable:
 |---|---|---|
 | which identifiers a variant answers, their shape and scaling; fault codes and their text | an ODIS project, via `vagcan setup` | yes, in minutes |
 | names, unit numbers, fault text where the project has none | a VCDS installation, via `vagcan setup` | yes, in minutes |
-| identifier, shape and scaling of a surveyed car's units, where ODIS has none | a VCDS installation's registry `RM.rod`, via `vagcan setup` | yes, in minutes |
+| identifier, shape and scaling of a connected car's units, where ODIS has none | a VCDS installation's registry `RM.rod`, via `vagcan setup` and the first `watch`, `measure` or `units --identify` with the car | yes, in minutes |
 | `(identifier, raw form, factor, offset)` | measured on a vehicle | only by driving |
 
 The first three land in a **project** — `~/.vagcan/data/<project id>/`, holding
-`cache.sqlite`, `names.json`, `odx-ids.json`, `rod-keys.json` and `sources.json`, with the raw `.rod`
+`cache.sqlite`, `names.json`, `odx-ids.json`, `rod-keys.json`, `registry.json` (which VCDS
+installation the channels were read from, and what came of each unit) and `sources.json`, with the raw `.rod`
 files and the fault text in a shared `~/.vagcan/rod/` because those are a property of a
 VCDS *build* rather than of any car. The last lands in that project's `measurements/`.
-`setup` fills the project, and with a VCDS installation alone the car's scalings need a
-survey first; the messages a short tool prints say whether it lacks label data or scalings.
+`setup` fills the project, and with a VCDS installation alone the car's channels arrive with the
+first `watch`, `measure` or `units --identify` after it (or `dev dash build`, offline); the
+messages a short tool prints say whether it lacks label data or scalings.
 
 **A project is keyed by platform, not by car**, and that is the whole reason it is not
 keyed by VIN: `SK37X` is VW's own identifier for a platform covering every Octavia III,
 Karoq and Kodiaq, and a proven scaling is a property of a *part number*, true of every
-car carrying that part. What is true of exactly one car — its car file, its drives, its
-survey — is keyed by the VIN the car itself answers, under `~/.vagcan/cars/<VIN>/`.
+car carrying that part. What is true of exactly one car — its car file, its drives, the record of
+its units — is keyed by the VIN the car itself answers, under `~/.vagcan/cars/<VIN>/`.
 [`docs/odis-project-mapping.md`](docs/odis-project-mapping.md)
 transcribes which vehicles each of VW's project names covers; nothing in the tool reads
 it, because a project declares its own coverage in `PRNR-INFO.xml`.
@@ -294,7 +298,9 @@ car command: fault naming reads `.rod` files off disk at run time, so those are 
 out, flat, into `~/.vagcan/rod/`. The `.lbl`/`.clb` files are deliberately *not* copied —
 they are read once, in step 2, into `cache.sqlite`, and that cache is what survives of
 them. Every car command runs without the installation; `setup` reads it in steps 1, 2 and
-5, so it is kept until the car it serves has been surveyed and `setup` has run again.
+5, and `watch`, `measure`, `units --identify` and `dev dash build` read it for a unit not yet
+read — so it is kept: a unit the tool meets later (swapped, updated, or asleep the first
+time) is read from it.
 
 **2. The label files → `cache.sqlite`.** Every `.lbl` parsed and every `.clb` decrypted
 into a SQLite database keyed by part number, so a later lookup is milliseconds rather
@@ -317,18 +323,29 @@ every car needs. Per-unit files are deliberately not swept: there are over sixte
 thousand of them, a blocked section costs about a minute of every core, and which
 handful a given car needs is a question only that car can answer.
 
-**5. `RM.rod` → the car's channels in `cache.sqlite`.** For every unit of every car this
-machine has surveyed (`~/.vagcan/cars/<VIN>/survey.jsonl`), the unit's file is found by its
+**5. `RM.rod` → the car's channels in `cache.sqlite`.** For every unit of every car recorded on
+this machine (`~/.vagcan/cars/<VIN>/units.json`, written by `watch`, `measure` and
+`units --identify`), the unit's file is found by its
 `F19E`/`F1A2`, its `[MWB]` list — its own or the store its `[INC]` names — points at 1-based
 rows of `RM.rod`, and each row gives the DID, bit layout and scaling, named from `TTTEXT`, with
 units from `UNIT.ROD` and text tables from `TTDOP.rod`. Read from the installation being set
 up, not from the pool: a list and the registry it points into mean something only together,
 and the pool can hold two builds' files under one name. A classic section's key is searched
-for once (minutes); a shifted one never. With no car surveyed the step is *not yet*, not a
+for once (minutes); a shifted one never. With no car recorded the step is *not yet*, not a
 gap: it says what to type. A table that does not open, a row that does not read, a list
 that lost its first row — each is said, never left as a smaller number — and a unit the
 installation has nothing for is not a gap when the ODIS project describes it. When the step
-writes nothing (no survey, no registry) it leaves no rows of an earlier installation behind.
+writes nothing (no car, no registry) it leaves no rows of an earlier installation behind.
+The same read runs from `watch`, `measure` and `units --identify` with the car, and from
+`dev dash build` offline (`vag_cli_core::registry::ensure`), for the units of the car in front of
+them that the installation has not been tried for — the first time, with a line, a spinner and a
+line per unit — and the project's `registry.json` records the installation and what came of each
+unit, so a unit VCDS has no file for is not searched for again. A project set up before that log
+existed is read from the installation its `sources.json` names, when that path is absolute and
+still holds `UDS_EV`. The firmware's build never reads: a plan that uses a unit whose channels
+have not been read is refused, and the refusal names `dev dash build` — or `setup`, when the
+installation is no longer where `setup` read it. A recorded unit the plan does not use is a note,
+never a refusal.
 
 The rows sit beside ODIS's under the installation's own source, and the last installation
 read replaces the one before, as its label files do. **ODIS wins every field it describes
@@ -336,15 +353,14 @@ and VCDS fills only what ODIS lacks** (owner, 2026-09-28), and a proven row outr
 ODIS also keeps the ODX ids it gives: VCDS names a field by the record of the name it shows,
 several fields can show one name, and a VCDS row filling a field ODIS lacks gives up an id
 ODIS gives another field of the unit, so `unit:IDE…` picks out what it picked out with ODIS
-alone. What a sweep asks a unit is still only what a drive proved and its ODIS variant
-declares: a VCDS list comes from whichever of a family's platform files read first, and
-whether it may widen a sweep is the owner's decision, not yet made.
+alone. A VCDS list comes from whichever of a family's platform files read first — which is
+why a row from it ranks below ODIS's; there is no sweep left for a list to widen (2026-09-28).
 
 Step 1 copies only what is newer than the pool's copy, and step 2 is skipped when its cache
 is newer than the label files; `--refresh` forces both. Step 4 searches only for keys not
 cached, or cached from another build. Steps 3 and 5 run every time: the names are read in seconds and written only
 when they come out different — a file time cannot tell the table read last time from
-another build's — and the registry step reads whichever units the surveys now name, which
+another build's — and the registry step reads whichever units the records now name, which
 no file time can say.
 
 ---
@@ -403,7 +419,7 @@ scheduler (`vag_uds_client::schedule::Planner`): consumers subscribe to a `(unit
 identifier)` at a rate or read it once, the scheduler puts one request on the bus at a
 time, merges due identifiers of one unit into one `22 d1 … dn`, keeps under 100
 exchanges a second, and hands every answer to everyone who asked for it, stamped with
-when it arrived. `watch` and `measure` subscribe; `info`, `units`, `faults`, `survey`
+when it arrived. `watch` and `measure` subscribe; `info`, `units`, `faults`
 use the `Bus` as an ordinary link, and each exchange queues in the same scheduler.
 `dev sniff` alone opens the adapter bare, because it reads frames.
 
@@ -425,18 +441,14 @@ data file this project has found — the label files carry the numbers and the n
 no CAN id anywhere — so that half is established by reading the car (`vagcan units
 --identify`) or written down by hand.
 
-**A blind sweep is group testing, not 65,536 reads.** A multi-identifier request comes
-back with only the identifiers the unit supports, and is refused outright when it
-supports none of them — so one request is a presence test for a whole batch. That is
-what turned a full sweep from hours into minutes.
-
-It is no longer what `survey` does. A unit is asked only the identifiers a source says
-that unit answers — the car reports `F187`/`F19E`/`F1A2`, that resolves to a variant,
-and the variant declares its own list — and a unit nothing describes is identified and
-has its faults read rather than being swept hardest of all. Blind sweeping survives as
-`--blind`, aimed at units named one at a time; there is no spelling of any flag that
-means "sweep the whole car blind", because that was the default and it turned one
-unit's crash into a whole-car risk.
+**There is no whole-car sweep.** `dev survey` — which walked every unit and asked each the
+identifiers its data declared, with a blind sweep on request — was removed on 2026-09-28
+(owner). What it supplied is supplied otherwise: which units a car has, `watch`, `measure` and
+`units --identify` record (`~/.vagcan/cars/<VIN>/units.json`), asking every unit again on every
+run and merging what it answered into its entry field by field; which identifiers they answer, a
+source `setup` reads declares. The one sweep left is `units --identify <unit>`, a unit's identification block
+(`F100`–`F1FF`), refused on a moving car and never through the dash board;
+`anomaly::Monitor` watches the unit and ends the run the moment it changes under the reads.
 
 **The CLI is split by what a command needs.** The top level is for commands that need
 a car in front of you, plus `setup`, which a new owner runs first. The workshop is under
@@ -457,8 +469,8 @@ An ESP32-C3 with a CAN transceiver and an OLED, on the OBD port. Firmware in
 `crates/dash/vag-dash-fw`, outside the workspace (`no_std`, `riscv32imc`).
 
 **The board executes a plan; it resolves no label data.** `build.rs` runs the same generator as
-`vagcan dev dash build`: it reads `~/.vagcan/dash/<VIN>/dash.toml`, the car's survey and
-the project's cache, and writes a Rust `static` with every channel resolved — unit,
+`vagcan dev dash build`: it reads `~/.vagcan/dash/<VIN>/dash.toml`, the car's record of its
+units (`units.json`) and the project's cache, and writes a Rust `static` with every channel resolved — unit,
 identifier, bit layout, scaling, unit, label. The image links it. A project cache is
 ~88 MB and the C3 has 400 KB of RAM, so nothing else could work; and a board holding a
 fixed list of identifiers cannot sweep. What may be written in that file — channels, pages,

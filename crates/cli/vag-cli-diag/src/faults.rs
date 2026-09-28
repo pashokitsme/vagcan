@@ -1,7 +1,6 @@
 //! `vagcan faults` — what the car has stored against itself.
 //!
-//! `survey` reports fault *counts* as a by-product of walking the car; this
-//! command is the fault reader proper: every unit, every confirmed code, and
+//! The fault reader proper: every unit, every confirmed code, and
 //! on request the extended data the unit keeps beside it — which is where the
 //! occurrence counter and the mileage stamp live on these control units.
 //!
@@ -22,7 +21,7 @@
 //! Read-only: the service issued is `0x19`, which reads. Clearing faults is
 //! `0x14`, which the client's allowlist rejects.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use vag_uds_can::UnitLink;
 use vag_uds_client::address::UnitAddress;
 use vag_uds_client::dtc::{CONFIRMED, CarTime, FAILED_NOW, FaultContext, UnitStamp};
@@ -308,93 +307,17 @@ fn compose(
 	project_has_unit.then(|| ("not in this unit's fault table in the ODIS project".to_string(), false))
 }
 
-/// Name the faults in a survey this tool recorded (`vagcan faults --from`).
-///
-/// The naming chain needs nothing from the car that a survey does not already
-/// hold — the fault codes, and the two identifiers that pick each unit's
-/// description file — so it runs offline against a recorded file. That is what
-/// makes the whole chain testable without the adapter, and it is how the
-/// figures in `.archive/research/labels/fault-naming-hop.md` §11.3 are reproduced.
-pub fn run_named(survey_path: &str, iv_cache: &str, all_codes: bool) -> Result<()> {
-	let text = std::fs::read_to_string(survey_path).with_context(|| format!("reading {survey_path:?}"))?;
-	// Naming a recorded survey with nothing to name from is nothing this can do,
-	// so a machine with neither source is a clear stop pointing at `vagcan
-	// setup` rather than a bare "the registry did not decode".
-	let mut namers = Namers::open(iv_cache)?;
-	if namers.is_empty() {
-		anyhow::bail!(crate::missing::cannot_name_faults(namers.vcds_root()));
-	}
-	for line in namers.describe() {
-		println!("{line}");
-	}
-	println!();
-
-	let (mut named, mut unnamed) = (0usize, 0usize);
-	// Every sealed catalogue this car names, asked about once at the end rather
-	// than printed as a command under each unit that hit one.
-	let mut sealed: Vec<std::path::PathBuf> = Vec::new();
-	for line in text.lines() {
-		let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-			continue;
-		};
-		let Some(codes) = value["dtcs"].as_array() else { continue };
-		let codes: Vec<(RawDtc, u8)> = codes
+/// The request ids a `--ecu` list names, checked before the adapter is opened:
+/// the cable is a single-user resource, and holding it open to fail on a typo
+/// blocks the next attempt.
+fn unit_list(flag: &str, spec: &str) -> Result<Vec<u16>> {
+	Ok(
+		vag_uds_client::address::parse_list(spec)
+			.map_err(|e| anyhow::anyhow!("{flag}: {e}"))?
 			.iter()
-			.filter_map(|d| {
-				let code = parse_code(d["code"].as_str()?)?;
-				let status = u8::from_str_radix(d["status"].as_str()?, 16).ok()?;
-				Some((RawDtc { code, status }, status))
-			})
-			.filter(|(dtc, _)| all_codes || dtc.status & CONFIRMED != 0)
-			.collect();
-		if codes.is_empty() {
-			continue;
-		}
-		let unit = value["unit"].as_str().unwrap_or("--").to_string();
-		let ident = |did: u16| -> String {
-			value["ident"]
-				.as_array()
-				.into_iter()
-				.flatten()
-				.find(|f| f["did"].as_str() == Some(&format!("{did:04X}")))
-				.and_then(|f| f["data"].as_str())
-				.and_then(vag_cli_core::plan::hex_bytes)
-				.map(|b| ident_text(&b))
-				.unwrap_or_default()
-		};
-		let (odx, version) = (ident(ODX_NAME), ident(ODX_VERSION));
-		println!("{unit}  {odx}");
-		let lookup = namers.unit(&odx, &version);
-		if let Some(file) = Namers::sealed(&lookup)
-			&& !sealed.contains(&file)
-		{
-			sealed.push(file);
-		}
-		for note in namers.notes(&lookup) {
-			println!("  ({note})");
-		}
-		for (dtc, _) in &codes {
-			let naming = namers.name(&lookup, dtc.code);
-			if naming.as_ref().is_some_and(|(_, is_name)| *is_name) {
-				named += 1;
-			} else {
-				unnamed += 1;
-			}
-			println!("  {}   {}", format_code(dtc.code), describe_status(dtc.status));
-			if let Some((line, _)) = naming {
-				println!("      {line}");
-			}
-		}
-		println!();
-	}
-	println!("{named} of {} {} named.", named + unnamed, crate::render::plural(named + unnamed, "code"));
-	crate::faultnames::offer_to_unseal(&sealed, &crate::datadir::resolve(iv_cache))?;
-	Ok(())
-}
-
-fn parse_code(text: &str) -> Option<[u8; 3]> {
-	let bytes = vag_cli_core::plan::hex_bytes(text)?;
-	(bytes.len() == 3).then(|| [bytes[0], bytes[1], bytes[2]])
+			.map(|u| u.request)
+			.collect(),
+	)
 }
 
 /// Read faults from the car (see the module docs).
@@ -422,7 +345,7 @@ pub async fn run<L: UnitLink>(
 	// there is the ordinary "setup has not run yet" case: the codes are still
 	// read and shown as numbers, with a note that names `vagcan setup`.
 	let mut namers = Namers::open(iv_cache)?;
-	let requested = only.map(|spec| crate::declared::unit_list("--ecu", spec)).transpose()?;
+	let requested = only.map(|spec| unit_list("--ecu", spec)).transpose()?;
 
 	let mut backend = open().await?;
 

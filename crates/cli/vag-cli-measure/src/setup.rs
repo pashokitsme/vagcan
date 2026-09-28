@@ -778,7 +778,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 	//    identification block per unit, then the VIN off the engine. The same
 	//    reads `watch` makes, and no session change in any of them.
 	let mut progress = crate::progress::Line::new();
-	let (_, identities) = crate::units::identify(bus.clone(), &[plan::ENGINE], &[], &mut progress).await;
+	let (_, identities) = crate::units::identify(bus.clone(), &[plan::ENGINE], &mut progress).await;
 	progress.update("asking the engine for the VIN");
 	let (_, engine) = read_engine_identity(bus.clone()).await;
 	progress.finish();
@@ -788,6 +788,13 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 		.clone()
 		.filter(|v| !v.trim().is_empty())
 		.context("the engine did not report a VIN, and a car file is keyed by the car")?;
+	// Written down for the commands that need this car's units without the car
+	// (`setup`'s registry step, the dash build); a write that fails is one line.
+	crate::units::record_quietly(&vin, &identities);
+	// The channels of units nothing has read yet, out of the VCDS installation
+	// the project was set up from — before the channel check below reads the
+	// project's rows.
+	crate::registry::ensure_async(identities.clone()).await;
 	let mut io = Console;
 
 	// 2. The channel check, at a standstill, so a missing channel is found with
@@ -1252,10 +1259,7 @@ mod screens {
              at zero and the selector in N — and this car publishes no {}.\n\n\
              Without it no pass can open, so the road part would never start, and nothing is\n\
              asked of you at speed to make up for it. Everything answered so far is saved.\n\
-             To look for the channel:\n    \
-             vagcan dev survey --out parked.jsonl      then, after a drive:\n    \
-             vagcan dev survey --out driving.jsonl\n    \
-             vagcan dev survey --diff parked.jsonl driving.jsonl",
+             A source that describes the channel brings it: vagcan setup <ODIS project>",
 			missing.join(" and ")
 		))
 	}
@@ -2279,7 +2283,8 @@ mod tests {
 		let with_neither = a_set(vec![speed.clone()]);
 		let text = screens::coast_impossible(&with_neither).expect("refused");
 		assert!(text.contains("pedal and selector"), "{text}");
-		assert!(text.contains("vagcan dev survey"), "{text}");
+		assert!(text.contains("vagcan setup"), "{text}");
+		assert!(!text.contains("survey"), "that command is gone: {text}");
 
 		let complete = a_set(vec![speed, a_channel("pedal", 0x7E0, 0xF449), a_channel("selector", 0x7E1, 0x1234)]);
 		assert!(screens::coast_impossible(&complete).is_none());

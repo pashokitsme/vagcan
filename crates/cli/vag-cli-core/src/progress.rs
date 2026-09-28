@@ -110,11 +110,24 @@ struct Shared {
 	stop: AtomicBool,
 }
 
+/// Whether every line in the process has been told to stop drawing — set once,
+/// by the Ctrl-C handler, which cannot reach the lines a blocking read owns and
+/// would otherwise print its last word under a spinner that keeps ticking for
+/// the moment the process takes to end (found in review, 2026-09-28: the
+/// terminal was left on a frozen spinner line, the notice above it).
+static SILENCED: AtomicBool = AtomicBool::new(false);
+
+/// Stop every line in the process from drawing again, whoever owns it. What is
+/// on screen stays; the caller writes a newline after it and says its piece.
+pub fn silence() {
+	SILENCED.store(true, Ordering::Relaxed);
+}
+
 impl Shared {
-	/// Whether drawing is allowed at all right now: on a terminal, and past
-	/// the threshold.
+	/// Whether drawing is allowed at all right now: on a terminal, past the
+	/// threshold, and not silenced.
 	fn may_draw(&self) -> bool {
-		self.tty && self.started.elapsed() >= THRESHOLD
+		self.tty && self.started.elapsed() >= THRESHOLD && !SILENCED.load(Ordering::Relaxed)
 	}
 
 	/// Redraw the current message on stderr, if drawing is allowed and the
@@ -193,8 +206,8 @@ impl Line {
 		// **stderr**, and deliberately not the question
 		// [`crate::ui::can_ask`] asks. That one is "is there a person at
 		// stdin to answer a menu"; this is "may I draw a line and erase it
-		// again". They disagree routinely — `vagcan dev survey </dev/null`
-		// still deserves a spinner, and `vagcan dev survey 2>log` must not have
+		// again". They disagree routinely — `vagcan faults </dev/null`
+		// still deserves a spinner, and `vagcan faults 2>log` must not have
 		// one written into the file — so the two must not be merged.
 		Line::with(std::io::stderr().is_terminal(), false)
 	}
@@ -320,7 +333,7 @@ impl Drop for Line {
 /// Held as a guard: it starts on construction and clears the line when it goes
 /// out of scope, so an early return or an error cannot leave it spinning.
 pub struct Spinner {
-	_line: Line,
+	line: Line,
 }
 
 impl Spinner {
@@ -329,7 +342,15 @@ impl Spinner {
 	pub fn new(message: impl Into<String>) -> Spinner {
 		let mut line = Line::with(std::io::stderr().is_terminal(), true);
 		line.update(&message.into());
-		Spinner { _line: line }
+		Spinner { line }
+	}
+
+	/// Say what is being waited for now, on the same line: for one wait made of
+	/// several blocking calls — a registry read opens four tables and then finds
+	/// a list per unit — where a spinner per call would restart the elapsed time
+	/// that tells somebody watching how long the whole thing has taken.
+	pub fn update(&mut self, message: &str) {
+		self.line.update(message);
 	}
 }
 
@@ -536,7 +557,7 @@ mod tests {
 		// Past a few seconds the elapsed time is the useful part of a spinner:
 		// it is what says a three-minute search is three minutes in, not stuck.
 		let spinner = Spinner::new("parsing the label files");
-		assert!(spinner._line.reporter.shared.elapsed, "a spinner asks for the elapsed time");
-		assert_eq!(spinner._line.state().message, "parsing the label files");
+		assert!(spinner.line.reporter.shared.elapsed, "a spinner asks for the elapsed time");
+		assert_eq!(spinner.line.state().message, "parsing the label files");
 	}
 }

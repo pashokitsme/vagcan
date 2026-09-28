@@ -56,6 +56,8 @@ pub fn resolve(relative: &str) -> PathBuf {
 ///       names.json                      text id -> name
 ///       odx-ids.json                    text id -> the IDE/MAS id that text names
 ///       rod-keys.json                   recovered .rod section keys
+///       registry.json                   which VCDS installation the channels were read
+///                                       from, and what came of each unit — `crate::registry`
 ///       measurements/                   proven-on-car rows, one file per part number
 ///       sources.json                    where this project's data came from
 ///     extracted/                      the layout from before projects existed,
@@ -67,9 +69,11 @@ pub fn resolve(relative: &str) -> PathBuf {
 ///   names.csv                         the owner's own wording, by text id
 ///   cars/
 ///     XW8AD4NE9JH008917/              one directory per car, named for its VIN
+///       units.json                    its control units, as each said what it is
+///                                     (`crate::units`), written by `watch`, `measure`
+///                                     and `units --identify`
 ///       car.json                      mass, tyre, measured road load
 ///       measures/2026-08-04-1241.json one saved session per file
-///       reports/                      surveys, fault dumps, whatever is kept
 /// ```
 ///
 /// **`data/` and `cars/` are keyed differently on purpose.** A project is keyed
@@ -78,7 +82,7 @@ pub fn resolve(relative: &str) -> PathBuf {
 /// the proven rows sit there: a proven scaling is a property of a *part number*,
 /// true of every car carrying that part. `cars/` is keyed by the VIN the car
 /// itself answers and holds what is true of one car and no other — its car
-/// file, its drives, its survey.
+/// file, its drives, the record of its units.
 ///
 /// **`data/` holds both the old layout and the new one, and they are told apart
 /// by name.** `extracted` and `measured` are the pre-project directories;
@@ -165,9 +169,18 @@ pub fn or_default(given: Option<&str>, default: impl FnOnce() -> anyhow::Result<
 /// Directories named the old way are still found and still used — see
 /// [`car_folder_in`]. Nothing is renamed.
 pub fn car_dir(vin: &str) -> anyhow::Result<PathBuf> {
-	let cars = vagcan_dir()?.join("cars");
+	let cars = cars_dir()?;
 	let folder = car_folder_in(&cars, vin)?;
 	Ok(cars.join(folder))
+}
+
+/// Every car this machine has met — `~/.vagcan/cars/`, one directory each.
+///
+/// For a reader that wants all of them at once, which `setup` does: the units
+/// of every car recorded here are what its VCDS registry step reads channels
+/// for. [`car_dir`] is the way to one car.
+pub fn cars_dir() -> anyhow::Result<PathBuf> {
+	Ok(vagcan_dir()?.join("cars"))
 }
 
 /// Where a car's saved measurement sessions go.
@@ -175,25 +188,120 @@ pub fn measures_dir(vin: &str) -> anyhow::Result<PathBuf> {
 	Ok(car_dir(vin)?.join("measures"))
 }
 
-/// The whole-car survey a car keeps for itself.
+/// What a car's control units said about themselves, one file per car.
 ///
-/// Named here for the same reason [`CAR_FILE`] is: two commands have to agree
-/// on it or the cache is written where nothing reads it.
-pub const SURVEY_FILE: &str = "survey.jsonl";
+/// Named here for the reason [`CAR_FILE`] is: the commands that write it
+/// (`watch`, `measure`, `units`) and the ones that read it (`setup`, the dash
+/// build) have to agree on the name or the record is written where nothing
+/// reads it. `crate::units` owns what is inside.
+pub const UNITS_FILE: &str = "units.json";
 
-/// The survey `vagcan dev survey` last recorded off this car.
+/// The record of a car's control units — `~/.vagcan/cars/<VIN>/units.json`.
 ///
-/// **Per car, not per part number.** Which identifiers a control unit answers
-/// is a fact about that unit as it is built, coded and installed in *this* car;
-/// `catalogs/` is the opposite — a proven scaling for a part number is true of
-/// every car carrying that part. So this belongs beside the car file, keyed by
-/// VIN, and never in the checkout.
+/// **Per car, not per part number.** Which units a car has, and what each of
+/// them is, is a fact about that car; `data/` is the opposite — a project
+/// describes a platform. So this sits beside the car file, keyed by VIN, and
+/// the VIN is checked as [`car_dir`] checks it: a unit's answer is not trusted
+/// as a path.
+pub fn units_record(vin: &str) -> anyhow::Result<PathBuf> {
+	Ok(car_dir(vin)?.join(UNITS_FILE))
+}
+
+/// Replace a file's contents in one step, or leave it as it was.
 ///
-/// It exists so that `watch` can offer every identifier the car answers without
-/// the user having to remember a file name from an eight-minute sweep they ran
-/// last week.
-pub fn survey_cache(vin: &str) -> anyhow::Result<PathBuf> {
-	Ok(car_dir(vin)?.join(SURVEY_FILE))
+/// The record of a car's units and a project's registry log are both read
+/// by one command while another may be writing them — `watch` on the car and
+/// `dev dash build` at the desk. A plain `write` truncates first and fills
+/// afterwards, and a reader in between sees an empty or half-written file as
+/// "no units". So the bytes go to a temporary file beside the target, which is
+/// then renamed over it: on Unix a rename replaces atomically, and a reader
+/// sees the old file or the new one and never the gap.
+///
+/// The temporary name carries the process id and a counter, so two writers in
+/// one directory — two commands, or two threads of one — never share a
+/// temporary file. A write that fails leaves no temporary file behind.
+pub fn replace_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+	use anyhow::Context as _;
+	static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+	let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+	std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+	let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+	let temporary = dir.join(format!(
+		".{name}.{}.{}.tmp",
+		std::process::id(),
+		COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+	));
+	let written = std::fs::write(&temporary, bytes)
+		.with_context(|| format!("writing {}", temporary.display()))
+		.and_then(|()| std::fs::rename(&temporary, path).with_context(|| format!("replacing {}", path.display())));
+	if written.is_err() {
+		let _ = std::fs::remove_file(&temporary);
+	}
+	written
+}
+
+/// Copy a file into place in one step, or leave the destination as it was.
+///
+/// `setup`'s step 1 copies the `.rod` files into the shared pool, and skips a
+/// copy whose destination is newer than its source. A copy cut short — Ctrl-C
+/// is acted on at once now — would leave a truncated file under the final name,
+/// newer than its source, which the next run then takes for current until
+/// `--refresh` (found in review, 2026-09-28). So the bytes go to a staging
+/// name beside the destination and are renamed over it, as [`replace_file`]
+/// does: the final name holds a whole file or nothing.
+pub fn copy_file(from: &Path, to: &Path) -> anyhow::Result<u64> {
+	copy_file_with(|from, to| std::fs::copy(from, to), from, to)
+}
+
+/// Remove the staging files a [`copy_file`] cut short left in `dir` — exactly
+/// the form it writes, `.<name>.<pid>.copying`, and nothing else. How many went.
+///
+/// A kill mid-copy leaves one per kill, each under its pid, and nothing reads
+/// them (found in review, 2026-09-28); `setup`'s step 1 sweeps them before it
+/// copies. A dotfile of any other shape is somebody else's and is left alone.
+pub fn remove_stale_copies(dir: &Path) -> usize {
+	let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+	entries
+		.flatten()
+		.filter(|entry| {
+			let name = entry.file_name();
+			let Some(name) = name.to_str() else { return false };
+			is_stale_copy(name) && entry.path().is_file()
+		})
+		.filter(|entry| std::fs::remove_file(entry.path()).is_ok())
+		.count()
+}
+
+/// Whether a file name is one [`copy_file`] stages under: `.<name>.<pid>.copying`.
+fn is_stale_copy(name: &str) -> bool {
+	let Some(rest) = name.strip_prefix('.').and_then(|n| n.strip_suffix(".copying")) else {
+		return false;
+	};
+	match rest.rsplit_once('.') {
+		Some((name, pid)) => !name.is_empty() && !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()),
+		None => false,
+	}
+}
+
+/// The rule behind [`copy_file`], with the copying itself passed in — so a copy
+/// that stops halfway can be staged in a test without stopping the test.
+fn copy_file_with(copy: impl FnOnce(&Path, &Path) -> std::io::Result<u64>, from: &Path, to: &Path) -> anyhow::Result<u64> {
+	use anyhow::Context as _;
+	let dir = to.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+	std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+	let name = to.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+	let staging = dir.join(format!(".{name}.{}.copying", std::process::id()));
+	let copied = copy(from, &staging)
+		.with_context(|| format!("copying {} to {}", from.display(), to.display()))
+		.and_then(|n| {
+			std::fs::rename(&staging, to)
+				.with_context(|| format!("replacing {}", to.display()))
+				.map(|()| n)
+		});
+	if copied.is_err() {
+		let _ = std::fs::remove_file(&staging);
+	}
+	copied
 }
 
 /// Where a car's dash plan is built — `~/.vagcan/dash/<VIN>/`: the hand-written
@@ -512,22 +620,77 @@ mod tests {
 		let vin = "XW8AD4NE9JH008917";
 		let car = car_dir(vin).unwrap();
 		assert_eq!(measures_dir(vin).unwrap(), car.join("measures"));
-		assert_eq!(survey_cache(vin).unwrap(), car.join(SURVEY_FILE));
+		assert_eq!(units_record(vin).unwrap(), car.join(UNITS_FILE));
 	}
 
 	#[test]
-	fn a_survey_is_cached_per_car_because_identifiers_are_per_car() {
-		// Which identifiers a unit answers is a fact about that unit in that
-		// car, so the cache is keyed the same way everything else about a car
-		// is — by VIN, outside the checkout.
-		let a = survey_cache("XW8AD4NE9JH008917").unwrap();
-		let b = survey_cache("XW8AD4NE9JH008918").unwrap();
-		assert_ne!(a, b);
-		assert!(a.ends_with("XW8AD4NE9JH008917/survey.jsonl"), "{a:?}");
+	fn a_cars_units_are_recorded_beside_its_car_file_and_never_in_the_checkout() {
+		// Which units a car has is a fact about that car, so the record is keyed
+		// the way everything else about a car is — by VIN, under `cars/`.
+		let vin = "XW8AD4NE9JH008917";
+		assert_eq!(units_record(vin).unwrap(), car_dir(vin).unwrap().join(UNITS_FILE));
+		assert_ne!(units_record(vin).unwrap(), units_record("XW8AD4NE9JH008918").unwrap());
+		assert!(car_dir(vin).unwrap().starts_with(cars_dir().unwrap()));
 		let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
-		assert!(!a.starts_with(&repo), "{a:?} is inside the checkout");
+		assert!(!units_record(vin).unwrap().starts_with(&repo));
 		// A VIN off the bus never chooses where this tool writes.
-		assert!(survey_cache("../../etc").is_err());
+		for not_a_vin in ["../../etc", "XW8AD4NE9JH00 8917", ""] {
+			assert!(units_record(not_a_vin).is_err(), "{not_a_vin:?} was accepted");
+		}
+	}
+
+	#[test]
+	fn replacing_a_file_leaves_no_temporary_behind_and_the_old_contents_until_the_new_are_whole() {
+		let dir = TempDir::new("replace");
+		let path = dir.0.join("units.json");
+		replace_file(&path, b"first").unwrap();
+		assert_eq!(std::fs::read(&path).unwrap(), b"first");
+		replace_file(&path, b"second").unwrap();
+		assert_eq!(std::fs::read(&path).unwrap(), b"second");
+		let left: Vec<_> = std::fs::read_dir(&dir.0).unwrap().flatten().map(|e| e.file_name()).collect();
+		assert_eq!(left, vec![std::ffi::OsString::from("units.json")], "a temporary file was left: {left:?}");
+		// The directory is made on the way, as a first record of a car needs.
+		let deep = dir.0.join("new-car").join("units.json");
+		replace_file(&deep, b"{}").unwrap();
+		assert_eq!(std::fs::read(&deep).unwrap(), b"{}");
+	}
+
+	#[test]
+	fn a_reader_never_sees_a_torn_file_while_writers_replace_it() {
+		// The property the temporary-and-rename exists for. Several writers
+		// replace one file with whole contents of different lengths while a
+		// reader reads it as fast as it can: every read is one of the whole
+		// contents, never empty and never a prefix. A plain `write` fails this
+		// within a few hundred reads.
+		let dir = TempDir::new("torn");
+		let path = dir.0.join("units.json");
+		let contents: Vec<Vec<u8>> = (1..=4).map(|n| vec![b'a' + n as u8; 4096 * n]).collect();
+		replace_file(&path, &contents[0]).unwrap();
+		let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+		let writers: Vec<_> = contents
+			.iter()
+			.map(|bytes| {
+				let (path, bytes, stop) = (path.clone(), bytes.clone(), stop.clone());
+				std::thread::spawn(move || {
+					while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+						replace_file(&path, &bytes).unwrap();
+					}
+				})
+			})
+			.collect();
+		let mut reads = 0;
+		for _ in 0..2000 {
+			let seen = std::fs::read(&path).unwrap();
+			assert!(contents.contains(&seen), "a torn read of {} bytes", seen.len());
+			reads += 1;
+		}
+		stop.store(true, std::sync::atomic::Ordering::Relaxed);
+		for writer in writers {
+			writer.join().unwrap();
+		}
+		assert_eq!(reads, 2000);
+		let left = std::fs::read_dir(&dir.0).unwrap().flatten().count();
+		assert_eq!(left, 1, "temporary files were left behind");
 	}
 
 	#[test]
@@ -541,5 +704,84 @@ mod tests {
 	fn with_nowhere_to_write_the_error_says_what_to_set() {
 		let err = vagcan_dir_in(None).unwrap_err().to_string();
 		assert!(err.contains("HOME"), "{err}");
+	}
+
+	#[test]
+	fn a_copy_cut_short_leaves_nothing_under_the_final_name() {
+		// Found in review (2026-09-28): `setup`'s step 1 copied the `.rod` files
+		// straight to their final names, so a Ctrl-C mid-copy left a truncated
+		// file newer than its source, which the next run took for current until
+		// `--refresh`. A copy that stops halfway, as an interrupted one does,
+		// must leave the final name empty — and no staging file either.
+		let dir = tempfile::tempdir().unwrap();
+		let src = dir.path().join("EV_X.rod");
+		let bytes: Vec<u8> = (0..4000u32).map(|n| (n % 251) as u8).collect();
+		std::fs::write(&src, &bytes).unwrap();
+		let pool = dir.path().join("pool");
+		std::fs::create_dir_all(&pool).unwrap();
+		let dst = pool.join("EV_X.rod");
+		let cut_short = |from: &Path, to: &Path| -> std::io::Result<u64> {
+			let bytes = std::fs::read(from)?;
+			std::fs::write(to, &bytes[..bytes.len() / 2])?;
+			Err(std::io::Error::other("cut short"))
+		};
+		let err = copy_file_with(cut_short, &src, &dst).unwrap_err().to_string();
+		assert!(err.contains("EV_X.rod"), "{err}");
+		assert!(!dst.exists(), "a truncated file under the final name reads as current next time");
+		assert_eq!(std::fs::read_dir(&pool).unwrap().count(), 0, "no staging file left behind");
+		// The whole copy lands under the final name, whole, and nothing else is left.
+		assert_eq!(copy_file(&src, &dst).unwrap(), bytes.len() as u64);
+		assert_eq!(std::fs::read(&dst).unwrap(), bytes);
+		assert_eq!(std::fs::read_dir(&pool).unwrap().count(), 1);
+		// And a copy over an older file replaces it whole, as `setup` does on `--refresh`.
+		std::fs::write(&src, b"newer").unwrap();
+		copy_file(&src, &dst).unwrap();
+		assert_eq!(std::fs::read(&dst).unwrap(), b"newer");
+	}
+
+	#[test]
+	fn the_staging_files_a_kill_left_are_removed_and_nothing_else_is() {
+		// One per kill, each under its pid (found in review, 2026-09-28). Only
+		// the exact form `copy_file` writes goes; every other name in the pool —
+		// a copied file, a dotfile of another shape, a staging name with no pid
+		// — stays.
+		let dir = tempfile::tempdir().unwrap();
+		let pool = dir.path().join("rod");
+		std::fs::create_dir_all(&pool).unwrap();
+		for name in [
+			".EV_A.rod.35611.copying",
+			".EV_B.rod.7.copying",
+			"EV_A.rod",
+			".DS_Store",
+			".EV_C.rod.copying",
+			".EV_D.rod.12x.copying",
+			"..1.copying",
+			"EV_E.rod.35611.copying",
+		] {
+			std::fs::write(pool.join(name), b"x").unwrap();
+		}
+		std::fs::create_dir_all(pool.join(".dir.1.copying")).unwrap();
+		assert_eq!(remove_stale_copies(&pool), 2);
+		let mut left: Vec<String> = std::fs::read_dir(&pool)
+			.unwrap()
+			.flatten()
+			.map(|e| e.file_name().to_string_lossy().into_owned())
+			.collect();
+		left.sort();
+		assert_eq!(
+			left,
+			vec![
+				"..1.copying",
+				".DS_Store",
+				".EV_C.rod.copying",
+				".EV_D.rod.12x.copying",
+				".dir.1.copying",
+				"EV_A.rod",
+				"EV_E.rod.35611.copying"
+			]
+		);
+		assert_eq!(remove_stale_copies(&dir.path().join("nowhere")), 0, "no pool is nothing to sweep");
+		// The name a real copy stages under is one this recognises.
+		assert!(is_stale_copy(&format!(".EV_X.rod.{}.copying", std::process::id())));
 	}
 }

@@ -83,17 +83,6 @@ pub fn hex_spaced(bytes: &[u8]) -> String {
 	bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ")
 }
 
-/// Bytes for a file: `0B34`.
-///
-/// Separate from [`hex_spaced`] rather than a parameter of it, because this one
-/// is a **format on disk**. `survey` writes it and `survey --diff` compares the
-/// strings as text, so adding a separator here would report every identifier in
-/// an existing pair of dumps as having moved. The two are not the same function
-/// with a flag; they have different readers and only one of them can change.
-pub fn hex_packed(bytes: &[u8]) -> String {
-	bytes.iter().map(|b| format!("{b:02X}")).collect()
-}
-
 /// One `vagcan sensors` row: name, value, and a unit only when there is one.
 ///
 /// Whether a row has a unit is a property of the measurement, not of the value

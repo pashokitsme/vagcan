@@ -274,8 +274,13 @@ so it does not pretend to.
 
 ## 7. `faults --from` on the reference car, before and after
 
-The survey those figures came from (`research/dumps/survey-parked.jsonl`) is gitignored
-and no longer on disk; [`reference-survey.py`](reference-survey.py) writes
+> **2026-09-28:** `faults --from` and `dev survey` were removed with
+> `feat/units-without-survey` (`todo/label-lookup/03`). The two runs below cannot be repeated
+> by that command; the recorded results stand as recorded, and `reference-survey.py` and
+> `reference-survey.jsonl` are kept as their record.
+
+The survey those figures came from (`research/dumps/survey-parked.jsonl`) is gitignored — it
+is in the owner's checkout, kept out of git; [`reference-survey.py`](reference-survey.py) writes
 [`reference-survey.jsonl`](reference-survey.jsonl) from what the archive recorded of it —
 the fifteen confirmed codes and each unit's `F19E`, plus the `F1A2` of the three units
 VCDS was seen to identify (`fault-naming-hop.md` §12.1, `other-ecus.md` §2). The two runs

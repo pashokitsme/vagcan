@@ -1,6 +1,6 @@
 //! The handful of channels one person watches every time they drive.
 //!
-//! With a survey loaded, `watch` offers thousands of channels across fifteen
+//! With a project set up, `watch` offers thousands of channels across fifteen
 //! control units. Nearly all of a session is spent finding the same six of them
 //! again, and nothing about that selection survived the run — the tool asked the
 //! same question every drive and never learned the answer. `f` on the selection
