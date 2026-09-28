@@ -5,7 +5,7 @@
 //! LAWICEL slcan ASCII protocol on the USB-Serial-JTAG port, so
 //! `vag_uds_can::SlcanBackend` — the client every `vagcan` command opens the
 //! cable with — drives it unchanged: `watch`, `info`, `units`, `faults`,
-//! `dev sniff`, `dev survey` all work through `--device /dev/cu.usbmodem…`
+//! `dev sniff` all work through `--device /dev/cu.usbmodem…`
 //! exactly as through the CANable. Nothing is decided on the board: no
 //! address, no identifier, no service. Bytes in, frames out, and back.
 //!

@@ -24,13 +24,16 @@
 //! | ODIS | every variant's channels, by identifier, **with scalings** | `data/<id>/cache.sqlite` |
 //! | ODIS | every `(text id, name)` pair in the project | `data/<id>/names-odis.json` |
 //!
-//! The copy is what makes a VCDS installation disposable: fault naming reads
-//! `.rod` files straight off disk at run time, so those have to outlive the
-//! install. The `.lbl`/`.clb` files are **not** copied (D4) — they are read once,
-//! here, into `cache.sqlite`, and that cache is what survives of them. The
-//! consequence is D5, honoured in [`crate::labels::load_project`]: a cache whose
-//! label files are gone is trusted rather than declared stale, or every run
-//! after somebody deletes their installation would try to rebuild from nothing.
+//! The copy is what lets every car command run without the installation: fault
+//! naming reads `.rod` files straight off disk at run time, so those are taken
+//! from the install. The `.lbl`/`.clb` files are **not** copied (D4) — they are
+//! read once, here, into `cache.sqlite`, and that cache is what survives of
+//! them. The consequence is D5, honoured in [`crate::labels::load_project`]: a
+//! cache whose label files are gone is trusted rather than declared stale, or
+//! every run after somebody moved their installation would try to rebuild from
+//! nothing. The installation is still worth keeping: step 5 and the first
+//! command with a car read a unit's channels from it, and a unit met later —
+//! swapped, updated, asleep the first time — is read from it then.
 //!
 //! **Offline.** No adapter is opened and no car is addressed.
 //!
@@ -67,19 +70,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-/// Where a VCDS installation keeps the ODX files, relative to its root.
-///
-/// A property of Ross-Tech's layout, not of any car.
-const ODX_DIR: &str = "UDS_EV";
-
-/// The global text table every measurement name comes out of.
-///
-/// **Ross-Tech names it per language build**, and that is not a detail: the
-/// English one ships `TTTEXT.ROD`, the Russian one `TTText-RUS.rod`. Matching
-/// only the English spelling left anyone who chose Russian with an install that
-/// recovered no names at all and never said why. Nothing suggests the list is
-/// closed, so a name nobody here has seen is a question to ask, not a verdict.
-const TEXT_TABLES: &[&str] = &["TTTEXT.ROD", "TTText-RUS.rod"];
+// The installation's layout — where the ODX files are, what the text table is
+// called per language build, which code page it is in — is `core`'s now, because
+// the registry read that needs it runs from `watch` and `measure` as well as
+// from here. Same names, so every use below reads as it did.
+use crate::registry::{ODX_DIR, TEXT_TABLES, text_page};
 
 /// The fault text store, one file in the install root beside `Labels/`.
 ///
@@ -557,10 +552,20 @@ enum Step {
 		why: String,
 	},
 	/// Not done yet, for a reason that is a step still to take rather than
-	/// something the source lacks: the registry's channels wait for a surveyed
-	/// car. Not a gap — "Done, with gaps" and "a newer VCDS may have it" would
+	/// something the source lacks: the registry's channels wait for a car to
+	/// have been connected. Not a gap — "Done, with gaps" and "a newer VCDS may have it" would
 	/// send the reader to the wrong place — and `why` says what to type.
 	Pending {
+		what: &'static str,
+		why: String,
+	},
+	/// Did not complete, for a reason on this machine rather than in the
+	/// source: a record of a car's units that does not read. A gap in the
+	/// report, never an abort of the run — the steps before it wrote real
+	/// files, and a run that stopped without its report would leave them
+	/// unmentioned (found in review, 2026-09-28). `why` names the file and
+	/// says to move it aside.
+	Failed {
 		what: &'static str,
 		why: String,
 	},
@@ -571,23 +576,24 @@ enum Step {
 /// it is the source that brings scalings.
 pub const WITHOUT_A_TERMINAL: &str = "vagcan setup /path/to/ODIS-project      (or the path to a VCDS installation)";
 
-pub fn run(opts: Options<'_>) -> Result<()> {
+pub async fn run(opts: Options<'_>) -> Result<()> {
 	let mut io = crate::ui::Console::new(WITHOUT_A_TERMINAL);
 	// **The system folder panel is opened from this thread, and this thread is
 	// the main one.** `main` is `#[tokio::main]` — `block_on` around the whole
 	// of `main`'s future, which it runs on the calling thread — and the `setup`
-	// arm calls straight into here without awaiting, so nothing has moved off
-	// the main thread by the time `native_folder` runs. macOS requires exactly
-	// that of `NSOpenPanel`; see `source::native_folder`. Do not wrap this call
-	// in `spawn_blocking`.
-	run_with(&mut io, &mut source::native_folder, opts)
+	// arm awaits this future on that same thread, so nothing has moved off the
+	// main thread by the time `native_folder` runs. macOS requires exactly that
+	// of `NSOpenPanel`; see `source::native_folder`. Do not wrap this call in
+	// `spawn_blocking`, and do not `spawn` it: the one thing that leaves the
+	// main thread is step 5's registry read, inside `registry_channels`.
+	run_with(&mut io, &mut source::native_folder, opts).await
 }
 
 /// The rule behind [`run`], with the asking behind [`crate::ui::menu::Asker`] and
 /// [`source::Dialog`] so the flow is testable without a terminal — and without a
 /// window, which CI has even less of.
-fn run_with(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source::Dialog, opts: Options<'_>) -> Result<()> {
-	let Some(chosen) = choose(io, dialog, &opts)? else { return Ok(()) };
+async fn run_with(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source::Dialog, opts: Options<'_>) -> Result<()> {
+	let Some(mut chosen) = choose(io, dialog, &opts)? else { return Ok(()) };
 	let project = &chosen.project;
 	io.say(&format!("Writing into {}\n", project.dir.display()))?;
 
@@ -616,19 +622,21 @@ fn run_with(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source::Dial
 	};
 	let mut steps = Vec::new();
 	if let Some(dir) = beside {
-		steps.extend(read_vcds_files(dir, project, opts.refresh)?);
+		let (dir, project, refresh) = (dir.clone(), project.clone(), opts.refresh);
+		steps.extend(off_the_main_task(move || read_vcds_files(&dir, &project, refresh)).await?);
 	}
 	steps.extend(match &chosen.source {
 		source::Source::Odis { dir } => {
-			let odis = chosen.odis.as_ref().expect("an ODIS source opens its project in `choose`");
-			read_odis(odis, dir, project)?
+			let odis = chosen.odis.take().expect("an ODIS source opens its project in `choose`");
+			let (dir, project) = (dir.clone(), project.clone());
+			off_the_main_task(move || read_odis(&odis, &dir, &project)).await?
 		}
-		source::Source::Vcds { dir } => read_vcds(dir, project, opts.refresh)?,
+		source::Source::Vcds { dir } => read_vcds(dir, project, opts.refresh).await?,
 		// `choose` turns a download into the installation it fetched.
 		source::Source::DownloadVcds => unreachable!("the download is resolved to an installation before this point"),
 	});
 	if let Some(dir) = beside {
-		steps.push(read_vcds_registry(dir, project)?);
+		steps.push(read_vcds_registry(dir, project).await?);
 	}
 
 	// Written down so a later command needs no flag. Not a preference — the
@@ -666,10 +674,24 @@ fn fault_text_available(pool: &Path, project: &crate::project::Project) -> Resul
 }
 
 /// The VCDS branch: its five steps, into a project.
-fn read_vcds(root: &Path, project: &crate::project::Project, refresh: bool) -> Result<Vec<Step>> {
-	let mut steps = read_vcds_files(root, project, refresh)?;
-	steps.push(read_vcds_registry(root, project)?);
+async fn read_vcds(root: &Path, project: &crate::project::Project, refresh: bool) -> Result<Vec<Step>> {
+	let (dir, project_, refresh_) = (root.to_path_buf(), project.clone(), refresh);
+	let mut steps = off_the_main_task(move || read_vcds_files(&dir, &project_, refresh_)).await?;
+	steps.push(read_vcds_registry(root, project).await?);
 	Ok(steps)
+}
+
+/// Run one of `setup`'s steps on the blocking pool, so the main task — inside
+/// `main`'s `select!` with Ctrl-C — is free to act on the signal. Made on the
+/// main task, minutes of key search or label parsing sat between the signal and
+/// the branch that acts on it (found in review, 2026-09-28: steps 1–4 lost it,
+/// since 2026-09-14; step 5 was fixed first). Nothing that needs the main thread
+/// runs here: the folder panel is [`choose`]'s, before any step. A step that
+/// asks a question asks it from this thread, which is the same terminal.
+async fn off_the_main_task<T: Send + 'static>(step: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
+	tokio::task::spawn_blocking(step)
+		.await
+		.map_err(|e| anyhow::anyhow!("the step did not finish: {e}"))?
 }
 
 /// Steps 1 to 4: the installation's files — the pool, the label files, the
@@ -682,8 +704,9 @@ fn read_vcds_files(root: &Path, project: &crate::project::Project, refresh: bool
 	println!("Reading the VCDS installation at {}", root.display());
 
 	// The copy runs first and the derivations then read from it, so afterwards
-	// `~/.vagcan` is the one set of raw files everything points at and the
-	// installation can go.
+	// `~/.vagcan` is the one set of raw files the car commands read. The
+	// installation is still kept: the channels of a unit met later are read
+	// from it (step 5, and `registry::ensure` at the car).
 	// The fault text is looked for once, in step [1/5], and handed on: finding
 	// it can mean asking the person which file it is, and one run must ask
 	// that once.
@@ -697,9 +720,31 @@ fn read_vcds_files(root: &Path, project: &crate::project::Project, refresh: bool
 }
 
 /// Step 5, and the installation recorded as one of the project's sources.
-fn read_vcds_registry(root: &Path, project: &crate::project::Project) -> Result<Step> {
+///
+/// Async for one reason: the read is minutes of CPU, and made on the main task it
+/// would sit between Ctrl-C and the `select!` that acts on it (see
+/// [`registry::registry_channels`]). Nothing else in `setup` moves off the main
+/// thread — the folder panel needs it (see [`run`]).
+async fn read_vcds_registry(root: &Path, project: &crate::project::Project) -> Result<Step> {
+	// The records of the cars on this machine, before anything is announced:
+	// one that does not read is a step that did not complete, never an abort
+	// with the steps before it unreported. The installation is still written
+	// down when it is another than the one logged — this run's, so that the
+	// next `setup`, or the first command with a car, reads from the right one
+	// — and what was tried with the same one is kept: nothing was read here,
+	// and a log wiped clean made every unit count as unread (found in review).
+	let step = match registry::recorded_units() {
+		Ok(units) => registry::registry_channels(root, project, &units).await?,
+		Err(e) => {
+			println!(
+				"[5/5] Channels — a car's record on this machine does not read, so nothing\n      \
+                 was read from the registry."
+			);
+			crate::registry::note_installation(project, root)?;
+			registry::failed(&e)
+		}
+	};
 	// From the installation itself, not the pool: see `registry`.
-	let step = registry::registry_channels(root, project, &registry::surveyed_units()?)?;
 	crate::project::record_source(
 		project,
 		crate::project::SourceEntry {
@@ -905,8 +950,10 @@ fn merge_names(path: &Path, incoming: std::collections::BTreeMap<String, String>
 	Ok(names.len())
 }
 
-/// Step 1: copy the raw files into the shared pool, so the installation is
-/// disposable.
+/// Step 1: copy the raw files into the shared pool, which every car command
+/// reads instead of the installation. (The installation itself is still worth
+/// keeping: step 5 and the first command with a car read a unit's channels
+/// from it.)
 ///
 /// **Flat, and only the files something reads at run time.** Fault naming and
 /// ODX lookup search for a file *by name* (`dtc::find_named`,
@@ -929,8 +976,17 @@ fn merge_names(path: &Path, incoming: std::collections::BTreeMap<String, String>
 fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<(Step, Option<PathBuf>)> {
 	println!(
 		"[1/5] Raw files — copying the .rod files and the fault text into the\n      \
-         shared pool, so no car command needs the installation afterwards."
+         shared pool, which every car command reads instead of the installation."
 	);
+	// What a copy cut short left behind, before anything is copied: one staging
+	// file per kill, each under its pid, and nothing reads them.
+	let stale = crate::datadir::remove_stale_copies(target);
+	if stale > 0 {
+		println!(
+			"      {stale} staging file{} of a copy cut short removed",
+			if stale == 1 { "" } else { "s" }
+		);
+	}
 	let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
 	let odx = root.join(ODX_DIR);
 	match odx.is_dir() {
@@ -971,11 +1027,11 @@ fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<(Step, 
 			skipped += 1;
 			continue;
 		}
-		if let Some(parent) = dst.parent() {
-			std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-		}
 		progress.update(&format!("copying — {} of {total}", at + 1));
-		std::fs::copy(src, dst).with_context(|| format!("copying {} to {}", src.display(), dst.display()))?;
+		// Staged and renamed into place: a copy cut short by Ctrl-C must not
+		// leave a truncated file under the final name, newer than its source and
+		// so skipped as current by the next run (see `datadir::copy_file`).
+		crate::datadir::copy_file(src, dst)?;
 		copied += 1;
 	}
 	progress.finish();
@@ -1015,8 +1071,8 @@ fn collect_rod_files(src: &Path, dst: &Path, plan: &mut Vec<(PathBuf, PathBuf)>)
 ///
 /// **Reads the installation, not a copy of it**, because there is no longer a
 /// copy: D4 drops the `.lbl`/`.clb` files and this cache is what survives of
-/// them. This is the one moment they are ever read, and after it the
-/// installation can go.
+/// them. This is the one moment they are ever read; the installation is still
+/// kept, for the channels of units met later.
 /// `codes` is the fault text file step [1/5] found, passed in rather than
 /// looked for again — [`locate`] can ask the person which file it is, and one
 /// setup run asks that once.
@@ -1202,20 +1258,6 @@ fn write_if_changed(path: &Path, text: &str) -> Result<bool> {
 	Ok(true)
 }
 
-/// The code page a text table's high bytes are in, from its name — the only
-/// place the build says, as for the fault text ([`CODES_FILES`]).
-///
-/// The English table is Windows-1252: its `0x96` is an en dash. The Russian
-/// one has never been read — it is shifted, and refused above before this is
-/// asked — so 1251 is the page its build's `Code-RUS.dat` is in, not a page
-/// anybody has seen it use.
-fn text_page(file_name: &str) -> vag_data_labels::codes::CodePage {
-	match file_name {
-		"TTText-RUS.rod" => vag_data_labels::codes::CodePage::Windows1251,
-		_ => vag_data_labels::codes::CodePage::Windows1252,
-	}
-}
-
 /// Step 4: recover the keys of the `.rod` sections every car needs.
 fn rod_keys(pool: &Path, project: &crate::project::Project) -> Result<Step> {
 	let cache = project.rod_keys();
@@ -1274,11 +1316,27 @@ fn is_newer(out: &Path, source: &Path) -> bool {
 ///
 /// A VCDS installation's label files carry names and no numbers
 /// (`.archive/research/labels/rod-labels.md` §4.0c); its registry carries them
-/// for the units of a surveyed car, and the registry step says itself why it
-/// brought none — no survey yet, or units the installation cannot open. So this
-/// names only what that step cannot, and says nothing that would send somebody
-/// whose survey is already on file back to the car.
+/// for the units of the cars this machine has met, and the registry step says
+/// itself why it brought none — no car yet, or units the installation cannot
+/// open. So this names only what that step cannot, and says nothing that would
+/// send somebody whose units are already on record back to the car.
 const SCALINGS_ARE_MEASURED: &str = "No scalings yet. An ODIS project brings them for every unit it describes.";
+
+/// The same, when the registry step is still to come: the last word of a VCDS
+/// setup with no car yet is the command that finishes it, not the other source.
+/// Wrapped by hand, as everything `setup` prints is: eighty columns.
+const SCALINGS_WAIT_FOR_THE_CAR: &str = "No scalings yet. An ODIS project brings them for every unit it describes; this\n\
+                                        installation brings them for the units it has files for, once `vagcan watch`\n\
+                                        has run with the car.";
+
+/// The command that turns a pending registry step into channels, for the
+/// closing "Next:" — with what it does, since a reader who has just been told
+/// "not yet" needs to see which line is the one that changes that.
+const NEXT_WITH_THE_CAR: &str = "vagcan watch        with the car: records its units, reads their channels";
+
+/// The last word when step 5 did not complete: what to do, not the other source.
+const AFTER_A_FAILED_STEP: &str = "Step 5 did not complete: move the file it names aside, then re-run\n\
+                                  vagcan setup <VCDS installation>.";
 
 /// The closing report: what is on disk now, and what to do with it.
 ///
@@ -1297,7 +1355,9 @@ fn report(steps: &[Step], scalings: bool, fault_labels: bool) -> String {
 	// header has to say so, or a reader takes the fast finish for a complete one.
 	// A partial artefact counts as a gap too: a run that recovered 63 % of the
 	// names finished successfully and is still not what "Done." promises.
-	let any_gap = steps.iter().any(|s| matches!(s, Step::Missing { .. } | Step::Partial { .. }));
+	let any_gap = steps
+		.iter()
+		.any(|s| matches!(s, Step::Missing { .. } | Step::Partial { .. } | Step::Failed { .. }));
 	let mut out = String::from(if any_gap { "Done, with gaps.\n\n" } else { "Done.\n\n" });
 	for step in steps {
 		match step {
@@ -1315,6 +1375,9 @@ fn report(steps: &[Step], scalings: bool, fault_labels: bool) -> String {
 			}
 			Step::Pending { what, why } => {
 				let _ = writeln!(out, "  {what}: not yet — {why}");
+			}
+			Step::Failed { what, why } => {
+				let _ = writeln!(out, "  {what}: NOT done\n    {why}");
 			}
 		}
 	}
@@ -1340,12 +1403,24 @@ fn report(steps: &[Step], scalings: bool, fault_labels: bool) -> String {
          vagcan info         which car is this?\n       \
          {faults}"
 	);
+	// A registry step still to come is finished by a command with the car, and
+	// that command is the next step — named here, or a VCDS-only owner is left
+	// with three commands that read the car and none that says which one
+	// brings the channels.
+	let pending = steps.iter().any(|s| matches!(s, Step::Pending { .. }));
+	if pending {
+		let _ = write!(out, "\n       {NEXT_WITH_THE_CAR}");
+	}
 	// Said only where it is true. An ODIS project declares a scaling per variant,
 	// so "they must be measured" would be false there; the paragraph that once
 	// replaced it was more noise than use (owner, 2026-09-13), so an ODIS run
-	// closes on the commands.
+	// closes on the commands. A VCDS run with no car yet closes on the car.
 	if !scalings {
-		let _ = write!(out, "\n\n{SCALINGS_ARE_MEASURED}");
+		let _ = write!(out, "\n\n{}", if pending { SCALINGS_WAIT_FOR_THE_CAR } else { SCALINGS_ARE_MEASURED });
+	}
+	// A step that did not complete closes on what to do about it.
+	if steps.iter().any(|s| matches!(s, Step::Failed { .. })) {
+		let _ = write!(out, "\n\n{AFTER_A_FAILED_STEP}");
 	}
 	out
 }
@@ -1411,8 +1486,8 @@ mod tests {
 		assert_eq!(prefer_its_own_name(&mut io, "../escape", "SK37X", &[], &[]).unwrap(), "SK37X");
 	}
 
-	#[test]
-	fn a_run_that_could_not_ask_fails_rather_than_succeeding_at_nothing() {
+	#[tokio::test]
+	async fn a_run_that_could_not_ask_fails_rather_than_succeeding_at_nothing() {
 		// The exit-code decision, pinned. With no path and no way to ask, there
 		// is nothing to decide with — and `Ok(())` here would tell a script that
 		// setup succeeded when nothing was set up, leaving the real failure to
@@ -1431,7 +1506,8 @@ mod tests {
 				archive_base: vendor::ARCHIVE_BASE,
 				download: false,
 			},
-		);
+		)
+		.await;
 		assert!(outcome.is_err(), "a run that asked nobody anything reported success");
 	}
 
@@ -1592,9 +1668,9 @@ mod tests {
 		// all.
 		let body = include_str!("mod.rs");
 		let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("{needle} is gone"));
-		let files = at("steps.extend(read_vcds_files(dir, project, opts.refresh)?);");
-		let odis = at("read_odis(odis, dir, project)?");
-		let registry = at("steps.push(read_vcds_registry(dir, project)?);");
+		let files = at("steps.extend(off_the_main_task(move || read_vcds_files(&dir, &project, refresh)).await?);");
+		let odis = at("off_the_main_task(move || read_odis(&odis, &dir, &project)).await?");
+		let registry = at("steps.push(read_vcds_registry(dir, project).await?);");
 		assert!(files < odis, "the ODIS read moved ahead of the label files' freshness check");
 		assert!(odis < registry, "the registry step moved ahead of the ODIS rows it asks about");
 	}
@@ -1738,15 +1814,15 @@ mod tests {
 	fn a_run_with_no_scalings_says_how_to_get_them() {
 		// The closing lines are the last chance to say what a run did not bring.
 		// It used to be "no VCDS installation carries them"; since 2026-09-28 one
-		// does, through its registry, for the units of a surveyed car — and the
-		// registry step says so itself, with the reason it has none. The close
-		// names only what that step cannot: an ODIS project. Telling somebody
-		// whose survey is on file but whose units the install cannot open to go
-		// and survey again would send them back to the car for nothing.
+		// does, through its registry, for the units of the cars this machine has
+		// met — and the registry step says so itself, with the reason it has
+		// none. The close names only what that step cannot: an ODIS project.
+		// Telling somebody whose units are on record but whose files the install
+		// cannot open to connect the car again would send them back for nothing.
 		let r = report(&[], false, true);
 		assert!(r.contains("No scalings yet"), "{r}");
 		assert!(r.contains("ODIS project"), "{r}");
-		assert!(!r.contains("vagcan dev survey"), "{r}");
+		assert!(!r.contains("survey"), "{r}");
 		assert!(!r.contains("no VCDS installation carries them"), "the old claim is false now: {r}");
 	}
 
@@ -1763,19 +1839,97 @@ mod tests {
 	}
 
 	#[test]
-	fn a_car_not_surveyed_yet_is_the_next_step_and_not_a_gap_in_the_installation() {
-		// With no survey there is no list of units to read. That is a step still
-		// to take, not something the installation lacks: "Done, with gaps" and
-		// "a newer VCDS may have it" sent people to the wrong place.
+	fn a_car_not_connected_yet_is_the_next_step_and_not_a_gap_in_the_installation() {
+		// With no car recorded there is no list of units to read. That is a step
+		// still to take, not something the installation lacks: "Done, with gaps"
+		// and "a newer VCDS may have it" sent people to the wrong place.
 		let steps = vec![Step::Pending {
 			what: "channels from the VCDS registry",
-			why: "no car has been surveyed on this machine.\n      vagcan dev survey".to_string(),
+			why: registry::PENDING_WHY.to_string(),
 		}];
 		let r = report(&steps, false, true);
 		assert!(r.starts_with("Done.\n"), "{r}");
 		assert!(r.contains("channels from the VCDS registry: not yet — no car"), "{r}");
 		assert!(!r.contains("newer VCDS"), "{r}");
-		assert_eq!(r.matches("vagcan dev survey").count(), 1, "said once: {r}");
+		// And the closing names the command that finishes the step, as the next
+		// step: "Next:" listed devices, info and faults and left a VCDS-only owner
+		// with no car to work out which one reads the channels, and the last
+		// word sent them to ODIS (found in review, 2026-09-28).
+		let next = r.split("Next:").nth(1).expect("a Next: block");
+		assert!(next.contains("vagcan watch"), "{r}");
+		assert!(next.contains("records its units, reads their channels"), "{r}");
+		assert!(r.trim_end().ends_with("has run with the car."), "{r}");
+		// Without a pending step, the closing is what it was.
+		let r = report(&[], false, true);
+		assert!(!r.contains("vagcan watch"), "{r}");
+		assert!(r.trim_end().ends_with(SCALINGS_ARE_MEASURED), "{r}");
+	}
+
+	#[test]
+	fn a_record_that_does_not_read_is_a_step_that_did_not_complete_and_the_report_still_comes() {
+		// One unreadable `units.json` aborted `setup` at step 5 with no report,
+		// after steps 1–4 had written their files (found in review, 2026-09-28).
+		// It is a gap now, with the path and what to do about it — and the
+		// closing word is that, not the other source.
+		let bad = anyhow::Error::new(crate::units::NotARecord {
+			path: PathBuf::from("/home/x/.vagcan/cars/BAD/units.json"),
+			cause: "expected ident at line 1 column 2".into(),
+		});
+		let steps = vec![
+			Step::Wrote {
+				what: "the label files",
+				path: PathBuf::from("/home/x/.vagcan/data/SK37X/cache.sqlite"),
+				detail: "3035 label files".to_string(),
+			},
+			registry::failed(&bad),
+		];
+		let r = report(&steps, false, true);
+		assert!(r.starts_with("Done, with gaps.\n"), "{r}");
+		assert!(
+			r.contains(
+				"channels from the VCDS registry: NOT done\n    a car's record on this machine is not one this tool wrote:\n    /home/x/.vagcan/cars/BAD/units.json\n    (expected ident at line 1 column 2)\n"
+			),
+			"{r}"
+		);
+		assert!(r.contains("3035 label files"), "the steps before it are still reported: {r}");
+		assert!(!r.contains("newer VCDS"), "not a gap in the installation: {r}");
+		assert!(r.trim_end().ends_with(AFTER_A_FAILED_STEP), "the last word is what to do: {r}");
+		assert_eq!(r.matches("aside").count(), 1, "said once, at the close: {r}");
+		// An error that is not a record's — the directory would not read — is laid out too.
+		let other = registry::failed(&anyhow::anyhow!("reading /x/cars: permission denied"));
+		let Step::Failed { why, .. } = &other else { panic!("{other:?}") };
+		assert!(
+			why.starts_with("the records of the cars on this machine could not be read:\n    reading /x/cars"),
+			"{why}"
+		);
+	}
+
+	#[test]
+	fn the_closing_report_keeps_to_eighty_columns_whatever_its_steps() {
+		// The module's rule, applied to the report with every kind of step and
+		// both closings (found in review, 2026-09-28: two closing lines ran to 88
+		// and 177 columns). Paths are short here; a real one may run a line
+		// over, and the rule for those is that the line ends with it.
+		let steps = vec![
+			Step::Wrote {
+				what: "the label files",
+				path: PathBuf::from("/x/cache.sqlite"),
+				detail: "3035 label files".to_string(),
+			},
+			Step::Pending {
+				what: registry::WHAT,
+				why: registry::PENDING_WHY.to_string(),
+			},
+			registry::failed(&anyhow::Error::new(crate::units::NotARecord {
+				path: PathBuf::from("/x/units.json"),
+				cause: "expected ident at line 1 column 2".into(),
+			})),
+		];
+		for (scalings, fault_labels) in [(false, false), (false, true), (true, true)] {
+			for line in report(&steps, scalings, fault_labels).lines() {
+				assert!(line.chars().count() <= 80, "{} columns: {line:?}", line.chars().count());
+			}
+		}
 	}
 
 	#[test]
@@ -1821,8 +1975,8 @@ mod tests {
 		}
 	}
 
-	#[test]
-	fn a_run_against_something_that_is_not_an_installation_says_where_to_get_one() {
+	#[tokio::test]
+	async fn a_run_against_something_that_is_not_an_installation_says_where_to_get_one() {
 		let mut io = crate::ui::menu::Scripted::new(vec![]);
 		let err = run_with(
 			&mut io,
@@ -1834,6 +1988,7 @@ mod tests {
 				download: false,
 			},
 		)
+		.await
 		.unwrap_err();
 		let text = err.to_string();
 		assert!(text.contains(crate::missing::VCDS_DOWNLOAD), "{text}");

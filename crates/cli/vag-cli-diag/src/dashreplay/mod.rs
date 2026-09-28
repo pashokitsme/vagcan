@@ -34,12 +34,10 @@ pub fn run(vin: &str, log: &str, input: Option<&Path>, presses: &[f64], speed: f
 	let plan = &resolved.built.plan;
 
 	// Every channel `watch` offers this car — the names its headings were written from.
-	let offered = crate::plan::with_survey(
-		crate::plan::available(&resolved.store, &resolved.extracted, &resolved.units),
-		&resolved.survey,
-	);
-	let answered = crate::plan::answered_from_survey(&resolved.survey);
-	let matched = columns::match_columns(&recording.columns, &offered, &answered, plan);
+	// The project's, for the car's recorded units: a plan channel is always one of those,
+	// since the build refuses anything the project does not describe.
+	let offered = crate::plan::available(&resolved.store, &resolved.extracted, &resolved.units);
+	let matched = columns::match_columns(&recording.columns, &offered, plan);
 	let mut notes = unreplayed(plan);
 	notes.extend(matched.notes);
 	// The board's plan is `'static`; this one lives until the process ends anyway.

@@ -23,7 +23,7 @@ use vag_cli_core::dash::{AlarmRule, Channel as PlanChannel, Page, Plan};
 use vag_dash_render::plan::{Channel as DeviceChannel, Plan as DevicePlan};
 
 use super::engine::{Series, address_name, channel_name};
-use crate::plan::{Answered, Channel as Offered, hex_bytes};
+use crate::plan::{Channel as Offered, hex_bytes};
 use crate::watch::replay::{Column, Recording, unconverted};
 
 /// Where a plan channel's values are in the recording.
@@ -49,10 +49,8 @@ pub struct Matched {
 type Identity = (u16, u16, Option<u32>);
 
 /// Match the recording's columns to the plan's channels. `offered` is every channel `watch`
-/// offers for this car, which is what its headings were written from; `answered` is what the
-/// car's survey saw it answer — a channel the car was seen not to answer wrote no values, so
-/// it is not what a column holds.
-pub fn match_columns(columns: &[Column], offered: &[Offered], answered: &Answered, plan: &Plan) -> Matched {
+/// offers for this car, which is what its headings were written from.
+pub fn match_columns(columns: &[Column], offered: &[Offered], plan: &Plan) -> Matched {
 	let meanings: Vec<BTreeSet<Identity>> = columns
 		.iter()
 		.map(|column| {
@@ -61,7 +59,6 @@ pub fn match_columns(columns: &[Column], offered: &[Offered], answered: &Answere
 			let mut can_be: BTreeSet<Identity> = offered
 				.iter()
 				.filter(|c| c.def.is_some() != column.raw && c.label() == column.name)
-				.filter(|c| answered.saw(c.request, c.did) != Some(false))
 				.map(|c| match column.raw {
 					true => (c.request, c.did, None),
 					false => {
@@ -127,15 +124,14 @@ pub fn match_columns(columns: &[Column], offered: &[Offered], answered: &Answere
 	if !missing.is_empty() {
 		notes.insert(0, format!("not in the recording, so no value and never an alarm: {}", missing.join(", ")));
 	}
-	// `watch` names a column from the units it knew on the day: its own survey (`--survey`,
-	// or the car's cached one) and the units it identified live — the engine, and every
-	// `--did` unit that survey lacks. The plan's survey is `dash.toml`'s `survey =` or the
-	// cached one. Where the two differ, a unit only `watch` knew could have a channel of the
-	// same name, and nothing in the recording says which unit a column is from.
+	// `watch` names a column from the units it knew on the day: the car's record as it
+	// stood, and the units it identified live. The plan's units are the record as it
+	// stands now. Where the two differ, a unit only `watch` knew could have a channel of
+	// the same name, and nothing in the recording says which unit a column is from.
 	if !by_name.is_empty() {
 		notes.push(format!(
-			"matched by name: {}. Checked against the units of the plan's survey; a unit `watch` knew on the day \
-			 and that survey does not hold could share a name, and the recording does not say which unit a column is from",
+			"matched by name: {}. Checked against the units of the car's record; a unit `watch` knew on the day \
+			 and the record does not hold could share a name, and the recording does not say which unit a column is from",
 			by_name.join(", ")
 		));
 	}
@@ -402,7 +398,7 @@ mod tests {
 		]);
 		// Another order, and a column the plan does not have in between.
 		let recording = columns("t_s,Three,Other,One,Two\n0.0,1,2,3,4\n");
-		let matched = match_columns(&recording.columns, &offered, &Answered::default(), &plan);
+		let matched = match_columns(&recording.columns, &offered, &plan);
 		assert_eq!(
 			matched.sources,
 			[Some(Source::Converted(2)), Some(Source::Converted(3)), Some(Source::Converted(0))]
@@ -412,22 +408,22 @@ mod tests {
 
 	#[test]
 	fn a_match_by_name_says_what_it_was_checked_against() {
-		// `watch` heads a column from the units it knew on the day — its survey, and the
-		// units it identified live (the engine, every `--did` unit) — which need not be
-		// the plan's survey. A unit only it knew could share the name, and nothing here
+		// `watch` heads a column from the units it knew on the day — the car's record as
+		// it stood, and the units it identified live — which need not be the record the
+		// plan was built from. A unit only it knew could share the name, and nothing here
 		// can see that; an address heading names its unit and needs no caveat.
 		let offered = [offered(ENGINE, 0x1001, "One", RawForm::I16Be)];
 		let plan = plan(vec![plan_channel(ENGINE, 0x1001, 0, "one"), plan_channel(ENGINE, 0x1004, 0, "raw")]);
-		let by_name = match_columns(&columns("t_s,One\n0.0,1\n").columns, &offered, &Answered::default(), &plan);
+		let by_name = match_columns(&columns("t_s,One\n0.0,1\n").columns, &offered, &plan);
 		assert!(
 			by_name
 				.notes
 				.iter()
-				.any(|n| n.starts_with("matched by name: one (01:1001).") && n.contains("the plan's survey")),
+				.any(|n| n.starts_with("matched by name: one (01:1001).") && n.contains("the car's record")),
 			"{:?}",
 			by_name.notes
 		);
-		let by_address = match_columns(&columns("t_s,01/1004_raw\n0.0,0001\n").columns, &offered, &Answered::default(), &plan);
+		let by_address = match_columns(&columns("t_s,01/1004_raw\n0.0,0001\n").columns, &offered, &plan);
 		assert_eq!(by_address.sources, [None, Some(Source::Raw(0))]);
 		assert!(!by_address.notes.iter().any(|n| n.contains("matched by name")), "{:?}", by_address.notes);
 	}
@@ -456,7 +452,7 @@ mod tests {
 			plan_channel(ENGINE, 0x1004, 16, "raw b"),
 		]);
 		let recording = columns("t_s,Low,High,01/1004_raw\n0.0,1,2,00010002\n");
-		let matched = match_columns(&recording.columns, &offered, &Answered::default(), &plan);
+		let matched = match_columns(&recording.columns, &offered, &plan);
 		assert_eq!(
 			matched.sources,
 			[
@@ -477,7 +473,7 @@ mod tests {
 		];
 		let plan = plan(vec![plan_channel(ENGINE, 0x1001, 0, "speed"), plan_channel(ENGINE, 0x1009, 0, "absent")]);
 		let recording = columns("t_s,Speed\n0.0,1\n");
-		let matched = match_columns(&recording.columns, &offered, &Answered::default(), &plan);
+		let matched = match_columns(&recording.columns, &offered, &plan);
 		assert_eq!(matched.sources, [None, None]);
 		assert_eq!(matched.notes.len(), 2, "{:?}", matched.notes);
 		assert!(matched.notes[0].starts_with("not in the recording") && matched.notes[0].contains("absent (01:1009)"));
@@ -486,13 +482,6 @@ mod tests {
 			"{:?}",
 			matched.notes
 		);
-
-		// The car's survey asked the gearbox for that identifier and got nothing: it wrote no
-		// values, so the column is the engine's.
-		let survey = r#"{"request":"7E1","dids":[{"did":"2002"}],"asked":["2000-20FF"]}"#;
-		let answered = crate::plan::answered_from_survey(survey);
-		let matched = match_columns(&recording.columns, &offered, &answered, &plan);
-		assert_eq!(matched.sources, [Some(Source::Converted(0)), None]);
 	}
 
 	/// The replay runs neither the lever nor the stopwatch (`super::unreplayed` says so first),
@@ -535,7 +524,7 @@ mod tests {
 		});
 		let recording = columns("t_s,One\n0.0,1\n");
 		let missing = |owned: &Plan| {
-			let matched = match_columns(&recording.columns, &one, &Answered::default(), owned);
+			let matched = match_columns(&recording.columns, &one, owned);
 			matched
 				.notes
 				.iter()
@@ -559,7 +548,7 @@ mod tests {
 			offered(ENGINE, 0x2001, "Cruise", RawForm::I16Be),
 			offered(GEARBOX, 0x2001, "Cruise", RawForm::I16Be),
 		];
-		let matched = match_columns(&columns("t_s,One,Cruise\n0.0,1,0\n").columns, &shared, &Answered::default(), &owned);
+		let matched = match_columns(&columns("t_s,One,Cruise\n0.0,1,0\n").columns, &shared, &owned);
 		assert!(!matched.notes.iter().any(|n| n.contains("cruise")), "{:?}", matched.notes);
 	}
 
@@ -577,7 +566,7 @@ mod tests {
 			"t_s,One_t_s,One,01/1004_raw\n0.100,0.050,-2.3,FF38\n0.200,0.050,-2.3,\n0.300,0.250,0x0064,0064\n0.400,0.350,,0064\n\
 			 0.500,0.450,0x05,\n0.600,,,\n0.700,0.650,0x,\n",
 		);
-		let matched = match_columns(&recording.columns, &offered, &Answered::default(), &owned);
+		let matched = match_columns(&recording.columns, &offered, &owned);
 		let mut notes = Vec::new();
 		let series = series(&recording, &matched.sources, &owned, &device, &mut notes);
 		assert!(notes.is_empty(), "{notes:?}");
@@ -608,7 +597,7 @@ mod tests {
 		let device = owned.to_device();
 		let read = |csv: &str| {
 			let recording = columns(csv);
-			let matched = match_columns(&recording.columns, &offered, &Answered::default(), &owned);
+			let matched = match_columns(&recording.columns, &offered, &owned);
 			series(&recording, &matched.sources, &owned, &device, &mut Vec::new())
 		};
 		assert_eq!(read("t_s,A\n0.0,5\n0.1,\n0.2,5\n"), [Some(vec![(0, Some(5.0)), (200, Some(5.0))])]);
@@ -629,7 +618,7 @@ mod tests {
 		let owned = plan(vec![channel]);
 		let device = owned.to_device();
 		let recording = columns(csv);
-		let matched = match_columns(&recording.columns, &offered, &Answered::default(), &owned);
+		let matched = match_columns(&recording.columns, &offered, &owned);
 		let mut notes = Vec::new();
 		let series = series(&recording, &matched.sources, &owned, &device, &mut notes);
 		(series, notes)
@@ -643,7 +632,7 @@ mod tests {
 		let owned = plan(vec![channel]);
 		let device = owned.to_device();
 		let recording = columns(csv);
-		let matched = match_columns(&recording.columns, &offered, &Answered::default(), &owned);
+		let matched = match_columns(&recording.columns, &offered, &owned);
 		let mut notes = Vec::new();
 		let series = series(&recording, &matched.sources, &owned, &device, &mut notes);
 		(series, notes)
@@ -774,7 +763,7 @@ mod tests {
 		let owned = plan(vec![plan_channel(ENGINE, 0x1001, 0, "one")]);
 		let device = owned.to_device();
 		let recording = columns("t_s,One\n0.0,-2.305\n");
-		let matched = match_columns(&recording.columns, &offered, &Answered::default(), &owned);
+		let matched = match_columns(&recording.columns, &offered, &owned);
 		let mut notes = Vec::new();
 		assert_eq!(series(&recording, &matched.sources, &owned, &device, &mut notes), [None]);
 		assert!(notes[0].contains("not a number on the plan's scaling"), "{notes:?}");

@@ -15,12 +15,11 @@
 // into core because `core::project` reports the same shortage and the sentence
 // may only be written once. Re-exported for the same reason as the rest —
 // `crate::missing::…` reads the same here as it always did.
-pub use vag_cli_core::{analyse, config, datadir, device, extracted, glossary, missing, plan, progress, project, ui, units, vcdslog};
+pub use vag_cli_core::{analyse, config, datadir, device, extracted, glossary, missing, plan, progress, project, registry, ui, units, vcdslog};
 
 pub mod anomaly;
 pub mod dash;
 pub mod dashreplay;
-pub mod declared;
 pub mod discover;
 pub mod faultnames;
 pub mod faults;
@@ -36,6 +35,5 @@ pub mod safety;
 pub mod scan;
 pub mod setup;
 pub mod sniff;
-pub mod survey;
 pub mod vcds;
 pub mod watch;

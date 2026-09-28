@@ -516,7 +516,7 @@ impl Unit {
 	///
 	/// `F187` carries the number padded — one trailing space on the reference car, and a
 	/// NUL is the other thing a fixed-width field is padded with — so the padding is
-	/// trimmed before comparing, exactly as the survey the plan was built from trimmed it.
+	/// trimmed before comparing, exactly as the record the plan was built from trimmed it.
 	pub fn check_part(&self, answer: PartAnswer<'_>) -> PartCheck {
 		match answer {
 			PartAnswer::Data(data) => match core::str::from_utf8(data) {

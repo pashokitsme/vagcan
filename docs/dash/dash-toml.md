@@ -7,7 +7,8 @@ the stopwatch and buttons on the board's pins. One file per car, written by hand
 ~/.vagcan/dash/<VIN>/dash.toml
 ```
 
-The build resolves every name in it against the car's survey and the project's label data and
+The build resolves every name in it against the car's recorded units (`~/.vagcan/cars/<VIN>/units.json`,
+written by `vagcan units --identify` or `vagcan watch` with the car) and the project's label data, and
 writes the plan the firmware links. The board resolves nothing itself.
 
 ## Build it
@@ -18,8 +19,13 @@ writes the plan the firmware links. The board resolves nothing itself.
 | build the firmware for that car | `VAGCAN_DASH_VIN=<VIN> cargo build --release --bin dash` in `crates/dash/vag-dash-fw` |
 | check the firmware compiles, no car | `VAGCAN_DASH_NO_CAR=1 cargo build --release --bin dash` (an empty plan — do not flash it) |
 
-Both run the same build. `vagcan dev dash build` is for reading the result; it is not a step
-before the firmware build.
+Both run the same build. `vagcan dev dash build` is for reading the result — and, with a VCDS
+installation, it is a step before the firmware build only when no command with the car has read
+the channels of the plan's units yet: it reads them from the installation (offline, minutes the
+first time), which the firmware build never does. A firmware build for a car whose plan uses a
+unit whose channels have not been read is refused; the refusal names `vagcan dev dash build
+<VIN>`, or `vagcan setup <VCDS installation>` when the installation is no longer where `setup`
+read it. A recorded unit the plan does not use is a note in the build's output, never a refusal.
 
 | setting | for | what it does |
 |---|---|---|
@@ -43,7 +49,6 @@ Octavia III). Take yours from your car: see [How to find names for your car](#ho
 ```toml
 vin = "XW8AD4NE9JH008917"
 language = "ru"                    # labels (names.csv's ru column) and the board's own words
-# survey = "/Users/me/surveys/octavia.jsonl"   # only to use a survey other than the car's own
 
 [[channel]]
 ref = "01:IDE00025"                # coolant temperature, by text id
@@ -121,7 +126,7 @@ type: `decimals = "2"` is refused, never read as absent.
 
 - Top-level keys go above the first section. TOML gives a key to the section header above it.
 - A key of the other `kind` is refused: `min` on a values page, `trip` on a drift rule.
-- Strings are trimmed at both ends, except `survey`.
+- Strings are trimmed at both ends.
 - Keywords are lowercase: `kind = "Values"` and `direction = "Above"` are refused.
 
 Check the build's output after every edit. It prints one line per channel (with its rate) and per
@@ -134,7 +139,6 @@ come in between, such as nothing turning the page.
 |---|---|---|---|---|
 | `vin` | string | yes | — | The car. Must be the VIN the build is for (case does not matter), or the build stops. |
 | `language` | `"en"` or `"ru"`, any case | no | `language` in `~/.vagcan/config.toml`, else `"en"` | The labels' language, and the words the board writes itself (the stopwatch page). |
-| `survey` | string, a file path | no | `~/.vagcan/cars/<VIN>/survey.jsonl` | The survey to resolve against. Give an absolute path: `~` is not expanded. |
 
 - At least one `[[channel]]` and one `[[page]]` are required.
 - A label comes from the channel's `label`. Without one, from `~/.vagcan/names.csv` in
@@ -362,7 +366,7 @@ Two spellings, both `<unit>:<row>`:
 - The unit is a short number (`01`, `02`, `4B`) or a request id (`7E0`, `714`).
 - An identifier is exactly four hex digits. Anything else after the colon is a text id.
 - A text id takes no `@`.
-- Which variant of the unit the car has is not written here. It comes from the survey.
+- Which variant of the unit the car has is not written here. It comes from the car's record of its units.
 - One row is one channel however it is spelled. `01:IDE00191` and `01:202A` are the same row:
   declaring both is refused, and a page, an alarm, a `setpoint` or `speed` may use either
   spelling for a row declared under the other.
@@ -410,14 +414,17 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `line N: [[channel]] 2: unknown key "hzz" — did you mean "hz"? [[channel]] takes …` | Fix the spelling. The message lists the keys that table takes. |
 | `line N: unknown section [[alarms]] — did you mean [[alarm]]? The top level takes …` | Fix the section's name. |
 | `line N: [[page]] 1: "min" is a key of a chart page (kind = "chart"), and this is a values page` | Remove the key, or change `kind`. The same for an `[[alarm]]`'s two kinds. |
-| `line N: [stopwatch]: "survey" is a top-level key: write it above the first section` | Move it above the first section. |
+| `line N: [stopwatch]: "language" is a top-level key: write it above the first section` | Move it above the first section. |
 | `line N: [[page]] 1: "hz" is a key of [[channel]]` | Move it under that section. |
 | `line N: [[channel]] 1: label must be a string, not an integer` | Write the type this reference gives. The same for every optional key but `hz` and `setpoint`, whose refusals are under **Channels**. |
 | `no build input at <path>` | Write `~/.vagcan/dash/<VIN>/dash.toml`, or pass `--input`. |
 | `vin is missing or not a string` | Add `vin = "<VIN>"`. |
 | `<path> is for VIN X but the build asked for Y` | Build for X, or correct `vin`. |
 | `language "xx" is not one this build has words for` | `"en"` or `"ru"`. |
-| `no survey at <path>` | Run `vagcan dev survey` on the car, or set `survey`. |
+| ``line N: `survey` is no longer read — delete the line`` | Delete it. The units come from the car's record, not from a file named here. |
+| `no record of <VIN>'s control units at <path>` | Connect to the car once: `vagcan units --identify` or `vagcan watch` writes it. |
+| `the channels of N control units … have not been read from the VCDS installation (…)` | Only the units the plan uses count. Run `vagcan dev dash build <VIN>` once: it reads them from the installation, offline, then builds. If the refusal goes on to say the installation `is not on this machine any more`, or names the project's own note of it, re-run `vagcan setup <VCDS installation>` first. If `dev dash build` is what just ran, the lines above it say what stopped the read. |
+| `the channels of N control units … (…), which the plan does not use` | Not a refusal: a note among the build's lines, and the plan builds. Those units' channels are read by the next `watch`, `measure` or `units --identify` with the car, or by `vagcan dev dash build <VIN>`; when the note says the installation is gone, re-run `vagcan setup <VCDS installation>` if you want them. |
 | `no [[channel]]` / `no [[page]]` | Add one. A single `[channel]` or `[page]` with one pair of brackets counts as none. |
 | `alarm must be written as [[alarm]] tables` | Two pairs of brackets. |
 | `stalk must be one [stalk] table` / `stopwatch must be one [stopwatch] table` | One pair of brackets. |
@@ -443,13 +450,12 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `hz must be a number above 0 and at most 100` | Fix `hz`. |
 | `hz V is too small for the board, which would hold it as 0` | A larger `hz`. |
 | `setpoint is not a string` | Quote it. |
-| `unit XXX is not in the survey` | Survey the car with that unit answering, or fix the unit. |
-| `unit XXX: the survey has no part number (F187) for it` | Survey again. The board checks the unit by that number. |
+| `unit XXX is not in the car's record of its units` | Connect to the car with that unit answering (`vagcan units --identify`), or fix the unit. |
+| `unit XXX: the car's record has no part number (F187) for it` | Run `vagcan units --identify` again. The board checks the unit by that number. |
 | `X: the car's variant does not declare this channel and nothing has proven it` | This car's unit has no such row. Pick another from `vagcan watch`. |
 | `X: N rows answer to it — name one by identifier and bit offset: DID@bit name, …` | Write one of the listed rows as `<unit>:<DID>@<bit>`. |
 | `X: scaling is an enumeration, not linear` (or `a single proven point with no slope`) | The board shows numbers only. Pick a numeric row. |
 | `X: its scaling is not a finite number the board's 32-bit float holds` | Pick another row. Also for a factor the board would hold as 0. |
-| `X: the survey asked the unit for this identifier and it did not answer` | This car does not answer it. Pick another row. |
 | `X is listed twice under [[channel]]` | Delete one. |
 | `X and Y are the same row …; keep one [[channel]]` | Delete one. |
 | `X: its setpoint Y is on another unit` | Pair channels of one unit only. |
@@ -502,8 +508,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 | refusal | what to do |
 |---|---|
 | `[stalk] read X is not <unit>:<DID>` | One identifier, four hex digits, no `@`. |
-| `unit XXX is not in the survey` | `read`'s or `cruise`'s unit: survey the car with it answering. |
-| `X: the survey asked the unit for this identifier and it did not answer` | `read` or `cruise` is silent on this car. Pick another. |
+| `unit XXX is not in the car's record of its units` | `read`'s or `cruise`'s unit: connect to the car with it answering (`vagcan units --identify`). |
 | `[stalk] read X: the car's variant declares no such identifier` | Find the lever's identifier (see [How to find names](#how-to-find-names-for-your-car)). |
 | `[stalk] rocker: X has no field named "N" — its fields are …` | Copy a name from the list. Same for `switch`. |
 | `[stalk] rocker: X has 2 fields named "N"` | The project gives the name twice, possibly differing only by a space at an end. That field cannot be named. |
@@ -561,7 +566,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 - All channels together: at most 100 requests a second. Asked for more, the board reads them
   more slowly than their `hz`. The build does not check it.
 - At start-up the board checks each unit's part number (`F187`) against the plan. A unit that
-  answers another number is not read: after replacing a unit, survey the car again and rebuild.
+  answers another number is not read: after replacing a unit, run `vagcan units --identify` and rebuild.
 
 **Paging**
 

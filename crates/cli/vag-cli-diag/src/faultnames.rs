@@ -95,7 +95,7 @@ pub struct Namer {
 	cache: IvCache,
 	registry: DtcRegistry,
 	codes: CodesDb,
-	/// Per-unit catalogues, memoised — a survey re-reads the same unit's file
+	/// Per-unit catalogues, memoised — a fault read re-reads the same unit's file
 	/// once per fault otherwise, and the file is a decrypt and an inflate.
 	units: BTreeMap<(String, String), UnitLookup>,
 }

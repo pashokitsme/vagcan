@@ -35,6 +35,7 @@ pub mod missing;
 pub mod plan;
 pub mod progress;
 pub mod project;
+pub mod registry;
 pub mod ui;
 pub mod units;
 pub mod vcdslog;

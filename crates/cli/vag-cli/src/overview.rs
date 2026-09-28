@@ -445,8 +445,9 @@ fn setup_advice(cars: &Cars) -> String {
               identifier and a number: the names and the scalings come from somebody\n                   \
               else's data, which may not be shipped with this tool.\n\n  \
               Point it at an extracted ODIS-Service project (names and scalings) or a\n  \
-              VCDS installation (names, and scalings for a surveyed car). With no path\n  \
-              it asks which, and offers to download a VCDS installation for you.\n"
+              VCDS installation (names; the channels of the units `watch`, `measure` or\n  \
+              `units --identify` records). With no path it asks which, and offers to\n  \
+              download a VCDS installation for you.\n"
 			.to_string(),
 	}
 }

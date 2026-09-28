@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Write reference-survey.jsonl: the reference car's fifteen confirmed faults in
-the shape `vagcan dev survey` records, for `vagcan faults --from`.
+the shape `vagcan dev survey` recorded, for `vagcan faults --from`.
+
+2026-09-28: both commands were removed (`todo/label-lookup/03`). The script and
+its output stay as the record of the offline proof in README.md §7; nothing in
+the tool reads the file any more.
 
 Every value is transcribed from the archive, not read off a car:
 `.archive/research/labels/fault-naming-hop.md` §12.1 (the codes and each

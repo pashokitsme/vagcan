@@ -43,9 +43,9 @@ pub type Key = crate::plan::Key;
 /// What the choice costs is that the memory is a rate times a window rather
 /// than a constant. At the fastest rate this tool has polled at, a minute is a
 /// few thousand points per channel, and the channels are the ones somebody
-/// selected rather than the thousand a survey puts on offer — a few hundred
-/// kilobytes at the top end, for a program that already holds a survey in
-/// memory.
+/// selected rather than the thousands a project puts on offer — a few hundred
+/// kilobytes at the top end, for a program that already holds every channel of
+/// the car in memory.
 ///
 /// A minute because `watch` is read while it runs: long enough to hold a gear
 /// change, an overrun and the recovery from it, short enough that the trace of

@@ -83,7 +83,17 @@ the server. Read-only bounds what can be *changed* about a car, not what can be
 - **Never add a write service.** No coding, no adaptation, no clearing faults, no
   flashing. The UDS allowlist is `0x22`, `0x19`, `0x10`, `0x3E` and stays that way.
 - **A sweep is a fuzz test of a diagnostic server.** It is the most invasive thing here.
-  Guard anything new that resembles one the same way `survey` is guarded.
+  Guard anything new that resembles one the way `units --identify <unit>` is guarded: one
+  named unit; a bounded range (its identification block, `F100`–`F1FF`); refused on a moving
+  car (`require_stationary`, with "no answer" counted as moving); stopped the moment the
+  unit falls silent under the reads (`anomaly::Monitor`); never through the dash board —
+  `--slcan`, or the board's `slcan` image, either of which makes the board a plain adapter,
+  is the one exception. The allowlist holds
+  for every request it makes. Two gaps in that command today, not the pattern to copy: the
+  three OBD-II mode-09 identifiers (`F802`, `F804`, `F80A`) it reads after the block are
+  outside the guard, and it re-reads no witness, so a unit going back on an earlier answer is
+  not something the monitor can see. Never a blind sweep of the whole car — that command was
+  removed on 2026-09-28 and does not come back.
 - **Anything that can change how a unit behaves is refused on a moving car** — checked
   by reading road speed, with "no answer" counted as moving.
 - **A firmware image that transmits on its own is a bench tool, and builds only with the
@@ -174,7 +184,8 @@ crates/            all Rust. Three families and the product.
                        the link: a cable, or the dash board over USB or BLE), where
                        its files live, the terminal widgets. Knows no command.
     vag-cli-diag       reading a car and the files that explain it: identify,
-                       faults, the guarded sweeps, watch, setup, vcds tooling
+                       faults, the one guarded sweep (`units --identify <unit>`),
+                       watch, setup, vcds tooling
     vag-cli-measure    binary `vagcan-measure` — the acceleration stopwatch.
                        Depends on `core` **alone**, checked symbol by symbol,
                        which is what makes it a crate rather than a directory.
@@ -183,8 +194,8 @@ crates/            all Rust. Three families and the product.
                        devices / info / units / faults / sensors / watch / measure —
                        plus `setup`, the one offline command there, because it is
                        the first thing a new owner runs and what a car command short
-                       of label data offers to run. The workshop is `dev …`: survey /
-                       sniff / glossary / dash, and offline work grouped by input —
+                       of label data offers to run. The workshop is `dev …`: sniff /
+                       glossary / dash, and offline work grouped by input —
                        `dev recording …` (our own `watch --out` recordings) and
                        `dev vcds …` (VCDS's own files). `main.rs`'s
                        `the_top_level_is_only_what_needs_a_car` test holds the line
@@ -198,7 +209,9 @@ research/        RE writeups + tooling (NOT shipped) for work still in progress:
                        a control unit; bench pair only, refuses on car traffic)
   odis-dtc/            fault codes and their text in an ODIS project: the object
                        layouts the DTC loader reads, and the offline proof against
-                       the reference car's stored faults (ODIS 15/15, VCDS 11/15)
+                       the reference car's stored faults (ODIS 15/15, VCDS 11/15) —
+                       made through `faults --from`, removed 2026-09-28; the results
+                       stand as recorded
   vcds-registry/       VCDS keeps every measurement's DID, layout and scaling in the global
                        registry `RM.rod` (2026-09-28); a unit's `MWB` lists 1-based row numbers
                        into it. Overturns "scaling is live-only" (the archive labels/ files,

@@ -50,7 +50,7 @@ pub enum Tool {
 	/// plan channel the recording does not hold has no value and never trips an alarm.
 	///
 	/// IN: a `vagcan watch --out` recording, and the car's `dash.toml` as `vagcan dev
-	/// dash build` reads it — with the car's survey and this project's catalogs. A column
+	/// dash build` reads it — with the car's recorded units and this project's catalogs. A column
 	/// counts for a plan channel only when it is the same unit, identifier and field.
 	///
 	/// OUT: in a terminal, the panel drawn at the recording's pace with the alarm log
@@ -190,8 +190,8 @@ mod tests {
 	fn the_list_offers_recordings_last_drive_first_and_nothing_else() {
 		// `watch --out` names these, so they sort as text and the drive
 		// somebody just finished is at the wrong end. And a directory a person
-		// works in holds more than recordings: a survey's `.jsonl`, notes.
-		let dir = a_directory_with(&["2026-08-02-1030.csv", "2026-08-04-1241.csv", "survey-parked.jsonl", "notes.md"]);
+		// works in holds more than recordings: a sniff capture's `.jsonl`, notes.
+		let dir = a_directory_with(&["2026-08-02-1030.csv", "2026-08-04-1241.csv", "capture.jsonl", "notes.md"]);
 		let names: Vec<String> = picker::entries(&dir, &recordings()).into_iter().map(|c| c.name).collect();
 		assert_eq!(names, ["2026-08-04-1241.csv", "2026-08-02-1030.csv"]);
 	}

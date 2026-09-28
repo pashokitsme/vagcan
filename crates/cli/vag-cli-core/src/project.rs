@@ -115,6 +115,12 @@ impl Project {
 		self.dir.join("rod-keys.json")
 	}
 
+	/// Which VCDS installation this project's registry channels were read
+	/// from, and what came of each unit tried — `crate::registry::Log`.
+	pub fn registry_log(&self) -> PathBuf {
+		self.dir.join("registry.json")
+	}
+
 	/// The proven-on-car rows, one file per part number.
 	pub fn measurements_dir(&self) -> PathBuf {
 		self.dir.join("measurements")
@@ -419,15 +425,44 @@ pub fn records_source(project: &Project, kind: &str, path: &str) -> bool {
 /// where its data came from gets the cautious answer, which is to trust nothing
 /// it did not have to.
 pub fn has_source(project: &Project, kind: &str) -> bool {
+	!sources_of_kind(project, kind).is_empty()
+}
+
+/// The directories every source of this kind was read from, as `sources.json`
+/// records them, **newest read first** — the second exception to §4.4, for the
+/// same reason as [`has_source`]: a project set up from a VCDS installation
+/// before `registry.json` existed has this as its only note of where the
+/// installation is (`crate::registry::Installation`), and the installation is
+/// the one read last, whose rows the project holds.
+///
+/// By `parsed_at`, not by position: [`record_source`] puts a reread back where
+/// its entry was, so the file's order is the order sources were first read in.
+/// An entry with no stamp counts as the oldest. Empty when the log is missing
+/// or unreadable.
+pub fn sources_of_kind(project: &Project, kind: &str) -> Vec<String> {
 	let Ok(text) = std::fs::read_to_string(project.sources()) else {
-		return false;
+		return Vec::new();
 	};
 	let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-		return false;
+		return Vec::new();
 	};
-	value["sources"]
+	let mut rows: Vec<(String, String)> = value["sources"]
 		.as_array()
-		.is_some_and(|rows| rows.iter().any(|row| row["kind"].as_str() == Some(kind)))
+		.map(|rows| {
+			rows
+				.iter()
+				.filter(|row| row["kind"].as_str() == Some(kind))
+				.filter_map(|row| {
+					let path = row["path"].as_str()?.to_string();
+					Some((row["parsed_at"].as_str().unwrap_or_default().to_string(), path))
+				})
+				.collect()
+		})
+		.unwrap_or_default();
+	// RFC 3339 in one zone sorts as text; a stable sort keeps the file's order
+	// between equal stamps.
+	rows.sort_by(|a, b| b.0.cmp(&a.0));
+	rows.into_iter().map(|(_, path)| path).collect()
 }
 
 /// What `config.toml` says this machine's project is, if it says.
@@ -759,6 +794,33 @@ mod tests {
 		assert!(records_source(&p, "vcds", "/Applications/VCDS"));
 		assert!(!records_source(&p, "odis", "/Applications/VCDS"), "the kind is part of the source");
 		assert!(!records_source(&p, "vcds", "/Applications/VCDS-other"));
+	}
+
+	#[test]
+	fn the_sources_of_a_kind_come_newest_first_whatever_their_place_in_the_file() {
+		// A reread lands where its entry was, so the file's order is the order
+		// sources were first read in; what the registry needs is the one read
+		// last (found in review, 2026-09-28).
+		let here = temp();
+		let p = open_or_create_in(here.path(), "SK37X").unwrap();
+		let vcds = |path: &str| SourceEntry {
+			kind: "vcds",
+			path: path.into(),
+			version: None,
+			detail: None,
+		};
+		record_source(&p, vcds("/Applications/VCDS-old")).unwrap();
+		std::thread::sleep(std::time::Duration::from_millis(5));
+		record_source(&p, vcds("/Applications/VCDS-new")).unwrap();
+		std::thread::sleep(std::time::Duration::from_millis(5));
+		// The old one read again: its entry stays first in the file, and is the newest.
+		record_source(&p, vcds("/Applications/VCDS-old")).unwrap();
+		assert_eq!(
+			sources_of_kind(&p, "vcds"),
+			vec!["/Applications/VCDS-old".to_string(), "/Applications/VCDS-new".to_string()]
+		);
+		assert!(sources_of_kind(&p, "odis").is_empty());
+		assert!(has_source(&p, "vcds") && !has_source(&p, "odis"));
 	}
 
 	#[test]

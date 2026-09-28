@@ -14,59 +14,15 @@
 //! vehicle make/model, so there is nothing to group by. Rendering is factored
 //! into pure `render_*` helpers so the formatting is unit-tested without a disk.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Context;
 use vag_data_labels::{LabelDb, LabelScan, Measurement, scan_label_files};
 
-/// The directory the label files are actually in.
-///
-/// The loader reads one directory level, and what `vagcan setup` extracts is an
-/// install root — labels in `Labels/`, ODX files in `UDS_EV/` — so pointing it
-/// straight at the root would cache nothing and report "cached 0 label files",
-/// which reads as empty rather than as the wrong level.
-///
-/// So the directory is located rather than assumed: the one given if it holds
-/// label files, otherwise the first child that does. That also picks
-/// `Labels/RUS/` out of a Russian build, where nothing sits at the top level.
-/// Two levels is enough for every layout Ross-Tech ships and shallow enough not
-/// to wander into a home directory.
-pub(crate) fn label_dir_under(given: &Path) -> anyhow::Result<PathBuf> {
-	fn holds_labels(dir: &Path) -> bool {
-		std::fs::read_dir(dir).is_ok_and(|entries| {
-			entries.flatten().any(|e| {
-				matches!(
-					e.path().extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase).as_deref(),
-					Some("lbl") | Some("clb")
-				)
-			})
-		})
-	}
-
-	if holds_labels(given) {
-		return Ok(given.to_path_buf());
-	}
-	let mut children: Vec<PathBuf> = std::fs::read_dir(given)
-		.with_context(|| format!("reading {}", given.display()))?
-		.flatten()
-		.map(|e| e.path())
-		.filter(|p| p.is_dir())
-		.collect();
-	children.sort();
-	for child in &children {
-		if holds_labels(child) {
-			// Silently: this is the layout of what `vagcan setup` wrote, not a
-			// choice the reader made or can act on, and it was being announced
-			// on every single run.
-			return Ok(child.clone());
-		}
-	}
-	anyhow::bail!(
-		"no label files under {} — expected a VCDS install root (with a Labels directory) \
-         or the Labels directory itself",
-		given.display()
-	)
-}
+// The label directory locator is `core`'s now: the registry read keys its rows
+// by it, and that read runs from `watch` and `measure` as well as from `setup`.
+// Same name here, so every `crate::labels::label_dir_under` reads as it did.
+pub(crate) use vag_cli_core::registry::label_dir_under;
 
 /// Whether the cache on disk can be believed for this label file directory.
 ///

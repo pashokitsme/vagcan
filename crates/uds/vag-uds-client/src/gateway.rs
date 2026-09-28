@@ -52,8 +52,9 @@ pub const NOT_LISTED: [u16; 3] = [0x7E0, 0x7E1, GATEWAY];
 
 /// Which units to walk: [`NOT_LISTED`], then the gateway's list, each once.
 ///
-/// One order for every command that reads the whole car — `faults`, `dev survey` and the
-/// board's fault count (`todo/dash/20`) — so they read the same units.
+/// One order for every command that reads the whole car — `faults`, the identification
+/// walk (`vag_cli_core::units`) and the board's fault count (`todo/dash/20`) — so they read
+/// the same units.
 pub fn walk_order(listed: &[u16]) -> Vec<u16> {
 	let mut out: Vec<u16> = NOT_LISTED.to_vec();
 	for id in listed {

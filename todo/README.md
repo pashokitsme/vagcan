@@ -6,6 +6,35 @@ dated status sections moved verbatim to
 [`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-09-14,
 2026-09-15, 2026-09-22, 2026-09-26 and 2026-09-27.
 
+## 2026-09-28 — the car's units without a survey
+
+`feat/units-without-survey`, [`label-lookup/03`](label-lookup/03-units-without-survey.md), in
+review (four reviewers on `09d50d9`: not ready; their findings fixed the same day, second
+round pending).
+
+- **`dev survey` removed.** The car's units are recorded by `watch`, `measure` and
+  `units --identify` under `cars/<VIN>/units.json` — the gateway among them — every run asking
+  every unit again and merging what it answered into its entry field by field, so one missed
+  deadline never costs a recorded identifier. `setup`'s step 5 and `dev dash build` read that
+  record.
+- **A VCDS installation's channels** for a car not yet read come with the first `watch`,
+  `measure` or `units --identify` with the car, and with `dev dash build` offline
+  (`registry::ensure`; the project's `registry.json` says which units were tried, and a project
+  set up before that file existed is read from the installation its `sources.json` names). The
+  firmware's build reads nothing: it refuses a car with units whose channels are unread and
+  names `dev dash build`.
+- `faults --from`, `watch --survey`, the blind sweep and `--diff` went with the survey;
+  `watch --replay --vin` takes a replay's tabs from the record.
+- **After this merges, the owner's own data needs one migration** (the controller's, not the
+  tool's): his `dash.toml` still carries `survey = …` and is refused until the line is deleted
+  (with a backup of the file), and his car has no `units.json` until one is written from the
+  parked survey's identities — or `vagcan units --identify` is run with the car.
+- The sweep-witness item (`WITNESS_EVERY`, `QUIET_RUN` measured on a parked whole-car run) went
+  with the sweep. The witness path of `scan::Guard` has no caller now — `units --identify <unit>`
+  runs it with `witness: None` — so `WITNESS_EVERY` guards nothing today; `QUIET_RUN` is still
+  what `anomaly::Monitor` counts before it stops that read. Whether the one sweep left should
+  read a witness is a new request, the owner's call.
+
 ## Where things stand (2026-09-27)
 
 **Milestone: the panel takes input — the cruise lever and buttons on the board's pins page it,
@@ -107,8 +136,8 @@ item 8, `dash/18` on a real pull.
 4. **Measurements from a VCDS install** — [`label-lookup/02`](label-lookup/02-vcds-registry.md):
    **built 2026-09-28** on `feat/vcds-registry-p2`, reviewed the same day. The owner's `dash.toml`
    builds from a VCDS install alone with the same 19 channels as from ODIS. What is left is listed
-   there: the platform file's choice, the Russian fallback, and one decision for the owner —
-   whether a VCDS list may widen what `dev survey` asks (until then it does not). `measure`'s
+   there: the platform file's choice and the Russian fallback; whether a VCDS list may widen
+   what a sweep asks is moot — the sweep is gone (2026-09-28). `measure`'s
    roles go by text id since 2026-09-28 (`feat/measure-roles-by-id`): the gearbox's speed leads
    the reference car; an emulation over a scratch VCDS-only project the same day (not
    reproduced by a test) gave that owner boost and the shaft speeds. `calibrate` was removed
@@ -137,9 +166,7 @@ item 8, `dash/18` on a real pull.
 11. **Questions only the car answers** — `dash/06`.
 12. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.
-13. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
-    measured. One parked whole-car run.
-14. **`watch` and `measure` across all fifteen units** — measured against the file, not
+13. **`watch` and `measure` across all fifteen units** — measured against the file, not
     the car.
 
 ## Task files
@@ -157,6 +184,7 @@ item 8, `dash/18` on a real pull.
 | [`dash/20-fault-count.md`](dash/20-fault-count.md) | the car's stored codes counted once after boot, a triangle and the count in the corner, `?` when there is no count — built 2026-09-27; needs the car |
 | [`dash/21-runs-in-flash.md`](dash/21-runs-in-flash.md) | stopwatch runs in flash, read over BLE, saved on LIMIT; recorded 2026-09-27, open questions for the owner |
 | [`label-lookup/02-vcds-registry.md`](label-lookup/02-vcds-registry.md) | scalings, names and units from a VCDS install through its `RM.rod` registry — built 2026-09-28 on `feat/vcds-registry-p2`, in review; the owner's `dash.toml` builds from VCDS alone |
+| [`label-lookup/03-units-without-survey.md`](label-lookup/03-units-without-survey.md) | the car's units recorded by the live commands, their VCDS channels read the first time, `dev survey` removed — built 2026-09-28 on `feat/units-without-survey`; first review's findings fixed, second round pending |
 | [`measure/01-pedal-at-rest.md`](measure/01-pedal-at-rest.md) | the engine's absolute pedal reads 15 % at rest and the coastdown waits for 1 % — found in review 2026-09-28; the owner's call |
 | [`measure/02-cross-check-tracks.md`](measure/02-cross-check-tracks.md) | every unit's cross-check speed lands in one track — found in review 2026-09-28; open |
 | [`measure/03-speed-series-unit.md`](measure/03-speed-series-unit.md) | the saved speed is in m/s, labelled and drawn as km/h: `measure view` shows it 3.6 times low and never draws a rolling mark — found in review 2026-09-28; open |
@@ -170,21 +198,21 @@ Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, move
 
 ```
 setup devices info units faults sensors watch measure dev
-dev: survey sniff glossary recording dash vcds
+dev: sniff glossary recording dash vcds
 ```
 
 | older spelling | today |
 |---|---|
-| `vagcan survey` | `vagcan dev survey` (`--diff BEFORE AFTER` is the parked-vs-driving compare) |
+| `vagcan survey`, `vagcan dev survey` | gone (2026-09-28) — the car's units are recorded by `watch`, `measure` and `units --identify`; `--diff` and the blind sweep went with it |
 | `vagcan sniff` | `vagcan dev sniff` |
 | `vagcan vcds …`, `vagcan labels` | `vagcan dev vcds …` |
 | `vagcan recording …` | `vagcan dev recording …` |
 | `vagcan dash build` | `vagcan dev dash build` |
-| `vagcan scan` | gone — it was a strict subset of `dev survey --only` |
+| `vagcan scan` | gone — one unit's sweep over any range; today `units --identify <unit>` reads that unit's identification block, `F100`–`F1FF`, and nothing else |
 | `vagcan properties` | gone — it is `units --identify <unit>`, and now carries the moving-car guard |
 
 Every command the skills under `.claude/skills/` name was run against `--help` on
-2026-09-27 and resolves.
+2026-09-28 and resolves; `vagcan dev survey` and `faults --from` do not parse.
 
 ## Dead and archived (kept as negative results — do not retry)
 

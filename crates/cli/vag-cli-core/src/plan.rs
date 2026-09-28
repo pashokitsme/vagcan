@@ -42,8 +42,8 @@ pub struct Channel {
 	///
 	/// Carried so that somebody who has just read a bad name on screen can find
 	/// the line to write a better one; `watch`'s `show_key` setting is what puts
-	/// it on the row. `None` for a proven row and for anything a survey found
-	/// that no source describes.
+	/// it on the row. `None` for a proven row and for an identifier `--did`
+	/// named that no source describes.
 	pub text_id: Option<String>,
 	pub selected: bool,
 }
@@ -215,9 +215,8 @@ pub struct UnitIdentity {
 /// mechanism works on a car this project has never seen, and finds nothing
 /// rather than misapplying another car's numbers.
 ///
-/// This is what is *known*. Everything else the car answers comes from a
-/// survey file — see [`with_survey`] — because a measurement nobody has
-/// proven still has bytes worth watching.
+/// This is what is *known*; an identifier `--did` names that nothing here
+/// describes is watched as bytes beside it.
 pub fn available(store: &CatalogStore, extracted: &crate::extracted::Extracted, units: &[UnitIdentity]) -> Vec<Channel> {
 	let mut out = Vec::new();
 	for p in vag_data_labels::obd::PIDS {
@@ -281,59 +280,14 @@ pub fn available(store: &CatalogStore, extracted: &crate::extracted::Extracted, 
 	out
 }
 
-/// Every line of a survey file that is about a unit: `(request id, the line)`.
-///
-/// **One reader for the format, where there were four.** The three functions
-/// below and `survey::diff` each spelled out the same two rejections — a line
-/// that is not JSON, and a line with no readable `request` — which are the two
-/// ways a survey file can be half-written. Four copies of "skip it" is four
-/// chances for one of them to start counting a truncated file as a unit that
-/// answered nothing.
-///
-/// Rejections rather than errors, deliberately: a survey is appended to as it
-/// runs, so the last line of an interrupted one is routinely half-written, and
-/// refusing the whole file over it would throw away a drive's worth of answers.
-pub fn survey_units(survey: &str) -> impl Iterator<Item = (u16, serde_json::Value)> + '_ {
-	survey.lines().filter(|l| !l.trim().is_empty()).filter_map(|line| {
-		let value: serde_json::Value = serde_json::from_str(line).ok()?;
-		let request = u16::from_str_radix(value["request"].as_str()?, 16).ok()?;
-		Some((request, value))
-	})
-}
-
-/// What each unit in a survey said about itself.
-///
-/// A survey already asked every unit for its identification block, so a
-/// recording of one carries the keys its catalogs are found under — no need to
-/// re-read the car to know which scalings apply.
-pub fn identities_from_survey(survey: &str) -> Vec<UnitIdentity> {
-	let mut out = Vec::new();
-	for (request, value) in survey_units(survey) {
-		let field = |did: &str| -> Option<String> {
-			let entry = value["ident"].as_array()?.iter().find(|e| e["did"].as_str() == Some(did))?;
-			let bytes = hex_bytes(entry["data"].as_str()?)?;
-			let text = String::from_utf8_lossy(&bytes).trim_end_matches(['\0', ' ']).to_string();
-			(!text.is_empty()).then_some(text)
-		};
-		out.push(UnitIdentity {
-			request,
-			part_number: field("F187"),
-			odx_name: field("F19E"),
-			odx_version: field("F1A2"),
-			component: field("F197"),
-		});
-	}
-	out
-}
-
 /// Parse a hex string as bytes; `None` if it is not whole bytes of hex.
 ///
 /// **The inverse of the packed hex this tool writes into its own files**, and
-/// public because all three readers of that format needed it and each had grown
-/// a copy: the survey reader below, `faults`' identification lookup, and
-/// `watch`'s recording replay. Three parsers for one format is three chances to
-/// disagree about a malformed one, and they already did — one of the copies
-/// rejected the empty string and two returned no bytes for it.
+/// public because every reader of that format needed it and each had grown a
+/// copy — `watch`'s recording replay and the dash replay's columns today. Three
+/// parsers for one format were three chances to disagree about a malformed one,
+/// and they already did — one of the copies rejected the empty string and two
+/// returned no bytes for it.
 ///
 /// The empty string parses as no bytes, which is what "a hex string of length
 /// zero" means. A caller for whom an empty *cell* is not a reading says so
@@ -347,142 +301,6 @@ pub fn hex_bytes(text: &str) -> Option<Vec<u8>> {
 	(0..text.len() / 2)
 		.map(|i| u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).ok())
 		.collect()
-}
-
-/// Add every identifier a `vagcan dev survey` run found, on every unit it found
-/// them on.
-///
-/// The survey is the only source that covers the whole car: the catalogs know
-/// three units, the gateway lists fifteen more, and none of those fifteen has a
-/// proven measurement yet. Their channels come through with no definition, so
-/// they display as raw bytes, which is the honest rendering.
-///
-/// Identifiers already in `channels` keep their definition; a survey never
-/// overrides a proven scaling with nothing.
-pub fn with_survey(mut channels: Vec<Channel>, survey: &str) -> Vec<Channel> {
-	for (request, value) in survey_units(survey) {
-		let Some(dids) = value["dids"].as_array() else { continue };
-		for entry in dids {
-			let Some(did) = entry["did"].as_str().and_then(|s| u16::from_str_radix(s, 16).ok()) else {
-				continue;
-			};
-			if channels.iter().any(|c| c.request == request && c.did == did) {
-				continue;
-			}
-			channels.push(Channel {
-				request,
-				did,
-				def: None,
-				named: None,
-				proven: false,
-				text_id: None,
-				selected: false,
-			});
-		}
-	}
-	channels.sort_by_key(|c| (c.request, c.did));
-	channels
-}
-
-/// What a survey established about which identifiers this car actually answers.
-///
-/// Kept beside the channels rather than on them, because it is a different kind
-/// of statement. A [`Channel`] is what some data source *declares*; this is what
-/// the vehicle *did*, on a particular day, and the two disagree far more than
-/// the design assumed: on the reference car an ODIS project declares 2,251
-/// identifiers across the fifteen units, the car answered 1,198, and only 505
-/// are in both. Nearly two thousand declared channels are on the selection
-/// screen and can never produce a value.
-///
-/// Absence is only evidence about a unit the survey actually visited, which is
-/// why `units` is kept alongside: a unit nobody swept says nothing about its
-/// identifiers, and treating that as silence would hide a whole control unit
-/// on the strength of never having looked at it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Answered {
-	/// Units the survey visited. Only these can be argued about.
-	pub units: std::collections::BTreeSet<u16>,
-	/// `(request, did)` pairs that came back with a body.
-	pub dids: std::collections::BTreeSet<(u16, u16)>,
-	/// What each unit was actually asked, where the survey wrote it down.
-	///
-	/// **Without this, nothing can be called silent.** A survey used to record
-	/// only what answered, and the first version of this type read a missing
-	/// range as "the sweep covered everything, so absence is refusal". That
-	/// assumption was measured and is false: the sweep that wrote the reference
-	/// car's cached survey asked eight windows of 256 identifiers — 2,048 of
-	/// 65,536 — so of 2,251 declared identifiers it put only 543 to the car.
-	/// **505 of those 543 answered, 93%.** The 1,746 that looked like
-	/// over-declaration were 38 real refusals and 1,708 questions nobody asked.
-	///
-	/// So a file with no `asked` field supports no verdict, and
-	/// [`Answered::saw`] returns `None` throughout. That costs the filter
-	/// nothing it was entitled to: a sweep since 2026-08-09 asks what the unit's
-	/// own data declares and records the range, which is exactly the case where
-	/// silence means something.
-	pub asked: std::collections::BTreeMap<u16, Vec<std::ops::RangeInclusive<u16>>>,
-}
-
-impl Answered {
-	/// Whether the car has been seen to answer this identifier.
-	///
-	/// Three answers, not two. `None` when nothing can be said — the unit was
-	/// never swept, or it was swept over a range this identifier is outside of —
-	/// and that is deliberately distinct from `Some(false)`. A caller that
-	/// collapses the two hides every channel on every unit the survey did not
-	/// reach, and the safe habit is surveying one unit at a time, so that
-	/// is the ordinary case rather than the exotic one.
-	pub fn saw(&self, request: u16, did: u16) -> Option<bool> {
-		if !self.units.contains(&request) {
-			return None;
-		}
-		if self.dids.contains(&(request, did)) {
-			return Some(true);
-		}
-		// Silence only counts against an identifier somebody put to the unit.
-		// A file with no record of what it asked claims nothing at all — see
-		// [`Answered::asked`] for the measurement that settled this.
-		let ranges = self.asked.get(&request)?;
-		ranges.iter().any(|r| r.contains(&did)).then_some(false)
-	}
-}
-
-/// Read [`Answered`] out of a survey file.
-///
-/// The `asked` field is taken where a survey wrote one and simply missing on
-/// files from before it existed — see [`Answered::asked`] for what that costs.
-pub fn answered_from_survey(survey: &str) -> Answered {
-	let mut out = Answered::default();
-	for (request, value) in survey_units(survey) {
-		let Some(dids) = value["dids"].as_array() else { continue };
-		out.units.insert(request);
-		for entry in dids {
-			let Some(did) = entry["did"].as_str().and_then(|s| u16::from_str_radix(s, 16).ok()) else {
-				continue;
-			};
-			out.dids.insert((request, did));
-		}
-		if let Some(asked) = value["asked"].as_array() {
-			// A range this parser cannot read is dropped rather than guessed at,
-			// and a line whose whole list is unreadable records an empty range —
-			// which says "asked nothing", so nothing on that unit is called
-			// silent. Wrong in the safe direction.
-			let ranges: Vec<std::ops::RangeInclusive<u16>> = asked.iter().filter_map(|r| r.as_str().and_then(parse_span)).collect();
-			out.asked.insert(request, ranges);
-		}
-	}
-	out
-}
-
-/// One span as a survey writes it: `0102-0104`, or a bare `F187`.
-fn parse_span(text: &str) -> Option<std::ops::RangeInclusive<u16>> {
-	let (start, end) = match text.split_once('-') {
-		Some((a, b)) => (a, b),
-		None => (text, text),
-	};
-	let start = u16::from_str_radix(start.trim(), 16).ok()?;
-	let end = u16::from_str_radix(end.trim(), 16).ok()?;
-	(start <= end).then_some(start..=end)
 }
 
 /// Every `(request id, identifier)` the selected channels read, each once, in order.
@@ -896,157 +714,5 @@ mod tests {
 		// unrelated rows would show a comparison nobody established.
 		assert_eq!(split_role("Actual gear"), None);
 		assert_eq!(split_role("Engine speed"), None);
-	}
-
-	#[test]
-	fn what_a_survey_recorded_reads_back_as_answered_and_the_rest_of_that_unit_does_not() {
-		// Two claims and two non-claims, which is the whole of the type: a
-		// listed identifier answered, an unlisted one inside what was asked did
-		// not, an identifier outside the range is not spoken for, and neither
-		// is a unit nobody swept.
-		let survey = "\
-{\"request\":\"713\",\"asked\":[\"1001-1002\",\"F187\"],\"dids\":[{\"did\":\"1001\",\"data\":\"00\"},{\"did\":\"F187\",\"data\":\"00\"}]}
-{\"request\":\"7E1\",\"asked\":[\"1001\"],\"dids\":[]}
-";
-		let seen = answered_from_survey(survey);
-		assert_eq!(seen.saw(0x713, 0x1001), Some(true));
-		assert_eq!(seen.saw(0x713, 0xF187), Some(true));
-		assert_eq!(seen.saw(0x713, 0x1002), Some(false), "asked, and it said nothing");
-		assert_eq!(seen.saw(0x713, 0x2029), None, "outside the range this run swept");
-		assert_eq!(
-			seen.saw(0x7E1, 0x1001),
-			Some(false),
-			"a unit that answered none of what it was asked was still asked"
-		);
-		assert_eq!(seen.saw(0x714, 0x1001), None, "nobody swept the cluster, so nothing is claimed about it");
-	}
-
-	#[test]
-	fn an_identifier_outside_the_range_a_survey_swept_is_not_called_silent() {
-		// The caveat the `asked` field removes. A run aimed with
-		// `--blind --range 0100-0110` says nothing whatever about `2029`, and
-		// reading absence as silence there would hide a working channel on the
-		// strength of a sweep that never went near it.
-		let survey = "{\"request\":\"713\",\"asked\":[\"0100-0110\",\"F187\"],\"dids\":[{\"did\":\"0102\",\"data\":\"00\"}]}\n";
-		let seen = answered_from_survey(survey);
-		assert_eq!(seen.saw(0x713, 0x0102), Some(true));
-		assert_eq!(seen.saw(0x713, 0x0103), Some(false), "inside the range and it did not answer");
-		assert_eq!(seen.saw(0x713, 0xF187), Some(false), "a one-wide span is a range too");
-		assert_eq!(seen.saw(0x713, 0x2029), None, "nobody asked this unit about 2029");
-	}
-
-	#[test]
-	fn a_survey_from_before_the_asked_field_supports_no_verdict_at_all() {
-		// This started out the other way round — a missing range was read as
-		// "the sweep covered everything". Then the reference car's own cached
-		// survey was measured against the ranges its sweep actually used, and
-		// the assumption was false by a factor of thirty: eight windows of 256,
-		// so 1,708 of the 1,746 "silent" identifiers had never been asked.
-		//
-		// A file that does not say what it asked therefore says nothing about
-		// what a car does not have.
-		let survey = "{\"request\":\"713\",\"dids\":[{\"did\":\"0102\",\"data\":\"00\"}]}\n";
-		let seen = answered_from_survey(survey);
-		assert!(seen.asked.is_empty(), "no range was recorded");
-		assert_eq!(seen.saw(0x713, 0x0102), Some(true), "what answered is still an answer");
-		assert_eq!(seen.saw(0x713, 0x0103), None, "and everything else is unknown, not absent");
-	}
-
-	#[test]
-	fn an_unreadable_range_is_dropped_and_never_widens_what_was_asked() {
-		// Wrong in the safe direction: a span this parser cannot read shrinks
-		// what the file is taken to have asked, so the worst case is a channel
-		// shown that could have been hidden.
-		let survey = "{\"request\":\"713\",\"asked\":[\"nonsense\",\"0110-0100\",\"0200-0201\"],\"dids\":[]}\n";
-		let seen = answered_from_survey(survey);
-		assert_eq!(seen.asked.get(&0x713).map(Vec::len), Some(1), "only the one span that parses");
-		assert_eq!(seen.saw(0x713, 0x0200), Some(false));
-		assert_eq!(seen.saw(0x713, 0x0110), None, "a backwards span is not a range");
-	}
-
-	#[test]
-	fn a_malformed_survey_line_says_nothing_rather_than_claiming_silence() {
-		// The failure that would matter: a line this parser cannot read must
-		// not register its unit as swept, or every channel on that unit reads
-		// as silent and the unit vanishes from the list.
-		let seen = answered_from_survey("not json\n{\"request\":\"zz\"}\n{\"request\":\"713\"}\n\n");
-		assert!(seen.units.is_empty(), "no unit was established");
-		assert_eq!(seen.saw(0x713, 0x1001), None, "a line with no did array is not a sweep of that unit");
-	}
-
-	#[test]
-	fn this_machines_own_survey_reads_back_consistently() {
-		// Run against the owner's real cached survey where there is one, and
-		// skipped everywhere else. It asserts the relationship rather than the
-		// counts, because a car's numbers are not something to write into the
-		// program — and because this is where an assumption about them was
-		// caught: the sweep that wrote the reference car's file asked eight
-		// windows of 256 identifiers, so reading its silences as refusals
-		// overstated them thirty-fold.
-		let Some(path) = cached_survey() else {
-			eprintln!("skipped: this machine has no cached survey");
-			return;
-		};
-		let text = std::fs::read_to_string(&path).expect("the survey reads");
-		let seen = answered_from_survey(&text);
-		assert!(!seen.units.is_empty(), "{} has units in it", path.display());
-		assert!(!seen.dids.is_empty(), "{} has identifiers in it", path.display());
-		for (request, did) in &seen.dids {
-			assert_eq!(seen.saw(*request, *did), Some(true), "everything recorded reads back as answered");
-			assert!(seen.units.contains(request), "an answer implies its unit was swept");
-		}
-		// And the whole point: an identifier nobody recorded is a verdict only
-		// where the file says the range was asked. On a survey that recorded no
-		// range it is a shrug, whatever it looks like.
-		let unit = *seen.units.iter().next().expect("checked above");
-		let absent = (0u16..=u16::MAX)
-			.find(|d| !seen.dids.contains(&(unit, *d)))
-			.expect("no unit answers all 65,536");
-		let expected = match seen.asked.get(&unit) {
-			Some(ranges) => ranges.iter().any(|r| r.contains(&absent)).then_some(false),
-			None => None,
-		};
-		assert_eq!(seen.saw(unit, absent), expected);
-	}
-
-	/// The first cached survey this machine holds, whichever car it belongs to.
-	fn cached_survey() -> Option<std::path::PathBuf> {
-		let cars = crate::datadir::vagcan_dir().ok()?.join("cars");
-		std::fs::read_dir(cars)
-			.ok()?
-			.flatten()
-			.map(|e| e.path().join(crate::datadir::SURVEY_FILE))
-			.find(|p| p.is_file())
-	}
-
-	#[test]
-	fn a_survey_adds_every_unit_it_found_without_overriding_a_proven_scaling() {
-		// The whole point of surveying: units the catalogs know nothing about
-		// become watchable, as raw bytes, on the strength of having answered.
-		let survey = "\
-{\"request\":\"70E\",\"unit\":\"09\",\"dids\":[{\"did\":\"190B\",\"data\":\"02240010\"},\
-{\"did\":\"192F\",\"data\":\"0305AA11\"}]}
-{\"request\":\"7E0\",\"unit\":\"01\",\"dids\":[{\"did\":\"2029\",\"data\":\"0B34\"}]}
-";
-		let channels = with_survey(reference_channels(need_rows!()), survey);
-		let bcm: Vec<&Channel> = channels.iter().filter(|c| c.request == 0x70E).collect();
-		assert_eq!(bcm.len(), 2, "both BCM identifiers are on offer");
-		assert!(bcm.iter().all(|c| c.def.is_none()), "nothing proven, so nothing claimed");
-		assert_eq!(bcm[0].label(), "09/190B");
-
-		// 2029 is a proven engine measurement; the survey must not blank it.
-		let boost = channels
-			.iter()
-			.find(|c| c.request == 0x7E0 && c.did == 0x2029)
-			.expect("the engine row survives");
-		assert!(boost.def.is_some());
-	}
-
-	#[test]
-	fn a_malformed_survey_line_is_skipped_rather_than_fatal() {
-		let dir = need_rows!();
-		let before = reference_channels(dir.clone()).len();
-		let channels = with_survey(reference_channels(dir), "not json\n{\"request\":\"zz\"}\n\n");
-		assert_eq!(channels.len(), before);
 	}
 }

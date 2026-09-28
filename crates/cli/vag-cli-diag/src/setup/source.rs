@@ -27,7 +27,7 @@
 //!
 //! **The two sources compose, and the top row is that composition.** ODIS
 //! leads wherever it describes a channel; a VCDS installation adds fault text
-//! and, for a surveyed car, the channels ODIS lacks. It could one day give the
+//! and, for the cars this machine has met, the channels ODIS lacks. It could one day give the
 //! wording too — `TTTEXT.ROD` names the same `IDE`/`MAS` ids an ODIS row
 //! carries, and `odx-ids.json` keeps which — but nothing reads that join yet,
 //! so an ODIS channel keeps ODIS's phrasing. Offering the pair as a first-class
@@ -208,7 +208,7 @@ enum Pick {
 /// the clear; the loader for the last of those is still being written, which is
 /// a limit of this build and not a property of the format, so no line here says
 /// VCDS is needed for fault names. A VCDS installation carries wording and
-/// fault text, and the channels of a surveyed car's units through its registry
+/// fault text, and the channels of a car's units through its registry
 /// `RM.rod` — where ODIS covers every variant, and a VCDS file of a shifted
 /// unit cannot be opened at all — so its line says what it is *for*, which is
 /// a car no ODIS project covers, and the pair's line says which one leads.

@@ -93,12 +93,12 @@ fn offerable(err: &anyhow::Error, may_ask: bool) -> bool {
 /// the terminal: the question is [`Asker::line`]'s, which would take its
 /// default silently on a pipe, and a silent default is not the refusal this
 /// path owes a script.
-pub fn offer(archive_base: &str) -> Result<bool> {
+pub async fn offer(archive_base: &str) -> Result<bool> {
 	let mut io = crate::ui::Console::new(INSTEAD);
 	if !asked(&mut io)? {
 		return Ok(false);
 	}
-	fix(archive_base)?;
+	fix(archive_base).await?;
 	Ok(true)
 }
 
@@ -132,13 +132,14 @@ fn asked(io: &mut impl Asker) -> Result<bool> {
 /// `refresh` is false. This runs because something was *missing*; redoing work
 /// already on disk is a different request, and `vagcan setup --refresh` is
 /// still the only way to ask for it.
-fn fix(archive_base: &str) -> Result<()> {
+async fn fix(archive_base: &str) -> Result<()> {
 	crate::setup::run(crate::setup::Options {
 		dir: None,
 		refresh: false,
 		archive_base,
 		download: true,
 	})
+	.await
 }
 
 #[cfg(test)]
@@ -179,7 +180,7 @@ mod tests {
 
 	#[test]
 	fn only_this_shortage_is_offered_a_download() {
-		// A serial port that is not there, a survey file that will not parse —
+		// A serial port that is not there, a recording that will not parse —
 		// no amount of VCDS fixes either, and an offer to download ninety
 		// megabytes at one of them would be noise in front of the real message.
 		let other = anyhow::anyhow!("no adapter at /dev/tty.usbmodem1234");

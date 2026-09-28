@@ -12,8 +12,11 @@ fn main() {
 /// The firmware is built for **one car**, named by `VAGCAN_DASH_VIN` — or,
 /// when that is unset, by being the only car under `~/.vagcan/dash/` (see
 /// [`only_car`]). The plan is resolved here, on the host, from
-/// `~/.vagcan/dash/<VIN>/dash.toml`, the car's survey and the project's
-/// catalog cache — the same generator `vagcan dev dash build` runs — and
+/// `~/.vagcan/dash/<VIN>/dash.toml`, the car's record of its units
+/// (`~/.vagcan/cars/<VIN>/units.json`, written by `vagcan units --identify` or
+/// `vagcan watch`) and the project's catalog cache — the same generator
+/// `vagcan dev dash build` runs, short of its read of the VCDS registry for
+/// units nothing has read yet, which a build script never does — and
 /// written back under `~/.vagcan/`. Nothing it produces lands in the
 /// checkout: it is derived from VW's data and describes one owner's car, and
 /// `CLAUDE.md` says why that may not be committed.
@@ -59,9 +62,9 @@ fn plan() {
 		println!("cargo:warning=plan: {note}");
 	}
 
-	// Everything the plan was resolved from — the input, the survey, the
-	// project's cache and proven rows, the name table, the settings and the
-	// glossary. A change to any of them is a different plan, and an image
+	// Everything the plan was resolved from — the input, the car's record of
+	// its units, the project's cache and proven rows, the name table, the
+	// settings and the glossary. A change to any of them is a different plan, and an image
 	// built from a stale one is exactly as wrong as one built from none.
 	// Cargo watches a directory recursively, which is what `measurements/`
 	// needs.

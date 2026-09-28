@@ -35,7 +35,6 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 
 | Command | What it does |
 |---|---|
-| `dev survey` | Reads every control unit: identity, faults, the identifiers its data declares. Refused while driving unless `--while-driving` is given |
 | `dev sniff` | Records the bus. Listen-only by default. Reports dropped frames if the adapter can tell |
 | `dev glossary` | Your own names for channels, in `~/.vagcan/names.csv` |
 | `dev recording` | Works on recorded drives: `discover` finds gear and mode channels, `dash` plays one on the dash panel |
@@ -45,7 +44,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 ### Where names and numbers come from
 
 - **ODIS-Service project** (preferred): channels, byte layout, scaling and fault text for every control-unit variant.
-- **VCDS installation** (fallback): channel names, fault text, and scalings for the units of a car you have surveyed.
+- **VCDS installation** (fallback): channel names, fault text, and the channels of the units of every car `watch`, `measure` or `units --identify` has run with.
 - **Your own drives**: scalings proven on the car always override both.
 
 Everything lives under `~/.vagcan/`. Nothing about any car is built into the tool.
@@ -70,7 +69,7 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 - **BLE**: `dashcfg` sets brightness and the active page. Settings are stored on the board. BLE is always on: no button, no pairing.
 - **UDS over the USB cable**: on the `dash` image, `vagcan` reads the car through the board like through a CANable, and the panel keeps working. `vagcan devices` lists it as `dash image`.
 - **UDS over BLE**: the same with no cable, slower.
-- **Sweeps need a plain adapter**: through the board `dev survey` and `units --identify <unit>` are refused, and `dev sniff` needs `--slcan`.
+- **Sweeps need a plain adapter**: through the board `units --identify <unit>` is refused, and `dev sniff` needs `--slcan`.
 - **`--slcan`**: `vagcan --slcan …` makes the `dash` image a plain slcan adapter for that run, with no reflash. The panel shows `SLCAN`, the bit rate and frame counters. It ends when that run ends.
 - **Laptop sleep ends it too**: a `--slcan` command running across a sleep gets no frames after it. Run it again.
 - **`slcan` image**: flashed instead of `dash`, the board is only an adapter.
@@ -90,6 +89,7 @@ Updated 2026-09-28.
 - [x] ESP32 board as a CAN adapter (`slcan`), tested on the bench
 - [x] UDS over BLE: read the car from a laptop without a cable (info, faults, watch and units on the car; measure started, a full run waits for the road)
 - [x] Replay a recorded drive on the dash panel, without the car
+- [x] `dev survey` removed (2026-09-28): the car's units are recorded by `watch`, `measure` and `units --identify`, and those three read a VCDS installation's channels for them the first time; `dev dash build` reads them offline
 - [ ] Laptop reads the car through the dash while its screen keeps working (BLE passed on the car; the cable waits)
 - [ ] Dash shows how far a channel is from what its control unit asked for, with a drift alarm (built, waiting for the car)
 - [ ] OLED on the board, and an enclosure with snap-in boards (waiting for the display)
@@ -168,14 +168,17 @@ vagcan setup ~/Downloads/SK37X  # or give the path directly
 `setup` reads one of two sources:
 
 - **ODIS-Service project**, the better one. It describes every channel of every control-unit variant: where the value is in the reply and how to scale it.
-- **VCDS installation**, the fallback, for cars no ODIS project covers. It has names and fault text, and scalings for the units of a surveyed car. About 40 % of its unit files are locked to VCDS itself; ODIS covers those.
+- **VCDS installation**, the fallback, for cars no ODIS project covers. It has names and fault text, and the channels of the units of the cars `watch`, `measure` or `units --identify` records. About 40 % of its unit files are locked to VCDS itself; ODIS covers those.
 
-With VCDS alone, the scalings come in a second run, after a survey. Keep the installation until then:
+With VCDS alone, the channels come the first time `vagcan watch`, `vagcan measure` or
+`vagcan units --identify` runs with the car: it records which control units the car has and
+reads their channels from the installation. `vagcan dev dash build` does the same offline, for a
+car already recorded. Keep the installation: a unit the tool meets later — swapped, updated, or
+asleep the first time — is read from it.
 
 ```sh
 vagcan setup ~/vcds    # names and fault text
-vagcan dev survey      # on the parked car, with a cable adapter
-vagcan setup ~/vcds    # the surveyed units' channels
+vagcan watch           # with the car: records its units, reads their channels once
 ```
 
 The first menu entry reads both. Where both describe a channel, ODIS wins; VCDS fills in what ODIS lacks.
@@ -227,11 +230,12 @@ Everything is in `~/.vagcan/`. Nothing is written to the checkout.
     odx-ids.json          text id → the IDE/MAS id it names, from VCDS
     names-odis.json       text id → name, from ODIS
     rod-keys.json         recovered .rod section keys
+    registry.json         which VCDS installation the channels were read from, and what came of each unit
     sources.json          which ODIS project or VCDS installation was read
     measurements/         scalings proven on a car, one file per part number
   cars/<VIN>/           data about one car
     car.json              mass, tyre, measured road load
-    survey.jsonl          what the car answered on the last survey
+    units.json            the car's control units, as each said what it is
     measures/             saved acceleration runs
   dash/<VIN>/           the dash for one car
     dash.toml             pages and channels, written by hand

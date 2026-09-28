@@ -1127,10 +1127,10 @@ pub fn text_ids(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
 /// happens. Both halves ride `idx_reading_lookup`, so it stays in milliseconds
 /// on the owner's 92 MB cache.
 ///
-/// `(0, 0)` for a project whose VCDS installation was read with no car
-/// surveyed: its label files live in another table, which is D1's split, and
-/// the registry rows come only for a surveyed car's units. [`row_counts`] is
-/// the per-table dump for somebody who wants that.
+/// `(0, 0)` for a project whose VCDS installation was read with no car yet
+/// connected: its label files live in another table, which is D1's split, and
+/// the registry rows come only for the units of the cars recorded on this
+/// machine. [`row_counts`] is the per-table dump for somebody who wants that.
 pub fn channel_counts(db_path: &Path) -> Result<(u64, u64), Error> {
 	let conn = open_existing(db_path)?;
 	let (variants, channels): (i64, i64) = conn.query_row("SELECT COUNT(DISTINCT variant), COUNT(*) FROM reading", [], |row| {

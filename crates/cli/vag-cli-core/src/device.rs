@@ -484,8 +484,7 @@ fn same_node(listed: &str, given: &str) -> bool {
 }
 
 /// Why an explicitly named board will not be opened.
-// Says `--device ble`, not `--ble`: this also reaches `dev survey` and `dev sniff`, which
-// take no `--ble`.
+// Says `--device ble`, not `--ble`: this also reaches `dev sniff`, which takes no `--ble`.
 fn not_an_adapter(path: &str, answer: &BoardAnswer) -> String {
 	match answer {
 		BoardAnswer::Unopened(why) => format!(
@@ -1061,7 +1060,7 @@ mod tests {
 
 	#[test]
 	fn a_command_that_does_not_go_through_the_board_takes_the_other_device_beside_a_dash_board() {
-		// Survey, sniff, identify without `--slcan`: the board is refused on this path, so
+		// Sniff and identify without `--slcan`: the board is refused on this path, so
 		// it is no candidate either.
 		assert_eq!(cable(None, Ok(vec![canable(), board()]), answering(dash())).unwrap(), CANABLE);
 		assert_eq!(
@@ -1154,12 +1153,8 @@ mod tests {
 
 	#[test]
 	fn what_does_not_go_through_the_board_is_refused_on_each_way_to_it_unless_slcan_makes_the_cable_an_adapter() {
-		// `vagcan`'s three such commands — survey, identify, sniff — each with its own words.
+		// `vagcan`'s two such commands — identify and sniff — each with its own words.
 		let commands = [
-			NotThroughTheBoard {
-				over_ble: "survey over BLE",
-				over_usb: "survey through the board",
-			},
 			NotThroughTheBoard {
 				over_ble: "identify over BLE",
 				over_usb: "identify through the board",

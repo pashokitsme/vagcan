@@ -11,16 +11,13 @@
 //! channels per car; asking somebody to go and rediscover them by sweeping the
 //! vehicle was eight minutes spent learning what the project already said.
 //!
-//! A sweep is still the only thing that reaches a unit **no** source describes,
-//! because there the identifiers have to be guessed at rather than looked up.
-//! That case is offered — one question, on a terminal, with what it costs said
-//! plainly — and never taken without an answer: asking a control unit
-//! identifiers nothing declares it answers is a fuzz test of its diagnostic
-//! server, which on a unit the car is relying on is not a small event
-//!
-//! Whatever a sweep found is kept per car — see [`crate::datadir::survey_cache`]
-//! — and loaded with no flag at all, which puts every identifier it saw on
-//! offer as raw bytes. `--survey FILE` still wins over the cache.
+//! What the units said about themselves is written down per car
+//! (`~/.vagcan/cars/<VIN>/units.json`, [`crate::units`]) for the commands that
+//! cannot ask the car — `setup`'s registry step, the dash build; every run of
+//! this one asks every unit again; and the channels of units nothing has read
+//! yet are read out of the project's VCDS installation on the spot
+//! ([`crate::registry::ensure`]). A unit **no** source describes has nothing to
+//! show, and the summary says so.
 //!
 //! The previous version drew with carriage returns, which only works on a
 //! terminal that honours them — piped or resized, it left a trail of new lines
@@ -188,33 +185,26 @@ impl<'a> DisplayRow<'a> {
 	}
 }
 
-/// How many rows the selection screen is holding back, and why.
+/// How many rows the selection screen is holding back: the ones nothing
+/// anywhere has a name for.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Hidden {
-	/// Nothing anywhere has a name for these.
 	unnamed: usize,
-	/// A survey asked this car for these and it said nothing.
-	silent: usize,
 }
 
 impl Hidden {
 	fn total(self) -> usize {
-		self.unnamed + self.silent
+		self.unnamed
 	}
 
-	/// The footer sentence, or `None` when nothing is being held back.
-	///
-	/// One sentence whichever reasons apply, because two lines about a filter
-	/// is more screen than the filter is worth. It always ends with the key,
-	/// since the count is only useful to somebody who can act on it.
+	/// The footer sentence, or `None` when nothing is being held back. It
+	/// always ends with the key, since the count is only useful to somebody
+	/// who can act on it.
 	fn sentence(self) -> Option<String> {
-		let reason = match (self.unnamed, self.silent) {
-			(0, 0) => return None,
-			(n, 0) => format!("{n} with no name anywhere"),
-			(0, n) => format!("{n} this car does not answer"),
-			(u, s) => format!("{u} with no name anywhere and {s} this car does not answer"),
-		};
-		Some(format!("{reason} are hidden — [u] shows them"))
+		match self.unnamed {
+			0 => None,
+			n => Some(format!("{n} with no name anywhere are hidden — [u] shows them")),
+		}
 	}
 }
 
@@ -258,34 +248,21 @@ pub struct App {
 	chart_page: usize,
 	screen: Screen,
 	cursor: usize,
-	/// Substring the selection screen is narrowed to. With a survey loaded
-	/// there are over a thousand candidates, and stepping through them one
+	/// Substring the selection screen is narrowed to. An installed project
+	/// declares thousands of channels per car, and stepping through them one
 	/// arrow at a time is not a way to find anything.
 	filter: String,
 	/// True while the filter is being typed, so letters go into it instead of
 	/// triggering `a`/`n`/`q`.
 	typing_filter: bool,
-	/// Whether the rows held back for either reason are on the list.
+	/// Whether the rows nothing can name are on the list.
 	///
-	/// Two reasons, and both are the same complaint — a list two thirds of which
-	/// cannot be used buries the third that can:
-	///
-	/// - **Nothing can name it.** On the reference car 787 of 2,751 channels have
-	///   no name anywhere and their label is the identifier they already sit
-	///   beside.
-	/// - **The car was asked for it and said nothing.** A project describes a
-	///   vehicle family and no one car is all of it, so a named row can sit there
-	///   unable to produce a value — worse than a nameless one, because it looks
-	///   like it works. How common that is on any given car is not something this
-	///   comment should claim: the first attempt put it at 1,746 of 2,251 on the
-	///   reference car and the real figure was 38, the rest being identifiers the
-	///   sweep never asked. Hence [`crate::plan::Answered`], which will not call anything
-	///   silent without a record of what was put to the unit.
-	///
-	/// Neither is dropped. A nameless identifier is precisely what somebody
-	/// hunting a new measurement is looking for, a silent one may answer in a
-	/// state the survey was not taken in, and `u` puts both back. A selected one
-	/// is always on the list whatever this says, or `--did` could name a channel
+	/// A list two thirds of which cannot be used buries the third that can: on
+	/// the reference car 787 of 2,751 channels have no name anywhere and their
+	/// label is the identifier they already sit beside. They are hidden, not
+	/// dropped — a nameless identifier is precisely what somebody hunting a new
+	/// measurement is looking for, and `u` puts them back. A selected one is
+	/// always on the list whatever this says, or `--did` could name a channel
 	/// that could then never be unticked.
 	show_hidden: bool,
 	/// Which settings row the cursor is on.
@@ -295,13 +272,6 @@ pub struct App {
 	hz: f64,
 	/// Whether each row ends with the channel's own key.
 	show_key: bool,
-	/// What this car was seen to answer, when a survey has been loaded.
-	///
-	/// Empty means nothing is known, and nothing is then filtered on those
-	/// grounds — see [`crate::plan::Answered::saw`], which distinguishes "asked and
-	/// silent" from "never asked" precisely so this cannot hide a unit nobody
-	/// swept.
-	answered: crate::plan::Answered,
 	/// Scroll position of the selection list. Without one, everything past the
 	/// bottom of the terminal is unreachable.
 	select_state: TableState,
@@ -371,7 +341,6 @@ impl App {
 			settings_cursor: 0,
 			hz: crate::config::DEFAULT_HZ,
 			show_key: false,
-			answered: crate::plan::Answered::default(),
 			select_state: TableState::default(),
 			series_cursor: 0,
 			series_state: TableState::default(),
@@ -472,14 +441,8 @@ impl App {
 	}
 
 	/// Whether this channel is worth a row on the default list.
-	///
-	/// Both halves have to hold: something has to be able to name it, *and* the
-	/// car must not have been asked for it and stayed silent. The second is the
-	/// half added after the ODIS import — a project declares far more than any
-	/// one car answers, and a named channel that never returns a value spends a
-	/// row saying nothing.
 	fn usable(&self, channel: &Channel) -> bool {
-		channel.is_named() && self.answered.saw(channel.request, channel.did) != Some(false)
+		channel.is_named()
 	}
 
 	/// Whether this channel stays on the list however little describes it.
@@ -498,33 +461,23 @@ impl App {
 		self.channels.get(index).is_some_and(|c| self.favourites.contains(&c.key()))
 	}
 
-	/// How many of the open tab's channels this screen is holding back, split by
-	/// why.
+	/// How many of the open tab's channels this screen is holding back.
 	///
 	/// Counted rather than left implicit: a list that silently drops two rows
 	/// in three is its own defect, so the footer says how many went and which
-	/// key brings them back. Split by reason because the two are answered
-	/// differently — a nameless row wants a better name source, a silent one
-	/// wants the car in a different state, or wants nothing at all.
+	/// key brings them back.
 	fn hidden(&self) -> Hidden {
 		if self.show_hidden {
 			return Hidden::default();
 		}
 		let unit = self.open_unit();
-		let mut out = Hidden::default();
-		for c in self.channels.iter().filter(|c| unit.is_none_or(|u| c.request == u)) {
-			if self.usable(c) || self.kept(c) {
-				continue;
-			}
-			// A row can fail both tests; it is counted under the one a reader can
-			// do something about first. Silence is the stronger statement — the
-			// car was asked — so it wins over a missing name.
-			match self.answered.saw(c.request, c.did) {
-				Some(false) => out.silent += 1,
-				_ => out.unnamed += 1,
-			}
-		}
-		out
+		let unnamed = self
+			.channels
+			.iter()
+			.filter(|c| unit.is_none_or(|u| c.request == u))
+			.filter(|c| !self.usable(c) && !self.kept(c))
+			.count();
+		Hidden { unnamed }
 	}
 
 	/// Rows currently on screen, in the order the plan polls them.
@@ -1466,7 +1419,7 @@ fn select_keys(app: &App) -> String {
 	if let Some(sentence) = app.hidden().sentence() {
 		let _ = write!(keys, "\n {sentence}");
 	} else if app.show_hidden {
-		let _ = write!(keys, "\n [u] hides the rows with no name and the ones this car does not answer");
+		let _ = write!(keys, "\n [u] hides the rows with no name anywhere");
 	}
 	if !app.note.is_empty() {
 		let _ = write!(keys, "\n {}", app.note);
@@ -1829,10 +1782,8 @@ fn on_key(app: &mut App, code: KeyCode) -> bool {
 				KeyCode::Char('g') => app.toggle_charted(app.cursor),
 				KeyCode::Char(',') => app.screen = Screen::Settings,
 				// Everything held back, on the list again: the rows nothing can
-				// name, and the ones this car answered nothing to. A person
-				// hunting a measurement nobody has proven wants the first, and a
-				// person who thinks the survey was taken in the wrong state wants
-				// the second. The footer is where they learn the key exists.
+				// name, which a person hunting a measurement nobody has proven
+				// wants. The footer is where they learn the key exists.
 				KeyCode::Char('u') => {
 					app.show_hidden = !app.show_hidden;
 					// The cursor may have been standing on a row that just went
@@ -1853,33 +1804,64 @@ fn on_key(app: &mut App, code: KeyCode) -> bool {
 	true
 }
 
+/// The units a replay's tabs are made of: the record of the car `vin` names, or
+/// of the one car recorded on this machine. Empty when no car is recorded, or
+/// several are and none was named, or one car's record does not read — each
+/// said in one line, since the difference on screen is one tab against one per
+/// unit. A record that does not read is a stop only when `--vin` asked for that
+/// very car: a replay is offline, and another car's bad file is not its problem.
+fn replay_identities(vin: Option<&str>) -> Result<Vec<crate::plan::UnitIdentity>> {
+	if let Some(vin) = vin {
+		let record = crate::datadir::units_record(vin)?;
+		return crate::units::read_record(&record)?.ok_or_else(|| {
+			anyhow::anyhow!(
+				"no record of {vin}'s control units at {} — connect to the car once with `vagcan units --identify` or `vagcan watch`",
+				record.display()
+			)
+		});
+	}
+	let cars = match crate::units::recorded_cars() {
+		Ok(cars) => cars,
+		Err(e) => {
+			eprintln!("{e:#} — name the car with --vin to get one tab per control unit");
+			return Ok(Vec::new());
+		}
+	};
+	match cars.as_slice() {
+		[one] => Ok(one.units.clone()),
+		[] => Ok(Vec::new()),
+		many => {
+			eprintln!(
+				"{} cars are recorded on this machine — name one with --vin to get one tab per control unit",
+				many.len()
+			);
+			Ok(Vec::new())
+		}
+	}
+}
+
 /// Play a recorded drive back through the same screen, with no car.
 ///
 /// A separate loop from the live one, deliberately: see `replay`'s module
 /// docs. Nothing here opens a port or addresses a control unit.
-pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<&str>, speed: f64) -> Result<()> {
+///
+/// `vin` names the car whose recorded units give the tabs; without it, the one
+/// car recorded on this machine does. With no car recorded — or several and no
+/// `vin` — there is no unit list, and every catalog is offered under one tab.
+pub async fn run_recording(recording_path: &str, catalogs: &str, vin: Option<&str>, speed: f64) -> Result<()> {
 	let csv = std::fs::read_to_string(recording_path).with_context(|| format!("reading the recording {recording_path:?}"))?;
 	let recording = replay::Recording::parse(&csv).map_err(|e| anyhow::anyhow!("{recording_path}: {e}"))?;
 
 	let store = vag_data_labels::catalog::CatalogStore::open(catalogs);
-	// A recording carries no identification block, so the catalogs are offered
-	// for every unit this project has one for. On a replay that is honest:
-	// nothing is being addressed, and a column only appears if it matched.
-	let mut identities: Vec<crate::plan::UnitIdentity> = Vec::new();
-	let survey_text = match survey {
-		Some(path) => Some(std::fs::read_to_string(path).with_context(|| format!("reading the survey {path:?}"))?),
-		None => None,
-	};
-	if let Some(text) = &survey_text {
-		identities = crate::plan::identities_from_survey(text);
-	}
-	// A recording does not record which unit each column came from. With a
-	// survey the real units are known and the tabs are real; without one every
-	// catalog is offered under a single tab named after the file, because
-	// splitting them into units this build merely happens to have catalogs for
-	// would put addresses on screen that the recording never claimed.
-	let named_by_survey = !identities.is_empty();
-	if !named_by_survey {
+	// A recording carries no identification block and does not say which unit
+	// each column came from. With a car's record the real units are known and
+	// the tabs are real; without one every catalog this project has is offered
+	// under a single tab named after the file, because splitting them into
+	// units this build merely happens to have catalogs for would put addresses
+	// on screen that the recording never claimed.
+	let mut identities = replay_identities(vin)?;
+	let named_by_record = !identities.is_empty();
+	if !named_by_record {
 		for entry in std::fs::read_dir(store.dir()).into_iter().flatten().flatten() {
 			let name = entry.file_name().to_string_lossy().to_string();
 			if let Some(part) = name.strip_suffix(".json") {
@@ -1898,13 +1880,6 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 	// very rows came out of, and a second `current()` could answer differently.
 	let extracted = crate::extracted::current();
 	let mut channels = crate::plan::available(&store, &extracted, &identities);
-	// Everything the survey found, exactly as the live view folds it in. A
-	// replay is what this interface is *shown* with, and without this it showed
-	// a tidier tool than the one that exists: 1,964 channels of a car that
-	// answers 2,751, and none of the units no project describes at all.
-	if let Some(text) = &survey_text {
-		channels = crate::plan::with_survey(channels, text);
-	}
 	// A recording does not say which unit each column came from. Columns that
 	// match a known measurement keep its unit; the rest are attributed to the
 	// engine's id, which is a label on a screen and addresses nothing — no
@@ -1943,14 +1918,8 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 	let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
 	let mut app = App::new(channels);
-	// The same filter the live view gets, for the same reason: a replay is what
-	// this interface is shown with, and a demonstration that quietly offers two
-	// thousand channels the car never answers is showing a different tool.
-	if let Some(text) = &survey_text {
-		app.answered = crate::plan::answered_from_survey(text);
-	}
 	app.open_first_populated();
-	app.units = match named_by_survey {
+	app.units = match named_by_record {
 		true => unit_names(&identities),
 		false => {
 			let file = std::path::Path::new(recording_path)
@@ -2243,37 +2212,24 @@ fn hex(data: &[u8]) -> String {
 /// `0100` or `1E05` is one.
 pub const UNCONVERTED: &str = "0x";
 
-/// Where the identifiers beyond the proven catalogs are coming from.
+/// The control units this car has that nothing on this machine describes.
 ///
-/// The catalogs cover three control units of this car's fifteen. Everything the
-/// other twelve answer is watchable only because some sweep wrote down what
-/// they answered — so which sweep that was is worth naming on screen, and worth
-/// saying when there is none.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum SurveySource {
-	/// `--survey FILE`: the user was explicit, so nothing overrides it.
-	Given(String),
-	/// The survey this car cached the last time it was swept.
-	Cached(std::path::PathBuf),
-	/// Nothing to load. `cache` is where one would go, when the car said which
-	/// car it is; `None` when it did not, in which case there is no per-car
-	/// path to name and the advice has to be the `--out`/`--survey` pair.
-	Missing { cache: Option<std::path::PathBuf> },
-}
-
-/// Decide which survey a run uses.
+/// **The one definition of "covered", and it is per unit rather than per car.**
+/// A project describes an ECU variant, and a car is a set of variants: on the
+/// reference car's fifteen units an installed project reaches thirteen. Asking
+/// "does a project cover this car" of the whole vehicle would answer no for a
+/// car that is thirteen-fifteenths described.
 ///
-/// Split out from [`run`] because the precedence is the whole point and it is
-/// two lines of it: a file the user named beats a file this tool wrote for
-/// itself, always, and a cache that is not there is not an error.
-fn choose_survey(given: Option<&str>, cache: Option<std::path::PathBuf>) -> SurveySource {
-	if let Some(path) = given {
-		return SurveySource::Given(path.to_string());
-	}
-	match cache {
-		Some(path) if path.is_file() => SurveySource::Cached(path),
-		cache => SurveySource::Missing { cache },
-	}
+/// It costs nothing to ask. Every input is already in hand: `channels` is what
+/// [`crate::plan::available`] resolved out of the project and the catalogs, and
+/// `identities` is what the gateway walk already read. Nothing here goes back
+/// to the car.
+fn silent_units(identities: &[crate::plan::UnitIdentity], channels: &[Channel]) -> Vec<u16> {
+	identities
+		.iter()
+		.map(|i| i.request)
+		.filter(|request| !channels.iter().any(|c| c.request == *request))
+		.collect()
 }
 
 /// What answered, what of it can be shown, and what to do about the rest.
@@ -2284,34 +2240,12 @@ fn choose_survey(given: Option<&str>, cache: Option<std::path::PathBuf>) -> Surv
 /// set here, and the units with nothing to show are a line of their own, since
 /// "the tool cannot name this unit's identifiers" and "the tool did not find
 /// this unit" look identical on screen and are not the same problem.
-/// The control units this car has that nothing on this machine describes.
-///
-/// **The one definition of "covered", and it is per unit rather than per car.**
-/// A project describes an ECU variant, and a car is a set of variants: on the
-/// reference car's fifteen units an installed project reaches thirteen. Asking
-/// "does a project cover this car" of the whole vehicle would answer no for a
-/// car that is thirteen-fifteenths described, and then advise a sweep of all
-/// fifteen — twelve of which the project already declares in full.
-///
-/// It costs nothing to ask. Every input is already in hand: `channels` is what
-/// [`crate::plan::available`] resolved out of the project and the catalogs,
-/// plus whatever survey was loaded, and `identities` is what the gateway walk
-/// already read. Nothing here goes back to the car.
-fn silent_units(identities: &[crate::plan::UnitIdentity], channels: &[Channel]) -> Vec<u16> {
-	identities
-		.iter()
-		.map(|i| i.request)
-		.filter(|request| !channels.iter().any(|c| c.request == *request))
-		.collect()
-}
-
 fn coverage_report(
 	identities: &[crate::plan::UnitIdentity],
 	channels: &[Channel],
 	catalogs: &str,
-	source: &SurveySource,
-	answered: &crate::plan::Answered,
 	project: Option<&str>,
+	causes: &std::collections::BTreeMap<u16, String>,
 ) -> String {
 	let list = |units: &[u16]| units.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(" ");
 	let units: Vec<u16> = identities.iter().map(|i| i.request).collect();
@@ -2336,10 +2270,9 @@ fn coverage_report(
 	let raw: Vec<u16> = units.iter().copied().filter(|r| any(*r, &|c: &Channel| c.def.is_none())).collect();
 	let silent = silent_units(identities, channels);
 
-	// "answered" would be a claim about *this* run, and with a cached survey
-	// loaded it is not one: those units answered the sweep that wrote the
-	// cache, and this run took its word for it rather than paying a probe per
-	// unit again. What is true either way is that the car has them.
+	// Every one of these answered this run — the record is never taken as a
+	// reason not to ask — so "on this car" is what was seen, not what was
+	// remembered.
 	let mut out = format!(
 		"{} control {} on this car: {}\n",
 		units.len(),
@@ -2366,35 +2299,15 @@ fn coverage_report(
 		out.push_str(&crate::missing::no_catalog("This car", std::path::Path::new(catalogs)));
 	}
 	if !raw.is_empty() {
-		let from = match source {
-			SurveySource::Given(path) => path.clone(),
-			SurveySource::Cached(path) => path.display().to_string(),
-			// Nothing was loaded, so nothing can be raw-only; kept total
-			// rather than reached-for so a later change cannot make it lie.
-			SurveySource::Missing { .. } => "an earlier sweep".to_string(),
-		};
-		out.push_str(&format!("  raw identifiers from {from}: {}\n", list(&raw)));
-		// Why they are raw, and what turns them into numbers. Without this the
-		// screen is a wall of hex with no way to learn whether it is fixable —
-		// and with VCDS the fix is a survey before `setup`, which a reader has
-		// no way to guess.
+		// The raw channels are the ones `--did` named that nothing describes:
+		// watched as bytes, and said to be, with what turns bytes into numbers —
+		// a row of hex with no way to learn whether it is fixable is the screen
+		// this line exists to explain.
+		out.push_str(&format!("  raw identifiers, asked for with --did: {}\n", list(&raw)));
 		let unproven = channels.iter().filter(|c| c.def.is_none()).count();
 		for line in crate::missing::raw_channels_note(unproven).lines() {
 			out.push_str(&format!("  {line}\n"));
 		}
-	}
-	// How much of what the source data declares this particular car does not
-	// have. Worth saying out loud rather than leaving as a shorter list: a
-	// reader who is not told will count the rows, find fewer than `setup`
-	// reported, and conclude the import was lost. It counts only channels a
-	// survey actually put to the unit, so a car with no survey — or one whose
-	// survey did not record its range — gets no sentence rather than a wrong one.
-	let unanswered = channels.iter().filter(|c| answered.saw(c.request, c.did) == Some(false)).count();
-	if unanswered > 0 {
-		out.push_str(&format!(
-			"  {unanswered} declared {} asked and answered nothing — held off the list, [u] shows them.\n",
-			crate::render::plural(unanswered, "channel")
-		));
 	}
 	if !silent.is_empty() {
 		// Every line that carries a list or a path ends with it: these are as
@@ -2404,67 +2317,30 @@ fn coverage_report(
 		// **Which shortage this is, in the words that pick the right fix.** A
 		// project that is installed and does not reach these units is not the
 		// same state as no project at all, and the two have different next
-		// steps — one of them is `vagcan setup` and the other is not. What is
-		// deliberately absent from both is an instruction to sweep: that is
-		// offered below, as a question, because it is a fuzz test.
+		// steps — one of them is `vagcan setup` and the other is not. Nothing is
+		// offered beyond that: what describes a unit is a source `setup` reads,
+		// and `no_catalog` above says which when the whole car is short of one.
+		let (they, their) = match silent.len() {
+			1 => ("it answers", "its"),
+			_ => ("they answer", "their"),
+		};
 		out.push_str(&match project {
-			Some(id) => format!("  — they answer, but neither the project {id} nor any catalog in {catalogs} \n    describes their identifiers.\n"),
-			None => format!(
-				"  — they answer, but no catalog in {catalogs} matches their part numbers, \n                     and no project is set up that might describe them.\n"
-			),
+			Some(id) => format!("  — {they}, but neither the project {id} nor any catalog in {catalogs}\n    describes {their} identifiers.\n"),
+			None => {
+				format!(
+					"  — {they}, but no catalog in {catalogs} matches {their} part numbers,\n    and no project is set up that might describe {}.\n",
+					if silent.len() == 1 { "it" } else { "them" }
+				)
+			}
 		});
-		if !matches!(source, SurveySource::Missing { .. }) {
-			out.push_str("  The survey in use does not cover them either.\n");
+		// And the cause, where a VCDS read logged one for the unit: "no file"
+		// is a different next step from "shifted".
+		for request in &silent {
+			if let Some(cause) = causes.get(request) {
+				out.push_str(&format!("    {request:03X} {cause}\n"));
+			}
 		}
-		let spec = silent.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(",");
-		// The paragraph above gave the routes already, in the one wording.
-		out.push_str(&sweep_offer(&silent, !undescribed, &spec));
 	}
-	out
-}
-
-/// What sweeping the units nothing describes would be, said before it is asked.
-///
-/// A unit no source describes has nothing to look its identifiers up in, so
-/// the only way to learn them on the car is to ask for identifiers nothing
-/// declares — a fuzz test of that unit's diagnostic server. So the paragraph
-/// prices it rather than recommending it, and with `routes` names first the two
-/// routes that ask the car nothing blind: a VCDS installation, for the units of
-/// a surveyed car, and an ODIS project.
-///
-/// They are said as conditions, not as a diagnosis: whether `setup` has read
-/// an installation since this car's survey, and why it had nothing for a unit,
-/// is not something this screen knows — step 5 of `setup` said it when it ran.
-/// Guessing it here sent people round a loop once, and claimed a cause it could
-/// not know the next time.
-fn sweep_offer(silent: &[u16], routes: bool, spec: &str) -> String {
-	let n = silent.len();
-	let mut out = format!(
-		"\n{n} control {} on this car — {} — {} nothing on this machine describes.\n",
-		crate::render::plural(n, "unit"),
-		silent.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(" "),
-		if n == 1 { "is one" } else { "are ones" }
-	);
-	// The cheap answers first: somebody who sweeps blind instead spends minutes
-	// of fuzzing to rediscover part of what these would have handed them.
-	if routes {
-		out.push_str(
-			"\nTwo routes first, and neither asks the car anything blind. A VCDS installation\n\
-             reads the units of a surveyed car:\n    \
-             vagcan dev survey\n    \
-             vagcan setup <VCDS installation>\n\
-             If setup has read one since this car's survey, it had nothing for the units that\n\
-             survey found, and its step 5 said why; a unit the survey missed needs it again.\n\
-             An ODIS project that describes them:\n    \
-             vagcan setup <ODIS project>\n",
-		);
-	}
-	out.push_str(&format!(
-		"\nThe other way is to ask those units identifiers nothing declares they answer:\n    \
-         vagcan dev survey --only {spec} --blind {spec}\n\n\
-         That is a fuzz test of their diagnostic servers and the most invasive thing this \n         tool does. Each request takes a path through firmware that may never have been \n         exercised, and a path with a defect in it crashes the server, which on a control \n         unit the car is relying on is not a small event. It is refused outright while the \n         car is moving, and it takes a few minutes per unit.\n\n\
-         What it buys: the answers are filed under this car, and every later `watch` puts \n         those identifiers on offer as raw bytes with no flag.\n"
-	));
 	out
 }
 
@@ -2486,7 +2362,6 @@ pub struct Options<'a> {
 	/// `--hz`, when given.
 	pub hz: Option<f64>,
 	pub out: Option<&'a str>,
-	pub survey: Option<&'a str>,
 	pub catalogs: &'a str,
 	pub view: View,
 }
@@ -2501,7 +2376,6 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 		preselect,
 		hz,
 		out,
-		survey,
 		catalogs,
 		view,
 	} = opts;
@@ -2509,16 +2383,9 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 
 	// Argument checking first: the adapter is a single-user resource, and
 	// holding it open while failing on a typo blocks the next attempt. That
-	// means the recording is created here too, not once the car is answering —
-	// an unwritable --out path is the same typo as an unreadable --survey one.
+	// means the recording is created here too, not once the car is answering:
+	// an unwritable --out path is a typo like any other.
 	let store = vag_data_labels::catalog::CatalogStore::open(catalogs);
-	// Named surveys are read here, before the adapter: an unreadable one is a
-	// typo, and a typo should not cost the port. The car's own cache cannot be
-	// — it is found by VIN, and the VIN comes off the car.
-	let given_text = match survey {
-		Some(path) => Some(std::fs::read_to_string(path).with_context(|| format!("reading the survey {path:?}"))?),
-		None => None,
-	};
 	// Opened without truncating: `open` also resolves the device, and a run that
 	// cannot name its adapter must not empty a recording already there.
 	let file = match out {
@@ -2543,72 +2410,59 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 		_ => None,
 	};
 
-	// Which car this is, so its own survey can be found. One identifier read,
-	// and a car that will not say simply has no cache — everything below still
-	// works, with the catalogs alone.
+	// Which car this is, so its record can be found and written. One identifier
+	// read, and a car that will not say simply has no files of its own —
+	// everything below still works, with the catalogs alone.
 	let mut progress = crate::progress::Line::new();
 	progress.update("reading the vehicle identification number");
 	let (_, vin) = crate::units::read_vin(bus.clone()).await;
 
-	// The whole reason a car keeps a survey: without one, the twelve units no
-	// catalog covers have nothing on screen, and the only way to see them was
-	// to remember the file name of a sweep run some other day. The cache is
-	// loaded with no flag; `--survey` still overrides it.
-	let source = choose_survey(survey, vin.as_deref().and_then(|vin| crate::datadir::survey_cache(vin).ok()));
-	let survey_text = match &source {
-		// Already read above, before the port was taken.
-		SurveySource::Given(_) => given_text,
-		SurveySource::Cached(path) => Some(std::fs::read_to_string(path).with_context(|| format!("reading the survey {}", path.display()))?),
-		SurveySource::Missing { .. } => None,
-	};
-
-	// Which scalings apply is decided by what each unit says it is, never by
-	// its address. A survey already asked; without one, the units to be polled
-	// are asked directly below.
-	let mut identities = match &survey_text {
-		Some(text) => crate::plan::identities_from_survey(text),
-		None => Vec::new(),
-	};
-
-	// Which units the car has, and what each of them is. Without this the view
-	// would only ever show the engine, because a unit with no identity
+	// Which units the car has, and what each of them is — asked of the car,
+	// every run, never taken from its record: a swapped unit, or an identifier
+	// one bad read left out, is only ever seen by asking again. Without this
+	// the view would only ever show the engine, because a unit with no identity
 	// contributes no channels and so no tab — which is what "switching between
 	// units does nothing" looked like. The walk lives in `crate::units`,
-	// because `measure` makes the same one.
+	// because `measure` makes the same one. Which scalings apply is decided by
+	// what each unit says it is, never by its address.
 	let mut wanted: Vec<u16> = preselect.iter().map(|(request, _)| *request).collect();
 	wanted.push(crate::plan::ENGINE);
-	// A survey already asked every unit it visited for its identification
-	// block, so those are not asked again; everything else still is.
-	let (_, found) = crate::units::identify(bus.clone(), &wanted, &identities, &mut progress).await;
-	identities.extend(found);
-
+	let (_, identities) = crate::units::identify(bus.clone(), &wanted, &mut progress).await;
 	progress.finish();
+	// Written down for the commands that need this car's units without the
+	// car — `setup`'s registry step, the dash build. What was identified now,
+	// merged field by field into what earlier runs recorded; a write that fails
+	// is one line. A car that gave no VIN has no record to write into, and
+	// that is said, or a dash owner waits for a file that never comes.
+	match &vin {
+		Some(vin) => crate::units::record_quietly(vin, &identities),
+		None => eprintln!("{}", crate::units::NOT_RECORDED_WITHOUT_A_VIN),
+	}
+	// The channels of units nothing has read yet, out of the VCDS installation
+	// the project was set up from — the first time this car is seen, and before
+	// the project's rows are loaded below, so they include them.
+	crate::registry::ensure_async(identities.clone()).await;
 	// Bound rather than built twice: the coverage line names the project these
 	// very rows came out of, and a second `current()` could answer differently.
 	let extracted = crate::extracted::current();
 	let mut channels = crate::plan::available(&store, &extracted, &identities);
-	// What the car was seen to answer, so the selection screen can hold back the
-	// channels this project declares and this vehicle does not have. Empty
-	// without a survey, and nothing is then filtered on those grounds.
-	let mut answered = crate::plan::Answered::default();
-	if let Some(text) = &survey_text {
-		// Everything a survey found becomes watchable, on every unit — which
-		// is the only way the units outside the catalogs get on screen at all.
-		channels = crate::plan::with_survey(channels, text);
-		answered = crate::plan::answered_from_survey(text);
-	}
 	// Say what the car has and what of it can be shown, before the screen takes
 	// over. A unit that identified itself but has no catalog contributes no
 	// measurements and so no tab — which looks like the tool failing to find
-	// it, and is worth distinguishing from that. Reported after the survey is
-	// folded in, or it would describe a screen nobody is about to see.
+	// it, and is worth distinguishing from that.
 	//
 	// On stderr, because in the plain-console view stdout is the CSV: a
 	// paragraph of prose in front of the header is not something a reader of
 	// that stream can be asked to skip. It is still the terminal either way.
 	eprint!(
 		"{}",
-		coverage_report(&identities, &channels, catalogs, &source, &answered, extracted.project())
+		coverage_report(
+			&identities,
+			&channels,
+			catalogs,
+			extracted.project(),
+			&crate::registry::causes(&identities)
+		)
 	);
 	// A cache from before each state kept its whole range still names a state
 	// read on the range's lower end, and shows the rest as bytes. Said once, for
@@ -2644,7 +2498,6 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 	let mut header_written = false;
 
 	let mut app = App::new(channels);
-	app.answered = answered;
 	{
 		// The settings this screen can change, read once before it appears.
 		let settings = crate::config::load();
@@ -2942,14 +2795,7 @@ mod tests {
 		// with catalogs. Whatever else the summary says, those two must agree.
 		let identities = reference_identities();
 		let channels = crate::plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
-		let text = coverage_report(
-			&identities,
-			&channels,
-			"catalogs/vehicles",
-			&SurveySource::Missing { cache: None },
-			&crate::plan::Answered::default(),
-			None,
-		);
+		let text = coverage_report(&identities, &channels, "catalogs/vehicles", None, &Default::default());
 		let first = text.lines().next().unwrap().to_string();
 		let (count, listed) = first.split_once(':').unwrap();
 		let count: usize = count.split_whitespace().next().unwrap().parse().unwrap();
@@ -2958,148 +2804,78 @@ mod tests {
 	}
 
 	#[test]
-	fn without_a_survey_the_summary_names_the_one_command_that_fixes_it() {
-		// A unit with no catalog and no survey has nothing on screen at all,
-		// and the tool has to say which single command changes that.
+	fn a_unit_nothing_describes_is_named_and_nothing_is_offered_for_it() {
+		// A unit with no catalog and nothing in the project has nothing on
+		// screen. The summary names it and says why — and offers nothing more:
+		// what describes a unit is a source `setup` reads, and the sweep that
+		// used to be offered here is gone (owner, 2026-09-28).
 		let identities = reference_identities();
 		let channels = crate::plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
-		let text = coverage_report(
-			&identities,
-			&channels,
-			"catalogs/vehicles",
-			&SurveySource::Missing {
-				cache: Some(std::path::PathBuf::from("/somewhere/survey.jsonl")),
-			},
-			&crate::plan::Answered::default(),
-			None,
-		);
-		assert!(text.contains("vagcan dev survey"), "{text}");
+		let text = coverage_report(&identities, &channels, "catalogs/vehicles", None, &Default::default());
+		assert!(text.contains("nothing to show for"), "{text}");
 		assert!(text.contains("713"), "the unit with nothing to show is named: {text}");
-		// The identifiers a survey would offer are raw bytes and are said to
-		// be — this project does not invent a scaling for them.
-		assert!(text.contains("raw"), "{text}");
+		for never in ["survey", "blind", "fuzz"] {
+			assert!(!text.contains(never), "{never}: {text}");
+		}
 	}
 
 	#[test]
-	fn a_cached_survey_puts_every_unit_on_offer_and_the_summary_says_where_from() {
-		// The point of the cache: with one on disk, no unit is left with
-		// nothing to show and no flag was needed to get there.
-		let identities = reference_identities();
-		// A sweep answers on every unit, including the twelve no catalog
-		// covers — one identifier each is enough to make the point.
-		let survey: String = identities
-			.iter()
-			.map(|i| {
-				format!(
-					"{{\"request\":\"{:03X}\",\"dids\":[{{\"did\":\"1001\",\"data\":\"0224\"}}]}}\n",
-					i.request
-				)
-			})
-			.collect();
-		let channels = crate::plan::with_survey(
-			crate::plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities),
-			&survey,
-		);
-		assert!(channels.iter().any(|c| c.request == 0x713), "the sweep's units are watchable");
-		let cache = std::path::PathBuf::from("/somewhere/survey.jsonl");
-		let text = coverage_report(
-			&identities,
-			&channels,
-			"catalogs/vehicles",
-			&SurveySource::Cached(cache),
-			&crate::plan::Answered::default(),
-			None,
-		);
-		assert!(text.contains("survey.jsonl"), "{text}");
-		assert!(text.contains("713"), "{text}");
-		// No unit is left with nothing on screen, so there is nothing to
-		// advise about and no advice.
-		assert!(!text.contains("nothing to show"), "{text}");
-		assert!(!text.contains("vagcan dev survey\n"), "{text}");
+	fn one_unit_nothing_describes_is_said_in_the_singular_with_the_cause_the_read_logged() {
+		// "they answer" for one unit read as a slip (found in review, 2026-09-28),
+		// and the cause a VCDS read logged for the unit — no file, shifted — is
+		// the difference between two next steps, so it is said under the line.
+		let ident = |request: u16, odx: &str| crate::plan::UnitIdentity {
+			request,
+			part_number: Some(format!("{request:03X}0000000")),
+			odx_name: Some(odx.to_string()),
+			odx_version: Some("001".into()),
+			component: None,
+		};
+		let identities = vec![ident(crate::plan::ENGINE, "EV_Engine"), ident(0x70E, "EV_BCMMQB")];
+		let empty = vag_data_labels::catalog::CatalogStore::open("/definitely/not/here");
+		let channels = crate::plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
+		let causes = [(0x70E_u16, "EV_BCMMQB: no file of that name in this installation".to_string())].into();
+		let text = coverage_report(&identities, &channels, "/x/data/measured", Some("SK37X"), &causes);
+		assert!(text.contains("nothing to show for 70E\n"), "{text}");
+		assert!(text.contains("— it answers, but neither the project SK37X"), "{text}");
+		assert!(text.contains("describes its identifiers"), "{text}");
+		assert!(text.contains("    70E EV_BCMMQB: no file of that name in this installation\n"), "{text}");
+		assert!(!text.contains("they answer"), "{text}");
+		// Two units: the plural, as before.
+		let identities = vec![
+			ident(crate::plan::ENGINE, "EV_Engine"),
+			ident(0x70E, "EV_BCMMQB"),
+			ident(0x713, "EV_Brake"),
+		];
+		let channels = crate::plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
+		let text = coverage_report(&identities, &channels, "/x/data/measured", Some("SK37X"), &causes);
+		assert!(text.contains("nothing to show for 70E 713\n"), "{text}");
+		assert!(text.contains("— they answer, but neither"), "{text}");
+		assert!(text.contains("    70E EV_BCMMQB:"), "{text}");
+		assert!(!text.contains("    713 "), "no cause was logged for the ESC: {text}");
 	}
 
 	#[test]
-	fn a_screen_of_hex_says_why_it_is_hex_and_what_turns_it_into_numbers() {
-		// The reported gap: twelve of fifteen units show raw bytes, the tool
-		// tags each value `(raw)`, and nothing anywhere says the scaling is
-		// missing rather than the car being odd — let alone what fixes it. Said
-		// once, in the summary, not per row: this is read at an open driver's
-		// door.
+	fn a_raw_identifier_asked_for_by_did_is_said_to_be_raw_and_why() {
+		// `--did 713:1001` names a channel nothing describes: it is watched as
+		// bytes, and the summary says so once, with what turns bytes into
+		// numbers — a row of hex otherwise reads as the car being odd.
 		let identities = reference_identities();
-		let survey: String = identities
-			.iter()
-			.map(|i| {
-				format!(
-					"{{\"request\":\"{:03X}\",\"dids\":[{{\"did\":\"1001\",\"data\":\"0224\"}}]}}\n",
-					i.request
-				)
-			})
-			.collect();
-		let channels = crate::plan::with_survey(
-			crate::plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities),
-			&survey,
-		);
-		let text = coverage_report(
-			&identities,
-			&channels,
-			"/x/data",
-			&SurveySource::Cached(std::path::PathBuf::from("/somewhere/survey.jsonl")),
-			&crate::plan::Answered::default(),
-			None,
-		);
+		let mut channels = crate::plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
+		channels.push(Channel {
+			request: 0x713,
+			did: 0x1001,
+			def: None,
+			named: None,
+			proven: false,
+			text_id: None,
+			selected: true,
+		});
+		let text = coverage_report(&identities, &channels, "/x/data", None, &Default::default());
+		assert!(text.contains("raw identifiers, asked for with --did: 713"), "{text}");
 		assert!(text.contains("nothing read into this project scales them"), "{text}");
-		// What does, since 2026-09-28: `setup`, and with VCDS the survey first.
-		// The drive and `calibrate` that used to be the answer are gone.
 		assert!(text.contains("vagcan setup"), "{text}");
-		assert!(text.contains("vagcan dev survey"), "{text}");
-		assert!(!text.contains("calibrate"), "{text}");
-	}
-
-	#[test]
-	fn the_report_accounts_for_the_declared_channels_this_car_does_not_have() {
-		// Otherwise the filter looks like a loss. `setup` says it imported
-		// hundreds of thousands of channels, the list shows a fraction, and
-		// nothing on screen connects the two — so the import reads as broken
-		// when what actually happened is that this car is not that project.
-		let identities = reference_identities();
-		let channels = crate::plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
-		let one = channels.first().expect("the reference store has channels").clone();
-		// One channel asked and answered, and the rest of that unit asked and
-		// silent. The `asked` range is what makes silence count: a survey that
-		// does not say what it asked supports no verdict (`plan::Answered::asked`),
-		// and this fixture predated the field — it only ran on a machine with
-		// proven rows, which hid that until they were restored on 2026-09-13.
-		let survey = format!(
-			"{{\"request\":\"{:03X}\",\"asked\":[\"0000-FFFF\"],\"dids\":[{{\"did\":\"{:04X}\",\"data\":\"00\"}}]}}\n",
-			one.request, one.did
-		);
-		let answered = crate::plan::answered_from_survey(&survey);
-		let quiet = channels.iter().filter(|c| answered.saw(c.request, c.did) == Some(false)).count();
-		assert!(quiet > 0, "the fixture has to have something to hold back");
-
-		let text = coverage_report(
-			&identities,
-			&channels,
-			"catalogs/vehicles",
-			&SurveySource::Cached(std::path::PathBuf::from("/somewhere/survey.jsonl")),
-			&answered,
-			None,
-		);
-		assert!(text.contains(&format!("{quiet} declared")), "{text}");
-		assert!(text.contains("answered nothing"), "{text}");
-		assert!(text.contains("[u] shows them"), "the key that undoes it is on the same page: {text}");
-
-		// And nothing of the sort is claimed when no survey was loaded: the
-		// sentence is about identifiers somebody asked for.
-		let text = coverage_report(
-			&identities,
-			&channels,
-			"catalogs/vehicles",
-			&SurveySource::Missing { cache: None },
-			&crate::plan::Answered::default(),
-			None,
-		);
-		assert!(!text.contains("answered nothing"), "{text}");
+		assert!(!text.contains("survey"), "{text}");
 	}
 
 	#[test]
@@ -3121,14 +2897,7 @@ mod tests {
 		let identities = vec![ident(0x714), ident(0x713), ident(0x70C)];
 		let empty = vag_data_labels::catalog::CatalogStore::open("/definitely/not/here");
 		let channels = crate::plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
-		let text = coverage_report(
-			&identities,
-			&channels,
-			"/x/data/measured",
-			&SurveySource::Missing { cache: None },
-			&crate::plan::Answered::default(),
-			None,
-		);
+		let text = coverage_report(&identities, &channels, "/x/data/measured", None, &Default::default());
 		assert!(text.contains("has no scalings on this machine"), "{text}");
 		assert!(text.contains("/x/data/measured"), "{text}");
 		assert!(text.contains(crate::missing::scalings_path()), "{text}");
@@ -3152,69 +2921,11 @@ mod tests {
 		let empty = vag_data_labels::catalog::CatalogStore::open("/definitely/not/here");
 		let channels = crate::plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
 		assert!(channels.iter().any(|c| c.is_standard()), "the engine has its standard rows");
-		let text = coverage_report(
-			&identities,
-			&channels,
-			"/x/data/measured",
-			&SurveySource::Missing { cache: None },
-			&crate::plan::Answered::default(),
-			Some("SK37X"),
-		);
+		let text = coverage_report(&identities, &channels, "/x/data/measured", Some("SK37X"), &Default::default());
 		assert!(text.contains("has no scalings on this machine"), "{text}");
 		assert!(!text.contains("named and scaled from this project"), "{text}");
-		// 714 answers nothing described, and the sweep's offer does not give the
-		// same routes again in its own words.
+		// 714 answers nothing described; the route to a source is given once.
 		assert_eq!(text.matches("<VCDS installation>").count(), 1, "{text}");
-	}
-
-	#[test]
-	fn a_unit_nothing_describes_is_offered_the_survey_before_a_blind_sweep() {
-		// With a project set up and no survey yet, a VCDS installation's list is
-		// one survey away; the blind sweep, a fuzz test, is the last resort.
-		let text = sweep_offer(&[0x714, 0x713], true, "714,713");
-		let survey = text.find("vagcan dev survey\n").expect(&text);
-		let setup = text.find("vagcan setup <VCDS installation>").expect(&text);
-		let odis = text.find("vagcan setup <ODIS project>").expect(&text);
-		let blind = text.find("--blind").expect(&text);
-		assert!(survey < setup && setup < odis && odis < blind, "{text}");
-		// A condition, not a diagnosis: this screen cannot know why an
-		// installation had nothing for a unit, and said a wrong cause once.
-		assert!(text.contains("If setup has read one since this car's survey"), "{text}");
-		assert!(text.contains("a unit the survey missed needs it again"), "{text}");
-		assert!(!text.contains("no file, or a shifted one"), "{text}");
-
-		// The report already gave the routes: only the sweep's price is left.
-		let text = sweep_offer(&[0x714], false, "714");
-		assert!(!text.contains("vagcan setup"), "{text}");
-		assert!(text.contains("--blind"), "{text}");
-	}
-
-	#[test]
-	fn a_named_survey_wins_over_the_one_this_car_cached() {
-		// `--survey FILE` is the user being explicit; a cache must never
-		// silently override it.
-		let dir = std::env::temp_dir().join(format!("vagcan-watch-survey-{}-{:?}", std::process::id(), std::thread::current().id()));
-		std::fs::create_dir_all(&dir).unwrap();
-		let cache = dir.join("survey.jsonl");
-		std::fs::write(&cache, "{}\n").unwrap();
-
-		assert!(matches!(
-				choose_survey(Some("named.jsonl"), Some(cache.clone())),
-				SurveySource::Given(ref path) if path == "named.jsonl"
-		));
-		assert!(matches!(
-				choose_survey(None, Some(cache.clone())),
-				SurveySource::Cached(ref path) if *path == cache
-		));
-		// A car that has never been swept, and a car that would not say which
-		// car it is, both come out as nothing to load.
-		std::fs::remove_file(&cache).unwrap();
-		assert!(matches!(
-			choose_survey(None, Some(cache.clone())),
-			SurveySource::Missing { cache: Some(_) }
-		));
-		assert!(matches!(choose_survey(None, None), SurveySource::Missing { cache: None }));
-		let _ = std::fs::remove_dir_all(&dir);
 	}
 
 	#[test]
@@ -3277,7 +2988,7 @@ mod tests {
 
 	#[test]
 	fn a_filter_narrows_the_list_and_the_cursor_follows_it() {
-		// With a survey loaded there are over a thousand candidates; stepping
+		// With a project set up there are over a thousand candidates; stepping
 		// to one by arrow key is not a way to find anything.
 		let mut a = app(need_rows!());
 		a.screen = Screen::Select;
@@ -4286,115 +3997,15 @@ mod tests {
 		}
 	}
 
-	/// A survey line for one unit: what it was asked, and what answered.
-	///
-	/// `asked` is not optional here, and that is the point — a line without it
-	/// supports no verdict about what a car lacks, so a fixture that omitted it
-	/// would be testing the filter with the filter switched off.
-	fn surveyed(request: u16, asked: &[&str], dids: &[u16]) -> String {
-		let entries: Vec<String> = dids.iter().map(|d| format!("{{\"did\":\"{d:04X}\",\"data\":\"00\"}}")).collect();
-		let asked: Vec<String> = asked.iter().map(|r| format!("\"{r}\"")).collect();
-		format!(
-			"{{\"request\":\"{request:03X}\",\"asked\":[{}],\"dids\":[{}]}}\n",
-			asked.join(","),
-			entries.join(",")
-		)
-	}
-
 	#[test]
-	fn a_named_channel_this_car_does_not_answer_is_held_back_and_says_so() {
-		// Why the filter exists: a project describes a vehicle family, no one
-		// car is all of it, and a named row that can never produce a value is
-		// worse than a nameless one because it looks like it works.
-		//
-		// The fixture says what it was asked. That is not decoration — the
-		// first version of this feature inferred it, and on the only real
-		// survey in existence the inference was wrong for 1,708 of the 1,746
-		// channels it hid.
-		let mut a = App::new(vec![
-			unselected(proven(0x713, 0x1001, "Brake pressure", "bar")),
-			unselected(proven(0x713, 0x1002, "Declared but silent", "bar")),
-		]);
-		a.answered = crate::plan::answered_from_survey(&surveyed(0x713, &["1001-1002"], &[0x1001]));
-		a.screen = Screen::Select;
-
-		assert_eq!(a.visible().len(), 1, "only the one the car answered");
-		assert_eq!(a.hidden(), Hidden { unnamed: 0, silent: 1 });
-
-		let text = select_text(&mut a, 80, 14);
-		assert!(text.contains("Brake pressure"), "{text}");
-		assert!(!text.contains("Declared but silent"), "the silent row is off the list:\n{text}");
-		// Named for what it is. "unnamed" would be a lie about a row that has a
-		// perfectly good name and no value behind it.
-		assert!(text.contains("1 this car does not answer are hidden"), "{text}");
-
-		on_key(&mut a, KeyCode::Char('u'));
-		assert_eq!(
-			a.visible().len(),
-			2,
-			"[u] brings it back — the survey may have caught the car in the wrong state"
-		);
-	}
-
-	#[test]
-	fn a_unit_no_survey_visited_keeps_every_row_it_has() {
-		// The trap this filter has to avoid: silence is only evidence about a
-		// unit somebody actually asked. The safe habit is surveying one
-		// unit at a time, so a survey covering the brakes alone is normal — and
-		// reading it as "the gearbox answers nothing" would take a whole control
-		// unit off the screen on the strength of never having looked at it.
-		let mut a = App::new(vec![
-			unselected(proven(0x713, 0x1001, "Brake pressure", "bar")),
-			unselected(proven(0x7E1, 0x380A, "Engine speed", "/min")),
-		]);
-		a.answered = crate::plan::answered_from_survey(&surveyed(0x713, &["1001-1002"], &[0x1001]));
-		a.screen = Screen::Select;
-
-		// One tab per unit, so each is checked on its own tab rather than by a
-		// single count that the tab filter would have shortened anyway.
-		for (tab, request) in a.tabs().into_iter().enumerate() {
-			a.tab = tab;
-			assert_eq!(a.visible().len(), 1, "unit {request:03X} keeps its row");
-			assert_eq!(a.hidden(), Hidden::default(), "unit {request:03X} holds nothing back");
-		}
-		assert_eq!(
-			a.answered.saw(0x7E1, 0x380A),
-			None,
-			"never asked is not the same answer as asked and silent"
-		);
-		assert_eq!(a.answered.saw(0x713, 0x1002), Some(false), "inside what the brakes were asked");
-	}
-
-	#[test]
-	fn with_no_survey_at_all_nothing_is_filtered_for_silence() {
-		// The default on a car nobody has surveyed. An empty `Answered` must
-		// mean "nothing is known", never "nothing answers".
+	fn a_named_row_is_never_held_back() {
+		// The filter hides only what nothing can name. A named row stays on the
+		// list whether or not this car answers it: the record of its units says
+		// what they are and nothing about which identifiers they answer.
 		let mut a = App::new(vec![unselected(proven(0x713, 0x1001, "Brake pressure", "bar"))]);
 		a.screen = Screen::Select;
 		assert_eq!(a.visible().len(), 1);
 		assert_eq!(a.hidden(), Hidden::default());
-	}
-
-	#[test]
-	fn both_reasons_are_counted_apart_and_read_as_one_sentence() {
-		// They are answered differently — a nameless row wants a better name
-		// source, a silent one wants the car in another state — so a single
-		// number would tell a reader nothing about what to do next.
-		let mut a = App::new(vec![
-			unselected(proven(0x713, 0x1001, "Brake pressure", "bar")),
-			unselected(proven(0x713, 0x1002, "Declared but silent", "bar")),
-			unselected(raw(0x713, 0x1003)),
-		]);
-		a.answered = crate::plan::answered_from_survey(&surveyed(0x713, &["1001-1003"], &[0x1001, 0x1003]));
-		a.screen = Screen::Select;
-
-		assert_eq!(a.hidden(), Hidden { unnamed: 1, silent: 1 });
-		let text = select_text(&mut a, 80, 14);
-		assert!(
-			text.contains("1 with no name anywhere and 1 this car does not answer are hidden"),
-			"{text}"
-		);
-		assert!(text.contains("2 hidden"), "the title counts them together: {text}");
 	}
 
 	#[test]
@@ -4747,7 +4358,6 @@ mod tests {
 			preselect: &[],
 			hz: None,
 			out: Some(out),
-			survey: None,
 			catalogs: "/definitely/not/here",
 			view: View::Plain(Some(Duration::from_secs(1))),
 		}
