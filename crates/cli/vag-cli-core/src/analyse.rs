@@ -528,8 +528,8 @@ pub fn run(capture_path: &str, log_path: &str, out: Option<&str>, limits: Thresh
 		anyhow::anyhow!(
 			"{capture_path} is not a `vagcan dev sniff` capture — that file is JSON lines with a \
              `ts_us` field per frame. A `dev survey --out` file has a different \
-             shape, and a `watch --out` file is CSV (use `discover` or `calibrate` for that \
-             one). Parser said: {e}"
+             shape, and a `watch --out` file is CSV (use `discover` for that one). \
+             Parser said: {e}"
 		)
 	})?;
 	let (anchor, series) = extract_series(&records);

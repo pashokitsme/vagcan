@@ -143,18 +143,16 @@ intended behaviour, not a gap.
 
 ### How a row gets proven
 
-Two routes, both least-squares fits that accept nothing under **R² 0.995 over ≥ 20
-points and ≥ 4 distinct raw values**.
+One route, a least-squares fit that accepts nothing under **R² 0.995 over ≥ 20 points
+and ≥ 4 distinct raw values**. `vagcan dev sniff` records the bus listen-only while VCDS
+runs an ordinary session beside it, and `vagcan dev vcds analyse` crosses that capture
+with VCDS's own CSV export. The two files are aligned by wall-clock arithmetic — a
+subtraction, never a search.
 
-`vagcan dev sniff` records the bus listen-only while VCDS runs an ordinary session beside
-it, and `vagcan dev vcds analyse` crosses that capture with VCDS's own CSV export. The
-two files are aligned by wall-clock arithmetic — a subtraction, never a search.
-
-`vagcan dev recording calibrate` needs no VCDS at all: it fits unproven columns of a
-`vagcan watch --out` recording against columns already trusted in the *same*
-recording — the standard OBD-II parameters, whose conversions are SAE J1979's, or
-rows proven earlier. One clock, tens of hertz, and whatever identifiers were asked
-for. What it cannot do is **name** anything.
+There was a second, `vagcan dev recording calibrate`, which fitted unproven columns of a
+`watch --out` recording against trusted ones in the same recording. It was removed on
+2026-09-28 (owner): with ODIS and VCDS's registry giving scalings through `setup`, nobody
+was going to drive to make them.
 
 ---
 

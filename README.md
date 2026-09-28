@@ -38,7 +38,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 | `dev survey` | Reads every control unit: identity, faults, the identifiers its data declares. Refused while driving unless `--while-driving` is given |
 | `dev sniff` | Records the bus. Listen-only by default. Reports dropped frames if the adapter can tell |
 | `dev glossary` | Your own names for channels, in `~/.vagcan/names.csv` |
-| `dev recording` | Works on recorded drives: `calibrate` proves scalings, `discover` finds gear and mode channels, `dash` plays one on the dash panel |
+| `dev recording` | Works on recorded drives: `discover` finds gear and mode channels, `dash` plays one on the dash panel |
 | `dev vcds` | Works on VCDS files: label lookup, name search, `.rod` decryption, log analysis |
 | `dev dash build` | Builds the dash plan for one car |
 

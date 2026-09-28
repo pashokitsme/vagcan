@@ -2355,11 +2355,10 @@ fn coverage_report(
 		));
 	}
 	if proven.is_empty() && named.is_empty() && !units.is_empty() {
-		// Not one unit of this car has a catalog. That is the ordinary state of
-		// every car but the one this project was developed on, and it is worth
-		// a paragraph rather than a silence: everything on the screen will be
-		// hex, and the reason is that nobody has driven this car with the tool
-		// recording yet.
+		// Not one unit of this car has a scaling from anywhere. That is the state
+		// of a project `setup` has not read a source into for this car, and it is
+		// worth a paragraph rather than a silence: everything on the screen will
+		// be hex, and the paragraph says what `setup` needs to change that.
 		out.push_str(&crate::missing::no_catalog("This car", std::path::Path::new(catalogs)));
 	}
 	if !raw.is_empty() {
@@ -2372,9 +2371,9 @@ fn coverage_report(
 		};
 		out.push_str(&format!("  raw identifiers from {from}: {}\n", list(&raw)));
 		// Why they are raw, and what turns them into numbers. Without this the
-		// screen is a wall of hex with no way to learn that it is fixable —
-		// and the fix is a drive, not a `setup`, which is the distinction a
-		// reader has no way to guess.
+		// screen is a wall of hex with no way to learn whether it is fixable —
+		// and with VCDS the fix is a survey before `setup`, which a reader has
+		// no way to guess.
 		let unproven = channels.iter().filter(|c| c.def.is_none()).count();
 		for line in crate::missing::raw_channels_note(unproven).lines() {
 			out.push_str(&format!("  {line}\n"));
@@ -2834,9 +2833,9 @@ mod tests {
 	/// owner's measured data under `~/.vagcan/data/<id>/measurements`, like
 	/// everybody
 	/// else's — nothing measured on a vehicle lives in the checkout any more.
-	/// So a machine that has never calibrated a car has nothing to assert
-	/// against, and these tests say so rather than failing over data they were
-	/// never entitled to assume.
+	/// So a machine that holds no proven rows has nothing to assert against,
+	/// and these tests say so rather than failing over data they were never
+	/// entitled to assume.
 	fn measured_rows() -> Option<std::path::PathBuf> {
 		let dir = crate::project::current().ok()?.measurements_dir();
 		let any = std::fs::read_dir(&dir)
@@ -2854,7 +2853,7 @@ mod tests {
 				None => {
 					eprintln!(
 						"skipped: no proven rows in this machine's project — \
-                         drive and calibrate a car to get some"
+                         they are one owner's measured data, under ~/.vagcan"
 					);
 					return;
 				}
@@ -3013,9 +3012,9 @@ mod tests {
 	fn a_screen_of_hex_says_why_it_is_hex_and_what_turns_it_into_numbers() {
 		// The reported gap: twelve of fifteen units show raw bytes, the tool
 		// tags each value `(raw)`, and nothing anywhere says the scaling is
-		// missing rather than the car being odd — let alone that a drive fixes
-		// it. Said once, in the summary, not per row: this is read at an open
-		// driver's door.
+		// missing rather than the car being odd — let alone what fixes it. Said
+		// once, in the summary, not per row: this is read at an open driver's
+		// door.
 		let identities = reference_identities();
 		let survey: String = identities
 			.iter()
@@ -3038,12 +3037,12 @@ mod tests {
 			&crate::plan::Answered::default(),
 			None,
 		);
-		assert!(text.contains("no proven scaling for this car yet"), "{text}");
-		assert!(text.contains("recording calibrate"), "{text}");
-		// And never the other shortage's fix as an instruction: a scaling is
-		// not in any label files, so pointing at `setup` here sends a reader
-		// nowhere.
-		assert!(!text.contains("vagcan setup /path"), "{text}");
+		assert!(text.contains("nothing read into this project scales them"), "{text}");
+		// What does, since 2026-09-28: `setup`, and with VCDS the survey first.
+		// The drive and `calibrate` that used to be the answer are gone.
+		assert!(text.contains("vagcan setup"), "{text}");
+		assert!(text.contains("vagcan dev survey"), "{text}");
+		assert!(!text.contains("calibrate"), "{text}");
 	}
 
 	#[test]
@@ -3120,10 +3119,10 @@ mod tests {
 			&crate::plan::Answered::default(),
 			None,
 		);
-		assert!(text.contains("no proven measurement rows"), "{text}");
+		assert!(text.contains("has no scalings on this machine"), "{text}");
 		assert!(text.contains("/x/data/measured"), "{text}");
-		assert!(text.contains("vagcan dev recording calibrate"), "{text}");
-		assert!(text.contains("not something `vagcan setup` can fix"), "{text}");
+		assert!(text.contains(crate::missing::scalings_path()), "{text}");
+		assert!(!text.contains("calibrate"), "{text}");
 	}
 
 	#[test]

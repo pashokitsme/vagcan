@@ -1549,7 +1549,7 @@ mod tests {
 
 	#[test]
 	fn with_nothing_unrepeatable_at_stake_the_question_says_so() {
-		// Most machines: `setup` has run, no car has ever been calibrated. The
+		// Most machines: `setup` has run, no row was ever proved on a car. The
 		// question is still asked — the data still lands somewhere — but it must
 		// not imply a risk that is not there.
 		let here = TempDir::new("mig-norows");

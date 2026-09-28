@@ -50,10 +50,10 @@ const STEPPED_MAX_LEVELS: usize = 12;
 /// order the header lists them.
 ///
 /// **The one reader of this layout, where there were three.** `classify` below,
-/// `calibrate::series_of` and `watch::replay::Recording::parse` each grew their
-/// own walk over a header this tool writes itself — and `calibrate`'s carried
-/// the comment "same layout rule as `discover`", which is a promise prose
-/// cannot keep.
+/// the since-removed `calibrate`'s `series_of` and
+/// `watch::replay::Recording::parse` each grew their own walk over a header this
+/// tool writes itself — and `calibrate`'s carried the comment "same layout rule
+/// as `discover`", which is a promise prose cannot keep.
 ///
 /// A sample is `(time, cell)`, and the time is the column's **own** when it has
 /// one: values on a row are not simultaneous, because identifiers are polled in
@@ -265,7 +265,7 @@ pub fn render(columns: &[Column]) -> String {
 	let continuous = columns.iter().filter(|c| matches!(c.behaviour, Behaviour::Continuous { .. })).count();
 	let constant = columns.iter().filter(|c| c.behaviour == Behaviour::Constant).count();
 	out.push_str(&format!(
-		"\n{} {}: {} {}, {continuous} continuous (use `calibrate`), {constant} never moved\n",
+		"\n{} {}: {} {}, {continuous} continuous, {constant} never moved\n",
 		columns.len(),
 		plural(columns.len(), "column"),
 		candidates.len(),
