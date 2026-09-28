@@ -28,6 +28,10 @@ crossterm = "0.28"
 
 [dev-dependencies]
 vag-cli-core = { path = "../vag-cli-core", features = ["test-util"] }
+# `channels`' tests declare invented rows in a cache of their own, the way
+# `core::extracted`'s do, so a role's ODX id reaches a candidate through the
+# same join the command uses. Tests only: the command reads the cache through `core`.
+vag-data-db = { path = "../../data/vag-data-db" }
 tempfile = "3"
 # A paused clock, for a loop test whose deadline is minutes of real time.
 tokio = { workspace = true, features = ["test-util"] }

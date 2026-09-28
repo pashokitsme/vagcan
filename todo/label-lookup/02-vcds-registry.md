@@ -97,8 +97,8 @@ the unit's `.rod [DTC]` → a row of `RD.rod`), and reuses its pieces: file choi
    - A `dev vcds` command prints one unit's rows, with the usual help (for, in, out). This is
      how the owner checks a unit by hand.
 5. **Consumers.** `watch`, `measure` and `dev dash build` read the cache and need no new path.
-   `measure` finds its roles by name: check that it does on VCDS's names (`Vehicle speed`,
-   `Engine speed`).
+   `measure` found its roles by name when this was written; it goes by text id since
+   2026-09-28 ("Left after the build", item 2), so VCDS's rows reach it by the ids they carry.
 
 ## Must not
 
@@ -218,6 +218,29 @@ offset, unit, rate and ODX id. What differs:
    no drive gets speed, engine speed, pedal and a gear — the engine's `210F`, the unsettled
    channel `extracted.rs` warns about — but no boost and no shaft speeds. The fix is roles by
    ODX id, which ODIS and VCDS share.
+   **Done 2026-09-28** on `feat/measure-roles-by-id` (owner: «да, давай пофиксим»). The rule
+   (`vag-cli-measure/src/channels.rs`): every role lists its text ids, best first, and the
+   physical units its consumers read it in; a row is a hit under one of the ids, or — a
+   drive-proven row always, any other only when it carries no text id itself and no usable row
+   on the car carries one of the ids — under the role's words, or, on an engine whose variant
+   the project declares no OBD-II row for, as SAE J1979's own row at the PID the standard
+   defines for the quantity (the prediction is offered to no other unit: gearboxes declare
+   `F40C`, and the DSG ones `F40D`, in layouts of their own); a row in another unit of measure
+   is not a hit. Speed ranks by step in m/s,
+   then a drive-proven row, then a powertrain unit (ISO 15765-4's emissions addresses), then
+   the request id; every other role by a drive-proven row, then a powertrain unit, then the
+   id's position in the role's list, then the unit's own row before the J1979 prediction, then
+   the request id. On the owner's project the leading speed moves from the BCM's `2B16` to the
+   gearbox's `F40D` (owner: «да, переключи»); the gear and the pedal move to the gearbox's
+   drive-proven `3816`/`3804` as a consequence of drive-proven-first; air mass resolves to
+   nothing — the engine's known variant declares no row at PID 10 (the parked survey's `F400`
+   bitmap has PID 10 clear), `13CD` has no id and a name no word matches, and `2037` is what
+   both sources name a setpoint, following load in the 2026-09-26 capture (8–80 kg/h), so it
+   is not an air-mass id. An emulation of an earlier form of the rule over a scratch VCDS-only
+   project (2026-09-28,
+   not reproduced by a test — the owner's cache holds no VCDS registry rows) gave that owner
+   boost, both shaft speeds, the gearbox's gear and selector, and the engine's crankshaft speed
+   instead of the cluster's.
 3. **A Russian-only install** (decision 3, fall back to English names) is not built. Today its
    channels are named by their identifier in hex and carry no ODX id — the ODX id comes from
    the same shifted text table — so a `dash.toml` `unit:IDE…` reference cannot resolve there.
