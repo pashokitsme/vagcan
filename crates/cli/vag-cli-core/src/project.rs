@@ -18,6 +18,7 @@
 //!     SK37X/
 //!       cache.sqlite        the label/ODIS rows, queryable
 //!       names.json          text id -> name
+//!       odx-ids.json        text id -> the IDE/MAS id that text names
 //!       rod-keys.json       recovered .rod section keys — per project, because a
 //!                           key is a property of one file's *bytes* and two VCDS
 //!                           builds ship a same-named .rod with different content
@@ -93,9 +94,20 @@ impl Project {
 		self.dir.join("cache.sqlite")
 	}
 
-	/// Text id → name, the union of what TTTEXT and an ODIS project know.
+	/// Text id → name, every record of a VCDS installation's `TTTEXT.ROD`.
 	pub fn names(&self) -> PathBuf {
 		self.dir.join("names.json")
+	}
+
+	/// Text id → the ODX id (`IDE#####`, `MAS#####`) that text is the name of,
+	/// for the `TTTEXT.ROD` records whose tail says. Written beside
+	/// `names.json` by the same read.
+	///
+	/// A separate file because the two answer different questions: `names.json`
+	/// is what a text id says, and this is how a VCDS text joins what ODIS and
+	/// a `dash.toml` call the same measurement.
+	pub fn odx_ids(&self) -> PathBuf {
+		self.dir.join("odx-ids.json")
 	}
 
 	/// The recovered `.rod` section keys.
@@ -517,7 +529,7 @@ mod tests {
 		let p = open_or_create_in(here.path(), "SK37X").unwrap();
 		assert_eq!(p.id, "SK37X");
 		assert!(p.dir.is_dir(), "the directory is created on first open");
-		for path in [p.cache(), p.names(), p.rod_keys(), p.measurements_dir(), p.sources()] {
+		for path in [p.cache(), p.names(), p.odx_ids(), p.rod_keys(), p.measurements_dir(), p.sources()] {
 			assert_eq!(path.parent(), Some(p.dir.as_path()), "{path:?} is not in the project");
 		}
 	}

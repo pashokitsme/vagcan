@@ -17,9 +17,12 @@ pub mod measure;
 pub mod mwb;
 pub mod obd;
 pub mod odis;
+pub mod registry;
 pub mod rod;
 mod tea;
+pub mod ttdop;
 pub mod tttext;
+pub mod unit_strings;
 
 pub use catalog::{Level, MeasurementCatalog, MeasurementDef, ReadId, Scaling, ignition_angle};
 pub use clb::decrypt_clb;
@@ -32,4 +35,5 @@ pub use label_files::{
 };
 pub use measure::{IGNITION_ANGLE_ZERO_DIDS, IGNITION_ANGLE_ZERO_RAW, LinearScale, RawForm};
 pub use mwb::{MwbEntry, parse_mwb};
+pub use registry::{MeasurementRegistry, RegistryLoad, RegistryRow, UnitMeasurements};
 pub use rod::{RodSection, RodStatus, decode_rod};

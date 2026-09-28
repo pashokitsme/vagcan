@@ -77,8 +77,10 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> S
          Move the result to {} — the file name is the unit's own F187 part number — and\n\
          name its rows so this command can find them: `speed` and `gear` are what it\n\
          looks for.\n\n\
-         None of this is what `vagcan setup` does. Label files carry names and no\n\
-         scaling at all, so no installation of VCDS can supply what is missing here.",
+         Or, if this car's project has no channels for its units yet, let `vagcan setup`\n\
+         bring them: an ODIS project describes every unit's channels, and a VCDS\n\
+         installation those of a surveyed car — `vagcan dev survey` on the car, then\n\
+         `vagcan setup <installation>`.",
 		vag_cli_core::missing::calibration_path(),
 		crate::project::measurements_hint()
 	);
@@ -443,9 +445,12 @@ mod tests {
 		// printed path is a promise, so it is asked rather than remembered.
 		assert!(text.contains("measurements"), "where the file goes:\n{text}");
 		assert!(!text.contains("data/measured/"), "the path this instruction moved off:\n{text}");
-		// And it rules out the other shortage explicitly, because "the tool has
-		// no data" is the same sentence for both and only one of them is true
-		// here.
-		assert!(text.contains("None of this is what `vagcan setup` does"), "{text}");
+		// It used to rule `setup` out: label files carried no scalings. Since
+		// 2026-09-28 a VCDS installation brings them for a surveyed car, and an
+		// ODIS project always did, so a project that has read neither is short
+		// of data `setup` supplies — said as a condition, because a project that
+		// has read one and still has no speed row is short of something else.
+		assert!(text.contains("has no channels for its units yet"), "{text}");
+		assert!(!text.contains("None of this is what `vagcan setup` does"), "{text}");
 	}
 }

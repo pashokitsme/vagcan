@@ -9,11 +9,11 @@
 //! forbids outright.
 //!
 //! It exists because the vendor wording is written for a diagnostic engineer.
-//! `Brake_pedal_information_plausibility` is accurate and unreadable at an open
-//! driver's door, and neither ODIS nor VCDS is going to fix that. This file wins
-//! over both — see [`crate::extracted::Extracted::name_of`] — and anything it
-//! does not mention falls through to them unchanged, so it is worth writing one
-//! line at a time.
+//! A name in that style — `Pedal_signal_plausibility_state`, say — is accurate
+//! and unreadable at an open driver's door, and neither ODIS nor VCDS is going
+//! to fix that. This file wins over both — see
+//! [`crate::extracted::Extracted::name_of`] — and anything it does not mention
+//! falls through to them unchanged, so it is worth writing one line at a time.
 //!
 //! ```csv
 //! text_id,en,ru
@@ -107,6 +107,10 @@ fn quote(field: &str) -> String {
 /// A row that ends inside an open quote keeps what it has rather than being
 /// dropped — somebody's half-finished edit should still load the lines above it.
 fn read_csv(text: &str) -> Vec<Vec<String>> {
+	// Excel's "CSV UTF-8" starts the file with a byte-order mark, and `trim`
+	// keeps U+FEFF — so the header would read `\u{FEFF}text_id` and the whole
+	// file would name nothing.
+	let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
 	let mut rows = Vec::new();
 	let mut row = Vec::new();
 	let mut field = String::new();
@@ -150,18 +154,54 @@ fn read_csv(text: &str) -> Vec<Vec<String>> {
 
 /// Write or refresh `~/.vagcan/names.csv` from what this project knows.
 ///
-/// **Never destructive.** Every line already in the file is kept exactly as it
-/// is; ids the project knows and the file does not are appended with empty
-/// cells. Regenerating after an afternoon of translating must not cost the
-/// afternoon.
+/// **Never destructive.** Every translation in a column this build reads (`en`,
+/// `ru`) is kept; text ids the project's channels carry and the file does not
+/// are appended with empty cells. Regenerating after an afternoon of
+/// translating must not cost the afternoon. A blank line holds no work, and is
+/// written again only while a channel still carries its id. A file this cannot
+/// write back whole is refused rather than written over: one that is not
+/// UTF-8, has no `text_id` column, or has a column this build does not write
+/// (a language it has no heading for, a notes column). A byte-order mark is
+/// kept, because Excel needs it to open the file as UTF-8.
 ///
 /// The seed carries a fourth column, `current`, holding what the channel is
 /// called today. It is not read back — [`parse`] takes only the columns the
 /// header names as languages — and it is there because translating a list of
 /// bare ids is not something anybody can do.
 pub fn seed(project: &crate::project::Project) -> anyhow::Result<Seeded> {
-	let path = path()?;
-	let existing = std::fs::read_to_string(&path).unwrap_or_default();
+	seed_into(project, path()?)
+}
+
+/// [`seed`], into a file named by the caller — a test's, never the owner's.
+fn seed_into(project: &crate::project::Project, path: PathBuf) -> anyhow::Result<Seeded> {
+	// A file that is there and does not read is somebody's work in a form this
+	// cannot parse — saved as Windows-1251, say. Treating it as empty would
+	// write the project's ids over every translation in it.
+	let existing = match std::fs::read_to_string(&path) {
+		Ok(text) => text,
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+		Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+			anyhow::bail!("{} is not UTF-8 text; not writing over it", path.display())
+		}
+		Err(e) => anyhow::bail!("reading {}: {e}", path.display()),
+	};
+	if !existing.trim().is_empty() {
+		let header = read_csv(&existing).into_iter().next().unwrap_or_default();
+		let cells: Vec<String> = header.iter().map(|cell| cell.trim().to_ascii_lowercase()).collect();
+		if !cells.iter().any(|cell| cell == "text_id") {
+			anyhow::bail!(
+				"{} has no `text_id` column, so none of its lines can be kept; not writing over it",
+				path.display()
+			);
+		}
+		let written = |cell: &str| cell == "text_id" || cell == "current" || HEADINGS.iter().any(|(heading, _)| cell == *heading);
+		if let Some(other) = cells.iter().find(|cell| !written(cell)) {
+			anyhow::bail!(
+				"{} has a column `{other}` this build does not write back; not writing over it",
+				path.display()
+			);
+		}
+	}
 	let mut rows: BTreeMap<String, BTreeMap<Language, String>> = BTreeMap::new();
 	let mut current: BTreeMap<String, String> = BTreeMap::new();
 
@@ -173,20 +213,33 @@ pub fn seed(project: &crate::project::Project) -> anyhow::Result<Seeded> {
 	}
 	let translated = rows.len();
 
-	// Everything the project can name, whether or not it is written yet.
+	// Every text id a channel of this project carries, whether or not it is
+	// written yet.
 	for (id, name) in vag_data_db::text_ids(&project.cache()).unwrap_or_default() {
 		rows.entry(id.clone()).or_default();
 		current.insert(id, name);
 	}
-	for (id, name) in crate::extracted::open(project).names() {
-		rows.entry(id.clone()).or_default();
-		current.entry(id).or_insert(name);
+	// VCDS's wording, for rows that are here already — never a row of its own.
+	// `names.json` is keyed by the text table's six-digit record ids, and no
+	// channel carries one: a channel's text id is VW's (`IDE#####`), so a row
+	// keyed by a record id is a row nothing looks up. While a solver read a
+	// quarter of the table that cost 14,738 such rows; read exactly, it would be
+	// every record — 195,910, enum states, units and countries among them — in
+	// a file a person is meant to go through by hand.
+	let vcds = crate::extracted::open(project).names();
+	for id in rows.keys() {
+		if let Some(name) = vcds.get(id) {
+			current.entry(id.clone()).or_insert_with(|| name.clone());
+		}
 	}
 
 	let table: Vec<(String, BTreeMap<Language, String>)> = rows.into_iter().collect();
 	let mut text = render_with_current(&table, &current);
 	if !text.ends_with('\n') {
 		text.push('\n');
+	}
+	if existing.starts_with('\u{FEFF}') {
+		text.insert(0, '\u{FEFF}');
 	}
 	if let Some(parent) = path.parent() {
 		std::fs::create_dir_all(parent)?;
@@ -244,6 +297,91 @@ fn render_with_current(rows: &[(String, BTreeMap<Language, String>)], current: &
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn vcds_wording_fills_rows_that_are_here_and_adds_none() {
+		// `names.json` is keyed by the text table's record ids, which no channel
+		// carries. Read exactly it holds every record, so seeding a row per key
+		// would bury the ids a person can use under ~196,000 they cannot.
+		let here = tempfile::tempdir().unwrap();
+		let project = crate::project::Project {
+			id: "TEST".to_string(),
+			dir: here.path().to_path_buf(),
+		};
+		crate::project::record_source(
+			&project,
+			crate::project::SourceEntry {
+				kind: vag_data_db::VCDS,
+				path: "vcds".to_string(),
+				version: None,
+				detail: None,
+			},
+		)
+		.unwrap();
+		// Invented records: the text table's words are Ross-Tech's.
+		std::fs::write(
+			project.names(),
+			r#"{"000017": "Invented flap position", "000081": "Status", "910231": "Invented Shaft Speed Probe"}"#,
+		)
+		.unwrap();
+		let glossary = here.path().join("names.csv");
+		// A translated row keyed by a record id, and a blank one.
+		std::fs::write(&glossary, "text_id,en,ru,current\n000017,My flap reading,,\n000081,,,Status\n").unwrap();
+
+		let seeded = seed_into(&project, glossary.clone()).unwrap();
+		let text = std::fs::read_to_string(&glossary).unwrap();
+		assert!(text.contains("000017,My flap reading,,Invented flap position"), "{text}");
+		assert!(!text.contains("910231"), "a record id no channel carries became a row: {text}");
+		assert!(!text.contains("000081"), "a blank row nothing carries is not work to keep: {text}");
+		assert_eq!((seeded.total, seeded.translated, seeded.blank), (1, 1, 0));
+	}
+
+	/// A project with nothing in it, for seeding a glossary that is not the owner's.
+	fn empty_project(dir: &std::path::Path) -> crate::project::Project {
+		crate::project::Project {
+			id: "TEST".to_string(),
+			dir: dir.to_path_buf(),
+		}
+	}
+
+	#[test]
+	fn a_byte_order_mark_does_not_hide_the_header() {
+		let text = "\u{FEFF}text_id,en,ru\nIDE00022,Boost,\n";
+		assert_eq!(parse(text, Language::En).get("IDE00022").map(String::as_str), Some("Boost"));
+		let here = tempfile::tempdir().unwrap();
+		let glossary = here.path().join("names.csv");
+		std::fs::write(&glossary, text).unwrap();
+		seed_into(&empty_project(here.path()), glossary.clone()).unwrap();
+		let back = std::fs::read_to_string(&glossary).unwrap();
+		assert!(back.contains("IDE00022,Boost"), "the translation was lost: {back}");
+		assert!(back.starts_with('\u{FEFF}'), "the mark Excel needs for UTF-8 was dropped");
+	}
+
+	#[test]
+	fn a_file_that_does_not_read_is_refused_rather_than_written_over() {
+		let here = tempfile::tempdir().unwrap();
+		let glossary = here.path().join("names.csv");
+		// Windows-1251 Cyrillic: not UTF-8.
+		let cp1251 = b"text_id,en,ru\nIDE00022,Boost,\xc4\xe0\xe2\xeb\xe5\xed\xe8\xe5\n".to_vec();
+		std::fs::write(&glossary, &cp1251).unwrap();
+		assert!(seed_into(&empty_project(here.path()), glossary.clone()).is_err());
+		assert_eq!(std::fs::read(&glossary).unwrap(), cp1251);
+
+		let headless = b"id,en\nIDE00022,Boost\n".to_vec();
+		std::fs::write(&glossary, &headless).unwrap();
+		assert!(seed_into(&empty_project(here.path()), glossary.clone()).is_err());
+		assert_eq!(std::fs::read(&glossary).unwrap(), headless);
+
+		// A column this build does not write back would be dropped by the rewrite.
+		let german = b"text_id,en,de\nIDE00022,Boost,Ladedruck\n".to_vec();
+		std::fs::write(&glossary, &german).unwrap();
+		let Err(refused) = seed_into(&empty_project(here.path()), glossary.clone()) else {
+			panic!("a column it would drop was written over");
+		};
+		let refused = refused.to_string();
+		assert!(refused.contains("`de`"), "{refused}");
+		assert_eq!(std::fs::read(&glossary).unwrap(), german);
+	}
 
 	#[test]
 	fn a_name_with_a_comma_survives_the_round_trip() {

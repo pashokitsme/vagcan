@@ -39,12 +39,13 @@ use crate::config::Language;
 /// variants and a third of a million channels, and a car needs the handful
 /// belonging to the one variant it turns out to be.
 ///
-/// It also holds the project's `names.json`, because that file is the other
-/// half of the same question. An extracted row carries a **text id** and that
-/// id is the key `names.json` is written under — the whole finding
-/// `.archive/research/labels/odis-crib.md` §3 rests on — so a channel's wording is a
-/// lookup through an id the row itself carries, never a table of names in this
-/// source.
+/// It also holds the project's `names.json`, because a channel's wording is a
+/// lookup through a **text id** the row itself carries, never a table of names
+/// in this source. Which ids meet is not what this once said: an ODIS row
+/// carries VW's id (`IDE00594`), while `names.json` is keyed by the VCDS text
+/// table's own record ids (`000080`). The two meet through `odx-ids.json`,
+/// which maps a record to the `IDE`/`MAS` it names — a file [`Self::name_of`]
+/// does not read yet.
 #[derive(Debug, Clone)]
 pub struct Extracted {
 	cache: PathBuf,
@@ -56,7 +57,12 @@ pub struct Extracted {
 	/// caller that asks [`crate::project::current`] again can get a different
 	/// answer from the one these rows came from.
 	project: Option<String>,
-	variants: Vec<String>,
+	/// The variants each source holds rows for, **in the order the sources
+	/// rank**: an ODIS project, then a VCDS install's registry (owner,
+	/// 2026-09-28: ODIS wins where both describe a channel, and VCDS fills only
+	/// what ODIS lacks). Kept per source because the two can spell a variant
+	/// alike, and each source's best match is found among its own.
+	variants: Vec<(&'static str, Vec<String>)>,
 	/// text id → what the label files call it. Empty for a project that has
 	/// none, which is not an error: `watch --catalogs <dir>` has no project at
 	/// all, and a project set up before names were recovered has no file.
@@ -115,12 +121,12 @@ pub fn current() -> Extracted {
 
 /// Read a project's variant list, or nothing when it has no extracted rows.
 ///
-/// A project built from a VCDS installation alone has none, and that is the
-/// ordinary case rather than an error — the tool worked that way until an ODIS
-/// project became a second source, and it still does.
+/// Having none is an ordinary state rather than an error: a VCDS installation
+/// brings rows only for the units `setup` read its registry for, and a project
+/// set up before that has none.
 pub fn open(project: &crate::project::Project) -> Extracted {
 	let cache = project.cache();
-	let variants = vag_data_db::reading_variants(&cache).unwrap_or_default();
+	let variants = variants_by_source(&cache);
 	Extracted {
 		cache,
 		project: Some(project.id.clone()),
@@ -146,6 +152,14 @@ pub fn open(project: &crate::project::Project) -> Extracted {
 		mine: crate::glossary::load(),
 		language: crate::config::language(&crate::config::load()),
 	}
+}
+
+/// Each source's variants, in the order the sources rank.
+fn variants_by_source(cache: &std::path::Path) -> Vec<(&'static str, Vec<String>)> {
+	[vag_data_db::ODIS, vag_data_db::VCDS]
+		.into_iter()
+		.map(|kind| (kind, vag_data_db::reading_variants_of(cache, kind).unwrap_or_default()))
+		.collect()
 }
 
 /// A project's `names.json` as a map, or nothing at all.
@@ -186,7 +200,7 @@ impl Extracted {
 	#[cfg(any(test, feature = "test-util"))]
 	pub fn synthetic(cache: PathBuf, names: BTreeMap<String, String>) -> Extracted {
 		Extracted {
-			variants: vag_data_db::reading_variants(&cache).unwrap_or_default(),
+			variants: variants_by_source(&cache),
 			cache,
 			project: Some("TEST".to_string()),
 			names,
@@ -236,16 +250,17 @@ impl Extracted {
 
 	/// Every text id this project has recovered wording for, and that wording.
 	///
-	/// For [`crate::glossary::seed`], which needs the ids to key a translation
-	/// by and the current name so that translating is reading rather than
-	/// guessing. Not for display — [`Self::name_of`] is the one lookup.
+	/// For [`crate::glossary::seed`], which fills the `current` column of the
+	/// rows already in the glossary with it, so that translating is reading
+	/// rather than guessing. Not for display — [`Self::name_of`] is the one
+	/// lookup.
 	pub fn names(&self) -> BTreeMap<String, String> {
 		self.names.clone()
 	}
 
 	/// Whether this project knows any channels at all.
 	pub fn is_empty(&self) -> bool {
-		self.variants.is_empty()
+		self.variants.iter().all(|(_, names)| names.is_empty())
 	}
 
 	/// The project these rows came out of, when one resolved.
@@ -265,9 +280,11 @@ impl Extracted {
 	/// stale level on a unit that is not in the car is not worth a sentence.
 	pub fn levels_predate_bounds(&self, odx_name: Option<&str>, version: Option<&str>) -> bool {
 		!self.is_empty()
-			&& best_variants(&self.variants, odx_name, version)
-				.into_iter()
-				.any(|name| vag_data_db::levels_predate_bounds(&self.cache, name).unwrap_or(false))
+			&& self.variants.iter().any(|(_, names)| {
+				best_variants(names, odx_name, version)
+					.into_iter()
+					.any(|name| vag_data_db::levels_predate_bounds(&self.cache, name).unwrap_or(false))
+			})
 	}
 
 	/// The ODIS projects this cache was read from, as `setup` recorded them —
@@ -308,32 +325,59 @@ impl Extracted {
 	/// channel on the selection screen came to be called after the ODIS long
 	/// name — or, where there was none, after its own identifier.
 	fn described(&self, odx_name: Option<&str>, version: Option<&str>) -> Vec<(MeasurementDef, Option<String>)> {
+		self.described_from(None, odx_name, version)
+	}
+
+	/// The channels one kind of source alone declares for a unit.
+	///
+	/// For [`declared_for_unit`], which must not hear the other sources.
+	pub fn for_unit_from(&self, kind: &str, odx_name: Option<&str>, version: Option<&str>) -> Vec<MeasurementDef> {
+		self
+			.described_from(Some(kind), odx_name, version)
+			.into_iter()
+			.map(|(def, _)| def)
+			.collect()
+	}
+
+	/// [`Self::described`], from every source or from one kind of source alone.
+	fn described_from(&self, only: Option<&str>, odx_name: Option<&str>, version: Option<&str>) -> Vec<(MeasurementDef, Option<String>)> {
 		// A project that knows nothing answers nothing, without opening a cache
-		// that has nothing in it. That is every VCDS-only project, which is
-		// still the common case.
+		// that has nothing in it.
 		if self.is_empty() {
 			return Vec::new();
 		}
 		let mut out: Vec<(MeasurementDef, Option<String>)> = Vec::new();
-		for name in best_variants(&self.variants, odx_name, version) {
-			let Ok(readings) = vag_data_db::readings_of(&self.cache, name) else {
-				continue;
-			};
-			for reading in readings {
-				let text_id = reading.text_id.clone();
-				let Some(def) = to_def(&reading) else { continue };
-				// Two variants of one family can describe the same **field**. The
-				// first wins, which is the alphabetically first — arbitrary, but
-				// stable, and a run that reported a different name each time
-				// would be worse than one that reports a fixed one.
-				//
-				// The field, not the identifier. Keying this by DID alone was
-				// worth 1,952 channels of 3,963 on the reference car: everything
-				// a control unit packed into a response after the first field
-				// was parsed, scaled, named — and then dropped one line before
-				// it could be shown.
-				if !out.iter().any(|(held, _)| same_field(held, &def)) {
-					out.push((def, text_id));
+		// Source by source in rank order, so a field an ODIS variant describes is
+		// held before a VCDS row for it comes up — the rule below then keeps the
+		// first — and VCDS fills only the fields ODIS has no row for.
+		for (kind, names) in self.variants.iter().filter(|(kind, _)| only.is_none_or(|only| only == *kind)) {
+			// The ids a source ranked higher has given this unit's fields are
+			// that source's. VCDS names a field by the record of the name it
+			// shows, and several fields can show one name, so a VCDS row at a
+			// field ODIS lacks can carry the id of a field ODIS has: it keeps its
+			// channel and gives up the id, and `unit:IDE…` picks out the one
+			// field it picked out with ODIS alone.
+			let claimed: std::collections::BTreeSet<String> = out.iter().filter_map(|(_, id)| id.clone()).collect();
+			for name in best_variants(names, odx_name, version) {
+				let Ok(readings) = vag_data_db::readings_of_kind(&self.cache, kind, name) else {
+					continue;
+				};
+				for reading in readings {
+					let text_id = reading.text_id.clone().filter(|id| !claimed.contains(id));
+					let Some(def) = to_def(&reading) else { continue };
+					// Two variants of one family can describe the same **field**. The
+					// first wins, which is the alphabetically first — arbitrary, but
+					// stable, and a run that reported a different name each time
+					// would be worse than one that reports a fixed one.
+					//
+					// The field, not the identifier. Keying this by DID alone was
+					// worth 1,952 channels of 3,963 on the reference car: everything
+					// a control unit packed into a response after the first field
+					// was parsed, scaled, named — and then dropped one line before
+					// it could be shown.
+					if !out.iter().any(|(held, _)| same_field(held, &def)) {
+						out.push((def, text_id));
+					}
 				}
 			}
 		}
@@ -491,6 +535,28 @@ pub fn for_unit(
 	merge(store.for_unit(part_number, odx_name), extracted.for_unit(odx_name, version))
 }
 
+/// What a sweep may ask one unit: what a drive proved on it and what its ODIS
+/// variant declares.
+///
+/// Not [`for_unit`], which adds a VCDS install's measurement list. That list
+/// comes from whichever of a family's platform files read first — a Škoda's
+/// gateway gets `EV_GatewNF_AU37` — not from this unit's own variant, and
+/// whether it may widen what a sweep asks is the owner's decision, not yet made
+/// (2026-09-28). Until then a sweep asks exactly what it asked before VCDS rows
+/// were read.
+pub fn declared_for_unit(
+	store: &vag_data_labels::catalog::CatalogStore,
+	extracted: &Extracted,
+	part_number: Option<&str>,
+	odx_name: Option<&str>,
+	version: Option<&str>,
+) -> Vec<MeasurementDef> {
+	merge(
+		store.for_unit(part_number, odx_name),
+		extracted.for_unit_from(vag_data_db::ODIS, odx_name, version),
+	)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -512,7 +578,7 @@ mod tests {
 			vag_data_db::put_readings(&cache, "/nowhere/SK37X", name, readings).expect("the fixture writes");
 		}
 		Extracted {
-			variants: vag_data_db::reading_variants(&cache).unwrap(),
+			variants: variants_by_source(&cache),
 			cache,
 			project: Some("SK37X".to_string()),
 			names: names.iter().map(|(id, text)| (id.to_string(), text.to_string())).collect(),
@@ -534,6 +600,79 @@ mod tests {
 			scaling: Scaling::Linear(LinearScale { factor: 1.0, offset: 0.0 }),
 			text_id: None,
 		}
+	}
+
+	#[test]
+	fn an_odis_row_wins_its_field_and_a_vcds_row_fills_only_what_odis_lacks() {
+		// The owner's decision of 2026-09-28. The VCDS file stem ranks `Exact`
+		// and the ODIS variant only `Version` — the source ranks first, so that
+		// is not a reason for VCDS to win.
+		let here = tempfile::tempdir().unwrap();
+		let cache = here.path().join("cache.sqlite");
+		vag_data_db::put_readings(&cache, "/nowhere/SK37X", "EV_TCMDQ200021_001", &[reading(0x380A, "odis", 0, 16, false)]).unwrap();
+		let gearbox = [reading(0x380A, "vcds", 0, 16, true), reading(0x380B, "vcds", 0, 16, false)];
+		let brake = [reading(0x1822, "vcds", 0, 16, true)];
+		vag_data_db::put_all_vcds_readings(
+			&cache,
+			"/nowhere/vcds-en",
+			[("EV_TCMDQ200021", &gearbox[..]), ("EV_Brake1UDS", &brake[..])],
+		)
+		.unwrap();
+		let x = Extracted::synthetic(cache, BTreeMap::new());
+		let named = |odx: &str, version: &str| -> Vec<(u16, String)> {
+			x.for_unit(Some(odx), Some(version))
+				.into_iter()
+				.map(|def| {
+					let ReadId::Uds(did) = def.address;
+					(did, def.name.to_string())
+				})
+				.collect()
+		};
+		assert_eq!(
+			named("EV_TCMDQ200021", "001017"),
+			[(0x380A, "odis".to_string()), (0x380B, "vcds".to_string())]
+		);
+		// A unit only VCDS knows reads from VCDS alone.
+		assert_eq!(named("EV_Brake1UDS", "036010"), [(0x1822, "vcds".to_string())]);
+	}
+
+	#[test]
+	fn a_vcds_row_gives_up_an_id_odis_gives_another_field_of_the_unit() {
+		// VCDS names a field by the record of the name it shows, and several
+		// fields can show one name — an odometer's among them. Where ODIS already
+		// gives that id to one field of the unit, a VCDS row filling another field
+		// keeps its channel and loses the id, so `unit:IDE…` still picks out the
+		// one field it did with ODIS alone.
+		let here = tempfile::tempdir().unwrap();
+		let cache = here.path().join("cache.sqlite");
+		let with_id = |did, offset, id: &str| vag_data_labels::odis::Reading {
+			text_id: Some(id.to_string()),
+			..reading(did, "invented", offset, 16, true)
+		};
+		vag_data_db::put_readings(&cache, "/nowhere/ODIS", "EV_Unit_001", &[with_id(0x2203, 0, "IDE90001")]).unwrap();
+		let vcds = [
+			with_id(0x2203, 0, "IDE90009"),
+			with_id(0x2CD1, 48, "IDE90001"),
+			with_id(0x2CD1, 128, "IDE90002"),
+		];
+		vag_data_db::put_all_vcds_readings(&cache, "/nowhere/vcds", [("EV_Unit_VW37", &vcds[..])]).unwrap();
+		let both = Extracted::synthetic(cache, BTreeMap::new());
+		let ids: Vec<(u16, u32, Option<String>)> = both
+			.described(Some("EV_Unit"), Some("001001"))
+			.into_iter()
+			.map(|(def, id)| {
+				let ReadId::Uds(did) = def.address;
+				(did, def.raw_form.bit_offset(), id)
+			})
+			.collect();
+		assert_eq!(
+			ids,
+			[
+				(0x2203, 0, Some("IDE90001".to_string())),
+				(0x2CD1, 48, None),
+				(0x2CD1, 128, Some("IDE90002".to_string())),
+			]
+		);
 	}
 
 	fn proven(did: u16, name: &str) -> MeasurementDef {

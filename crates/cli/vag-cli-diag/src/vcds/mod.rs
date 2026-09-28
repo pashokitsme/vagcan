@@ -100,16 +100,17 @@ pub enum Tool {
 		device: DeviceArg,
 	},
 
-	/// Search the measurement names recovered from the label files.
+	/// Search the names in the label files' global text table.
 	///
 	/// FOR: finding what VW calls something, when all you have is a word.
 	///
-	/// IN: a substring, and the recovered name catalog (`--catalog`, by default
-	/// the `names.json` in this project that `vagcan setup` writes).
+	/// IN: a substring, and the name catalog (`--catalog`, by default the
+	/// `names.json` in this project that `vagcan setup` writes).
 	///
 	/// OUT: matching names on stdout. They are keyed by the label files' own text
-	/// id, not by data identifier — that join does not exist in the label files
-	/// — so a match is a hypothesis to test on the car, not an identification.
+	/// id, not by data identifier — this list does not say which identifier
+	/// carries a name — so a match is a hypothesis to test on the car, not an
+	/// identification.
 	Names {
 		/// Substring to look for, case-insensitive.
 		#[arg(value_name = "TEXT")]
@@ -117,7 +118,7 @@ pub enum Tool {
 		/// Stop after this many matches.
 		#[arg(long, default_value_t = 40, value_name = "N")]
 		limit: usize,
-		/// Names file to search. Recovered from a VCDS installation, so a
+		/// Names file to search. Read from a VCDS installation, so a
 		/// different installation means a different file.
 		/// Default: this project's `names.json`, written by `vagcan setup`.
 		#[arg(long, value_name = "FILE")]
@@ -213,64 +214,33 @@ pub enum Tool {
 		out: Option<String>,
 	},
 
-	/// Recover names from the label files' global text table.
+	/// Read the label files' global text table: every name, exactly.
 	///
-	/// FOR: turning `TTTEXT.ROD`'s enciphered text into readable names. Every
-	/// record is under its own substitution, so the attack is dictionary-driven
-	/// and bootstraps: words read off records it solves become vocabulary for
-	/// the next pass, and passes run until nothing new is learned.
+	/// FOR: seeing what VCDS calls a text id, and which ODX id (`IDE`/`MAS`)
+	/// that text names. Each record of `TTTEXT.ROD` is enciphered under its
+	/// own id, so every one reads, digits included — seconds, nothing guessed.
+	/// `vagcan setup` does the same read into a project's `names.json`.
 	///
 	/// IN: the decrypted, inflated `[TXT]` section of `TTTEXT.ROD` — produced
 	/// by `vagcan dev vcds rod TTTEXT.ROD --dump DIR`, which writes it as
-	/// `DIR/TXT.bin`. Vocabulary comes from `--names` and `--words`; with
-	/// neither, there is nothing to solve against and it refuses.
+	/// `DIR/TXT.bin`. Read as Windows-1252, the English build's code page.
 	///
-	/// OUT: `<id>TAB<plaintext>` per record read with no unresolved letter, to
-	/// stdout or `--out`. Partial readings are counted and dropped, because a
-	/// name with a guessed letter reads exactly like a name without one.
+	/// OUT: one line per record, `<id> TAB <name> TAB <kind> TAB <value>`, to
+	/// stdout or `--out`. Kind and value are the record's tail, empty when it
+	/// has none: kind 2 is an IDE and kind 7 a MAS, so `2 TAB 00594` is
+	/// IDE00594. A count on stderr, with any record that read as neither shape.
 	Tttext {
 		/// The `[TXT]` section, decrypted and inflated.
 		#[arg(value_name = "FILE")]
 		file: String,
-		/// A word list, as `FILE` or `FILE:WEIGHT`. Repeatable. The weight is
-		/// the prior: the label files' own label files are in-domain and must
-		/// outrank a general English list, or the search prefers a rarity to
-		/// the term the label files actually uses. Default weight 8.
-		#[arg(long, value_name = "FILE[:WEIGHT]")]
-		words: Vec<String>,
-		/// Names already recovered, as a `{"id": "name"}` catalog. Their words
-		/// enter the vocabulary at the highest weight.
-		#[arg(long, value_name = "FILE")]
-		names: Option<String>,
-		/// Write the readings here instead of stdout.
+		/// Write the lines here instead of stdout.
 		#[arg(long, value_name = "FILE")]
 		out: Option<String>,
-		/// Write the readings that clear the catalog gate as a
-		/// `{"<text id>": "<name>"}` JSON file — the form `vagcan dev vcds names`
-		/// searches. Far fewer than `--out`: a reading with an ambiguous word,
-		/// a guessed digit or a doubtful ending is dropped rather than shipped.
+		/// Also write every name as `{"<text id>": "<name>"}` JSON — the
+		/// `names.json` that `vagcan setup` writes and `vagcan dev vcds names`
+		/// searches.
 		#[arg(long, value_name = "FILE")]
 		catalog: Option<String>,
-		/// Also write the readings that still hold an unresolved letter, for
-		/// inspection. They are never part of the main output.
-		#[arg(long, value_name = "FILE")]
-		partial: Option<String>,
-		/// How many bootstrap passes at most. A pass that learns no new word
-		/// ends the run early.
-		#[arg(long, default_value_t = 4, value_name = "N")]
-		passes: usize,
-		/// Search effort per record, in branch-and-bound steps.
-		#[arg(long, value_name = "N")]
-		steps: Option<u32>,
-		/// Re-solve this many transferred records independently and report
-		/// whether they agree. Records inside a cluster are read from one
-		/// solve; this is the check that the cluster really was one text.
-		#[arg(long, default_value_t = 0, value_name = "N")]
-		check: usize,
-		/// Restrict `--check` to readings a catalog would ship, rather than
-		/// measuring the transfer over acronym soup no gate would accept.
-		#[arg(long)]
-		gated: bool,
 	},
 
 	/// Count what the label cache holds, table by table.
@@ -384,29 +354,11 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 			stats(&path, named)?;
 			Ok(Outcome::Done)
 		}
-		Tool::Tttext {
-			file,
-			words,
-			names,
-			out,
-			catalog,
-			partial,
-			passes,
-			steps,
-			check,
-			gated,
-		} => {
+		Tool::Tttext { file, out, catalog } => {
 			tttext::run(tttext::Options {
 				file: &file,
-				words: &words,
-				names: names.as_deref(),
 				out: out.as_deref(),
 				catalog: catalog.as_deref(),
-				partial: partial.as_deref(),
-				passes,
-				steps,
-				check,
-				gated,
 			})?;
 			Ok(Outcome::Done)
 		}

@@ -48,9 +48,9 @@ fn long_about() -> String {
          Wiring: OBD-II pin 6 → CAN-H, pin 14 → CAN-L, pin 5 → GND,\n\
          and the adapter's termination jumper OFF.\n\n\
          START HERE\n  \
-         vagcan setup              once, offline: read a VCDS install or an ODIS\n                            \
-         project for names and scalings. With no path given it asks\n                            \
-         which, and offers to download an installation.\n  \
+         vagcan setup              offline: read an ODIS project or a VCDS install\n                            \
+         for names and scalings. With no path given it asks which,\n                            \
+         and offers to download an installation.\n  \
          vagcan devices            is the adapter connected?\n  \
          vagcan info               which car is this?\n  \
          vagcan units              which control units does it have?\n\n\
@@ -117,25 +117,29 @@ struct Cli {
 // than a handful of strings and flags.
 #[derive(Clone, Subcommand)]
 enum Command {
-	/// Learn a car from a VCDS installation or an ODIS project. Run once. Offline.
+	/// Learn a car from a VCDS installation or an ODIS project. Offline.
 	///
 	/// Everything the label files contribute — the parsed label files
-	/// themselves, the measurement names, the `.rod` section keys — is derived
-	/// from somebody else's data and cannot be shipped with this tool. This
-	/// recovers it from what you have.
+	/// themselves, the measurement names, the `.rod` section keys, the
+	/// channels — is derived from somebody else's data and cannot be shipped
+	/// with this tool. This recovers it from what you have.
 	///
-	/// Two sources, and with no path given it asks which. A VCDS installation
-	/// gives names; an extracted ODIS-Service project gives names *and*
-	/// scalings, per identifier, with no drive required. Both land in one
-	/// project under `~/.vagcan/data/<id>/`, and a second source is added to
-	/// a project rather than replacing what is in it.
+	/// Two sources, and with no path given it asks which. An extracted
+	/// ODIS-Service project gives names and scalings for every unit it
+	/// describes, with no drive required. A VCDS installation gives names and
+	/// fault text, and scalings for the units of a surveyed car: run `vagcan dev
+	/// survey` on the car, then this again with the installation still in
+	/// place. Both land in one project under `~/.vagcan/data/<id>/`, and a
+	/// second source is added to a project rather than replacing what is in it;
+	/// where both describe a channel, ODIS wins.
 	///
 	/// An ODIS project reads in seconds; a VCDS installation takes minutes,
-	/// mostly in the name recovery. It touches no car. Running it again on a
-	/// source already in the project reads that source again and replaces what
-	/// it wrote before, leaving every other source's data where it is; a VCDS
-	/// run skips each step whose output is already newer than what it reads,
-	/// and `--refresh` redoes them.
+	/// most of them searching for keys the first time. It touches no car.
+	/// Running it again on a source already in the project replaces what that
+	/// source wrote before and leaves every other source's data where it is,
+	/// and a second VCDS installation replaces the first. A VCDS run skips the
+	/// copy and the label files when they are newer than what they read, and
+	/// `--refresh` redoes them.
 	///
 	/// No VCDS installation: https://www.ross-tech.com/vcds/download/
 	Setup {

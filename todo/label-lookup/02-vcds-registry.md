@@ -5,7 +5,9 @@ module, `dtc` for `INC`), `vag-data-db` (the `reading` rows), `vag-cli-diag` (`s
 `dev vcds`), `vag-cli-core` (resolution) · **Needs the car:** no — the gates run on the private
 data under `~/.vagcan` · **Depends:** [`research/vcds-registry/README.md`](../../research/vcds-registry/README.md)
 
-**State:** filed 2026-09-28, not started. Its own branch, reviewed before merge.
+**State:** built 2026-09-28 on `feat/vcds-registry-p2` (phases 1–4 and the acceptance below);
+not merged, not driven. Phase 1 (`TTTEXT` read exactly) was done the same day on
+`feat/vcds-registry`, which this branch continues.
 
 ## What the owner asked
 
@@ -121,10 +123,19 @@ the unit's `.rod [DTC]` → a row of `RD.rod`), and reuses its pieces: file choi
 - **Private data**, skipped without it:
   - The 18 car-proven rows that VCDS lists — gearbox 12, engine 3, cluster 3 of its 8 — agree on
     DID, length, byte order, factor and offset, and enum levels.
-  - The 15 `IDE–ENG` pairs from the gearbox logs resolve.
+  - The 13 `IDE–ENG` pairs from the gearbox logs resolve.
   - **The same checks fail at 0-based indexing.** Neighbouring rows of one key are
     near-duplicates, so an off-by-one looks plausible: `check_gearbox.py` gets 12/12 at 1-based
     and 11/12 at 0-based.
+  - It needs `RM.rod`'s key, and prints `skipped:` and passes without it — a green run of
+    `cargo test` does not say it ran. The owner's `rod-keys.json` gets that key from `vagcan
+    setup` on the English install; until then point the test at a cache that has it and look
+    for the `ok` with no `skipped:` line:
+
+    ```sh
+    VAGCAN_ROD_KEYS=<a rod-keys.json holding RM.rod's key> \
+      cargo test -p vag-data-labels --lib the_reference_cars_proven_rows -- --nocapture
+    ```
 - **A report against ODIS** on the reference car's units: every disagreement listed. This is not
   a gate.
 - **The usual checks:** `cargo test --workspace`, clippy with `-D warnings`, `cargo fmt`, and the
@@ -148,13 +159,95 @@ the unit's `.rod [DTC]` → a row of `RD.rod`), and reuses its pieces: file choi
    (README §6a), so its rows take their names and units from an English install on the same
    machine, by text id and unit id. Before relying on that, check that those ids agree between
    installs: compare the `RM.rod` rows of one unit in RU and EN. With no English install there
-   is nothing to fall back to, and the row keeps its IDE/MAS id as its name — not asked, the
-   only thing left.
+   is nothing to fall back to, and the row is named by its identifier: its IDE/MAS id comes
+   from the same shifted text table — not asked, the only thing left.
 4. **`calibrate` is deferred** — no decision until this task is merged. It is then needed only
    for:
    - shifted units;
    - units with no VCDS file, like this car's BCM;
    - measurements no list has, like the cluster's clock `2238`–`223C`.
+
+   **Decided later the same day (owner, 2026-09-28): `calibrate` goes, entirely**, once this
+   task is done — «давай полностью вырежем calibrate. Он скорее паразитный и никто этим
+   заморачиваться не будет». Its own change, after this one merges.
+
+## Result (2026-09-28)
+
+**The owner's `dash.toml` builds from a VCDS installation alone.** A project set up from the
+English 26.3 install with no ODIS project and no proven rows (a scratch `HOME`) builds the same
+plan as the ODIS project does: 19 channels on 4 units, 5 pages, 4 alarms, the stopwatch and the
+cruise lever. Every channel has the same identifier, bit layout, sign, byte order, factor,
+offset, unit, rate and ODX id. What differs:
+- four channels are `declared` rather than `proven`, because that project had no proven rows;
+- two automatic names — boost's specified value and the cruise control's status — are worded
+  differently by VCDS and ODIS;
+- two of the cruise switch's state names are worded differently too;
+- the lever's rocker states are listed in another order, with the same bands behind `next`
+  and `previous`.
+
+**`setup`, step 5, on the owner's 15 units:**
+- 5,314 channels for 14 units. The BCM has no file in any install checked.
+- 857 registry rows are not channels (raw, text, a type not decoded).
+- The first run took 2 min 40 s, most of it key searches, about 1,270 CPU-s. A second run
+  takes 6 s.
+
+**The gate on the private data** (`registry::tests::the_reference_cars_…`):
+- The gearbox's 12 proven rows, whole, and 0-based numbering fails them.
+- The engine's 3 through `[INC]`.
+- The cluster's 3 listed rows. `22B8` is raw bytes in VCDS and `22D2` nine bits: the proven
+  rows outrank both.
+- The gear and selector text tables.
+- The proven units.
+- All 13 `IDE–ENG` pairs of this car's gearbox logs.
+
+**Also changed on the way:**
+- A cached `.rod` key is used only if it opens the section. Keys are cached by file name, and
+  every VCDS release re-encrypts its files, so a key from 25.12 used to shut a 26.3 section for
+  good.
+- Type-4 registry rows (OBD-II mirrors) take SAE J1979's conversion from `crate::obd`.
+- A channel's ODX id is its field's, from `f10`'s record, and not the whole identifier's.
+
+## Left after the build
+
+1. **Which platform file a unit reads.** It is the first readable in name order, so the gateway
+   reads `EV_GatewNF_AU37`, not `_SK37`. Measured on the gateway and park assist, the brands'
+   lists differ by 1–5 rows of the same identifiers. The fix is to choose by the car:
+   `chassis.clb`, as VCDS does, or the identifiers the unit answered in its survey.
+2. **`measure` finds its roles by name**, and VCDS words the gear, boost and shaft speeds
+   differently from ODIS. With the owner's proven rows nothing changes. A VCDS-only owner with
+   no drive gets speed, engine speed, pedal and a gear — the engine's `210F`, the unsettled
+   channel `extracted.rs` warns about — but no boost and no shaft speeds. The fix is roles by
+   ODX id, which ODIS and VCDS share.
+3. **A Russian-only install** (decision 3, fall back to English names) is not built. Today its
+   channels are named by their identifier in hex and carry no ODX id — the ODX id comes from
+   the same shifted text table — so a `dash.toml` `unit:IDE…` reference cannot resolve there.
+4. **Not built:**
+   - the `dev vcds` command that prints one unit's rows;
+   - `[INC]` for the fault chain (`UnitLookup::NoSection`).
+5. **The shared pool can mix two builds** of one language: the copy is freshness-gated per
+   file. Step 5 reads the installation itself, so it is not affected; the fault chain is.
+6. **Keys are cached by file name.** A key from another build of the same name is tried,
+   refused and searched again, so a machine that alternates two installs of one release
+   searches each time. Caching by the section's own bytes would end that.
+7. **A plain `[MWB]` list loses its first row** (said since the review): a nonzero `product`
+   can spoil any of the row number's last three digits, and a spoiled digit still reads as a
+   digit one time in twenty-five, so keeping a row that "looks intact" would sometimes attach
+   another measurement to the unit. Keeping it needs the section's `product`, which a key search
+   for plain sections would give; none exists. None of the reference car's lists is plain; 29
+   of 103 plain lists in 26.3 keep a first row that reads as a number. A check exists if the
+   owner wants those 29 rows (review, 2026-09-28): a list's two-glyph code is a function of the
+   registry row (20,900 rows seen, each with exactly one code), and the code's second glyph
+   lies outside the spoiled block — it matches the row's code in 29 of 29. With it, a wrong
+   row drops from about one in 1,300 to about one in 5,000: not zero, so the owner's call.
+8. **A lighter way to learn a car's units than a survey.** `units --identify` reads `F187`
+   and `F197` and files nothing. If it read `F19E`/`F1A2` and filed them beside the car, setup
+   could read a car's channels without the survey. Not built; the owner's call.
+9. **The owner's decision: may a VCDS list widen what a sweep asks?** Until it is made,
+   `declared_for_unit` joins the proven rows and ODIS alone, and `dev survey` asks what it
+   asked before VCDS rows existed. Asking the VCDS lists would have taken the reference car
+   from the proven rows' units to 2,067 identifiers with VCDS alone, and 120 more beside
+   ODIS, 44 of them on the airbag unit — each one an identifier the unit's own VCDS list
+   names, from whichever of the family's platform files read first.
 
 ## Out of scope
 

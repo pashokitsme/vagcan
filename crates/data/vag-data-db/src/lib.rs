@@ -669,6 +669,9 @@ pub fn source_languages(db_path: &Path) -> Result<Vec<(String, String, Option<St
 enum Replace {
 	/// Every row this source wrote, whatever variant.
 	Source,
+	/// Every row any source of this kind wrote: a VCDS install's registry rows
+	/// replace the last install's, as its label files do.
+	Kind,
 	/// Only the rows of each variant in the batch.
 	EachVariant,
 }
@@ -683,7 +686,7 @@ enum Replace {
 ///
 /// Returns how many channels landed.
 pub fn put_readings(db_path: &Path, project_dir: &str, variant: &str, readings: &[vag_data_labels::odis::Reading]) -> Result<usize, Error> {
-	write_readings(db_path, project_dir, std::iter::once((variant, readings)), Replace::EachVariant)
+	write_readings(db_path, project_dir, ODIS, std::iter::once((variant, readings)), Replace::EachVariant)
 }
 
 /// Everything one ODIS source says about channels, in **one** transaction,
@@ -703,13 +706,34 @@ pub fn put_all_readings<'a>(
 	project_dir: &str,
 	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Reading])>,
 ) -> Result<usize, Error> {
-	write_readings(db_path, project_dir, variants, Replace::Source)
+	write_readings(db_path, project_dir, ODIS, variants, Replace::Source)
 }
 
-/// The one writer behind [`put_readings`] and [`put_all_readings`].
+/// Everything one VCDS install's measurement registry (`RM.rod`) says about
+/// channels, in one transaction, replacing what **any** VCDS install said
+/// before.
+///
+/// Any, not this one: two installs read into one project would otherwise both
+/// answer for one file stem, and which of them a reader heard would be down to
+/// row order. The last install read is the one, as it already is for the label
+/// files. An ODIS project's rows are another kind of source and stay, and so do
+/// the install's label files, which live in other tables. A variant here is the
+/// stem of the unit's `.rod` file, which `F19E`/`F1A2` pick the same way they
+/// pick an ODIS variant.
+pub fn put_all_vcds_readings<'a>(
+	db_path: &Path,
+	install_dir: &str,
+	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Reading])>,
+) -> Result<usize, Error> {
+	write_readings(db_path, install_dir, VCDS, variants, Replace::Kind)
+}
+
+/// The one writer behind [`put_readings`], [`put_all_readings`] and
+/// [`put_all_vcds_readings`].
 fn write_readings<'a>(
 	db_path: &Path,
-	project_dir: &str,
+	source_dir: &str,
+	kind: &str,
 	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Reading])>,
 	replace: Replace,
 ) -> Result<usize, Error> {
@@ -720,14 +744,22 @@ fn write_readings<'a>(
 	// stay in memory instead of being flushed page by page mid-transaction.
 	conn.pragma_update(None, "cache_size", -65536)?;
 	let tx = conn.transaction()?;
-	let source = source_id(&tx, ODIS, project_dir)?;
+	let source = source_id(&tx, kind, source_dir)?;
 
-	if let Replace::Source = replace {
-		tx.execute(
-			"DELETE FROM reading_level WHERE reading_id IN (SELECT id FROM reading WHERE source_id = ?1)",
-			params![source],
-		)?;
-		tx.execute("DELETE FROM reading WHERE source_id = ?1", params![source])?;
+	match replace {
+		Replace::Source => {
+			tx.execute(
+				"DELETE FROM reading_level WHERE reading_id IN (SELECT id FROM reading WHERE source_id = ?1)",
+				params![source],
+			)?;
+			tx.execute("DELETE FROM reading WHERE source_id = ?1", params![source])?;
+		}
+		Replace::Kind => {
+			let of_kind = "SELECT id FROM reading WHERE source_id IN (SELECT id FROM source WHERE kind = ?1)";
+			tx.execute(&format!("DELETE FROM reading_level WHERE reading_id IN ({of_kind})"), params![kind])?;
+			tx.execute(&format!("DELETE FROM reading WHERE id IN ({of_kind})"), params![kind])?;
+		}
+		Replace::EachVariant => {}
 	}
 
 	let mut written = 0usize;
@@ -750,7 +782,7 @@ fn write_readings<'a>(
 				delete.execute(params![source, variant])?;
 			}
 			for r in readings {
-				let (kind, factor, offset, anchor_raw, anchor_value) = match &r.scaling {
+				let (scaling, factor, offset, anchor_raw, anchor_value) = match &r.scaling {
 					Scaling::Linear(s) => ("linear", Some(s.factor), Some(s.offset), None, None),
 					Scaling::Enum { .. } => ("enum", None, None, None, None),
 					Scaling::Anchor { raw, value } => ("anchor", None, None, Some(*raw), Some(*value)),
@@ -766,7 +798,7 @@ fn write_readings<'a>(
 					r.signed,
 					r.big_endian,
 					r.text_id,
-					kind,
+					scaling,
 					factor,
 					offset,
 					anchor_raw,
@@ -967,16 +999,36 @@ type ReadingRow = (
 	Option<f64>,
 );
 
-/// The channels this cache knows for one ECU variant, by identifier.
-pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data_labels::odis::Reading>, Error> {
+/// The channels this cache knows for one ECU variant, by identifier, every
+/// source's together and unranked — for tests. A reader that ranks the sources
+/// asks each with [`readings_of_kind`].
+#[cfg(test)]
+fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data_labels::odis::Reading>, Error> {
+	read_variant(db_path, variant, None)
+}
+
+/// The channels one kind of source ([`ODIS`], [`VCDS`]) knows for one variant.
+///
+/// Asked per kind because the two kinds can spell a variant alike —
+/// `EV_Brake1UDSContiMK100ESP_036` is both a VCDS file stem and an ODIS
+/// variant — and a reader that ranks one source above the other has to be able
+/// to ask for each on its own.
+pub fn readings_of_kind(db_path: &Path, kind: &str, variant: &str) -> Result<Vec<vag_data_labels::odis::Reading>, Error> {
+	read_variant(db_path, variant, Some(kind))
+}
+
+/// The reader behind [`readings_of`] and [`readings_of_kind`].
+fn read_variant(db_path: &Path, variant: &str, kind: Option<&str>) -> Result<Vec<vag_data_labels::odis::Reading>, Error> {
 	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare(
 		"SELECT id, did, name, unit, bit_offset, bit_length, signed, big_endian, text_id, \
                 scaling, factor, offset, anchor_raw, anchor_value \
-         FROM reading WHERE variant = ?1 ORDER BY did, bit_offset",
+         FROM reading WHERE variant = ?1 \
+           AND (?2 IS NULL OR source_id IN (SELECT id FROM source WHERE kind = ?2)) \
+         ORDER BY did, bit_offset",
 	)?;
 	let rows: Vec<ReadingRow> = stmt
-		.query_map(params![variant], |row| {
+		.query_map(params![variant, kind], |row| {
 			Ok((
 				row.get(0)?,
 				row.get(1)?,
@@ -1049,17 +1101,24 @@ pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data_labels:
 /// the channel is currently called, or they are translating a list of opaque
 /// keys. `MIN()` picks the name rather than an arbitrary row so two runs on one
 /// cache produce the same file.
+///
+/// An id an ODIS row carries takes ODIS's name: a VCDS row can carry the id of
+/// another field — several fields can show one name — and the reader gives the
+/// id to ODIS's field (`vag-cli-core`'s `extracted`), so the reminder names that
+/// one.
 pub fn text_ids(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
 	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare(
-		"SELECT text_id, MIN(name) FROM reading \
-         WHERE text_id IS NOT NULL AND text_id <> '' GROUP BY text_id ORDER BY text_id",
+		"SELECT r.text_id, COALESCE(MIN(CASE WHEN s.kind = ?1 THEN r.name END), MIN(r.name)) \
+         FROM reading r LEFT JOIN source s ON s.id = r.source_id \
+         WHERE r.text_id IS NOT NULL AND r.text_id <> '' GROUP BY r.text_id ORDER BY r.text_id",
 	)?;
-	let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+	let rows = stmt.query_map(params![ODIS], |row| Ok((row.get(0)?, row.get(1)?)))?;
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// How much of a car an ODIS source described: `(variants, channels)`.
+/// How much of a car the sources described: `(variants, channels)`, an ODIS
+/// project's rows and a VCDS install's registry rows together.
 ///
 /// One query rather than `reading_variants(…).len()`, because a caller that
 /// wants the size of the answer should not have to materialise it — a project
@@ -1068,9 +1127,10 @@ pub fn text_ids(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
 /// happens. Both halves ride `idx_reading_lookup`, so it stays in milliseconds
 /// on the owner's 92 MB cache.
 ///
-/// `(0, 0)` for a project built from a VCDS installation alone: those rows are
-/// label files rather than readings and live in another table, which is D1's
-/// split. [`row_counts`] is the per-table dump for somebody who wants that.
+/// `(0, 0)` for a project whose VCDS installation was read with no car
+/// surveyed: its label files live in another table, which is D1's split, and
+/// the registry rows come only for a surveyed car's units. [`row_counts`] is
+/// the per-table dump for somebody who wants that.
 pub fn channel_counts(db_path: &Path) -> Result<(u64, u64), Error> {
 	let conn = open_existing(db_path)?;
 	let (variants, channels): (i64, i64) = conn.query_row("SELECT COUNT(DISTINCT variant), COUNT(*) FROM reading", [], |row| {
@@ -1104,11 +1164,36 @@ pub fn levels_predate_bounds(db_path: &Path, variant: &str) -> Result<bool, Erro
 	Ok(conn.query_row(&sql, params![variant], |row| row.get(0))?)
 }
 
-/// Every ECU variant this cache holds readings for, in name order.
-pub fn reading_variants(db_path: &Path) -> Result<Vec<String>, Error> {
+/// Every ECU variant this cache holds readings for, in name order, every
+/// source's together — for tests; see [`reading_variants_of`].
+#[cfg(test)]
+fn reading_variants(db_path: &Path) -> Result<Vec<String>, Error> {
 	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare("SELECT DISTINCT variant FROM reading ORDER BY variant")?;
 	let rows = stmt.query_map([], |row| row.get(0))?;
+	Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// How many channels one kind of source ([`ODIS`], [`VCDS`]) holds.
+pub fn reading_count_of(db_path: &Path, kind: &str) -> Result<u64, Error> {
+	let conn = open_existing(db_path)?;
+	let n: i64 = conn.query_row(
+		"SELECT COUNT(*) FROM reading WHERE source_id IN (SELECT id FROM source WHERE kind = ?1)",
+		params![kind],
+		|row| row.get(0),
+	)?;
+	Ok(n.max(0) as u64)
+}
+
+/// Every ECU variant one kind of source ([`ODIS`], [`VCDS`]) holds readings
+/// for, in name order.
+pub fn reading_variants_of(db_path: &Path, kind: &str) -> Result<Vec<String>, Error> {
+	let conn = open_existing(db_path)?;
+	let mut stmt = conn.prepare(
+		"SELECT DISTINCT variant FROM reading \
+         WHERE source_id IN (SELECT id FROM source WHERE kind = ?1) ORDER BY variant",
+	)?;
+	let rows = stmt.query_map(params![kind], |row| row.get(0))?;
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
@@ -1565,6 +1650,78 @@ mod tests {
 		assert_eq!(readings_of(&ws.db_path, "EV_ECM").unwrap().len(), 1);
 		// And one source row, not one per run.
 		assert_eq!(sources_of(&ws.db_path).unwrap(), [("odis".to_string(), "/x/SK37X".to_string())]);
+	}
+
+	#[test]
+	fn the_glossary_hint_for_an_id_odis_carries_is_odis_s_name() {
+		// A VCDS row can carry an id ODIS gives another field — several fields
+		// can show one name — and the reader gives the id to ODIS's field. The
+		// glossary's reminder of what a channel is called follows the same rule.
+		let ws = TempWorkspace::new("hint");
+		let linear = Scaling::Linear(vag_data_labels::LinearScale { factor: 1.0, offset: 0.0 });
+		let with_id = |did, name: &str, id: &str| vag_data_labels::odis::Reading {
+			text_id: Some(id.to_string()),
+			..reading(did, name, linear.clone())
+		};
+		put_readings(&ws.db_path, "/x/SK37X", "EV_Unit_001", &[with_id(0x2203, "the odis name", "IDE90001")]).unwrap();
+		put_all_vcds_readings(
+			&ws.db_path,
+			"/x/vcds-en",
+			[(
+				"EV_Unit_VW37",
+				&[with_id(0x2CD1, "a vcds name", "IDE90001"), with_id(0x2CD2, "only vcds", "IDE90002")][..],
+			)],
+		)
+		.unwrap();
+		assert_eq!(
+			text_ids(&ws.db_path).unwrap(),
+			[
+				("IDE90001".to_string(), "the odis name".to_string()),
+				("IDE90002".to_string(), "only vcds".to_string())
+			]
+		);
+	}
+
+	#[test]
+	fn a_vcds_install_and_an_odis_project_keep_their_channels_apart_under_one_variant_name() {
+		// `EV_Brake1UDSContiMK100ESP_036` is both a VCDS file stem and an ODIS
+		// variant: a reader ranking one source over the other must be able to
+		// ask each for its own rows, and rereading one must not touch the other.
+		let ws = TempWorkspace::new("kinds");
+		let linear = |factor| Scaling::Linear(vag_data_labels::LinearScale { factor, offset: 0.0 });
+		let variant = "EV_Brake1UDSContiMK100ESP_036";
+		put_readings(&ws.db_path, "/x/SK37X", variant, &[reading(0x1800, "odis", linear(0.1))]).unwrap();
+		put_all_vcds_readings(
+			&ws.db_path,
+			"/x/vcds-en",
+			[(
+				variant,
+				&[reading(0x1800, "vcds", linear(0.01)), reading(0x1822, "vcds", linear(1.0))][..],
+			)],
+		)
+		.unwrap();
+
+		assert_eq!(readings_of(&ws.db_path, variant).unwrap().len(), 3, "the plain read sees both sources");
+		let odis = readings_of_kind(&ws.db_path, ODIS, variant).unwrap();
+		assert_eq!(odis.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["odis"]);
+		assert_eq!(readings_of_kind(&ws.db_path, VCDS, variant).unwrap().len(), 2);
+		assert_eq!(reading_variants_of(&ws.db_path, VCDS).unwrap(), [variant]);
+		assert_eq!(
+			(reading_count_of(&ws.db_path, VCDS).unwrap(), reading_count_of(&ws.db_path, ODIS).unwrap()),
+			(2, 1)
+		);
+
+		// Rereading the install replaces its rows and leaves the project's.
+		put_all_vcds_readings(&ws.db_path, "/x/vcds-en", [(variant, &[reading(0x1822, "vcds", linear(1.0))][..])]).unwrap();
+		assert_eq!(readings_of_kind(&ws.db_path, VCDS, variant).unwrap().len(), 1);
+		assert_eq!(readings_of_kind(&ws.db_path, ODIS, variant).unwrap().len(), 1);
+
+		// And so does reading another install: two installs answering for one
+		// stem would leave which of them a reader heard to row order.
+		put_all_vcds_readings(&ws.db_path, "/x/vcds-ru", [(variant, &[reading(0x1800, "ru", linear(0.01))][..])]).unwrap();
+		let vcds = readings_of_kind(&ws.db_path, VCDS, variant).unwrap();
+		assert_eq!(vcds.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["ru"]);
+		assert_eq!(readings_of_kind(&ws.db_path, ODIS, variant).unwrap().len(), 1);
 	}
 
 	#[test]

@@ -23,16 +23,16 @@
 //! chain and declares it per ECU variant, and three rows this project had
 //! proved by driving came back identical out of the ODIS file with no drive,
 //! two of them engine-speed channels with opposite byte order. So the top two
-//! rows are both the ODIS project — paired with VCDS wording, then alone.
+//! rows are both the ODIS project — paired with a VCDS installation, then alone.
 //!
-//! **The two sources compose, and the top row is that composition.** What an
-//! ODIS project calls a channel is real but machine-phrased —
-//! `Engine_temperature`, `Brake_pedal_information_plausibility` — and each one
-//! carries a text id (`MAS06602`) which is *the same key* VCDS's recovered
-//! `names.json` is written under. So one source gives the structure and the
-//! other gives the wording for the very same rows, and offering that pair as a
-//! first-class answer is better than leaving somebody to discover it by running
-//! `setup` twice.
+//! **The two sources compose, and the top row is that composition.** ODIS
+//! leads wherever it describes a channel; a VCDS installation adds fault text
+//! and, for a surveyed car, the channels ODIS lacks. It could one day give the
+//! wording too — `TTTEXT.ROD` names the same `IDE`/`MAS` ids an ODIS row
+//! carries, and `odx-ids.json` keeps which — but nothing reads that join yet,
+//! so an ODIS channel keeps ODIS's phrasing. Offering the pair as a first-class
+//! answer is better than leaving somebody to discover it by running `setup`
+//! twice.
 //!
 //! **What the VCDS line may not claim.** An earlier version of it said VCDS
 //! supplies fault names, implying ODIS cannot. ODIS can: the project carries
@@ -208,15 +208,12 @@ enum Pick {
 /// the clear; the loader for the last of those is still being written, which is
 /// a limit of this build and not a property of the format, so no line here says
 /// VCDS is needed for fault names. A VCDS installation carries wording and
-/// fault text and provably not scalings (`.archive/research/labels/rod-labels.md`
-/// §4.0c), and it has no per-variant channel list at all — so its line says
-/// what it is *for*, which is a car no ODIS project covers.
+/// fault text, and the channels of a surveyed car's units through its registry
+/// `RM.rod` — where ODIS covers every variant, and a VCDS file of a shifted
+/// unit cannot be opened at all — so its line says what it is *for*, which is
+/// a car no ODIS project covers, and the pair's line says which one leads.
 const MENU: [(&str, &str, Pick); 4] = [
-	(
-		"ODIS + VCDS names",
-		"channels and scalings from ODIS, wording from VCDS",
-		Pick::OdisAndNames,
-	),
+	("ODIS + VCDS", "ODIS first, VCDS for what ODIS lacks", Pick::OdisAndNames),
 	(
 		"ODIS project",
 		"a folder like SK37X — what to read, and how to scale it",
@@ -231,7 +228,13 @@ const MENU: [(&str, &str, Pick); 4] = [
 ];
 
 /// What the second question asks, once an ODIS project is in hand.
-const NAMES_QUESTION: &str = "Where should the measurement names come from?";
+///
+/// Not "where should the names come from": an ODIS channel keeps ODIS's
+/// phrasing whatever is added beside it — the VCDS↔ODIS name join is written,
+/// not read — so offering VCDS as the names' source promised a choice that
+/// changes nothing. What a VCDS installation adds is fault text and the
+/// channels ODIS lacks.
+const NAMES_QUESTION: &str = "Add a VCDS installation as well?";
 
 /// What answering the second question does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -241,19 +244,19 @@ enum Wording {
 	Skip,
 }
 
-/// The second menu: where the wording for the ODIS channels comes from.
+/// The second menu: the VCDS installation to add beside the ODIS project.
 ///
-/// **Skipping is a real answer and it is on the list.** A project holding ODIS
-/// structure and no wording is valid and useful — the channels keep their
-/// machine phrasing (`Engine_temperature`) and everything reads and scales — so
-/// abandoning here must land on that rather than on a failed `setup`. Offering
+/// **Skipping is a real answer and it is on the list.** A project holding the
+/// ODIS project alone is valid and useful — everything it describes reads and
+/// scales — so abandoning here must land on that rather than on a failed
+/// `setup`. Offering
 /// the download here too, rather than sending somebody back to the first menu
 /// for it, is the same argument: they have already answered the expensive
 /// question.
 const NAMES_MENU: [(&str, &str, Wording); 3] = [
-	("VCDS installation", "point at one — its text table carries the wording", Wording::Point),
+	("VCDS installation", "point at one — fault text, and channels ODIS lacks", Wording::Point),
 	("Download VCDS", "fetch Ross-Tech's installer, about 90 MB", Wording::Download),
-	("Skip the names", "the channels keep the phrasing ODIS gives them", Wording::Skip),
+	("Skip VCDS", "the ODIS project alone", Wording::Skip),
 ];
 
 /// Where the wording comes from, or `None` for none.
@@ -440,10 +443,9 @@ pub fn choose(io: &mut impl Asker, dialog: &mut impl Dialog, preselected: Option
 /// **Giving up on the second question is not giving up on the run.** An empty
 /// answer at the first question backs out to the menu, because nothing has been
 /// decided yet; abandoning the second lands on the ODIS project alone,
-/// which is exactly what the row below this one would have produced. A project
-/// with structure and no wording reads and scales perfectly well — the channels
-/// simply keep the phrasing ODIS gives them — so a half-finished pair is a
-/// smaller result, never a failed `setup`.
+/// which is exactly what the row below this one would have produced. The ODIS
+/// project alone reads and scales everything it describes, so a half-finished
+/// pair is a smaller result, never a failed `setup`.
 fn odis_and_names(io: &mut impl Asker, dialog: &mut impl Dialog) -> Result<Option<Choice>> {
 	let Some(source) = ask_for(io, dialog, Look::Odis, BACK)? else {
 		return Ok(None);
@@ -454,7 +456,7 @@ fn odis_and_names(io: &mut impl Asker, dialog: &mut impl Dialog) -> Result<Optio
 	// somebody who changed their mind needs to read.
 	let names = match io.ask(NAMES_QUESTION, &names_options(), 0)? {
 		Some(row) => match NAMES_MENU.get(row).map(|(_, _, wording)| *wording) {
-			Some(Wording::Point) => ask_for(io, dialog, Look::Vcds, "skips this and keeps the ODIS wording")?,
+			Some(Wording::Point) => ask_for(io, dialog, Look::Vcds, "skips this and keeps the ODIS project alone")?,
 			Some(Wording::Download) => Some(Source::DownloadVcds),
 			// A row outside the menu names nothing, which is no wording either.
 			Some(Wording::Skip) | None => None,
@@ -465,8 +467,8 @@ fn odis_and_names(io: &mut impl Asker, dialog: &mut impl Dialog) -> Result<Optio
 		// Wrapped by hand, like every other message this command prints: `say`
 		// does not clip, so a sentence left to the terminal comes out ragged.
 		io.say(
-			"No names source — the channels will read under the phrasing ODIS gives\n\
-             them. Adding one later is another `vagcan setup` into this project.",
+			"No VCDS installation — the project holds the ODIS project alone. Adding\n\
+             one later is another `vagcan setup` into this project.",
 		)?;
 	}
 	Ok(Some(Choice { source, names }))
@@ -1178,7 +1180,7 @@ mod tests {
 		// applying when the tool was rebuilt around ODIS. What leads now is the
 		// two together: ODIS says which identifiers a variant answers and how
 		// to scale them, VCDS supplies the wording for the very same rows, and
-		// both sides key on the same text id. The pre-highlighted row should be
+		// both sides name the same text ids. The pre-highlighted row should be
 		// the one that finishes the job most completely.
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
@@ -1194,7 +1196,7 @@ mod tests {
 		assert_eq!(chosen.names, Some(Source::Vcds { dir: install }));
 		assert_eq!(
 			io.seen[0].1.iter().map(|(label, _)| label.as_str()).collect::<Vec<_>>(),
-			["ODIS + VCDS names", "ODIS project", "VCDS installation", "Download VCDS"]
+			["ODIS + VCDS", "ODIS project", "VCDS installation", "Download VCDS"]
 		);
 		assert_eq!(io.highlights[0], 0, "and it is the row the highlight starts on");
 	}
@@ -1249,10 +1251,9 @@ mod tests {
 
 	#[test]
 	fn abandoning_the_wording_leaves_a_project_rather_than_a_failed_run() {
-		// A project with structure and no wording reads and scales perfectly
-		// well — the channels keep the phrasing ODIS gives them. So skipping,
-		// quitting the second menu, and leaving its directory question empty
-		// are all the same answer, and none of them is a failed `setup`.
+		// The ODIS project alone reads and scales everything it describes. So
+		// skipping, quitting the second menu, and leaving its directory question
+		// empty are all the same answer, and none of them is a failed `setup`.
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
 		let alone = Some(Choice::only(Source::Odis { dir: project.clone() }));
@@ -1265,7 +1266,7 @@ mod tests {
 			assert_eq!(choose(&mut io, &mut no_dialog(), None).unwrap(), alone);
 			// Asserted either side of the hand-wrap, never across it.
 			let said = io.all_said();
-			assert!(said.contains("No names source"), "it says what that means: {said}");
+			assert!(said.contains("No VCDS installation"), "it says what that means: {said}");
 			assert!(said.contains("into this project"), "and how to add one later: {:?}", io.said);
 		}
 	}
@@ -1317,8 +1318,8 @@ mod tests {
 		// row would do the wrong thing.
 		for (label, _, pick) in MENU {
 			match pick {
-				Pick::OdisAndNames => assert!(label.contains("ODIS") && label.contains("names"), "{label}"),
-				Pick::Dir(Look::Odis) => assert!(label.contains("ODIS") && !label.contains("names"), "{label}"),
+				Pick::OdisAndNames => assert!(label.contains("ODIS") && label.contains("VCDS"), "{label}"),
+				Pick::Dir(Look::Odis) => assert!(label.contains("ODIS") && !label.contains("VCDS"), "{label}"),
 				Pick::Dir(Look::Vcds) => assert!(label.contains("VCDS installation"), "{label}"),
 				Pick::Download => assert!(label.contains("Download"), "{label}"),
 			}
@@ -1344,7 +1345,7 @@ mod tests {
 		// that only VCDS can name a fault, which is a gap in this build rather
 		// than a property of the sources.
 		assert!(menu.contains("how to scale it"), "the ODIS line says what only it supplies: {menu}");
-		assert!(menu.contains("wording from VCDS"), "the pair says what each half brings: {menu}");
+		assert!(menu.contains("VCDS for what ODIS lacks"), "the pair says which half leads: {menu}");
 		assert!(menu.contains("no ODIS project covers"), "the VCDS line says what it is for: {menu}");
 		assert!(!menu.contains("fault names"), "VCDS is not the only source of those: {menu}");
 	}

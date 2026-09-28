@@ -22,7 +22,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 | Command | What it does |
 |---|---|
 | `vagcan` | Shows where you stand: adapter, car data, what to type next |
-| `vagcan setup` | Reads an ODIS project or a VCDS installation once, offline. Takes seconds for ODIS, minutes for VCDS |
+| `vagcan setup` | Reads an ODIS project or a VCDS installation, offline. Takes seconds for ODIS, minutes for VCDS |
 | `vagcan devices` | Lists USB-CAN adapters and dash boards on USB |
 | `vagcan info` | VIN, engine and gearbox identity |
 | `vagcan units` | Control units the gateway lists. `--identify` makes each one name itself |
@@ -45,7 +45,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 ### Where names and numbers come from
 
 - **ODIS-Service project** (preferred): channels, byte layout, scaling and fault text for every control-unit variant.
-- **VCDS installation** (fallback): channel names and fault text, no scalings.
+- **VCDS installation** (fallback): channel names, fault text, and scalings for the units of a car you have surveyed.
 - **Your own drives**: scalings proven on the car always override both.
 
 Everything lives under `~/.vagcan/`. Nothing about any car is built into the tool.
@@ -95,7 +95,7 @@ Updated 2026-09-28.
 - [ ] OLED on the board, and an enclosure with snap-in boards (waiting for the display)
 - [ ] Page the dash panel with buttons on its pins, or with the cruise-control buttons while cruise is off; LIMIT or a pin button for the stopwatch (built, waiting for the car)
 - [ ] `vagcan faults` on the car with fault text from ODIS only
-- [ ] Scalings and names from a VCDS install alone, without an ODIS project (for about 60 % of VCDS's unit files; the rest need VCDS's own runtime key)
+- [ ] Scalings and names from a VCDS install alone, without an ODIS project (built 2026-09-28; checked offline on the reference car, waits for a drive)
 - [ ] 0–60 and 0–100 km/h stopwatch on the dash (built; a test run needs the car)
 - [ ] Dash counts the car's stored fault codes once after start and shows the number with a warning triangle (built, waiting for the car)
 
@@ -168,13 +168,21 @@ vagcan setup ~/Downloads/SK37X  # or give the path directly
 `setup` reads one of two sources:
 
 - **ODIS-Service project**, the better one. It describes every channel of every control-unit variant: where the value is in the reply and how to scale it.
-- **VCDS installation**, the fallback, for cars no ODIS project covers. It has names and fault text but no scalings.
+- **VCDS installation**, the fallback, for cars no ODIS project covers. It has names and fault text, and scalings for the units of a surveyed car. About 40 % of its unit files are locked to VCDS itself; ODIS covers those.
 
-The first menu entry reads both: structure from ODIS, wording from VCDS.
+With VCDS alone, the scalings come in a second run, after a survey. Keep the installation until then:
+
+```sh
+vagcan setup ~/vcds    # names and fault text
+vagcan dev survey      # on the parked car, with a cable adapter
+vagcan setup ~/vcds    # the surveyed units' channels
+```
+
+The first menu entry reads both. Where both describe a channel, ODIS wins; VCDS fills in what ODIS lacks.
 
 The result is saved as a **project** in `~/.vagcan/data/<project id>/`. A project is a **platform, not a single car**: VW files every Octavia III, Karoq and Kodiaq under `SK37X`. Data about one specific car is saved in `~/.vagcan/cars/<VIN>/`. See [which cars each ODIS project covers](docs/odis-project-mapping.md).
 
-**VCDS is Ross-Tech's software.** It is free from <https://www.ross-tech.com/vcds/download/>. `vagcan setup` can download and unpack an unmodified copy for you. The data is read once and nothing from it is built into the tool.
+**VCDS is Ross-Tech's software.** It is free from <https://www.ross-tech.com/vcds/download/>. `vagcan setup` can download and unpack an unmodified copy for you. The data is read from your copy, and nothing from it is built into the tool.
 
 ## Reading the car
 
@@ -216,6 +224,7 @@ Everything is in `~/.vagcan/`. Nothing is written to the checkout.
   data/<project id>/    one directory per platform, e.g. SK37X
     cache.sqlite          channels, scalings, fault text, label rows
     names.json            text id → name, from VCDS
+    odx-ids.json          text id → the IDE/MAS id it names, from VCDS
     names-odis.json       text id → name, from ODIS
     rod-keys.json         recovered .rod section keys
     sources.json          which ODIS project or VCDS installation was read

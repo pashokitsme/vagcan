@@ -341,11 +341,17 @@ fn candidates(store: &CatalogStore, extracted: &crate::extracted::Extracted, uni
 			unit.odx_version.as_deref(),
 		) {
 			let ReadId::Uds(did) = def.address;
+			// One row per identifier: measure reads an identifier once, as one
+			// channel ([`push`]). The unit's own row replaces the standard's there;
+			// of the unit's own rows the first stays, because `for_unit` gives them
+			// in the order the sources rank — proven, ODIS, VCDS — and a later field
+			// of the same response replacing it let the lower-ranked source win.
 			match out.iter_mut().find(|c| c.request == request && c.did == did) {
-				Some(existing) => {
-					existing.def = def;
-					existing.proven = true;
+				Some(standard) if !standard.proven => {
+					standard.def = def;
+					standard.proven = true;
 				}
+				Some(_) => {}
 				None => out.push(Candidate {
 					request,
 					did,
@@ -402,14 +408,17 @@ fn better(a: &Candidate, b: &Candidate, prefer: Prefer) -> std::cmp::Ordering {
 	}
 }
 
-/// Add a channel, unless that identifier is already being asked for.
+/// Add a channel, unless that identifier is already being asked for, and say
+/// whether it was added.
 ///
 /// The same identifier twice in one request wastes a slot and makes the
 /// response ambiguous to split.
-fn push(into: &mut Vec<Resolved>, channel: Resolved) {
-	if !into.iter().any(|r| r.request == channel.request && r.did == channel.did) {
+fn push(into: &mut Vec<Resolved>, channel: Resolved) -> bool {
+	let taken = into.iter().any(|r| r.request == channel.request && r.did == channel.did);
+	if !taken {
 		into.push(channel);
 	}
+	!taken
 }
 
 /// Resolve every channel a run needs, by name, against what the car reported.
@@ -452,9 +461,20 @@ pub fn resolve(store: &CatalogStore, extracted: &crate::extracted::Extracted, un
 			did: c.did,
 			def: c.def.clone(),
 		};
-		push(&mut found, resolved(spec.key, hits[0]));
+		// The best hit whose identifier no earlier role holds: a row answering to
+		// two roles goes to the first, and the second takes its next row rather
+		// than vanishing.
+		let Some(at) = hits.iter().position(|c| push(&mut found, resolved(spec.key, c))) else {
+			if spec.required {
+				missing.push(Missing {
+					key: spec.key,
+					tried: spec.names.iter().map(|n| n.to_string()).collect(),
+				});
+			}
+			continue;
+		};
 		if spec.key == SPEED {
-			for extra in &hits[1..] {
+			for extra in &hits[at + 1..] {
 				push(&mut found, resolved(CROSS_SPEED, extra));
 			}
 		}
@@ -648,6 +668,56 @@ mod tests {
 		assert_eq!(set.leading_unit.len(), 4);
 		assert!(set.background.is_empty());
 		assert!(set.cross_check_speeds.is_empty());
+	}
+
+	#[test]
+	fn a_second_field_of_one_identifier_does_not_push_out_the_first() {
+		// A response can pack several fields, and each is its own channel. Kept
+		// by identifier, the later field replaced the earlier one — and with a
+		// VCDS row filling a field ODIS lacks after ODIS's own, that made the
+		// lower-ranked source win.
+		let synthetic = Synthetic::new("two-fields");
+		let mut defs = invented_required(0.05);
+		defs.push(MeasurementDef {
+			raw_form: RawForm::for_field(16, 16, false, true).unwrap(),
+			..quantity("Invented status word", "", 0x1001, 1.0)
+		});
+		synthetic.write("SYN0000003", defs);
+		let set = resolve(
+			&synthetic.store(),
+			&crate::extracted::Extracted::none(),
+			&[unit(CLUSTER, "SYN0000003")],
+			false,
+		)
+		.expect("the speed field is still there");
+		assert_eq!(set.leading.source(), "714:1001");
+	}
+
+	#[test]
+	fn a_role_whose_best_identifier_is_taken_falls_to_its_next() {
+		// Measure reads an identifier once, as one channel. A row answering to
+		// two roles is taken by the first — here as a cross-check speed — and the
+		// second then takes its next row: a required role is resolved or reported
+		// missing, never dropped in silence.
+		let synthetic = Synthetic::new("taken");
+		synthetic.write("SYN0000004", invented_required(0.05));
+		synthetic.write(
+			"SYN0000005",
+			vec![quantity("Vehicle speed and accelerator pedal position, invented", "%", 0x2000, 1.0)],
+		);
+		let set = resolve(
+			&synthetic.store(),
+			&crate::extracted::Extracted::none(),
+			&[unit(0x710, "SYN0000005"), unit(CLUSTER, "SYN0000004")],
+			false,
+		)
+		.expect("every required role resolves");
+		assert_eq!(set.leading.source(), "714:1001");
+		assert!(
+			set.cross_check_speeds.iter().any(|r| r.did == 0x2000),
+			"the shared row is a cross-check speed"
+		);
+		assert_eq!(resolved(&set, "pedal").map(|r| (r.request, r.did)), Some((CLUSTER, 0x1004)));
 	}
 
 	#[test]

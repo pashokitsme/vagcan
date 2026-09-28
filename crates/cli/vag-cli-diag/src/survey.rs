@@ -289,23 +289,34 @@ pub fn run_diff(before_path: &str, after_path: &str) -> Result<()> {
 /// Keyed by request id, which is also how [`crate::plan::with_survey`]
 /// reads the file back — so a line that names no unit is dropped rather than
 /// carried forward: nothing can replace it and nothing can watch it.
+///
+/// A unit this run identified but did not sweep — nothing declares anything for
+/// it — is filed only where the cache holds no sweep of it: its identity is
+/// what `setup` reads the car's units from, and replacing an earlier sweep with
+/// it would cost `watch` every identifier that sweep found.
 pub fn merge_survey(cached: &str, fresh: &[String]) -> String {
-	let request_of = |line: &str| -> Option<u16> {
+	let read = |line: &str| -> Option<(u16, bool)> {
 		let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
-		u16::from_str_radix(value["request"].as_str()?, 16).ok()
+		let request = u16::from_str_radix(value["request"].as_str()?, 16).ok()?;
+		// `asked` is a list of spans, as `unit_line` writes it and
+		// `plan::answered_from_survey` reads it; a sweep that got no answer
+		// asked something all the same.
+		let swept = value["asked"].as_array().is_some_and(|asked| !asked.is_empty()) || value["dids"].as_array().is_some_and(|dids| !dids.is_empty());
+		Some((request, swept))
 	};
-	let mut units: std::collections::BTreeMap<u16, String> = std::collections::BTreeMap::new();
+	let mut units: std::collections::BTreeMap<u16, (String, bool)> = std::collections::BTreeMap::new();
 	for line in cached.lines().filter(|l| !l.trim().is_empty()) {
-		if let Some(request) = request_of(line) {
-			units.insert(request, line.to_string());
+		if let Some((request, swept)) = read(line) {
+			units.insert(request, (line.to_string(), swept));
 		}
 	}
 	for line in fresh {
-		if let Some(request) = request_of(line) {
-			units.insert(request, line.clone());
+		let Some((request, swept)) = read(line) else { continue };
+		if swept || !units.get(&request).is_some_and(|(_, held)| *held) {
+			units.insert(request, (line.clone(), swept));
 		}
 	}
-	units.values().map(|line| format!("{line}\n")).collect()
+	units.values().map(|(line, _)| format!("{line}\n")).collect()
 }
 
 /// Write the merged survey where `watch` looks for it, and say where that was.
@@ -478,6 +489,8 @@ pub async fn run<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, options: Op
 	let mut reports = Vec::new();
 	// One JSON line per unit this run read, for the car's own cache.
 	let mut fresh: Vec<String> = Vec::new();
+	// The units identified and not swept, said once at the end.
+	let mut unswept: Vec<String> = Vec::new();
 	let total = order.len();
 	let mut progress = crate::progress::Line::new();
 	for (at, request) in order.into_iter().enumerate() {
@@ -559,10 +572,28 @@ pub async fn run<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, options: Op
 
 		// Nothing declares anything for this unit and nobody aimed a blind sweep
 		// at it. It has been identified and its faults read; it is not fuzzed.
+		// It is filed all the same: `setup` reads the car's units out of the
+		// survey, and this unit's identity is what it needs.
 		if ask.is_empty() {
 			progress.finish();
 			println!("{}", report.summary());
-			println!("{}", crate::declared::no_source_notice(&address.label()));
+			// What the channels would come from, beyond what a sweep may ask.
+			let vcds = !crate::extracted::for_unit(
+				&store,
+				&extracted,
+				report.part_number().as_deref(),
+				report.odx_name().as_deref(),
+				report.odx_version().as_deref(),
+			)
+			.is_empty();
+			println!("{}", crate::declared::no_source_notice(&address.label(), vcds));
+			unswept.push(address.label());
+			let line = unit_line(&report, &address, false, &ask);
+			if let Some(w) = sink.as_mut() {
+				writeln!(w, "{line}")?;
+				w.flush()?;
+			}
+			fresh.push(line);
 			backend = L::release(uds.into_transport());
 			reports.push(report);
 			continue;
@@ -644,6 +675,9 @@ pub async fn run<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, options: Op
 		reports.iter().map(|r| r.hits.len()).sum::<usize>(),
 		started.elapsed().as_secs_f64()
 	);
+	if let Some(notice) = crate::declared::unswept_notice(&unswept) {
+		println!("{notice}");
+	}
 	if let Some(path) = out {
 		println!("written to {path}");
 	}
@@ -656,6 +690,12 @@ pub async fn run<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, options: Op
 		// about a cache that would be unchanged either way.
 		(_, true) => {}
 		(Some(vin), false) => match cache_survey(vin, &fresh) {
+			// A run that swept nothing filed the units' identities alone, and
+			// promising `watch` identifiers it did not find would be false.
+			Ok(path) if reports.iter().all(|r| r.hits.is_empty()) => println!(
+				"The units and what each said about itself are filed under this car in\n  {}",
+				path.display()
+			),
 			Ok(path) => println!(
 				"`vagcan watch` now offers every identifier above, on every unit, as \n\
                  raw bytes — no flag needed. Filed under this car in\n  {}",
@@ -670,14 +710,19 @@ pub async fn run<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, options: Op
              the car. Pass --out FILE to keep it, and `watch --survey FILE` to use it."
 		),
 	}
-	println!(
-		"\nRun this once parked and once driving, then compare:\n  \
-         vagcan dev survey --out parked.jsonl\n  \
-         vagcan dev survey --out driving.jsonl\n  \
-         vagcan dev survey --diff parked.jsonl driving.jsonl\n\
-         The identifiers whose bytes differ are the live measurements, and that list \n\
-         needs no label file."
-	);
+	// Only after a run that swept something: comparing two runs compares what
+	// the units answered, and a run that identified its units and asked them
+	// nothing has no answers to compare.
+	if reports.iter().any(|r| !r.hits.is_empty()) {
+		println!(
+			"\nRun this once parked and once driving, then compare:\n  \
+             vagcan dev survey --out parked.jsonl\n  \
+             vagcan dev survey --out driving.jsonl\n  \
+             vagcan dev survey --diff parked.jsonl driving.jsonl\n\
+             The identifiers whose bytes differ are the live measurements, and that list \n\
+             needs no label file."
+		);
+	}
 	Ok(())
 }
 
@@ -742,6 +787,53 @@ mod tests {
 		// sweep must not be able to empty a good cache.
 		let cached = format!("{}\n", line("7E0", "2029"));
 		assert_eq!(merge_survey(&cached, &[]), cached);
+	}
+
+	/// A unit's line exactly as the survey writes one: identified with `version`,
+	/// asked what `declared` spans, answered with `hits`. Built by the writer,
+	/// so a test of what reads it cannot drift from the shape it reads.
+	fn written(request: u16, version: &[u8], declared: &[u16], hits: &[u16]) -> String {
+		let report = UnitReport {
+			request,
+			ident: vec![(0xF1A2, version.to_vec())],
+			hits: hits.iter().map(|&did| DidHit { did, data: vec![0x0B, 0x34] }).collect(),
+			stats: scan::ScanStats::default(),
+			dtcs: Vec::new(),
+			answered: true,
+		};
+		let declared: std::collections::BTreeSet<u16> = declared.iter().copied().collect();
+		let ask = crate::declared::ask(&declared, None);
+		let address = vag_uds_client::address::UnitAddress::from_request(request).expect("a VW unit");
+		unit_line(&report, &address, !declared.is_empty(), &ask)
+	}
+
+	#[test]
+	fn a_unit_identified_but_not_swept_is_filed_without_replacing_a_sweep() {
+		// `setup` reads the car's units out of this file, so a unit nothing
+		// declares identifiers for is filed all the same — its identity is what
+		// setup needs. But a line that asked nothing must not replace one that
+		// did: that would cost `watch` every identifier the earlier sweep found,
+		// and a sweep that got no answer at all is a sweep too — what it asked is
+		// what lets a dash build refuse a channel this car does not answer.
+		let answered = written(0x713, b"001", &[0x1001, 0x1002], &[0x1001]);
+		let refused = written(0x7E1, b"002", &[0x3800], &[]);
+		let identified = |request, version: &[u8]| written(request, version, &[], &[]);
+		let merged = merge_survey(
+			&format!("{answered}\n{refused}\n"),
+			&[identified(0x713, b"009"), identified(0x7E1, b"009"), identified(0x7E0, b"003")],
+		);
+		let seen = crate::plan::answered_from_survey(&merged);
+		assert_eq!(seen.saw(0x713, 0x1001), Some(true), "the sweep that answered stays: {merged}");
+		assert_eq!(seen.saw(0x7E1, 0x3800), Some(false), "and so does the one that did not: {merged}");
+		assert!(merged.contains("\"7E0\""), "a unit never filed is filed: {merged}");
+		assert_eq!(merged.lines().count(), 3, "{merged}");
+
+		// An identity replaces an identity, and a sweep replaces either.
+		let merged = merge_survey(&merged, &[identified(0x7E0, b"004")]);
+		assert!(merged.contains("303034") && !merged.contains("303033"), "{merged}");
+		let merged = merge_survey(&merged, &[written(0x7E0, b"005", &[0x2029], &[0x2029])]);
+		assert_eq!(crate::plan::answered_from_survey(&merged).saw(0x7E0, 0x2029), Some(true), "{merged}");
+		assert!(!merged.contains("303034"), "{merged}");
 	}
 
 	#[test]

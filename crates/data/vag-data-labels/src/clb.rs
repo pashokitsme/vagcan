@@ -169,7 +169,7 @@ pub fn decrypt_clb(data: &[u8]) -> Vec<u8> {
 mod tests {
 	use super::*;
 	use crate::label::{Record, parse_label};
-	use crate::tea::DELTA;
+	use crate::tea::{tea_cbc_encrypt, tea_encrypt_block};
 
 	/// Synthetic 80-byte `.clb` fixture (TEA-CBC-encrypted with `KEY_CLB`,
 	/// `w7 = 7`) — no proprietary data, produced solely to exercise this
@@ -225,45 +225,6 @@ mod tests {
 		assert_eq!(measurements[1].block, 1);
 		assert_eq!(measurements[1].field, 2);
 		assert_eq!(measurements[1].name, "Coolant");
-	}
-
-	/// Forward TEA block encryption: the "reverse" schedule (s starting at 0,
-	/// running forward, applying the inverse of the decrypt round). Shared by
-	/// the roundtrip sanity check and the non-ASCII regression test, which
-	/// both need to synthesize ciphertext from a chosen plaintext.
-	fn tea_encrypt_block(block: [u8; 8], key: &[u32; 4]) -> [u8; 8] {
-		let mut v0 = u32::from_le_bytes(block[0..4].try_into().unwrap());
-		let mut v1 = u32::from_le_bytes(block[4..8].try_into().unwrap());
-		let mut s = 0u32;
-		for _ in 0..32 {
-			s = s.wrapping_add(DELTA);
-			v0 = v0.wrapping_add((v1 << 4).wrapping_add(key[0]) ^ v1.wrapping_add(s) ^ (v1 >> 5).wrapping_add(key[1]));
-			v1 = v1.wrapping_add((v0 << 4).wrapping_add(key[2]) ^ v0.wrapping_add(s) ^ (v0 >> 5).wrapping_add(key[3]));
-		}
-		let mut out = [0u8; 8];
-		out[0..4].copy_from_slice(&v0.to_le_bytes());
-		out[4..8].copy_from_slice(&v1.to_le_bytes());
-		out
-	}
-
-	/// Forward TEA-CBC encryption, the inverse of `tea_cbc_decrypt`:
-	/// `C_i = TEA_enc(P_i XOR C_{i-1})`, with `C_{-1} = iv`. `plain.len()`
-	/// must be a multiple of 8 (callers pad short records with zero bytes;
-	/// only the first `len` decrypted bytes are ever read back out).
-	fn tea_cbc_encrypt(plain: &[u8], key: &[u32; 4], iv: [u8; 8]) -> Vec<u8> {
-		assert_eq!(plain.len() % 8, 0);
-		let mut out = Vec::with_capacity(plain.len());
-		let mut prev = iv;
-		for block in plain.chunks_exact(8) {
-			let mut xored = [0u8; 8];
-			for i in 0..8 {
-				xored[i] = block[i] ^ prev[i];
-			}
-			let cipher = tea_encrypt_block(xored, key);
-			out.extend_from_slice(&cipher);
-			prev = cipher;
-		}
-		out
 	}
 
 	#[test]

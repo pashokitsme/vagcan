@@ -1,12 +1,13 @@
-//! `vagcan dev vcds names` — search the measurement names recovered from the label
-//! label files.
+//! `vagcan dev vcds names` — search the names in the label files' global text
+//! table.
 //!
-//! A project's `names.json` holds the names `vagcan setup` recovered by
-//! breaking `TTTEXT.ROD`'s per-record substitution cipher
-//! (`.archive/research/labels/tttext-codec.md`). They are keyed by the label files' own text id,
-//! **not** by data identifier: the join from a name to the identifier that
-//! carries it was shown to be structurally absent from the label files
-//! (`.archive/research/labels/label-linkage.md` §3), and no amount of decryption puts it back.
+//! A project's `names.json` holds every record of `TTTEXT.ROD`, which `vagcan
+//! setup` reads exactly — each record under its own key
+//! (`research/vcds-registry/README.md`). They are keyed by the label files' own
+//! text id, **not** by data identifier. The label files do say which identifier
+//! carries a name — in the `RM.rod` registry, which `setup` reads into a
+//! project's channels — but `names.json` holds the names alone, so this list
+//! cannot.
 //!
 //! So this command cannot name a scan result for you. What it can do is answer
 //! "does this car's label files have a name that sounds like the thing I am
@@ -49,8 +50,8 @@ pub fn run(needle: &str, limit: usize, path: &std::path::Path) -> Result<()> {
 	if hits.is_empty() {
 		println!(
 			"No name in the label files contain {needle:?}.\n\n\
-             The catalog is one car's label_files, in English, and it is a list of \n\
-             names only — a name it lacks may still exist on another model."
+             The catalog is every text of one VCDS installation, and it is a list of \n\
+             names only — a name it lacks may still exist in another build."
 		);
 		return Ok(());
 	}
@@ -64,7 +65,7 @@ pub fn run(needle: &str, limit: usize, path: &std::path::Path) -> Result<()> {
 	}
 	println!(
 		"\n{} of {} names matched.\n\n\
-         These are names, not addresses: the label files do not record which data \n\
+         These are names, not addresses: this list does not say which data \n\
          identifier carries which name, so a match here is a hypothesis to test \n\
          against the car, not an identification.",
 		hits.len(),
@@ -77,19 +78,20 @@ pub fn run(needle: &str, limit: usize, path: &std::path::Path) -> Result<()> {
 mod tests {
 	use super::*;
 
+	/// Invented names: the label files' own are Ross-Tech's.
 	fn catalog() -> serde_json::Value {
 		serde_json::json!({
-				"000080": "Absolute intake pressure",
-				"000097": "ACC specified acceleration",
-				"012389": "Button for rear lid unlocking in rear lid",
+				"000017": "Synthetic manifold pressure",
+				"000097": "Cruise target distance",
+				"012389": "Lid switch in the rear lid",
 		})
 	}
 
 	#[test]
 	fn a_search_is_case_insensitive_and_matches_anywhere_in_the_name() {
 		let c = catalog();
-		assert_eq!(search(&c, "intake"), vec![("000080", "Absolute intake pressure")]);
-		assert_eq!(search(&c, "ABSOLUTE"), vec![("000080", "Absolute intake pressure")]);
+		assert_eq!(search(&c, "manifold"), vec![("000017", "Synthetic manifold pressure")]);
+		assert_eq!(search(&c, "SYNTHETIC"), vec![("000017", "Synthetic manifold pressure")]);
 		assert_eq!(search(&c, "pressure").len(), 1);
 		assert!(search(&c, "boost").is_empty(), "no invented synonyms");
 	}

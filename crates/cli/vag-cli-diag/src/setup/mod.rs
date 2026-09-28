@@ -18,10 +18,11 @@
 //! |---|---|---|
 //! | VCDS | the `.rod` files and the fault text, raw | `~/.vagcan/rod/`, shared |
 //! | VCDS | the label files, parsed | `data/<id>/cache.sqlite` |
-//! | VCDS | measurement names, out of `TTTEXT.ROD` | `data/<id>/names.json` |
+//! | VCDS | every name in `TTTEXT.ROD`, by text id | `data/<id>/names.json` |
+//! | VCDS | the `IDE`/`MAS` id each of those texts names | `data/<id>/odx-ids.json` |
 //! | VCDS | `.rod` section keys | `data/<id>/rod-keys.json` |
 //! | ODIS | every variant's channels, by identifier, **with scalings** | `data/<id>/cache.sqlite` |
-//! | ODIS | every `(text id, name)` pair in the project | `data/<id>/names.json` |
+//! | ODIS | every `(text id, name)` pair in the project | `data/<id>/names-odis.json` |
 //!
 //! The copy is what makes a VCDS installation disposable: fault naming reads
 //! `.rod` files straight off disk at run time, so those have to outlive the
@@ -54,8 +55,11 @@
 //! it would read, and `--refresh` forces the lot. That is [`crate::labels`]'s
 //! rule — a cache is trusted only while it is newer than the label files it came
 //! from — applied to the other artefacts rather than a second rule invented for
-//! them. It matters because the names step is minutes of CPU.
+//! them. It matters because recovering a `.rod` section's key is minutes of CPU.
+//! The names are the exception: they are read every run, in seconds, and
+//! written only when they come out different (see `names`).
 
+mod registry;
 pub mod source;
 pub mod vendor;
 
@@ -107,22 +111,6 @@ fn codes_language(file_name: &str) -> Option<&'static str> {
 /// its own file in identifier `F19E`.
 const SHARED_ROD_FILES: &[&str] = &["RD.rod", "MUX.rod"];
 
-/// A general English word list, where the system has one.
-///
-/// The attack on the text table is dictionary-driven, and the label files' own
-/// label files are the strong prior; this is the weak one, for the words VW
-/// uses that no label file happens to contain. Absent on many systems, which is
-/// why it is looked for rather than required.
-const SYSTEM_WORDS: &str = "/usr/share/dict/words";
-
-/// Weight of the label files' own vocabulary against the general list.
-///
-/// The label files are in-domain: when both offer a reading, the label files' word
-/// has to win, or the search prefers an English rarity to the term VW actually
-/// uses.
-const LABEL_WORD_WEIGHT: &str = "8";
-const GENERAL_WORD_WEIGHT: &str = "1";
-
 pub struct Options<'a> {
 	/// The VCDS installation root. Without one, an installation is offered for
 	/// download and the run continues into the same parse.
@@ -161,9 +149,9 @@ pub struct Options<'a> {
 /// failure `datadir::existing_folder` was written to undo for cars.
 struct Chosen {
 	source: source::Source,
-	/// Where the wording for the channels comes from, when the recommended row
-	/// was picked and a source for it was actually given. Always a VCDS source
-	/// by the time it gets here — a download has already been fetched.
+	/// The VCDS installation read beside the ODIS project, when the recommended
+	/// row was picked and one was actually given. Always a VCDS source by the
+	/// time it gets here — a download has already been fetched.
 	names: Option<source::Source>,
 	project: crate::project::Project,
 	/// The projects that were already on disk when this run started — read
@@ -192,7 +180,7 @@ fn choose(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source::Dialog
 		},
 	};
 	let source = fetched(chosen.source, opts)?;
-	// The wording half of the recommended row. Resolved the same way, because a
+	// The VCDS half of the recommended row. Resolved the same way, because a
 	// download is a download whichever question asked for it.
 	let names = chosen.names.map(|from| fetched(from, opts)).transpose()?;
 
@@ -444,7 +432,10 @@ fn locate(dir: &Path, known: &[&str], what: &str, suffix: &str) -> Result<Option
 			return Ok(Some(candidate));
 		}
 	}
-	if !crate::ui::can_ask() {
+	// Nothing of that kind is there at all, so there is nothing to ask: a list
+	// with no choices is an error, and it stopped setup at its first step on an
+	// installation that simply ships no fault text.
+	if !crate::ui::can_ask() || !holds_any(dir, suffix) {
 		return Ok(None);
 	}
 	println!(
@@ -458,6 +449,17 @@ fn locate(dir: &Path, known: &[&str], what: &str, suffix: &str) -> Result<Option
          whose {what} is one of {known:?}"
 	));
 	crate::ui::picker::pick_path(&mut chooser, dir, &[crate::ui::picker::Level::files(what).ending(suffix)])
+}
+
+/// Whether `dir` holds any file ending in `suffix`, case aside — what a picker
+/// for that kind of file would have to offer.
+fn holds_any(dir: &Path, suffix: &str) -> bool {
+	let suffix = suffix.to_ascii_lowercase();
+	std::fs::read_dir(dir).is_ok_and(|entries| {
+		entries
+			.flatten()
+			.any(|e| e.path().is_file() && e.file_name().to_string_lossy().to_ascii_lowercase().ends_with(&suffix))
+	})
 }
 
 /// Whether this text table's key is already in the cache, so no search is due.
@@ -554,6 +556,14 @@ enum Step {
 		what: &'static str,
 		why: String,
 	},
+	/// Not done yet, for a reason that is a step still to take rather than
+	/// something the source lacks: the registry's channels wait for a surveyed
+	/// car. Not a gap — "Done, with gaps" and "a newer VCDS may have it" would
+	/// send the reader to the wrong place — and `why` says what to type.
+	Pending {
+		what: &'static str,
+		why: String,
+	},
 }
 
 /// The command to type when there is no terminal to ask at — what `setup` and
@@ -592,17 +602,21 @@ fn run_with(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source::Dial
 		}
 	}
 
-	// **The wording is read first, and the order is the whole correctness of the
-	// combined row.** `vcds::tttext` writes `names.json` wholesale — it builds a
-	// fresh map and replaces the file — while `read_odis` *merges*, first writer
-	// winning. Reading ODIS first would therefore have the VCDS half overwrite
-	// every ODIS-only name a moment later, and a single combined run would come
-	// out worse than the two runs it is supposed to be equivalent to (spec §5).
-	// This way round, VCDS supplies the wording wherever it recovered any and
-	// ODIS fills in the text ids it alone knows — which is what the row offers.
+	// **The pair's order: the VCDS installation's files, the ODIS project, then
+	// the VCDS registry.** Step 2 trusts its label cache while the cache file is
+	// newer than the label files, and the ODIS read writes that file — read
+	// after it, an installation updated in place would never be read again. The
+	// registry step asks whether this run's ODIS rows describe a unit the
+	// installation has nothing for, so it comes after them. The names do not
+	// care: the text table's read replaces `names.json`, `read_odis` merges into
+	// `names-odis.json`.
+	let beside = match &chosen.names {
+		Some(source::Source::Vcds { dir }) => Some(dir),
+		_ => None,
+	};
 	let mut steps = Vec::new();
-	if let Some(source::Source::Vcds { dir }) = &chosen.names {
-		steps.extend(read_vcds(dir, project, opts.refresh)?);
+	if let Some(dir) = beside {
+		steps.extend(read_vcds_files(dir, project, opts.refresh)?);
 	}
 	steps.extend(match &chosen.source {
 		source::Source::Odis { dir } => {
@@ -613,6 +627,9 @@ fn run_with(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source::Dial
 		// `choose` turns a download into the installation it fetched.
 		source::Source::DownloadVcds => unreachable!("the download is resolved to an installation before this point"),
 	});
+	if let Some(dir) = beside {
+		steps.push(read_vcds_registry(dir, project)?);
+	}
 
 	// Written down so a later command needs no flag. Not a preference — the
 	// answer to "which car did I just set up", which is the one a bare
@@ -648,8 +665,17 @@ fn fault_text_available(pool: &Path, project: &crate::project::Project) -> Resul
 	Ok(codes > 0)
 }
 
-/// The VCDS branch: the four steps this command has always run, into a project.
+/// The VCDS branch: its five steps, into a project.
 fn read_vcds(root: &Path, project: &crate::project::Project, refresh: bool) -> Result<Vec<Step>> {
+	let mut steps = read_vcds_files(root, project, refresh)?;
+	steps.push(read_vcds_registry(root, project)?);
+	Ok(steps)
+}
+
+/// Steps 1 to 4: the installation's files — the pool, the label files, the
+/// names, the keys. Apart from step 5 so the pair can read the ODIS project
+/// between them (see [`run_with`]).
+fn read_vcds_files(root: &Path, project: &crate::project::Project, refresh: bool) -> Result<Vec<Step>> {
 	let pool = crate::project::rod_pool()?;
 	replace_if_another_build(root, &pool, refresh)?;
 	std::fs::create_dir_all(&pool).with_context(|| format!("creating {}", pool.display()))?;
@@ -658,16 +684,22 @@ fn read_vcds(root: &Path, project: &crate::project::Project, refresh: bool) -> R
 	// The copy runs first and the derivations then read from it, so afterwards
 	// `~/.vagcan` is the one set of raw files everything points at and the
 	// installation can go.
-	// The fault text is looked for once, in step [1/4], and handed on: finding
+	// The fault text is looked for once, in step [1/5], and handed on: finding
 	// it can mean asking the person which file it is, and one run must ask
 	// that once.
 	let (copied, codes) = copy_label_files(root, &pool, refresh)?;
-	let steps = vec![
+	Ok(vec![
 		copied,
 		label_cache(root, codes.as_deref(), project, refresh)?,
-		names(&pool, root, project, refresh)?,
+		names(&pool, project)?,
 		rod_keys(&pool, project)?,
-	];
+	])
+}
+
+/// Step 5, and the installation recorded as one of the project's sources.
+fn read_vcds_registry(root: &Path, project: &crate::project::Project) -> Result<Step> {
+	// From the installation itself, not the pool: see `registry`.
+	let step = registry::registry_channels(root, project, &registry::surveyed_units()?)?;
 	crate::project::record_source(
 		project,
 		crate::project::SourceEntry {
@@ -677,7 +709,7 @@ fn read_vcds(root: &Path, project: &crate::project::Project, refresh: bool) -> R
 			detail: None,
 		},
 	)?;
-	Ok(steps)
+	Ok(step)
 }
 
 /// What one half of the ODIS read could not take, told apart by whose fault it
@@ -714,7 +746,7 @@ impl Skipped {
 }
 
 /// The ODIS branch: every variant's channels into `cache.sqlite`, every name it
-/// knows into `names.json`.
+/// knows into `names-odis.json`.
 ///
 /// **A variant that will not read costs itself and nothing else.** A project
 /// describes hundreds of control units, and one whose measurement chain reaches
@@ -844,15 +876,14 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 /// Fold an ODIS project's pooled names into `names-odis.json`.
 ///
 /// **Its own file, not `names.json`, and that separation is the whole point.**
-/// Both are keyed by the same text id — the finding
-/// `.archive/research/labels/odis-crib.md` rests on — but they are not interchangeable
-/// wording. An ODIS *reading* carries the parameter's name in one ECU variant;
+/// Both name VW's text ids — this file by the `IDE`/`MAS` id itself,
+/// `names.json` by the VCDS record whose tail names it (`odx-ids.json`) — but
+/// they are not interchangeable wording. An ODIS *reading* carries the parameter's name in one ECU variant;
 /// the pooled entry is the generic text for the id. Writing the second where a
 /// reader expects the first cost real wording on the owner's car: 0 channels
-/// gained a name, 340 got different and mostly worse wording, and
-/// `Total_Physical_Wakeup_Events_Counter` and
-/// `Total_Logical_Wakeup_Events_Counter` both became
-/// `Total_CarWakeup_Events_Counter` — two live channels labelled identically.
+/// gained a name, 340 got different and mostly worse wording, and the
+/// physical and the logical wakeup counters both took the pooled counter's
+/// name — two live channels labelled identically.
 ///
 /// So this file is an index of what a text id means, which `vagcan dev vcds names`
 /// searches, and `names.json` stays what a VCDS installation recovered.
@@ -893,12 +924,12 @@ fn merge_names(path: &Path, incoming: std::collections::BTreeMap<String, String>
 /// newer than what is there, and `--refresh` copies the lot.
 /// Returns the step and **where the fault text was found**, because finding it
 /// may have meant asking: [`locate`] opens a picker when the file is under a
-/// name this tool does not know, and step [2/4] needs the same file to read
+/// name this tool does not know, and step [2/5] needs the same file to read
 /// the build's language off its name. Looking twice asked twice.
 fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<(Step, Option<PathBuf>)> {
 	println!(
-		"[1/4] Raw files — copying the .rod files and the fault text into the\n      \
-         shared pool, so the installation can be deleted afterwards."
+		"[1/5] Raw files — copying the .rod files and the fault text into the\n      \
+         shared pool, so no car command needs the installation afterwards."
 	);
 	let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
 	let odx = root.join(ODX_DIR);
@@ -986,11 +1017,11 @@ fn collect_rod_files(src: &Path, dst: &Path, plan: &mut Vec<(PathBuf, PathBuf)>)
 /// copy: D4 drops the `.lbl`/`.clb` files and this cache is what survives of
 /// them. This is the one moment they are ever read, and after it the
 /// installation can go.
-/// `codes` is the fault text file step [1/4] found, passed in rather than
+/// `codes` is the fault text file step [1/5] found, passed in rather than
 /// looked for again — [`locate`] can ask the person which file it is, and one
 /// setup run asks that once.
 fn label_cache(root: &Path, codes: Option<&Path>, project: &crate::project::Project, refresh: bool) -> Result<Step> {
-	println!("[2/4] Label files — parsing every .lbl and decrypting every .clb.");
+	println!("[2/5] Label files — parsing every .lbl and decrypting every .clb.");
 	let db = crate::labels::load_cached(root, &project.cache(), refresh)?;
 	// The language of this build's fault text, on the same source row the
 	// label files were written under, so that `faults` can tell a VCDS source
@@ -1007,32 +1038,36 @@ fn label_cache(root: &Path, codes: Option<&Path>, project: &crate::project::Proj
 	})
 }
 
-/// Step 3: recover the measurement names from the global text table.
+/// Step 3: read the names out of the global text table.
 ///
 /// Two of the existing tools, chained the way `vagcan dev vcds`'s own help
 /// documents: `rod --dump` writes the decrypted, inflated `[TXT]` section, and
-/// `tttext` reads it. The intermediate file is this function's business and
-/// nobody else's, so it goes in a scratch directory and is removed again.
-fn names(pool: &Path, install: &Path, project: &crate::project::Project, refresh: bool) -> Result<Step> {
+/// the text table reader reads every record of it under its own key. The
+/// intermediate file is this function's business and nobody else's, so it goes
+/// in a scratch directory and is removed again.
+///
+/// One read, two files: `names.json`, text id → name, and `odx-ids.json`, text
+/// id → the `IDE`/`MAS` id the text names (see [`crate::project::Project::odx_ids`]).
+///
+/// **Read on every run**, unlike the other steps. Skipping when the output was
+/// newer than the table saved minutes while this was a dictionary search; the
+/// read is seconds now, and the skip had a hole: the pool keeps the
+/// installation's own file time, so a table from another build could pass for
+/// the one read last time. A read that comes out the same writes nothing
+/// ([`write_if_changed`]). The registry step does not lean on this file: it
+/// names the `RM.rod` rows it reads from the installation's own text table,
+/// the same install as the rows.
+fn names(pool: &Path, project: &crate::project::Project) -> Result<Step> {
 	// The text table is read out of the pool it was just copied into, so the
 	// keys recovered from it match the bytes every later run will open.
 	let odx = pool.to_path_buf();
-	let out = project.names();
+	let (out, ids) = (project.names(), project.odx_ids());
 	let Some(source) = locate(&odx, TEXT_TABLES, "measurement text table", ".rod")? else {
 		return Ok(Step::Missing {
 			what: "the measurement names",
 			why: format!("none of {TEXT_TABLES:?} is under {}", odx.display()),
 		});
 	};
-	if !refresh && is_newer(&out, &source) {
-		println!("[3/4] Measurement names — already recovered from this installation.");
-		return Ok(Step::Skipped {
-			what: "the measurement names",
-			path: out,
-			why: "newer than the text table it came from",
-		});
-	}
-
 	// How long it takes is the spinner's job to say, and it says it in elapsed
 	// seconds rather than in a sentence nobody can act on.
 	// Ask what opening it would cost before starting, because the two cases look
@@ -1046,24 +1081,24 @@ fn names(pool: &Path, install: &Path, project: &crate::project::Project, refresh
 		&& vag_data_labels::rod::key_cost(&bytes, "TXT") == Some(vag_data_labels::rod::KeyCost::AnchorSweep)
 	{
 		{
-			println!("[3/4] Measurement names — skipped: {name} masks its key.");
+			println!("[3/5] Measurement names — skipped: {name} masks its key.");
 			return Ok(Step::Missing {
 				what: "the measurement names",
 				why: format!(
 					"{name} is a *shifted* container, so its text section has no\n    \
                      anchor to search from — the only route is every legal anchor\n    \
                      against the full space, which is hours to days rather than\n    \
-                     the minute or two an ordinary table costs. Everything else\n    \
-                     in this installation is recovered; only the names are out of\n    \
-                     reach. See .archive/research/labels/tttext2.md §3.3"
+                     the minute or two an ordinary table costs. Step 5 names its\n    \
+                     channels from this table too, so there they go by their\n    \
+                     identifiers. See .archive/research/labels/tttext2.md §3.3"
 				),
 			});
 		}
 	}
-	println!("[3/4] Measurement names — opening {name}, then reading its cipher.");
+	println!("[3/5] Measurement names — opening {name}, then reading every record under its own key.");
 	let scratch = out.with_file_name("tttext-scratch");
 	let _ = std::fs::remove_dir_all(&scratch);
-	crate::vcds::rod::run(
+	let sections = crate::vcds::rod::open(
 		&source.to_string_lossy(),
 		true,
 		Some(&project.rod_keys().to_string_lossy()),
@@ -1072,68 +1107,113 @@ fn names(pool: &Path, install: &Path, project: &crate::project::Project, refresh
 	let text = scratch.join("TXT.bin");
 	if !text.is_file() {
 		let _ = std::fs::remove_dir_all(&scratch);
-		let why = format!("the [TXT] section of {} did not decode — see the section listing above", source.display());
+		let shut = sections.iter().find(|s| s.tag == "TXT").map_or("there is no such section", |s| {
+			crate::vcds::rod::why_shut(s).unwrap_or("it opened, and nothing was written")
+		});
+		let why = format!("the [TXT] section of {} did not open: {shut}", source.display());
 		return Ok(Step::Missing {
 			what: "the measurement names",
 			why,
 		});
 	}
-
-	// The installation's own label files are the strong prior for the attack.
-	// They are read here and copied nowhere (D4) — this is the last moment they
-	// are in reach, which is why the installation is still a parameter.
-	let mut words = vec![format!("{}:{LABEL_WORD_WEIGHT}", install.join("Labels").display())];
-	if Path::new(SYSTEM_WORDS).exists() {
-		words.push(format!("{SYSTEM_WORDS}:{GENERAL_WORD_WEIGHT}"));
-	}
-	let coverage = crate::vcds::tttext::run(crate::vcds::tttext::Options {
-		file: &text.to_string_lossy(),
-		words: &words,
-		names: None,
-		// The readings themselves are not wanted here — only the ones that
-		// clear the gate, in the form `vagcan dev vcds names` searches.
-		out: None,
-		catalog: Some(&out.to_string_lossy()),
-		partial: None,
-		passes: 4,
-		steps: None,
-		check: 0,
-		gated: false,
-	})?;
+	let table = crate::vcds::tttext::read_file(&text, text_page(&name));
 	let _ = std::fs::remove_dir_all(&scratch);
+	written_names(&table?, &source, &out, &ids)
+}
 
-	let count = std::fs::read_to_string(&out)
-		.ok()
-		.and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-		.and_then(|v| v.as_object().map(|m| m.len()))
-		.unwrap_or(0);
-	// The attack withholds any record it could not read outright, so falling
-	// short is the expected outcome, not a failure — but it has to be said. A
-	// bare "124294 names" reads as the whole table to somebody who has no idea
-	// how big the table is.
-	if coverage.read < coverage.candidates {
-		let pct = 100.0 * coverage.read as f32 / coverage.candidates.max(1) as f32;
-		let short = coverage.total.saturating_sub(coverage.candidates);
+/// What the names step leaves on disk, given what the text table read as.
+///
+/// Apart from [`names`] so the rule is testable without a `.rod` container to
+/// open.
+fn written_names(table: &vag_data_labels::tttext::Table, source: &Path, out: &Path, ids: &Path) -> Result<Step> {
+	// A section with no record in it is not a table with no names: `{}` written
+	// over the last good read would be a loss reported as "0 names".
+	if table.texts.is_empty() {
+		let example = match table.malformed.first() {
+			Some((id, plain)) => format!(", e.g. {id:06} {plain:?}"),
+			None => String::new(),
+		};
+		return Ok(Step::Missing {
+			what: "the measurement names",
+			why: format!(
+				"the [TXT] section of {} read into no name: {} records of neither shape{example},\n    \
+                 {} lines that were not records. The names already here are left as they were",
+				source.display(),
+				table.malformed.len(),
+				table.not_records
+			),
+		});
+	}
+	let (names_text, count) = crate::vcds::tttext::names_json(table)?;
+	let (ids_text, with_ids) = crate::vcds::tttext::odx_ids_json(table)?;
+	let names_changed = write_if_changed(out, &names_text)?;
+	let ids_changed = write_if_changed(ids, &ids_text)?;
+	let detail = format!("{count} names, {with_ids} of them naming an IDE or MAS id (odx-ids.json)");
+	// Nothing is withheld for doubt any more — every record reads under its
+	// own key — so the one way to fall short is a line of neither shape. The
+	// 26.3 table has none; one here says the table or its key is not the one
+	// this reader was built on, and a count on its own would hide that.
+	if !table.malformed.is_empty() || table.not_records > 0 {
+		let shown: Vec<String> = table.malformed.iter().take(3).map(|(id, plain)| format!("{id:06} {plain:?}")).collect();
+		let example = match shown.is_empty() {
+			true => String::new(),
+			false => format!(" — e.g. {}", shown.join(", ")),
+		};
 		return Ok(Step::Partial {
 			what: "the measurement names",
-			path: out,
-			detail: format!("{count} names"),
+			path: out.to_path_buf(),
+			detail,
 			why: format!(
-				"{} of {} records long enough to carry a name were read ({pct:.1} %);\n    \
-                 the rest held a letter the attack could not settle, and a\n    \
-                 half-read name is worse than none, so they are withheld rather\n    \
-                 than guessed. A further {short} records in the table are under\n    \
-                 a dozen letters — acronyms and status codes, which are not\n    \
-                 names and are not counted against this",
-				coverage.read, coverage.candidates
+				"{} records read as neither `<name>,` nor `<name>,<kind>,<value>`, and {} lines\n    \
+                 were not records; both are left out rather than guessed at{example}",
+				table.malformed.len(),
+				table.not_records
 			),
+		});
+	}
+	if !names_changed && !ids_changed {
+		return Ok(Step::Skipped {
+			what: "the measurement names",
+			path: out.to_path_buf(),
+			why: "the text table reads as it did last time",
 		});
 	}
 	Ok(Step::Wrote {
 		what: "the measurement names",
-		path: out,
-		detail: format!("{count} names"),
+		path: out.to_path_buf(),
+		detail,
 	})
+}
+
+/// Write `text` to `path` unless the file holds exactly that already, and say
+/// whether it wrote.
+///
+/// The names are read on every run, and a file rewritten with the same bytes
+/// still looks new to whatever keys on its time — `dev dash build` counts
+/// `names.json` among its inputs.
+fn write_if_changed(path: &Path, text: &str) -> Result<bool> {
+	if std::fs::read(path).is_ok_and(|held| held == text.as_bytes()) {
+		return Ok(false);
+	}
+	if let Some(parent) = path.parent() {
+		std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+	}
+	std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))?;
+	Ok(true)
+}
+
+/// The code page a text table's high bytes are in, from its name — the only
+/// place the build says, as for the fault text ([`CODES_FILES`]).
+///
+/// The English table is Windows-1252: its `0x96` is an en dash. The Russian
+/// one has never been read — it is shifted, and refused above before this is
+/// asked — so 1251 is the page its build's `Code-RUS.dat` is in, not a page
+/// anybody has seen it use.
+fn text_page(file_name: &str) -> vag_data_labels::codes::CodePage {
+	match file_name {
+		"TTText-RUS.rod" => vag_data_labels::codes::CodePage::Windows1251,
+		_ => vag_data_labels::codes::CodePage::Windows1252,
+	}
 }
 
 /// Step 4: recover the keys of the `.rod` sections every car needs.
@@ -1146,19 +1226,32 @@ fn rod_keys(pool: &Path, project: &crate::project::Project) -> Result<Step> {
 			why: format!("none of {SHARED_ROD_FILES:?} is in {}", pool.display()),
 		});
 	}
-	println!("[4/4] .rod section keys — searching for the ones not already cached.");
+	println!("[4/5] .rod section keys — searching for the ones not already cached.");
+	let mut shut = Vec::new();
 	for file in &present {
-		crate::vcds::rod::run(&file.to_string_lossy(), true, Some(&cache.to_string_lossy()), None)?;
+		for section in crate::vcds::rod::open(&file.to_string_lossy(), true, Some(&cache.to_string_lossy()), None)? {
+			if let Some(why) = crate::vcds::rod::why_shut(&section) {
+				shut.push(format!("[{}] in {} did not open: {why}", section.tag, file.display()));
+			}
+		}
 	}
 	let keys = std::fs::read_to_string(&cache)
 		.ok()
 		.and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
 		.and_then(|v| v.as_object().map(|m| m.len()))
 		.unwrap_or(0);
-	Ok(Step::Wrote {
-		what: "the .rod section keys",
-		path: cache,
-		detail: format!("{keys} keys"),
+	Ok(match shut.is_empty() {
+		true => Step::Wrote {
+			what: "the .rod section keys",
+			path: cache,
+			detail: format!("{keys} keys"),
+		},
+		false => Step::Partial {
+			what: "the .rod section keys",
+			path: cache,
+			detail: format!("{keys} keys"),
+			why: shut.join("\n    "),
+		},
 	})
 }
 
@@ -1179,13 +1272,13 @@ fn is_newer(out: &Path, source: &Path) -> bool {
 
 /// What to say about scalings when the project has none.
 ///
-/// True of a VCDS installation and always was: the label files carry the names
-/// and no numbers at all (`.archive/research/labels/rod-labels.md` §4.0c). Somebody who
-/// has just watched 300 MB of label files parse reasonably assumes the numbers
-/// came with the names, and this is the last chance to say they did not.
-const SCALINGS_ARE_MEASURED: &str = "Scalings are a separate thing and no VCDS installation carries them — the label \n\
-     files have names, not numbers. Those are measured: `vagcan dev survey`, then \n\
-     `vagcan watch --out drive.csv`, then `vagcan dev recording calibrate`.";
+/// A VCDS installation's label files carry names and no numbers
+/// (`.archive/research/labels/rod-labels.md` §4.0c); its registry carries them
+/// for the units of a surveyed car, and the registry step says itself why it
+/// brought none — no survey yet, or units the installation cannot open. So this
+/// names only what that step cannot, and says nothing that would send somebody
+/// whose survey is already on file back to the car.
+const SCALINGS_ARE_MEASURED: &str = "No scalings yet. An ODIS project brings them for every unit it describes.";
 
 /// The closing report: what is on disk now, and what to do with it.
 ///
@@ -1219,6 +1312,9 @@ fn report(steps: &[Step], scalings: bool, fault_labels: bool) -> String {
 			}
 			Step::Missing { what, why } => {
 				let _ = writeln!(out, "  {what}: NOT recovered — {why}");
+			}
+			Step::Pending { what, why } => {
+				let _ = writeln!(out, "  {what}: not yet — {why}");
 			}
 		}
 	}
@@ -1482,12 +1578,13 @@ mod tests {
 	}
 
 	#[test]
-	fn the_wording_source_is_read_before_the_structure_source() {
-		// The combined row's whole correctness. `vcds::tttext` replaces
-		// `names.json` outright; `read_odis` merges into it, first writer
-		// winning. Read the other way round and the VCDS half would overwrite
-		// every ODIS-only name a moment after it was written, making one
-		// combined run worse than the two runs it stands in for (spec §5).
+	fn the_pair_reads_the_vcds_files_then_odis_then_the_vcds_registry() {
+		// Both halves of the order were found in review (2026-09-28). The
+		// registry step asks whether this run's ODIS rows describe a unit, so it
+		// comes after them; step 2 trusts its label cache while the cache file is
+		// newer than the label files, and the ODIS read writes that file, so the
+		// files come before them. Spec §5 once put the wording first, while both
+		// sources wrote `names.json`; the names no longer care.
 		//
 		// Asserted against the source rather than by running two multi-minute
 		// reads: what is being pinned is an ordering decision, and a test that
@@ -1495,10 +1592,11 @@ mod tests {
 		// all.
 		let body = include_str!("mod.rs");
 		let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("{needle} is gone"));
-		assert!(
-			at("steps.extend(read_vcds(dir, project, opts.refresh)?);") < at("read_odis(odis, dir, project)?"),
-			"the ODIS read moved ahead of the wording read; names.json will be clobbered"
-		);
+		let files = at("steps.extend(read_vcds_files(dir, project, opts.refresh)?);");
+		let odis = at("read_odis(odis, dir, project)?");
+		let registry = at("steps.push(read_vcds_registry(dir, project)?);");
+		assert!(files < odis, "the ODIS read moved ahead of the label files' freshness check");
+		assert!(odis < registry, "the registry step moved ahead of the ODIS rows it asks about");
 	}
 
 	#[test]
@@ -1531,7 +1629,7 @@ mod tests {
 			dir: here.0.clone(),
 		};
 		assert_ne!(project.odis_names(), project.names(), "one file again");
-		let incoming = [("MAS14374".to_string(), "Total_CarWakeup_Events_Counter".to_string())]
+		let incoming = [("MAS90001".to_string(), "Invented_Wakeup_Events_Counter".to_string())]
 			.into_iter()
 			.collect();
 		merge_names(&project.odis_names(), incoming).unwrap();
@@ -1561,6 +1659,70 @@ mod tests {
 		assert_eq!(back["000117"], "Motordrehzahl");
 	}
 
+	/// A text table read from plaintext records, the way [`names`] gets one.
+	fn text_table(records: &[(u32, &str)]) -> vag_data_labels::tttext::Table {
+		let section: String = records
+			.iter()
+			.map(|(id, plain)| format!("{id:06},{}\r\n", vag_data_labels::glyphs::TableAlphabet::for_key(*id).encipher(plain)))
+			.collect();
+		vag_data_labels::tttext::read(section.as_bytes(), vag_data_labels::codes::CodePage::Windows1252)
+	}
+
+	#[test]
+	fn a_read_that_comes_out_the_same_writes_nothing_and_another_is_written() {
+		// What makes reading on every run cheap. That `names` reads every run is
+		// not pinned here — it needs a `.rod` container to open.
+		let here = TempDir::new("names-step");
+		let (out, ids, source) = (here.0.join("names.json"), here.0.join("odx-ids.json"), here.0.join("TTTEXT.ROD"));
+		let table = text_table(&[(17, "Invented flap position,2,90001"), (13, "Pump 2,")]);
+		let first = written_names(&table, &source, &out, &ids).unwrap();
+		assert!(matches!(first, Step::Wrote { .. }), "{first:?}");
+		assert!(std::fs::read_to_string(&ids).unwrap().contains("\"IDE90001\""));
+		let again = written_names(&table, &source, &out, &ids).unwrap();
+		assert!(matches!(again, Step::Skipped { .. }), "the same read rewrote the files: {again:?}");
+		// Another build's table is written whatever the files' times say — the
+		// times are what used to let one pass for the other.
+		let other = text_table(&[(17, "Invented flap position,2,90001"), (13, "Pump 3,")]);
+		let step = written_names(&other, &source, &out, &ids).unwrap();
+		assert!(matches!(step, Step::Wrote { .. }), "{step:?}");
+		assert!(std::fs::read_to_string(&out).unwrap().contains("Pump 3"));
+	}
+
+	#[test]
+	fn a_section_with_no_record_leaves_the_last_names_alone() {
+		// `{}` over the last good read, reported as "0 names", is the failure.
+		let here = TempDir::new("names-empty");
+		let before = br#"{"000017": "Invented flap position"}"#;
+		let out = here.write("names.json", before);
+		let (ids, source) = (here.0.join("odx-ids.json"), here.0.join("TTTEXT.ROD"));
+		let table = vag_data_labels::tttext::read(b"not a record\r\nnor this\r\n", vag_data_labels::codes::CodePage::Windows1252);
+		let step = written_names(&table, &source, &out, &ids).unwrap();
+		assert!(matches!(step, Step::Missing { .. }), "{step:?}");
+		assert_eq!(std::fs::read(&out).unwrap(), before);
+		assert!(!ids.exists());
+		// Records of neither shape and nothing else: the same, and it shows one.
+		match written_names(&text_table(&[(5, "no separator")]), &source, &out, &ids).unwrap() {
+			Step::Missing { why, .. } => assert!(why.contains("000005"), "{why}"),
+			other => panic!("not missing: {other:?}"),
+		}
+		assert_eq!(std::fs::read(&out).unwrap(), before);
+	}
+
+	#[test]
+	fn a_line_of_neither_shape_makes_the_names_partial_and_keeps_the_rest() {
+		let here = TempDir::new("names-partial");
+		let (out, ids, source) = (here.0.join("names.json"), here.0.join("odx-ids.json"), here.0.join("TTTEXT.ROD"));
+		let table = text_table(&[(17, "Invented flap position,2,90001"), (5, "no separator")]);
+		match written_names(&table, &source, &out, &ids).unwrap() {
+			Step::Partial { detail, why, .. } => {
+				assert!(detail.starts_with("1 names"), "{detail}");
+				assert!(why.contains("000005"), "the record left out is named: {why}");
+			}
+			other => panic!("not partial: {other:?}"),
+		}
+		assert!(std::fs::read_to_string(&out).unwrap().contains("000017"));
+	}
+
 	#[test]
 	fn a_step_that_could_not_run_says_so_without_condemning_the_rest() {
 		let steps = vec![Step::Missing {
@@ -1573,17 +1735,47 @@ mod tests {
 	}
 
 	#[test]
-	fn the_report_does_not_promise_scalings_the_label_files_cannot_supply() {
-		// The single most expensive misunderstanding available on the VCDS
-		// path: a reader who has just parsed 300 MB of label files reasonably
-		// assumes the numbers came with the names. They did not, and the
-		// closing lines are the last chance to say so.
+	fn a_run_with_no_scalings_says_how_to_get_them() {
+		// The closing lines are the last chance to say what a run did not bring.
+		// It used to be "no VCDS installation carries them"; since 2026-09-28 one
+		// does, through its registry, for the units of a surveyed car — and the
+		// registry step says so itself, with the reason it has none. The close
+		// names only what that step cannot: an ODIS project. Telling somebody
+		// whose survey is on file but whose units the install cannot open to go
+		// and survey again would send them back to the car for nothing.
 		let r = report(&[], false, true);
-		assert!(r.contains("no VCDS installation carries them"), "{r}");
-		assert!(r.contains("recording calibrate"), "{r}");
-		// "the label files has names" shipped for months; the noun is plural.
-		assert!(r.contains("files have names"), "the grammar fault that shipped with it: {r}");
-		assert!(!r.contains("label files has"), "{r}");
+		assert!(r.contains("No scalings yet"), "{r}");
+		assert!(r.contains("ODIS project"), "{r}");
+		assert!(!r.contains("vagcan dev survey"), "{r}");
+		assert!(!r.contains("no VCDS installation carries them"), "the old claim is false now: {r}");
+	}
+
+	#[test]
+	fn a_folder_with_no_file_of_the_kind_offers_nothing_to_pick() {
+		// The English install ships no fault text, and a picker opened on it had
+		// no choices: an error, at step 1, whenever setup ran from a terminal.
+		let here = tempfile::tempdir().unwrap();
+		std::fs::write(here.path().join("TTTEXT.ROD"), b"").unwrap();
+		std::fs::create_dir(here.path().join("folder.dat")).unwrap();
+		assert!(!holds_any(here.path(), ".dat"), "a directory is not a file to pick");
+		std::fs::write(here.path().join("Code-XYZ.DAT"), b"").unwrap();
+		assert!(holds_any(here.path(), ".dat"), "and case aside, this one is");
+	}
+
+	#[test]
+	fn a_car_not_surveyed_yet_is_the_next_step_and_not_a_gap_in_the_installation() {
+		// With no survey there is no list of units to read. That is a step still
+		// to take, not something the installation lacks: "Done, with gaps" and
+		// "a newer VCDS may have it" sent people to the wrong place.
+		let steps = vec![Step::Pending {
+			what: "channels from the VCDS registry",
+			why: "no car has been surveyed on this machine.\n      vagcan dev survey".to_string(),
+		}];
+		let r = report(&steps, false, true);
+		assert!(r.starts_with("Done.\n"), "{r}");
+		assert!(r.contains("channels from the VCDS registry: not yet — no car"), "{r}");
+		assert!(!r.contains("newer VCDS"), "{r}");
+		assert_eq!(r.matches("vagcan dev survey").count(), 1, "said once: {r}");
 	}
 
 	#[test]
@@ -1594,7 +1786,7 @@ mod tests {
 		// reader who believes the footer goes and drives the car to establish
 		// rows the tool already has. It now closes on the commands.
 		let r = report(&[], true, true);
-		assert!(!r.contains("no VCDS installation carries them"), "{r}");
+		assert!(!r.contains("No scalings yet"), "{r}");
 		assert!(!r.contains("carries scalings"), "the paragraph the owner dropped is gone: {r}");
 		assert!(r.trim_end().ends_with("stored faults, named"), "{r}");
 	}
@@ -1750,8 +1942,8 @@ mod tests {
 	#[test]
 	fn the_fault_text_is_located_once_and_handed_to_the_next_step() {
 		// `locate` opens a picker when the file is under a name nobody here
-		// has seen, so looking for it again in step [2/4] asked the same
-		// question twice in one run. Step [1/4] hands over what it found.
+		// has seen, so looking for it again in step [2/5] asked the same
+		// question twice in one run. Step [1/5] hands over what it found.
 		let install = synthetic_install("once");
 		let target = TempDir::new("once-out");
 		let (_, codes) = copy_label_files(&install.0, &target.0, false).unwrap();
