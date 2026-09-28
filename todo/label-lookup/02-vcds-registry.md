@@ -169,7 +169,7 @@ the unit's `.rod [DTC]` → a row of `RD.rod`), and reuses its pieces: file choi
 
    **Decided later the same day (owner, 2026-09-28): `calibrate` goes, entirely**, once this
    task is done — «давай полностью вырежем calibrate. Он скорее паразитный и никто этим
-   заморачиваться не будет». Its own change, after this one merges.
+   заморачиваться не будет». Done the same day, in its own change (`feat/remove-calibrate`).
 
 ## Result (2026-09-28)
 

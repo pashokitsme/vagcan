@@ -2325,10 +2325,13 @@ fn coverage_report(
 		.copied()
 		.filter(|r| any(*r, &|c: &Channel| c.def.is_some() && c.proven))
 		.collect();
+	// The standard OBD-II rows are nobody's description of this car: the engine
+	// answers them whatever was read, and counting them here kept the
+	// no-scalings paragraph below from ever printing on a real car.
 	let named: Vec<u16> = units
 		.iter()
 		.copied()
-		.filter(|r| any(*r, &|c: &Channel| c.def.is_some() && !c.proven) && !proven.contains(r))
+		.filter(|r| any(*r, &|c: &Channel| c.def.is_some() && !c.proven && !c.is_standard()) && !proven.contains(r))
 		.collect();
 	let raw: Vec<u16> = units.iter().copied().filter(|r| any(*r, &|c: &Channel| c.def.is_none())).collect();
 	let silent = silent_units(identities, channels);
@@ -2354,12 +2357,12 @@ fn coverage_report(
 			list(&named)
 		));
 	}
-	if proven.is_empty() && named.is_empty() && !units.is_empty() {
-		// Not one unit of this car has a catalog. That is the ordinary state of
-		// every car but the one this project was developed on, and it is worth
-		// a paragraph rather than a silence: everything on the screen will be
-		// hex, and the reason is that nobody has driven this car with the tool
-		// recording yet.
+	// Nothing on this car is scaled but the standard OBD-II rows. That is the
+	// state of a project `setup` has not read a source into for this car, and it
+	// is worth a paragraph rather than a silence: the paragraph says what `setup`
+	// needs to change that.
+	let undescribed = proven.is_empty() && named.is_empty() && !units.is_empty();
+	if undescribed {
 		out.push_str(&crate::missing::no_catalog("This car", std::path::Path::new(catalogs)));
 	}
 	if !raw.is_empty() {
@@ -2372,9 +2375,9 @@ fn coverage_report(
 		};
 		out.push_str(&format!("  raw identifiers from {from}: {}\n", list(&raw)));
 		// Why they are raw, and what turns them into numbers. Without this the
-		// screen is a wall of hex with no way to learn that it is fixable —
-		// and the fix is a drive, not a `setup`, which is the distinction a
-		// reader has no way to guess.
+		// screen is a wall of hex with no way to learn whether it is fixable —
+		// and with VCDS the fix is a survey before `setup`, which a reader has
+		// no way to guess.
 		let unproven = channels.iter().filter(|c| c.def.is_none()).count();
 		for line in crate::missing::raw_channels_note(unproven).lines() {
 			out.push_str(&format!("  {line}\n"));
@@ -2414,26 +2417,27 @@ fn coverage_report(
 			out.push_str("  The survey in use does not cover them either.\n");
 		}
 		let spec = silent.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(",");
-		out.push_str(&sweep_offer(&silent, project, &spec));
+		// The paragraph above gave the routes already, in the one wording.
+		out.push_str(&sweep_offer(&silent, !undescribed, &spec));
 	}
 	out
 }
 
 /// What sweeping the units nothing describes would be, said before it is asked.
 ///
-/// **This is the one place `watch` still talks about a survey, and it is the
-/// only place it is still true.** Everywhere else the channels come from what
-/// the project declares, resolved off what the car reports about itself, with
-/// no sweep in the picture at all. A unit no source describes is the exception:
-/// there is nothing to look the identifiers up in, so the only way to learn
-/// them is to ask for identifiers nothing declares — which is a fuzz test of
-/// that unit's diagnostic server.
+/// A unit no source describes has nothing to look its identifiers up in, so
+/// the only way to learn them on the car is to ask for identifiers nothing
+/// declares — a fuzz test of that unit's diagnostic server. So the paragraph
+/// prices it rather than recommending it, and with `routes` names first the two
+/// routes that ask the car nothing blind: a VCDS installation, for the units of
+/// a surveyed car, and an ODIS project.
 ///
-/// So the paragraph prices it rather than recommending it, and where a cheaper
-/// answer exists it is named first: a machine with no project at all may be one
-/// `vagcan setup` away from describing these units without asking the car
-/// anything.
-fn sweep_offer(silent: &[u16], project: Option<&str>, spec: &str) -> String {
+/// They are said as conditions, not as a diagnosis: whether `setup` has read
+/// an installation since this car's survey, and why it had nothing for a unit,
+/// is not something this screen knows — step 5 of `setup` said it when it ran.
+/// Guessing it here sent people round a loop once, and claimed a cause it could
+/// not know the next time.
+fn sweep_offer(silent: &[u16], routes: bool, spec: &str) -> String {
 	let n = silent.len();
 	let mut out = format!(
 		"\n{n} control {} on this car — {} — {} nothing on this machine describes.\n",
@@ -2441,13 +2445,18 @@ fn sweep_offer(silent: &[u16], project: Option<&str>, spec: &str) -> String {
 		silent.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(" "),
 		if n == 1 { "is one" } else { "are ones" }
 	);
-	if project.is_none() {
-		// The cheap answer first. A project describes a whole platform without
-		// the car being asked anything, and somebody who sweeps instead spends
-		// minutes of fuzzing to rediscover part of what a parse would have
-		// handed them.
+	// The cheap answers first: somebody who sweeps blind instead spends minutes
+	// of fuzzing to rediscover part of what these would have handed them.
+	if routes {
 		out.push_str(
-			"\nNo project is set up here. A VCDS installation or an extracted ODIS project \n             may describe them outright — `vagcan setup /path/to/VCDS` — and that asks the \n             car nothing at all. It is worth trying before anything below.\n",
+			"\nTwo routes first, and neither asks the car anything blind. A VCDS installation\n\
+             reads the units of a surveyed car:\n    \
+             vagcan dev survey\n    \
+             vagcan setup <VCDS installation>\n\
+             If setup has read one since this car's survey, it had nothing for the units that\n\
+             survey found, and its step 5 said why; a unit the survey missed needs it again.\n\
+             An ODIS project that describes them:\n    \
+             vagcan setup <ODIS project>\n",
 		);
 	}
 	out.push_str(&format!(
@@ -2834,9 +2843,9 @@ mod tests {
 	/// owner's measured data under `~/.vagcan/data/<id>/measurements`, like
 	/// everybody
 	/// else's — nothing measured on a vehicle lives in the checkout any more.
-	/// So a machine that has never calibrated a car has nothing to assert
-	/// against, and these tests say so rather than failing over data they were
-	/// never entitled to assume.
+	/// So a machine that holds no proven rows has nothing to assert against,
+	/// and these tests say so rather than failing over data they were never
+	/// entitled to assume.
 	fn measured_rows() -> Option<std::path::PathBuf> {
 		let dir = crate::project::current().ok()?.measurements_dir();
 		let any = std::fs::read_dir(&dir)
@@ -2854,7 +2863,7 @@ mod tests {
 				None => {
 					eprintln!(
 						"skipped: no proven rows in this machine's project — \
-                         drive and calibrate a car to get some"
+                         they are one owner's measured data, under ~/.vagcan"
 					);
 					return;
 				}
@@ -3013,9 +3022,9 @@ mod tests {
 	fn a_screen_of_hex_says_why_it_is_hex_and_what_turns_it_into_numbers() {
 		// The reported gap: twelve of fifteen units show raw bytes, the tool
 		// tags each value `(raw)`, and nothing anywhere says the scaling is
-		// missing rather than the car being odd — let alone that a drive fixes
-		// it. Said once, in the summary, not per row: this is read at an open
-		// driver's door.
+		// missing rather than the car being odd — let alone what fixes it. Said
+		// once, in the summary, not per row: this is read at an open driver's
+		// door.
 		let identities = reference_identities();
 		let survey: String = identities
 			.iter()
@@ -3038,12 +3047,12 @@ mod tests {
 			&crate::plan::Answered::default(),
 			None,
 		);
-		assert!(text.contains("no proven scaling for this car yet"), "{text}");
-		assert!(text.contains("recording calibrate"), "{text}");
-		// And never the other shortage's fix as an instruction: a scaling is
-		// not in any label files, so pointing at `setup` here sends a reader
-		// nowhere.
-		assert!(!text.contains("vagcan setup /path"), "{text}");
+		assert!(text.contains("nothing read into this project scales them"), "{text}");
+		// What does, since 2026-09-28: `setup`, and with VCDS the survey first.
+		// The drive and `calibrate` that used to be the answer are gone.
+		assert!(text.contains("vagcan setup"), "{text}");
+		assert!(text.contains("vagcan dev survey"), "{text}");
+		assert!(!text.contains("calibrate"), "{text}");
 	}
 
 	#[test]
@@ -3120,10 +3129,64 @@ mod tests {
 			&crate::plan::Answered::default(),
 			None,
 		);
-		assert!(text.contains("no proven measurement rows"), "{text}");
+		assert!(text.contains("has no scalings on this machine"), "{text}");
 		assert!(text.contains("/x/data/measured"), "{text}");
-		assert!(text.contains("vagcan dev recording calibrate"), "{text}");
-		assert!(text.contains("not something `vagcan setup` can fix"), "{text}");
+		assert!(text.contains(crate::missing::scalings_path()), "{text}");
+		assert!(!text.contains("calibrate"), "{text}");
+	}
+
+	#[test]
+	fn an_engine_with_only_the_standard_rows_is_a_car_with_no_scalings() {
+		// The engine always answers SAE J1979's parameters, and they are
+		// nobody's measurement of this car: counted as "named", they kept the
+		// no-scalings paragraph from ever printing on a real car, whose engine
+		// sits at 0x7E0.
+		let ident = |request| crate::plan::UnitIdentity {
+			request,
+			part_number: Some(format!("{request:03X}0000000")),
+			odx_name: None,
+			odx_version: None,
+			component: None,
+		};
+		let identities = vec![ident(crate::plan::ENGINE), ident(0x714)];
+		let empty = vag_data_labels::catalog::CatalogStore::open("/definitely/not/here");
+		let channels = crate::plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
+		assert!(channels.iter().any(|c| c.is_standard()), "the engine has its standard rows");
+		let text = coverage_report(
+			&identities,
+			&channels,
+			"/x/data/measured",
+			&SurveySource::Missing { cache: None },
+			&crate::plan::Answered::default(),
+			Some("SK37X"),
+		);
+		assert!(text.contains("has no scalings on this machine"), "{text}");
+		assert!(!text.contains("named and scaled from this project"), "{text}");
+		// 714 answers nothing described, and the sweep's offer does not give the
+		// same routes again in its own words.
+		assert_eq!(text.matches("<VCDS installation>").count(), 1, "{text}");
+	}
+
+	#[test]
+	fn a_unit_nothing_describes_is_offered_the_survey_before_a_blind_sweep() {
+		// With a project set up and no survey yet, a VCDS installation's list is
+		// one survey away; the blind sweep, a fuzz test, is the last resort.
+		let text = sweep_offer(&[0x714, 0x713], true, "714,713");
+		let survey = text.find("vagcan dev survey\n").expect(&text);
+		let setup = text.find("vagcan setup <VCDS installation>").expect(&text);
+		let odis = text.find("vagcan setup <ODIS project>").expect(&text);
+		let blind = text.find("--blind").expect(&text);
+		assert!(survey < setup && setup < odis && odis < blind, "{text}");
+		// A condition, not a diagnosis: this screen cannot know why an
+		// installation had nothing for a unit, and said a wrong cause once.
+		assert!(text.contains("If setup has read one since this car's survey"), "{text}");
+		assert!(text.contains("a unit the survey missed needs it again"), "{text}");
+		assert!(!text.contains("no file, or a shifted one"), "{text}");
+
+		// The report already gave the routes: only the sweep's price is left.
+		let text = sweep_offer(&[0x714], false, "714");
+		assert!(!text.contains("vagcan setup"), "{text}");
+		assert!(text.contains("--blind"), "{text}");
 	}
 
 	#[test]

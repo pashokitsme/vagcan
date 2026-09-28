@@ -157,7 +157,8 @@ shifted section will search for hours (§6).
   `ECM10TFS03005C906032Q`), Hella Gen3 headlights, the tailgate, seat memory, auxiliary heaters,
   the trailer module, infotainment (`MUCNS`, `MUHig6`, `MUOI`), telematics (`OCU3Clas5G`,
   `OCUClass2023`, `OCUGen3*`), the amplifier, cameras (`MFK*`), airbags TS6 22/23 and the ACC
-  radar `MRRCONTI`. The reference car needs none of them. Route for those: ODIS, or `calibrate`.
+  radar `MRRCONTI`. The reference car needs none of them. Route for those: ODIS (`calibrate`,
+  the other route named here, was removed on 2026-09-28, owner).
 - **BCM (`EV_BCMMQB`) has no file in any of the three installs of §6a** — a missing file, not
   encryption. Whether `ReDir.rod` sends its variant to another file is unchecked.
 - **Undecoded:** `f2` types 1/5/6/12, fields `f11`/`f12`, ~620 RM rows with an empty DID; the
@@ -217,7 +218,8 @@ has what landed, the acceptance on the reference car and what is left.
    the 1-based row convention explicitly — neighbouring rows of a key are near-duplicates, so an
    off-by-one looks plausible (`check_gearbox.py` already shows 1-based 12/12 vs 0-based 11/12).
 4. Then the `calibrate` decision: with a registry reader it is needed only for shifted units,
-   units with no VCDS file, and measurements absent from VCDS's list.
+   units with no VCDS file, and measurements absent from VCDS's list. **Decided 2026-09-28
+   (owner): removed entirely.**
 
 ## 8. What this refutes in the archive (each marked in place)
 

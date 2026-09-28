@@ -109,7 +109,7 @@ item 8, `dash/18` on a real pull.
    builds from a VCDS install alone with the same 19 channels as from ODIS. What is left is listed
    there: the platform file's choice, `measure`'s roles by ODX id, the Russian fallback, and one
    decision for the owner — whether a VCDS list may widen what `dev survey` asks (until then it
-   does not). `calibrate` is removed entirely next, in its own change (owner, 2026-09-28).
+   does not). `calibrate` was removed entirely, in its own change (owner, 2026-09-28).
 
 **With the car**
 
@@ -210,7 +210,7 @@ Every command the skills under `.claude/skills/` name was run against `--help` o
   [`research/vcds-registry/README.md`](../research/vcds-registry/README.md) and "Next" below. ODIS
   is still the shipped route, and remains the route for the ~41% of files in the shifted-IV regime.
 - **OBD-II Mode 01 as the product path** — dropped. The standard sensors survive as
-  `vagcan sensors` and as calibration references, not as the measurement model.
+  `vagcan sensors` and as reference readings, not as the measurement model.
 - **`MUX.rod` as the measurement registry** — opened 2026-08-04 and it is not one. It is
   the ODX multiplexer table, a leaf of the `STRUC` subgraph a car cannot enter, with no
   read identifier by four independent tests and a median table of three rows.

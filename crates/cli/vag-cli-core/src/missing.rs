@@ -1,22 +1,23 @@
 //! What the tool says when the data it needs has not been made yet.
 //!
 //! Nothing this tool reads ships with it. The label files are Ross-Tech's and
-//! cannot be redistributed; the measurement rows were proven on a car and
-//! cannot be invented. So a fresh checkout is *expected* to be short of both,
+//! cannot be redistributed, and a project's channels are read out of them or out
+//! of an ODIS project. So a fresh checkout is *expected* to be short of both,
 //! and the only question is whether it says so.
 //!
-//! **There are two shortages and they have nothing to do with each other.**
+//! **There are two shortages, and `setup` fixes both — in a different order.**
 //!
 //! | missing | why | the fix |
 //! |---|---|---|
 //! | label data | never set up from an ODIS project or a VCDS install | `vagcan setup <DIR>` — offline, one command |
-//! | a measurement catalog | this car was never calibrated | a drive: `survey`, `watch --out`, `recording calibrate` |
+//! | scalings for this car | no ODIS project describes its units, and no VCDS installation was read after a survey of it | [`scalings_path`]: `setup` with an ODIS project, or `dev survey` and then `setup` with a VCDS installation |
 //!
-//! Telling somebody to run `setup` when their real problem is that they have
-//! never calibrated their car sends them round a loop that cannot help them,
-//! and the reverse sends them looking for a VCDS installation they do not need.
-//! That is why the two messages live here side by side rather than being
-//! written out at each call site, and why each has a test.
+//! The second is the one a reader cannot guess: with VCDS alone the survey has
+//! to come first, and somebody who already ran `setup` once has no reason to
+//! think running it again will change anything. That is why the two messages
+//! live here side by side rather than being written out at each call site, and
+//! why each has a test. Until 2026-09-28 the second was fixed by a drive and
+//! `vagcan dev recording calibrate`; that command is gone (owner, 2026-09-28).
 //!
 //! **The first row of that table is [`NoLabelData`], and it is one type because
 //! it was five strings.** Six call sites run into the same shortage — `vcds
@@ -40,18 +41,20 @@ use std::path::Path;
 /// it is Ross-Tech's, and all the label files are derived from their product.
 pub const VCDS_DOWNLOAD: &str = "https://www.ross-tech.com/vcds/download/";
 
-/// The three commands that turn raw bytes into proven numbers, in order.
+/// How a car's scalings are got, in the order a person types it.
 ///
-/// Quoted verbatim by every message about a missing catalog — [`no_catalog`],
+/// Quoted verbatim by every message about a car short of them — [`no_catalog`],
 /// which is what `watch` reports, and `vag_cli_measure::messages`, which is what
 /// `measure` reports — so that a reader who meets the shortage twice is not left
-/// wondering whether the two are the same path. `measure` genuinely did not
-/// quote this until it was made to; the doc claiming otherwise is how the two
-/// wordings drifted to five commands and three without anybody noticing.
-pub fn calibration_path() -> &'static str {
-	"    vagcan dev survey                    once, parked: what every unit answers\n    \
-     vagcan watch --out drive.csv     then drive, with the values on screen\n    \
-     vagcan dev recording calibrate --log drive.csv --out <part-number>.json"
+/// wondering whether the two are the same path. The two wordings once drifted
+/// to five commands and three without anybody noticing.
+pub fn scalings_path() -> &'static str {
+	"    vagcan setup <ODIS project>          every unit the project describes\n  \
+     or, with a VCDS installation:\n    \
+     vagcan dev survey                    on the parked car, with a cable adapter\n    \
+     vagcan setup <VCDS installation>     the channels of the units it found\n  \
+     If setup has read one since this car's survey, it had nothing for the units that\n  \
+     survey found, and its step 5 said why; a unit the survey missed needs it again."
 }
 
 /// The label shortage, in the one wording every command reports it in.
@@ -69,8 +72,9 @@ pub fn calibration_path() -> &'static str {
 /// wanted, and by what — and **which path was looked at**. Those are the two
 /// things this takes. Everything after them is fixed text, written below, once.
 ///
-/// It is *not* [`no_catalog`]: that shortage is fixed by a drive and naming
-/// `setup` at it sends a reader round a loop. See the module docs.
+/// It is *not* [`no_catalog`]: that shortage is a car whose units no source
+/// read so far describes, and with VCDS its fix needs a survey before `setup`,
+/// which this one does not. See the module docs.
 ///
 /// **It is an [`std::error::Error`], and that is load-bearing.** Every site
 /// below reports it by `bail!`-ing one of these, so the type survives into the
@@ -162,8 +166,9 @@ pub fn no_label_data(what: &str, needed_for: &str, path: &Path) -> NoLabelData {
 
 /// Fault codes read fine, but this machine has nothing to name them with.
 ///
-/// A named case of [`NoLabelData`] and not of [`no_catalog`]: a drive cannot
-/// invent a fault name, and only `vagcan setup` can put one here. What it adds
+/// A named case of [`NoLabelData`] and not of [`no_catalog`]: fault names come
+/// with the label files `vagcan setup` reads, and no survey is needed for them.
+/// What it adds
 /// over [`no_label_data`] is the first line — it deliberately says the codes are
 /// still shown, because a reader looking at bare numbers needs to know the
 /// numbers are real and only the names are missing.
@@ -189,29 +194,27 @@ pub fn no_fault_labels(looked_in: &Path) -> String {
 		.to_string()
 }
 
-/// No proven measurement rows for the car in front of the tool.
+/// No scalings for the car in front of the tool: no row proven on a car, and
+/// no channel read from an ODIS project or a VCDS installation.
 ///
-/// Deliberately does **not** mention `setup`. A VCDS installation supplies
-/// names and nothing else — the label files provably carries no scaling
-/// (`.archive/research/labels/rod-labels.md` §4.0c) — so parsing one again cannot
-/// produce a single row of what is missing here. Only a drive can.
+/// It names `setup`, and the order: with a VCDS installation alone the survey
+/// comes first, because the installation's registry is read for the units a
+/// surveyed car answered.
 pub fn no_catalog(subject: &str, dir: &Path) -> String {
 	let mut out = String::new();
-	let _ = writeln!(out, "{subject} has no proven measurement rows on this machine.");
+	let _ = writeln!(
+		out,
+		"{subject} has no scalings on this machine: no row proven on a car, and no channel\n\
+         read from an ODIS project or a VCDS installation."
+	);
 	let _ = writeln!(out, "\nLooked in: {}", dir.display());
 	let _ = writeln!(
 		out,
 		"\n\
-         A row says what an identifier's bytes mean — the raw form, the factor and the\n\
-         offset — and every one of them was measured on a car. The label files do not\n\
-         carry scaling and never did, so this is not something `vagcan setup` can fix.\n\n\
-         What does fix it is a drive:\n\
-         {}\n\n\
-         The last step fits each unknown identifier against a reading already trusted —\n\
-         the standard OBD-II parameters, or a row proven earlier — and writes the ones\n\
-         that hold as a catalog under {}.",
-		calibration_path(),
-		crate::project::measurements_hint()
+         A scaling says what an identifier's bytes mean: the raw form, the factor and the\n\
+         offset. `vagcan setup` brings them:\n\
+         {}",
+		scalings_path()
 	);
 	out
 }
@@ -245,14 +248,19 @@ fn shell_word(path: &str) -> String {
 
 /// Values are on screen, but as bytes, and the reader has no way to know why.
 ///
-/// One line plus the path, printed once per run. A screen read at an open
-/// driver's door cannot afford a paragraph, and repeating it per row would
-/// crowd out the values it is apologising for.
+/// Three lines, printed once per run. A screen read at an open driver's door
+/// cannot afford a paragraph, and repeating it per row would crowd out the
+/// values it is apologising for.
+///
+/// Said as a condition: raw channels are mostly identifiers no source declares
+/// — a blind sweep's, an old survey's, somebody else's survey file — and those
+/// stay raw whatever `setup` reads. Only what an ODIS project or a VCDS list
+/// names can be scaled.
 pub fn raw_channels_note(count: usize) -> String {
 	format!(
-		"{count} channel{} shown as raw bytes: no proven scaling for this car yet.\n\
-         Record a drive and fit them — `vagcan watch --out drive.csv`, then\n\
-         `vagcan dev recording calibrate --log drive.csv --out <part-number>.json`.",
+		"{count} channel{} shown as raw bytes: nothing read into this project scales them.\n\
+         `vagcan setup` scales an identifier that an ODIS project, or a VCDS installation\n\
+         read after `vagcan dev survey`, lists with a scaling; any other stays raw.",
 		if count == 1 { " is" } else { "s are" }
 	)
 }
@@ -276,31 +284,34 @@ mod tests {
 	}
 
 	#[test]
-	fn the_catalog_shortage_names_the_drive_and_never_names_setup() {
+	fn the_scalings_shortage_names_setup_and_the_survey_before_it() {
+		// Since 2026-09-28 `setup` brings scalings from either source, and the
+		// drive and `calibrate` that used to be the fix are gone. What a reader
+		// cannot guess is the order with VCDS: the survey first.
 		let m = no_catalog("This car", Path::new("/x/data"));
-		for step in ["vagcan dev survey", "vagcan watch --out drive.csv", "vagcan dev recording calibrate"] {
-			assert!(m.contains(step), "{step} missing from:\n{m}");
-		}
-		// The distinction that has to survive: somebody whose car has never
-		// been calibrated must not be sent to look for a VCDS installation.
-		// `setup` is named — but only to rule it out, which is the one thing a
-		// reader who already ran it needs to hear.
-		assert!(m.contains("not something `vagcan setup` can fix"), "{m}");
-		assert!(!m.contains("vagcan setup /path"), "that is an instruction, not a warning:\n{m}");
-		assert!(!m.contains(VCDS_DOWNLOAD), "{m}");
+		assert!(m.contains(scalings_path()), "{m}");
+		assert!(m.contains("/x/data"), "the reader must see where it looked:\n{m}");
+		let survey = m.find("vagcan dev survey").expect("the survey is named");
+		let setup = m.find("vagcan setup <VCDS installation>").expect("and setup after it");
+		assert!(survey < setup, "{m}");
+		assert!(!m.contains("calibrate"), "that command is gone:\n{m}");
 	}
 
 	#[test]
 	fn the_two_shortages_cannot_be_mistaken_for_one_another() {
-		// They are the same shape of failure — "the tool has less data than it
-		// wants" — with opposite fixes, and the whole risk is a reader running
-		// the wrong one. So neither message may *offer* the other's command.
+		// Both are fixed by `setup`, and the risk now is the order: a car short
+		// of scalings with only VCDS needs the survey first, and a project short
+		// of label data needs `setup` to have run at all. So only the scalings
+		// shortage gives the survey-then-setup path; the label one mentions the
+		// survey only as what VCDS's scalings need.
 		let label = no_label_data("The names", "this", Path::new("/n")).to_string();
 		let catalog = no_catalog("This car", Path::new("/d"));
 		assert!(label.contains("vagcan setup <path"));
+		assert!(!label.contains(scalings_path()), "{label}");
 		assert!(!label.contains("calibrate"), "{label}");
-		assert!(catalog.contains("vagcan dev recording calibrate"));
-		assert!(!catalog.contains("vagcan setup /path"), "{catalog}");
+		assert!(catalog.contains(scalings_path()), "{catalog}");
+		assert!(!catalog.contains("vagcan setup <path to the ODIS project folder>"), "{catalog}");
+		assert!(!catalog.contains("calibrate"), "{catalog}");
 	}
 
 	#[test]
@@ -308,7 +319,7 @@ mod tests {
 		// The message for a car whose codes read but cannot be named: setup has
 		// not copied the labels in yet. It must send the reader to `setup`, name
 		// the directory it looked in, and never to a drive — the numbers are
-		// real, only the names are absent, so `calibrate` would be the wrong loop.
+		// real, only the names are absent, so a drive would be the wrong loop.
 		let m = no_fault_labels(Path::new("/home/x/.vagcan/data/extracted"));
 		assert!(m.contains("vagcan setup <path to the ODIS project folder>"), "{m}");
 		assert!(m.contains("/home/x/.vagcan/data/extracted"), "the reader must see where it looked:\n{m}");
@@ -325,7 +336,10 @@ mod tests {
 		let one = raw_channels_note(1);
 		assert!(one.contains("1 channel is"), "{one}");
 		assert!(raw_channels_note(7).contains("7 channels are"));
-		assert!(one.contains("recording calibrate"), "{one}");
+		assert!(one.contains("vagcan setup"), "{one}");
+		assert!(one.contains("vagcan dev survey"), "{one}");
+		// A condition, not a promise: what no source names stays raw.
+		assert!(one.contains("any other stays raw"), "{one}");
 		// It shares a screen with the values it is about. Three lines, no more.
 		assert_eq!(one.lines().count(), 3, "{one}");
 	}
@@ -350,10 +364,10 @@ mod tests {
 	}
 
 	#[test]
-	fn the_calibration_path_is_quoted_from_one_place() {
+	fn the_scalings_path_is_quoted_from_one_place() {
 		// Two commands print it. A reader who meets it twice must see the same
-		// three steps, or they will reasonably assume there are two paths.
-		assert!(no_catalog("x", Path::new("/d")).contains(calibration_path()));
+		// steps, or they will reasonably assume there are two paths.
+		assert!(no_catalog("x", Path::new("/d")).contains(scalings_path()));
 	}
 
 	/// The fix line, cut out of a rendered message so two of them can be

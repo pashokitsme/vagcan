@@ -60,8 +60,8 @@ crates/cli/vag-cli-measure/src/view_sample.html
 #                                       redistribute — `vagcan setup` recovers
 #                                       them into ~/.vagcan/data/<project>/
 #   vehicles/*.json                     measurement rows proven on one owner's
-#                                       car; another car needs its own, built by
-#                                       `vagcan dev recording calibrate`
+#                                       car; another car needs its own, proven
+#                                       with `vagcan dev sniff` + `dev vcds analyse`
 #
 # They are still on disk for anyone who has them; git simply does not carry
 # them. See crates/cli/vag-cli-core/src/datadir.rs for where the tool looks now.

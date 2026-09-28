@@ -66,6 +66,21 @@ pub struct Channel {
 pub type Key = (u16, u16, u32);
 
 impl Channel {
+	/// Whether this is the standard's OBD-II row: what [`available`] puts on
+	/// the engine for a parameter SAE J1979 defines, asked of the row itself.
+	/// Not inferred from a missing text id or from not being proven: a VCDS row
+	/// can have neither, and it is this car's control unit's, not the
+	/// standard's.
+	pub fn is_standard(&self) -> bool {
+		!self.proven
+			&& self.request == ENGINE
+			&& self.did >> 8 == 0xF4
+			&& self
+				.def
+				.as_ref()
+				.is_some_and(|def| vag_data_labels::obd::pid((self.did & 0xFF) as u8).is_some_and(|p| p.to_def() == *def))
+	}
+
 	/// This channel's identity: unit, identifier, and where in the response it
 	/// starts. A channel nothing describes reads from byte 0, which is also
 	/// where a lone field would be.
@@ -286,21 +301,6 @@ pub fn survey_units(survey: &str) -> impl Iterator<Item = (u16, serde_json::Valu
 	})
 }
 
-/// Every channel `watch` offers one car, from what this machine holds about it:
-/// its cached survey (which units it has, and what each said it is) and the
-/// current project. What a recording's headings were written from, for a command
-/// that reads a recording offline and has to know what a heading is.
-pub fn offered_for_car(vin: &str) -> anyhow::Result<Vec<Channel>> {
-	use anyhow::Context as _;
-	let path = crate::datadir::survey_cache(vin)?;
-	let survey =
-		std::fs::read_to_string(&path).with_context(|| format!("no survey of {vin} at {} — run `vagcan dev survey` on the car", path.display()))?;
-	let project = crate::project::current()?;
-	let store = CatalogStore::open(project.measurements_dir());
-	let extracted = crate::extracted::open(&project);
-	Ok(with_survey(available(&store, &extracted, &identities_from_survey(&survey)), &survey))
-}
-
 /// What each unit in a survey said about itself.
 ///
 /// A survey already asked every unit for its identification block, so a
@@ -355,8 +355,7 @@ pub fn hex_bytes(text: &str) -> Option<Vec<u8>> {
 /// The survey is the only source that covers the whole car: the catalogs know
 /// three units, the gateway lists fifteen more, and none of those fifteen has a
 /// proven measurement yet. Their channels come through with no definition, so
-/// they display as raw bytes — which is the honest rendering and is also
-/// exactly what `vagcan dev recording calibrate` needs as input.
+/// they display as raw bytes, which is the honest rendering.
 ///
 /// Identifiers already in `channels` keep their definition; a survey never
 /// overrides a proven scaling with nothing.
@@ -585,9 +584,9 @@ mod tests {
 	/// owner's measured data under `~/.vagcan/data/<id>/measurements`, like
 	/// everybody
 	/// else's — nothing measured on a vehicle lives in the checkout any more.
-	/// So a machine that has never calibrated a car has nothing to assert
-	/// against, and these tests say so rather than failing over data they were
-	/// never entitled to assume.
+	/// So a machine that holds no proven rows has nothing to assert against,
+	/// and these tests say so rather than failing over data they were never
+	/// entitled to assume.
 	fn measured_rows() -> Option<std::path::PathBuf> {
 		let dir = crate::project::current().ok()?.measurements_dir();
 		let any = std::fs::read_dir(&dir)
@@ -605,7 +604,7 @@ mod tests {
 				None => {
 					eprintln!(
 						"skipped: no proven rows in this machine's project — \
-                         drive and calibrate a car to get some"
+                         they are one owner's measured data, under ~/.vagcan"
 					);
 					return;
 				}

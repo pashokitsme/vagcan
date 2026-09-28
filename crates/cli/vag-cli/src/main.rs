@@ -1257,16 +1257,15 @@ mod tests {
 		// help would leave the tool advertising a standard it no longer holds
 		// itself to; this makes that a test failure.
 		let bar = vag_cli_core::analyse::Thresholds::default();
-		for path in [["dev", "vcds", "analyse"], ["dev", "recording", "calibrate"]] {
-			for flag in ["min_r2", "min_points"] {
-				let help = flag_help(&path, flag);
-				assert!(help.contains(&format!("R² ≥ {:.3}", bar.min_r2)), "{path:?} {flag}: {help}");
-				assert!(help.contains(&format!("≥ {} points", bar.min_points)), "{path:?} {flag}: {help}");
-				assert!(
-					help.contains(&format!("≥ {} distinct raw values", bar.min_levels)),
-					"{path:?} {flag}: {help}"
-				);
-			}
+		let path = ["dev", "vcds", "analyse"];
+		for flag in ["min_r2", "min_points"] {
+			let help = flag_help(&path, flag);
+			assert!(help.contains(&format!("R² ≥ {:.3}", bar.min_r2)), "{path:?} {flag}: {help}");
+			assert!(help.contains(&format!("≥ {} points", bar.min_points)), "{path:?} {flag}: {help}");
+			assert!(
+				help.contains(&format!("≥ {} distinct raw values", bar.min_levels)),
+				"{path:?} {flag}: {help}"
+			);
 		}
 	}
 
@@ -1701,9 +1700,10 @@ mod tests {
 		// This is the rule made enforceable, and every name that has ever moved
 		// off the top level stays on the denylist — the leaves that went under
 		// `vcds` and `recording` first, then those two groups themselves along
-		// with `survey`, `sniff` and `glossary` when `dev` swallowed them, and
-		// finally `scan` and `properties`, which were deleted outright as
-		// second spellings of `dev survey --only` and `units --identify`.
+		// with `survey`, `sniff` and `glossary` when `dev` swallowed them, then
+		// `scan` and `properties`, which were deleted outright as second
+		// spellings of `dev survey --only` and `units --identify`, and
+		// `calibrate`, deleted with its feature (owner, 2026-09-28).
 		let cli = Cli::command();
 		let top: Vec<&str> = cli.get_subcommands().map(|s| s.get_name()).collect();
 		for offline in [

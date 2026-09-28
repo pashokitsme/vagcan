@@ -529,9 +529,9 @@ mod tests {
 	/// owner's measured data under `~/.vagcan/data/<id>/measurements`, like
 	/// everybody
 	/// else's — nothing measured on a vehicle lives in the checkout any more.
-	/// So a machine that has never calibrated a car has nothing to assert
-	/// against, and these tests say so rather than failing over data they were
-	/// never entitled to assume.
+	/// So a machine that holds no proven rows has nothing to assert against,
+	/// and these tests say so rather than failing over data they were never
+	/// entitled to assume.
 	fn measured_rows() -> Option<std::path::PathBuf> {
 		let dir = crate::project::current().ok()?.measurements_dir();
 		let any = std::fs::read_dir(&dir)
@@ -549,7 +549,7 @@ mod tests {
 				None => {
 					eprintln!(
 						"skipped: no proven rows in this machine's project — \
-                         drive and calibrate a car to get some"
+                         they are one owner's measured data, under ~/.vagcan"
 					);
 					return;
 				}

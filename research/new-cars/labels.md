@@ -148,7 +148,8 @@ measurement selection nor fault names — codes and raw bytes only — until the
 ### 1.3 Solutions
 
 Three routes were weighed. Only one is offline and none is cheap; the choice below explains why
-the project's own answer is ODIS, plus (long-term) `calibrate` on the reference car.
+the project's own answer is ODIS. (It also named `calibrate` on the reference car, long-term;
+that command was removed on 2026-09-28, owner.)
 
 #### (b) Derive the mask offline — checked, and it is not possible
 
@@ -176,8 +177,8 @@ already, with no shift to defeat — that is exactly how the registry finding us
 oracle (sourced: `research/vcds-registry/README.md` intro, §0). So a shifted unit that `vagcan`
 cannot read from VCDS files it **can** read from the car's own ODIS project, imported through
 `vagcan setup` (see §2.4). This is what the roadmap means by "drives on the car override";
-`research/vcds-registry/README.md` §6 lists ODIS (or `calibrate`) as the route for every shifted
-variant.
+`research/vcds-registry/README.md` §6 lists ODIS as the route for every shifted variant
+(`calibrate`, the other one it named, was removed on 2026-09-28).
 
 - Cost: the owner of the newer car must obtain that platform's ODIS project (§2). Code cost:
   none new — `setup` already reads ODIS; the parser gaps are §2.3.

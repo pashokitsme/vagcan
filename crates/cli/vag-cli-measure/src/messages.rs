@@ -63,26 +63,20 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> S
 		let names: Vec<String> = m.tried.iter().map(|n| format!("\"{n}\"")).collect();
 		let _ = writeln!(out, "\n    {} was looked for under {}", m.key, names.join(", "));
 	}
-	// Quoted from `missing::calibration_path`, not written again here. This
-	// message and `watch`'s describe the same job on the same car, and they had
-	// drifted to five commands and three: a reader who meets the shortage twice
-	// cannot tell two wordings of one procedure from two procedures. Only what
-	// is genuinely `measure`'s — which rows it looks for — is written below.
+	// Quoted from `missing::scalings_path`, not written again here. This message
+	// and `watch`'s describe the same job on the same car, and they had drifted
+	// to five commands and three: a reader who meets the shortage twice cannot
+	// tell two wordings of one procedure from two procedures. Only what is
+	// genuinely `measure`'s — which rows it looks for — is written above.
 	let _ = writeln!(
 		out,
 		"\n\
          There is no stopwatch without a speed channel, and measure will not guess one\n\
-         from raw bytes. The whole way there:\n\
-         {}\n\
-         Move the result to {} — the file name is the unit's own F187 part number — and\n\
-         name its rows so this command can find them: `speed` and `gear` are what it\n\
-         looks for.\n\n\
-         Or, if this car's project has no channels for its units yet, let `vagcan setup`\n\
-         bring them: an ODIS project describes every unit's channels, and a VCDS\n\
-         installation those of a surveyed car — `vagcan dev survey` on the car, then\n\
-         `vagcan setup <installation>`.",
-		vag_cli_core::missing::calibration_path(),
-		crate::project::measurements_hint()
+         from raw bytes. It finds a channel by the names above only: one under another\n\
+         name is not used. If this car's project has no channels for its units yet,\n\
+         `vagcan setup` brings them:\n\
+         {}",
+		vag_cli_core::missing::scalings_path()
 	);
 	out
 }
@@ -398,7 +392,7 @@ mod tests {
 			}],
 		);
 		assert!(text.contains("0CW300041G"), "{text}");
-		assert!(text.contains("dev recording calibrate"), "{text}");
+		assert!(text.contains("vagcan setup"), "{text}");
 	}
 
 	#[test]
@@ -418,16 +412,13 @@ mod tests {
 	}
 
 	#[test]
-	fn the_refusal_goes_all_the_way_to_a_catalog_rather_than_to_a_list_of_hex() {
+	fn the_refusal_goes_all_the_way_to_the_channels_rather_than_to_a_list_of_hex() {
 		// It used to end at `survey --diff`, which finds the identifiers and
-		// says nothing about what to do with them. A reader who follows it to
-		// the letter is left holding a list of hex and no catalog — and the
-		// catalog is what this command refused for.
-		//
-		// It then went too far the other way and wrote its own five-command
-		// route while `watch` printed a three-command one for the same job on
-		// the same car. Asserted as a verbatim quote, not as a list of
-		// substrings: substrings are what let the two drift apart.
+		// says nothing about what to do with them, and then at a drive and
+		// `calibrate`, which is gone (owner, 2026-09-28). Since that day `setup`
+		// brings the channels from either source, and the one path is quoted
+		// verbatim, not as a list of substrings: substrings are what let this
+		// message and `watch`'s drift apart once.
 		let text = missing_channels(
 			&[],
 			&[MissingChannel {
@@ -436,21 +427,12 @@ mod tests {
 			}],
 		);
 		assert!(
-			text.contains(vag_cli_core::missing::calibration_path()),
-			"not the one calibration path `watch` prints:\n{text}"
+			text.contains(vag_cli_core::missing::scalings_path()),
+			"not the one path `watch` prints:\n{text}"
 		);
-		// Where the file goes, resolved rather than written out: this literal
-		// used to be `~/.vagcan/data/measured/`, and it reached somebody
-		// standing at a car after the store had moved out from under it. A
-		// printed path is a promise, so it is asked rather than remembered.
-		assert!(text.contains("measurements"), "where the file goes:\n{text}");
-		assert!(!text.contains("data/measured/"), "the path this instruction moved off:\n{text}");
-		// It used to rule `setup` out: label files carried no scalings. Since
-		// 2026-09-28 a VCDS installation brings them for a surveyed car, and an
-		// ODIS project always did, so a project that has read neither is short
-		// of data `setup` supplies — said as a condition, because a project that
-		// has read one and still has no speed row is short of something else.
+		// Said as a condition: a project that has read a source and still has
+		// no speed row is short of something `setup` cannot bring.
 		assert!(text.contains("has no channels for its units yet"), "{text}");
-		assert!(!text.contains("None of this is what `vagcan setup` does"), "{text}");
+		assert!(!text.contains("calibrate"), "that command is gone:\n{text}");
 	}
 }

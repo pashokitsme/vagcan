@@ -14,50 +14,12 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 
 use crate::ui::picker;
-use crate::{analyse, calibrate, dashreplay, discover};
+use crate::{dashreplay, discover};
 
 // Clone for the reason `vcds::Tool` is: the dispatcher keeps a copy of the
 // command so it can be run again after the label data has been made.
 #[derive(Clone, Subcommand)]
 pub enum Tool {
-	/// Prove new scalings against ones already trusted — no VCDS needed.
-	///
-	/// FOR: naming what raw bytes mean using measurements this project has
-	/// already proven, instead of a parallel VCDS session. One clock, so no
-	/// alignment error is possible. It cannot name anything, and cannot find a
-	/// quantity unrelated to everything already known.
-	///
-	/// IN: a `vagcan watch --out` recording holding BOTH converted reference
-	/// columns and raw hex columns (the ones suffixed `_raw`).
-	///
-	/// OUT: the fits that clear the bar, on stdout.
-	Calibrate {
-		/// Recording written by `vagcan watch --out`. Left out, the recordings
-		/// in the current directory are offered as a list.
-		#[arg(long, value_name = "FILE")]
-		log: Option<String>,
-		/// Minimum R² for a fit to count (the whole bar: R² ≥ 0.995, ≥ 20
-		/// points over ≥ 4 distinct raw values).
-		#[arg(long, default_value_t = 0.995, value_name = "R2")]
-		min_r2: f64,
-		/// Minimum matched samples for a fit to count (the whole bar: R² ≥
-		/// 0.995, ≥ 20 points over ≥ 4 distinct raw values).
-		#[arg(long, default_value_t = 20, value_name = "N")]
-		min_points: usize,
-		/// Write the proven scalings as a measurement catalog. Put the file in
-		/// `~/.vagcan/data/<project>/measurements/<part number>.json` and `watch` and `measure`
-		/// read it from then on.
-		#[arg(long, value_name = "FILE")]
-		out: Option<String>,
-		/// The car the recording is of. Its channel list (from its cached survey
-		/// and the project) says which headings are states, which are then never
-		/// used as a reference. Left out, a heading is judged by its values.
-		/// The list is today's survey and project, not the ones the recording was
-		/// made with.
-		#[arg(long, value_name = "VIN")]
-		vin: Option<String>,
-	},
-
 	/// Find which identifiers carry discrete state — a gear, a mode, a switch.
 	///
 	/// FOR: the values that cannot be fitted. A two-level signal fits any line
@@ -174,27 +136,6 @@ fn recordings() -> picker::Level<'static> {
 
 pub fn run(tool: Tool) -> Result<()> {
 	match tool {
-		Tool::Calibrate {
-			log,
-			min_r2,
-			min_points,
-			out,
-			vin,
-		} => {
-			let Some(log) = pick_when_absent(log, "vagcan dev recording calibrate --log FILE.csv")? else {
-				return Ok(());
-			};
-			calibrate::run(
-				&log,
-				out.as_deref(),
-				analyse::Thresholds {
-					min_r2,
-					min_points,
-					..Default::default()
-				},
-				vin.as_deref(),
-			)
-		}
 		Tool::Discover { log, pairs } => {
 			let Some(log) = pick_when_absent(log, "vagcan dev recording discover --log FILE.csv")? else {
 				return Ok(());

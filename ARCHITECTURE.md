@@ -46,8 +46,8 @@ The first three land in a **project** — `~/.vagcan/data/<project id>/`, holdin
 `cache.sqlite`, `names.json`, `odx-ids.json`, `rod-keys.json` and `sources.json`, with the raw `.rod`
 files and the fault text in a shared `~/.vagcan/rod/` because those are a property of a
 VCDS *build* rather than of any car. The last lands in that project's `measurements/`.
-A tool short of one of them is in a completely different situation from a tool short of
-the other, and the messages it prints say which.
+`setup` fills the project, and with a VCDS installation alone the car's scalings need a
+survey first; the messages a short tool prints say whether it lacks label data or scalings.
 
 **A project is keyed by platform, not by car**, and that is the whole reason it is not
 keyed by VIN: `SK37X` is VW's own identifier for a platform covering every Octavia III,
@@ -143,18 +143,16 @@ intended behaviour, not a gap.
 
 ### How a row gets proven
 
-Two routes, both least-squares fits that accept nothing under **R² 0.995 over ≥ 20
-points and ≥ 4 distinct raw values**.
+One route, a least-squares fit that accepts nothing under **R² 0.995 over ≥ 20 points
+and ≥ 4 distinct raw values**. `vagcan dev sniff` records the bus listen-only while VCDS
+runs an ordinary session beside it, and `vagcan dev vcds analyse` crosses that capture
+with VCDS's own CSV export. The two files are aligned by wall-clock arithmetic — a
+subtraction, never a search.
 
-`vagcan dev sniff` records the bus listen-only while VCDS runs an ordinary session beside
-it, and `vagcan dev vcds analyse` crosses that capture with VCDS's own CSV export. The
-two files are aligned by wall-clock arithmetic — a subtraction, never a search.
-
-`vagcan dev recording calibrate` needs no VCDS at all: it fits unproven columns of a
-`vagcan watch --out` recording against columns already trusted in the *same*
-recording — the standard OBD-II parameters, whose conversions are SAE J1979's, or
-rows proven earlier. One clock, tens of hertz, and whatever identifiers were asked
-for. What it cannot do is **name** anything.
+There was a second, `vagcan dev recording calibrate`, which fitted unproven columns of a
+`watch --out` recording against trusted ones in the same recording. It was removed on
+2026-09-28 (owner): with ODIS and VCDS's registry giving scalings through `setup`, nobody
+was going to drive to make them.
 
 ---
 

@@ -56,7 +56,8 @@ impl Old {
 	/// `data/` is extracted from a VCDS installation and can be extracted again.
 	///
 	/// Zero is the ordinary answer: a machine that has run `setup` but never
-	/// calibrated a car has nothing here, and nothing irreversible is at stake.
+	/// proved a row on a car has nothing here, and nothing irreversible is at
+	/// stake.
 	pub fn proven(&self) -> usize {
 		plan(self).iter().filter(|(_, kind, _)| *kind == Kind::Measured).count()
 	}
@@ -511,7 +512,7 @@ mod tests {
 		assert_eq!(old.proven(), 1, "the override is not a proven row and does not move");
 		assert_eq!(old.files(), 7);
 
-		// A machine that ran setup but never calibrated a car has nothing
+		// A machine that ran setup but never proved a row on a car has nothing
 		// irreversible at stake, and the question can say so.
 		std::fs::remove_file(old.measured.join("04E-906-027-AH.json")).unwrap();
 		assert_eq!(old.proven(), 0);
