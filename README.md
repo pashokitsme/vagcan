@@ -74,12 +74,13 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 - **Laptop sleep ends it too**: a `--slcan` command running across a sleep gets no frames after it. Run it again.
 - **`slcan` image**: flashed instead of `dash`, the board is only an adapter.
 - **Power**: OBD pin 1, so the board is on only with the ignition.
-- **`dashsim`**: shows the board's screen in a terminal over USB, until the OLED is fitted.
+- **OLED**: an SSD1322 module (3.12″, 256×64) on the board's SPI pins. `set brightness N` in `dashcfg` sets how bright it is, 0–255.
+- **`dashsim`**: shows the board's screen in a terminal over USB, with or without the OLED.
 - **Replay without the board**: `vagcan dev recording dash <VIN> --log drive.csv` plays a `watch --out` recording on the panel in the terminal, alarms included, and prints each alarm event. `--press 12.5` turns the page at 12.5 s, as `dashsim`'s press does. Piped, it prints the events only.
 
 ## Roadmap
 
-Updated 2026-09-28.
+Updated 2026-09-30.
 
 **Done**
 - [x] Read the car: identity, units, faults, OBD-II sensors, live values, acceleration timing with html-report
@@ -92,7 +93,7 @@ Updated 2026-09-28.
 - [x] `dev survey` removed (2026-09-28): the car's units are recorded by `watch`, `measure` and `units --identify`, and those three read a VCDS installation's channels for them the first time; `dev dash build` reads them offline
 - [ ] Laptop reads the car through the dash while its screen keeps working (BLE passed on the car; the cable waits)
 - [ ] Dash shows how far a channel is from what its control unit asked for, with a drift alarm (built, waiting for the car)
-- [ ] OLED on the board, and an enclosure with snap-in boards (waiting for the display)
+- [ ] OLED on the board (draws on the bench since 2026-09-30, not in the car yet), and an enclosure with snap-in boards
 - [ ] Page the dash panel with buttons on its pins, or with the cruise-control buttons while cruise is off; LIMIT or a pin button for the stopwatch (built, waiting for the car)
 - [ ] `vagcan faults` on the car with fault text from ODIS only
 - [ ] Scalings and names from a VCDS install alone, without an ODIS project (built 2026-09-28; checked offline on the reference car, waits for a drive)
@@ -126,6 +127,20 @@ This tool does **not** work over VCDS's `HEX-V2`, a `VNCI`, or any other diagnos
 | 14 | CAN-L |
 | 5 or 4 | GND |
 | 16 or 1 | +12 V, only for standalone boards such as the dash |
+
+**OLED wiring** (dash only; a 16-pin SSD1322 module set to 4-wire SPI)
+
+| Module pin | ESP32-C3 |
+|---|---|
+| 1 GND | `G` |
+| 2 VCC | supply, per the module |
+| 4 SCLK | `GPIO10` |
+| 5 SDIN | `GPIO8` (the board's blue LED; it flickers with the panel's data) |
+| 14 D/C | `GPIO0` |
+| 15 RES | `GPIO21` |
+| 16 CS | `GPIO20` |
+
+Module pins 3 and 6 stay free; 7–13 go to GND.
 
 ## Install
 

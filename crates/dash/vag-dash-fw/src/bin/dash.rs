@@ -82,13 +82,15 @@ use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_sync::waitqueue::MultiWakerRegistration;
-use embassy_time::{Duration, Instant, Timer, with_timeout};
+use embassy_time::{Delay, Duration, Instant, Timer, with_timeout};
 use esp_backtrace as _;
 use esp_hal::Async;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Input, InputConfig, Pull};
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::peripherals::{GPIO1, GPIO3, GPIO4, GPIO5, GPIO6, TWAI0};
+use esp_hal::spi::master::{Config as SpiConfig, Spi};
+use esp_hal::time::Rate;
 use esp_hal::timer::systimer::SystemTimer;
 #[cfg(feature = "ble")]
 use esp_hal::timer::timg::TimerGroup;
@@ -110,6 +112,7 @@ use vag_dash_fw::panel::Framebuffer;
 use vag_dash_fw::plan::{ALARM_COUNT, BUTTON_COUNT, CHANNEL_COUNT, CHART_COUNT, PLAN, UNIT_COUNT};
 use vag_dash_fw::saving::{Flash, RunWrite, Saving};
 use vag_dash_fw::slcan::{self, Adapter, CommandLine, Commands, Line, Packet, Port};
+use vag_dash_fw::ssd1322::{self, Shown, Ssd1322};
 use vag_dash_fw::store::{Error as StoreError, Store};
 use vag_dash_fw::ui::{Button, DEBOUNCE_MS, Press, Visibility};
 use vag_dash_fw::usb;
@@ -534,8 +537,8 @@ enum Outgoing {
 	Frame(Vec<u8>),
 }
 
-/// `Visibility as u8`. An atomic rather than the mutex because the LED task
-/// reads it constantly and must never wait for a flash write.
+/// `Visibility as u8`. An atomic rather than the mutex because the panel's link icons
+/// read it every frame and must never wait for a flash write.
 static VISIBILITY: AtomicU8 = AtomicU8::new(Visibility::Dark as u8);
 
 /// Presses arriving from the panel simulator over USB, for `input_task`. What they ask for
@@ -601,8 +604,8 @@ fn set_visibility(v: Visibility) {
 }
 
 /// Which hosts the board is serving, for the icons in the panel's corner: a host on the
-/// cable that said Hello ([`USB_LINKED`]), and a BLE central connected — the LED's
-/// [`Visibility::Connected`], `dashcfg` included.
+/// cable that said Hello ([`USB_LINKED`]), and a BLE central connected
+/// ([`Visibility::Connected`]), `dashcfg` included.
 fn links() -> vag_dash_render::Links {
 	vag_dash_render::Links {
 		usb: USB_LINKED.load(Ordering::Relaxed),
@@ -631,10 +634,31 @@ async fn main(spawner: Spawner) {
 	// hang during start-up reboots too. See `health.rs`.
 	vag_dash_fw::health::init(spawner);
 
-	let led = Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
+	// GPIO8, the SuperMini's blue LED, is the glass's SDIN (owner 2026-09-30, from GPIO7): the
+	// LED flickers with the panel's data and says nothing of its own any more — the link icons
+	// on the glass say what it said.
 	// GPIO9, the SuperMini's BOOT button, is not configured: it is technical, not an input
 	// (owner, 2026-09-27), and a strapping pin the ROM reads at reset.
 	let pins = PINS.init(pin_buttons(peripherals.GPIO3, peripherals.GPIO4, peripherals.GPIO5));
+
+	// The glass: an SSD1322 on SPI2 — SCLK `GPIO10`, SDIN `GPIO8`, D/C `GPIO0`, CS `GPIO20`,
+	// RES `GPIO21` (`todo/dash/22-oled.md`; CS and RES swapped by the owner, 2026-09-30). The link is write-only, so a board with no
+	// panel fitted runs the same: five pins driven into nothing.
+	static OLED: StaticCell<Oled> = StaticCell::new();
+	let oled = match Spi::new(peripherals.SPI2, SpiConfig::default().with_frequency(Rate::from_hz(ssd1322::CLOCK_HZ))) {
+		Ok(spi) => {
+			let spi = spi.with_sck(peripherals.GPIO10).with_mosi(peripherals.GPIO8).into_async();
+			let pin = OutputConfig::default();
+			let dc = Output::new(peripherals.GPIO0, Level::Low, pin);
+			let cs = Output::new(peripherals.GPIO20, Level::High, pin);
+			let res = Output::new(peripherals.GPIO21, Level::High, pin);
+			Some(OLED.init(Oled::new(Ssd1322::new(spi, dc, cs, res))))
+		}
+		Err(_) => {
+			warn!("glass: no SPI bus — the panel goes to the cable only");
+			None
+		}
+	};
 
 	// Which car this image is for, said once, before anything is asked of the
 	// bus: a plan and a car that disagree is the first thing to look for.
@@ -704,11 +728,8 @@ async fn main(spawner: Spawner) {
 	if let Err(e) = spawner.spawn(usb_session_task(bus)) {
 		warn!("SPAWN usb session FAILED: {e:?}");
 	}
-	if let Err(e) = spawner.spawn(panel_task(settings, screen, stopwatch)) {
+	if let Err(e) = spawner.spawn(panel_task(settings, screen, stopwatch, oled)) {
 		warn!("SPAWN panel FAILED: {e:?}");
-	}
-	if let Err(e) = spawner.spawn(led_task(led)) {
-		warn!("SPAWN led FAILED: {e:?}");
 	}
 	if let Err(e) = spawner.spawn(control_task(settings, screen)) {
 		warn!("SPAWN control FAILED: {e:?}");
@@ -968,36 +989,6 @@ async fn control_task(settings: &'static Shared, screen: &'static ScreenCell) ->
 			Outcome::NoStopwatch => note!("{source}: stopwatch — the plan has no [stopwatch]"),
 			Outcome::StopwatchHeld => note!("{source}: {} does nothing while the stopwatch is up", command.name()),
 			Outcome::Ignored => note!("{source}: {} does nothing on the adapter screen", command.name()),
-		}
-	}
-}
-
-/// The only thing that says what state the device is in while there is no
-/// panel: off is not advertising (it could not start), a hurried blink is
-/// advertising, a slow double pulse is connected.
-#[embassy_executor::task]
-async fn led_task(mut led: Output<'static>) -> ! {
-	loop {
-		match visibility() {
-			Visibility::Dark => {
-				led.set_high();
-				Timer::after(Duration::from_millis(200)).await;
-			}
-			Visibility::Advertising => {
-				led.set_low();
-				Timer::after(Duration::from_millis(60)).await;
-				led.set_high();
-				Timer::after(Duration::from_millis(140)).await;
-			}
-			Visibility::Connected => {
-				for _ in 0..2 {
-					led.set_low();
-					Timer::after(Duration::from_millis(40)).await;
-					led.set_high();
-					Timer::after(Duration::from_millis(120)).await;
-				}
-				Timer::after(Duration::from_millis(1200)).await;
-			}
 		}
 	}
 }
@@ -2753,6 +2744,70 @@ static PANEL_LINE: Mutex<CriticalSectionRawMutex, heapless::String<FRAME_LINE>> 
 /// Raised when [`PANEL_LINE`] holds a frame not yet written.
 static PANEL_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
+/// Every this many frames the glass is sent the whole picture, changed or not: ten seconds.
+/// Nothing can be read back from it, so this is what repairs a byte lost on the wire, and
+/// what bounds how long a row the checksums took for unchanged can stay stale.
+const RESEND_FRAMES: u32 = 50;
+
+type Glass = Ssd1322<Spi<'static, Async>, Output<'static>>;
+
+/// The OLED: its controller, what it was last sent, and whether the last frame went out.
+/// One static (`main`), so none of it is in the panel task's future.
+struct Oled {
+	glass: Glass,
+	shown: Shown,
+	/// The brightness the controller was last told; `None` until it is, and at a resend.
+	brightness: Option<u8>,
+	frames: u32,
+	failed: bool,
+}
+
+impl Oled {
+	fn new(glass: Glass) -> Self {
+		Self {
+			glass,
+			shown: Shown::new(),
+			brightness: None,
+			frames: 0,
+			failed: false,
+		}
+	}
+
+	/// Puts the framebuffer on the glass at the settings' `brightness`: the rows that changed
+	/// since the last frame, or all of them every [`RESEND_FRAMES`], and the brightness when
+	/// it changed or with a resend. A frame that does not go out is said once, and the next
+	/// one goes whole.
+	async fn show(&mut self, frame: &Framebuffer, brightness: u8) {
+		self.frames = self.frames.wrapping_add(1);
+		if self.frames % RESEND_FRAMES == 0 {
+			self.shown.forget();
+			self.brightness = None;
+		}
+		let mut sent = Ok(());
+		if self.brightness != Some(brightness) {
+			sent = self.glass.brightness(brightness).await;
+			self.brightness = sent.is_ok().then_some(brightness);
+		}
+		if let Some((first, last)) = self.shown.changed(frame.rows()) {
+			let rows = self
+				.glass
+				.rows(first, frame.rows().skip(first).take(last - first + 1), ssd1322::FULL)
+				.await;
+			if rows.is_err() {
+				self.shown.forget();
+			}
+			sent = sent.and(rows);
+		}
+		if sent.is_err() != self.failed {
+			self.failed = sent.is_err();
+			match sent {
+				Ok(()) => note!("glass: frames go out again"),
+				Err(_) => note!("glass: a frame did not go out"),
+			}
+		}
+	}
+}
+
 /// Draws the current page and leaves its pixels for the USB port.
 ///
 /// This is the real renderer on real pixels: `vag_dash_render::draw` into a 256×64
@@ -2784,7 +2839,12 @@ static PANEL_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// shows: the stopwatch does not arm while the write waits, and arms once it is tried (PR #12
 /// review) — never as the board turns adapter — or by a `save`.
 #[embassy_executor::task]
-async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stopwatch: &'static StopwatchCell) -> ! {
+async fn panel_task(
+	settings: &'static Shared,
+	screen: &'static ScreenCell,
+	stopwatch: &'static StopwatchCell,
+	mut oled: Option<&'static mut Oled>,
+) -> ! {
 	use vag_dash_render::history::History;
 	use vag_dash_render::{Board, Cell, Deviation, Frame, Rates, Theme, draw_with};
 	use vag_uds_can::wire::BitRate;
@@ -2792,6 +2852,14 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stop
 	static FRAMEBUFFER: StaticCell<Framebuffer> = StaticCell::new();
 	let framebuffer = FRAMEBUFFER.init(Framebuffer::new());
 	let theme = Theme::bold_mono();
+
+	// The glass is set up once, here: reset, the controller's settings, a dark picture, on.
+	if let Some(oled) = oled.as_deref_mut() {
+		match oled.glass.start(&mut Delay, false).await {
+			Ok(()) => info!("glass: the SSD1322 is set up ({} Hz)", ssd1322::CLOCK_HZ),
+			Err(_) => warn!("glass: setting the SSD1322 up failed"),
+		}
+	}
 
 	// One history per chart the plan has, in the plan's order — `PLAN.chart`
 	// says which slot a channel's is. Every one of them takes a sample **every
@@ -2862,7 +2930,10 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stop
 		}
 		// Whether a kept run still waits for its write — kept, tried, dropped by `load` or
 		// `defaults`, written by `save`: the stopwatch arms by it (`Stopwatch::hold`).
-		let write_waits = settings.lock().await.saving.write_waits();
+		let (write_waits, brightness) = {
+			let s = settings.lock().await;
+			(s.saving.write_waits(), s.config.brightness)
+		};
 		stopwatch.lock(|w| w.borrow_mut().hold(write_waits));
 
 		if adapter_mode() {
@@ -2885,6 +2956,9 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stop
 			if compromised != last_compromised {
 				last_compromised = compromised;
 				note!("panel: {report:?}");
+			}
+			if let Some(oled) = oled.as_deref_mut() {
+				oled.show(framebuffer, brightness).await;
 			}
 			continue;
 		}
@@ -3041,6 +3115,10 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stop
 		if compromised != last_compromised {
 			last_compromised = compromised;
 			note!("panel: {report:?}");
+		}
+
+		if let Some(oled) = oled.as_deref_mut() {
+			oled.show(framebuffer, brightness).await;
 		}
 
 		// Left for the writer, which puts it on the wire whole between everything else.

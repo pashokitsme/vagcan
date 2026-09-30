@@ -536,9 +536,10 @@ RESET buttons are not inputs; `GPIO9` is left to the ROM.
 
 **Rendering is shared with the laptop.** `vag-dash-render` turns a `Frame` (a values page
 of up to four cells, or a chart page) into pixels on any `embedded-graphics` target. On
-the board that is a 1-bit framebuffer; until the OLED is fitted, the board sends it over
-USB and `dashsim` (`research/dash/host`) draws it in a terminal. The layout is decided
-only on the board.
+the board that is a 1-bit framebuffer. The board sends it to the OLED — an SSD1322 over
+SPI, four bits a pixel, widened row by row as it is sent, and only the rows that changed —
+and over USB, where `dashsim` (`research/dash/host`) draws it in a terminal. The layout is
+decided only on the board.
 
 **A recorded drive on the panel, without the board.** `vagcan dev recording dash` runs a
 `watch --out` recording through the board's own `Screen`, alarms, `Plan::rates` and

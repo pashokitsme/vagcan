@@ -16,6 +16,7 @@ pub mod plan;
 pub mod saving;
 pub mod schema;
 pub mod slcan;
+pub mod ssd1322;
 pub mod store;
 pub mod ui;
 pub mod usb;

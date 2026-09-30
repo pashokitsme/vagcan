@@ -149,3 +149,13 @@ answered, `200A`–`200D` among them):
 | the same, rolling slowly through a tight turn | which index is which wheel: the inner side reads slower, and on one side the front reads faster than the rear |
 | rows' spacing in that `watch` | how fast the ESC answers, and so what rate its channels can have beside the stopwatch's gearbox speed |
 | `vagcan watch --did 713:1822,1800,1801,1802,1803 7E1:380B` through a launch | a rear wheel against `380B`: a gap at launch is wheelspin; `1822` steps at the launch instant |
+
+**2026-09-30, a drive (owner):** the DRIVE page's acceleration (`713:IDE03660`, `1822`) shows a
+dash the whole time; every other value shows. So the board gets nothing it can read from the
+ESC: either `713` is not polled (the board polls a unit only when its `F187` matches the plan's
+`5Q0614517AQ`), or `1822` gets no answer or one the plan's layout does not fit. The board's
+console on the car says which — `can: 713 …` lines (USB plugged in before OBD power) — and the
+first row of the table above says whether the ESC answers `1822` to the laptop at all. Also
+from that drive: the speed (the gearbox's `IDE00075`) matches the cluster at a steady speed and
+differs from it while speeding up or slowing down, one way or the other — two readings taken at
+different moments, not a scaling error.

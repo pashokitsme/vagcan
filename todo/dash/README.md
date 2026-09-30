@@ -68,6 +68,7 @@ drama and a real collapse into a flat line.
 | [`19-stalk-and-stopwatch.md`](19-stalk-and-stopwatch.md) | the lever and `[[button]]` pins as input, the stopwatch page — merged (PR #12, 2026-09-27); needs the car |
 | [`20-fault-count.md`](20-fault-count.md) | the car's stored codes counted once after boot, a triangle and the count in the corner, `?` when there is no count — built 2026-09-27; needs the car |
 | [`21-runs-in-flash.md`](21-runs-in-flash.md) | stopwatch runs kept in flash and read back over BLE; saved on LIMIT — recorded 2026-09-27, after dash/19 |
+| [`22-oled.md`](22-oled.md) | the SSD1322 panel on the board — draws on the bench and in the car (2026-09-30), PR #21; which way up is open |
 
 Done: `01`, `02`, `03`, `05`, `10`, `11`, `12`, `16` in `.archive/tasks/done/dash/`.
 Superseded: `07`, `08`, `09` in `.archive/specs/dash/`.
