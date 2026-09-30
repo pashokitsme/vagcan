@@ -459,6 +459,9 @@ plan the pin table adds ~300 B of statics.
 
 ## On the car
 
+**2026-09-30, a drive (owner):** paging with the lever works, the stopwatch works, LIMIT opens
+it. Items 4–6 below were not reported one by one.
+
 1. `vagcan setup` again, so the cache keeps the bands; then add `[stalk]` / `[stopwatch]` and
    build.
 2. Paging: +, −, LIMIT with cruise off; nothing with cruise on or after CANCEL. With the
