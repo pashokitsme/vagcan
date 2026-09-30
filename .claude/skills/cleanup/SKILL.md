@@ -270,7 +270,8 @@ mixed in.
 - **Run the pass from a worktree of `origin/master`, and read this file from there.** `/cleanup`
   loads the skill from whatever branch the main checkout sits on. On 2026-09-27 that was a
   stale hand-off branch, and the text that loaded lacked the 2026-09-26 rules. Phase 1 starts
-  with `git fetch` and `git worktree add -b chore/cleanup-<date> .worktrees/cleanup origin/master`.
+  with `git fetch` and `git worktree add -b chore/cleanup-<date> .worktrees/cleanup-<date> origin/master`
+  (dated: the last pass's worktree may still be there, merged and waiting for the owner's word).
   Then diff `.claude/skills/cleanup/SKILL.md` against the loaded text before acting on it.
 - **A reviewer's probe counts under the 2026-09-22 rule too.** The tool that found PR #12's
   window-edge bug (board and laptop 65 ms apart on a sample exactly 400 ms after the first moving
@@ -309,6 +310,22 @@ mixed in.
   backticked span as a command — one of them a whole `cargo check --workspace`, which also left a
   `target/` in the worktree — and the header came out full of holes. Write text with the Write
   tool or a quoted `<<'EOF'`, then grep the file for one of its spans before committing.
+
+### Rules established on the 2026-09-30 pass
+
+- **What a board runs is checked by its image's source tree, not by a PR number.** The board in
+  the car was flashed from a PR branch at `46ddfb8`, and the PR was then squashed and merged as
+  `959c6d5`, so the commit the image came from is on no branch of `master`. "The board runs
+  master" was written only after `git diff 46ddfb8 origin/master -- crates/` showed that the
+  squash changed `oledtest`, a driver method `dash` never called and a removed probe, and not
+  `dash`. A status line about a board names the commit it was built from and says how that
+  commit differs from `master`.
+- **The housing's record lives in the CAD workspace, and this repository points to it.**
+  `~/CAD/projects/vagcan/` is its own git repository: `housing.py`'s header and `print/README.md`
+  hold every print, parameter and test piece. `todo/dash/15-enclosure.md` keeps a dated line per
+  change with a pointer, not a second copy, or the two disagree within a day — they already had
+  once, when a row here said the display would take wires soldered into bare holes after the
+  module had come with a pin header.
 
 ## What a cleanup pass produces
 
