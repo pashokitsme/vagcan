@@ -4,59 +4,42 @@ The short roadmap is in [`README.md`](../README.md#roadmap) and is kept current 
 This file is the detail behind it: state, decisions, open items, and what is dead. Older
 dated status sections moved verbatim to
 [`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-09-14,
-2026-09-15, 2026-09-22, 2026-09-26 and 2026-09-27.
+2026-09-15, 2026-09-22, 2026-09-26, 2026-09-27, 2026-09-28 and 2026-09-30.
 
-## Since then (2026-09-30)
+## Where things stand (2026-09-30)
 
-- **The OLED arrived and the board draws on it** — [`dash/22`](dash/22-oled.md), PR #21.
-- **A drive with it (owner):** the lever pages, the stopwatch and LIMIT work, values show
-  ([`dash/19`](dash/19-stalk-and-stopwatch.md) "On the car"); the DRIVE page's acceleration is
-  a dash the whole time ([`dash/17`](dash/17-bench-ble-usb.md) §4).
+**Milestone: the board draws on its own OLED, and the lever and the stopwatch work on the car —
+PR #21 merged 2026-09-30** (`959c6d5`). `cargo test --workspace` 1,997 passed, `research/dash/host`
+95; firmware static RAM 140,996 B with BLE, 131,536 B without (+1,496 / +1,488 for the glass,
+explained in the PR). The 2026-09-28 status moved to
+[`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-09-30.
 
-## Where things stand (2026-09-28)
+- **The glass** ([`dash/22`](dash/22-oled.md)): an SSD1322 3.12″ 256×64 module on SPI, set to
+  4-wire by one moved 0 Ω link; `dash` sends every frame to it (changed rows only, everything
+  every 10 s); the settings' `brightness` drives it; scan clock `B3 F1`. Pins as the rev v1.1
+  board is wired — `README.md`, "OLED wiring" — after an afternoon when the glass went dark
+  on that board until the firmware followed its wiring.
+- **The board in the car** is the rev v1.1 board with BLE. It runs `dash` built from PR #21's
+  branch at `46ddfb8` with the owner's plan — the same `dash` code as `959c6d5` (the squash
+  dropped only `oledtest`'s clock sweep, a driver method `dash` never called, and the
+  `oledpins` probe). So every merged change since PR #7 is on it now. The rev v0.4 board is a
+  spare, and the glass works on it too (without BLE).
+- **A drive with it (owner, 2026-09-30):** the lever pages, the stopwatch works and LIMIT opens
+  it, the values show ([`dash/19`](dash/19-stalk-and-stopwatch.md) "On the car"); the DRIVE
+  page's acceleration (`713:1822`) is a dash the whole time
+  ([`dash/17`](dash/17-bench-ble-usb.md) §4); the speed matches the cluster at a steady speed
+  and differs while it changes, either way.
+- **The housing** (CAD in `~/CAD/projects/vagcan/`, [`dash/15`](dash/15-enclosure.md)): the
+  module is the drawing's board; the display is held by snap pegs through its mounting holes;
+  no ledges under the buck and the CAN module; a fit-test plate (~45 min) and a peg coupon
+  (~8 min) are sliced. Jumper plugs on the display's pin header do not fit over the ESP in the
+  model. Nothing of this printed yet.
 
-**Milestone: a VCDS installation alone gives the car's channels, and nothing asks for a survey —
-PRs #15–#18 merged 2026-09-28** (`7d895f8`, `c19799a`, `c4f45fd`, `198f51f`). CI green on
-`198f51f`; `cargo test --workspace` 1,997 passed; firmware RAM unchanged (static 139,500 B with
-BLE, 130,048 B without). The 2026-09-27 status and the day's first one moved to
-[`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-09-28.
-
-- **#15 — scalings from a VCDS installation**
-  ([`label-lookup/02`](../.archive/tasks/done/label-lookup/02-vcds-registry.md)): `setup`'s step 5
-  reads the channels of a car's units from VCDS's registry `RM.rod`; a proven row outranks ODIS
-  and ODIS outranks VCDS, per field. On the reference car: 5,314 channels for 14 of 15 units (the
-  BCM has no VCDS file); the owner's `dash.toml` builds from VCDS alone with the same 19 channels
-  as from ODIS.
-- **#16 — `calibrate` removed** entirely (owner).
-- **#17 — `measure` finds its roles by text id**, in the units its consumers read, and ranks a
-  drive-proven row and the powertrain first. The reference car's run is timed from the gearbox's
-  `F40D`, the channel the board's stopwatch reads (it was the BCM's `2B16`); gear and pedal are
-  the gearbox's drive-proven rows; air mass is absent (no row on that engine carries an air-mass
-  id; `2037` is what both sources name a setpoint). Three older defects filed as `measure/01`–`03`.
-- **#18 — `dev survey` removed**
-  ([`label-lookup/03`](../.archive/tasks/done/label-lookup/03-units-without-survey.md)), with
-  `faults --from`, `watch --survey` and the blind sweep. `watch`, `measure` and `units --identify`
-  record the car's units in `~/.vagcan/cars/<VIN>/units.json` and read their VCDS channels the
-  first time; `dev dash build` reads the record offline; the firmware's build refuses a plan unit
-  not read yet and names `dev dash build`. The gateway identifies itself too, four reads a run —
-  the controller's decision, the owner told ([`label-lookup/04`](label-lookup/04-vcds-follow-ups.md)
-  item 1).
-- **The owner's data, migrated 2026-09-28:** his car's `units.json` written from the parked
-  survey's identities through `units::record` (15 units; the part numbers match the 2026-09-26
-  capture), and his `dash.toml`'s `survey =` line removed (the file before:
-  `dash.toml.before-units-record-2026-09-28`). On a copy of his data, master's binary builds his
-  plan from the record — 19 channels on 4 units, 5 pages, no VCDS read — identical to the plan the
-  code before #18 built from the survey.
-- **The board in the car** still runs an image from before PR #7: nothing merged since 2026-09-26
-  has been flashed. USB on the car enumerates only when plugged in before OBD power
-  (`research/dash/can-bring-up.md` §9.16). Boards unchanged since 2026-09-22: the old board on 5 V
-  works, the rev v0.4 board is a spare without BLE.
-
-**Not verified on hardware:** everything in #15–#18 on the car (the units record from a live
-`watch`, the gateway's reads, `measure`'s gearbox lead over a real run); and still everything in
-PR #12 (the lever, the pin buttons, the stopwatch, the run's flash write), the retard alarm at
-−6.0 and the blink, over the cable through the board on the car, the moving-car guard, the CANable
-on car traffic, the ESC's channels, `dash/17` §2 item 8, `dash/18` on a real pull.
+**Not verified on hardware:** the fault count on the car, the pin buttons, `+`/`−` never opening
+the stopwatch, a 0–100 against `vagcan measure`, the run saved before `GO`, the retard alarm and
+the blink on a drive, the cable through the board on the car, the moving-car guard, the CANable
+on car traffic, `dash/17` §2 item 8, `dash/18` on a real pull, and everything in #15–#18 on the
+car.
 
 ## Decisions (owner)
 
@@ -88,58 +71,57 @@ on car traffic, the ESC's channels, `dash/17` §2 item 8, `dash/18` on a real pu
 | `dev survey` removed entirely, with `faults --from`, `--diff` and the blind sweep: nobody runs a command just to feed the tool — the commands that meet the car record its units (owner, «б», 2026-09-28) | `label-lookup/03` (archived) |
 | `measure` times a run from the gearbox's speed, the board's stopwatch channel, and finds its roles by text id (owner, 2026-09-28) | PR #17 |
 | A Russian-only VCDS installation takes names and units from an English one on the same machine (owner, 2026-09-28) — not built | `label-lookup/04` |
+| The glass's pins follow how the board is wired: SDIN `GPIO8` (the blue LED's pin; the LED no longer blinks on its own), CS `GPIO20`, RES `GPIO21` (owner, 2026-09-30) | `README.md` "OLED wiring", `dash/22` |
+| Scan clock `B3 F1`; burn-in shift set aside, burn-in will not come quickly (owner, 2026-09-30) | `dash/22` |
+| `oledtest`'s clock sweep and the `oledpins` multimeter probe removed from PR #21 before the merge (owner, 2026-09-30); `oledtest`'s test picture stays | `dash/22` |
 
 ## Next, in order
 
 **Without the car**
 
-1. **Flash `master`** — the owner. Everything on it is reviewed and merged; the owner's plan
-   builds (above). In `crates/dash/vag-dash-fw`: `VAGCAN_DASH_VIN=XW8AD4NE9JH008917 cargo run
-   --release --bin dash` builds and flashes through the `espflash` runner in `.cargo/config.toml`
-   (it passes the partition table). Since #18 the plan is built from the car's `units.json`
-   (checked on a copy of the owner's data, 2026-09-28). The image carries the lever, the stopwatch and the fault count;
-   BOOT no longer pages.
+1. **The housing's test prints** — [`dash/15`](dash/15-enclosure.md): the peg coupon first
+   (the display's holes and their spacing across it), then the fit-test plate. Before that the
+   owner decides the display's plugs: solder to the header's pins, or an IDC socket (lower than
+   jumper plugs), or a thicker housing (`CABLE_ROOM`).
 2. **Runs in flash** — [`dash/21`](dash/21-runs-in-flash.md): how many runs, and when LIMIT
    writes; the owner set both aside on 2026-09-27.
-3. **OLED and enclosure** — the panel draws ([`dash/22`](dash/22-oled.md), 2026-09-30); open
-   there: which way up (the burn-in shift is set aside by the owner). The
-   enclosure is `dash/15`, drawn for a module without a pin header — this one has one.
-4. **`measure view`'s speed** — [`measure/03`](measure/03-speed-series-unit.md): the saved speed
+3. **`measure view`'s speed** — [`measure/03`](measure/03-speed-series-unit.md): the saved speed
    series is m/s drawn as km/h, so the chart is 3.6 times low and a rolling mark is never drawn —
    visible on the owner's own 2026-09-26 session. Then [`measure/02`](measure/02-cross-check-tracks.md)
    (every unit's cross-check speed in one track) and [`measure/01`](measure/01-pedal-at-rest.md)
    (the pedal at rest; the owner's call).
-5. **The VCDS follow-ups** — [`label-lookup/04`](label-lookup/04-vcds-follow-ups.md): three for
+4. **The VCDS follow-ups** — [`label-lookup/04`](label-lookup/04-vcds-follow-ups.md): three for
    the owner to decide (the gateway's reads, a plain list's first row, a witness), then the
    platform file's choice and the Russian fallback.
-6. **Guard `sensors --ecu <unit>`** — it reads 32 standard OBD-II identifiers from any unit with
+5. **Guard `sensors --ecu <unit>`** — it reads 32 standard OBD-II identifiers from any unit with
    no moving-car check (found in review, 2026-09-28; it predates that change). A command that
    resembles a sweep and is unguarded gets the guard (`CLAUDE.md`, Safety).
+6. **Which way up the glass hangs** — [`dash/22`](dash/22-oled.md): `turned`, with the housing.
 
 **With the car**
 
-7. **`dash/19` on the car** — [`dash/19`](dash/19-stalk-and-stopwatch.md) "On the car", first
-   of all: pressing and releasing + and − never opens the stopwatch or turns the page back (a
-   release from 91 or 128 to 205 crosses the other bands; at 20 Hz two reads are 100 ms). Then
-   paging with cruise off, cruise on closing the stopwatch, a 0–100 beside `vagcan measure --ble`
-   started first (both time the gearbox's speed), and the run saved before `GO` surviving a
-   power cycle. Pin buttons on the bench first.
-8. **The fault count on the car** — [`dash/20`](dash/20-fault-count.md) "Car checks": the
+7. **The ESC's acceleration** — [`dash/17`](dash/17-bench-ble-usb.md) §4: the board's console on
+   the car (USB plugged in before OBD power) says whether `713` is polled and what `1822`
+   answers; then `vagcan watch --did 713:1822` parked.
+8. **The rest of `dash/19` on the car** — [`dash/19`](dash/19-stalk-and-stopwatch.md) "On the car"
+   items 4–6: `+` and `−` never open the stopwatch or turn the page back; a 0–100 beside
+   `vagcan measure --ble` started first; the run saved before `GO` surviving a power cycle.
+   Pin buttons on the bench first.
+9. **The fault count on the car** — [`dash/20`](dash/20-fault-count.md) "Car checks": the
    total against `vagcan faults`, the log's time, the units skipped, a BLE `info` during it.
-9. **Alarms on a drive** — `dash/04`: the retard at −6.0 and the blink, the misfire window; a
+10. **Alarms on a drive** — `dash/04`: the retard at −6.0 and the blink, the misfire window; a
    `watch --out` recording with `200A`–`200D` for the replay.
-10. **The rest of `dash/17` §4** — through the board over the cable (USB before OBD power), the
-   moving-car guard (`bleuds`), the CANable on car traffic, the ESC's channels (DRIVE's
-   acceleration: `+` should read as speeding up); §2 item 8.
-11. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
+11. **The rest of `dash/17` §4** — through the board over the cable (USB before OBD power), the
+   moving-car guard (`bleuds`), the CANable on car traffic, the ESC's wheel speeds; §2 item 8.
+12. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
    then the owner's `percent`, `hold_ms` and `min_setpoint`.
-12. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup` (on 2026-09-26 it
+13. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup` (on 2026-09-26 it
    ran with the `.rod` fallback beside the project); then freeze-frame layouts
    (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
-13. **Questions only the car answers** — `dash/06`.
-14. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
+14. **Questions only the car answers** — `dash/06`.
+15. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.
-15. **`watch` and `measure` across all fifteen units** — measured against the file, not
+16. **`watch` and `measure` across all fifteen units** — measured against the file, not
     the car.
 
 ## Task files
@@ -151,9 +133,10 @@ on car traffic, the ESC's channels, `dash/17` §2 item 8, `dash/18` on a real pu
 | [`dash/13-screens.md`](dash/13-screens.md) | channel menu for pages |
 | [`dash/14-one-bus-three-clients.md`](dash/14-one-bus-three-clients.md) | design; §7 is the dash work order; §6a has the lever probe (2026-09-26) |
 | [`dash/15-enclosure.md`](dash/15-enclosure.md) | enclosure hand-off |
-| [`dash/17-bench-ble-usb.md`](dash/17-bench-ble-usb.md) | bench passed except §2 item 8; §4 on the car: BLE `info`, `faults`, `watch`, `units`, `measure` pass (2026-09-26), the cable and the guard open |
+| [`dash/17-bench-ble-usb.md`](dash/17-bench-ble-usb.md) | bench passed except §2 item 8; §4 on the car: BLE `info`, `faults`, `watch`, `units`, `measure` pass (2026-09-26), the cable and the guard open; the ESC's acceleration is a dash on the glass (2026-09-30) |
 | [`dash/18-setpoints-and-drift.md`](dash/18-setpoints-and-drift.md) | specified vs actual channels, and the drift alarm — merged (PR #4, 2026-09-15); the owner's `dash.toml` pairs boost; car pending |
-| [`dash/19-stalk-and-stopwatch.md`](dash/19-stalk-and-stopwatch.md) | the lever and `[[button]]` pins as input, the stopwatch page — merged (PR #12, 2026-09-27); in the owner's `dash.toml`; needs the car |
+| [`dash/19-stalk-and-stopwatch.md`](dash/19-stalk-and-stopwatch.md) | the lever and `[[button]]` pins as input, the stopwatch page — merged (PR #12, 2026-09-27); on the car 2026-09-30 the lever pages and the stopwatch and LIMIT work; items 4–6 and the pin buttons open |
+| [`dash/22-oled.md`](dash/22-oled.md) | the SSD1322 on the board — merged (PR #21, 2026-09-30), draws on the bench and in the car; which way up is open |
 | [`dash/20-fault-count.md`](dash/20-fault-count.md) | the car's stored codes counted once after boot, a triangle and the count in the corner, `?` when there is no count — built 2026-09-27; needs the car |
 | [`dash/21-runs-in-flash.md`](dash/21-runs-in-flash.md) | stopwatch runs in flash, read over BLE, saved on LIMIT; recorded 2026-09-27, open questions for the owner |
 | [`label-lookup/04-vcds-follow-ups.md`](label-lookup/04-vcds-follow-ups.md) | what `label-lookup/02` and `03` left open — filed 2026-09-28; three items for the owner to decide |

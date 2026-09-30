@@ -3,6 +3,10 @@
 **Subsystem:** dash · **Crates:** `vag-cli-core` (plan), `vag-dash-render` (lever, stopwatch,
 screen), `vag-dash-fw` · **Needs the car:** partly (the speed factor, a run)
 
+**State (2026-09-30):** flashed (with PR #21's image) and on the car: the lever pages, the
+stopwatch works, LIMIT opens it (owner, a drive). Items 4–6 of "On the car" and the pin buttons
+are not reported yet.
+
 **State (2026-09-27):** merged, PR #12 (`6fa2bc8`). In the owner's `dash.toml` since 2026-09-27:
 `vagcan setup` re-run, the plan builds, and the lever's bands hold the capture's readings
 (`todo/README.md`). Not flashed; nothing of it has run on the car or the bench — "On the car".

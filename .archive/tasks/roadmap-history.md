@@ -1,12 +1,58 @@
-# vagcan roadmap — history, 2026-08-02 to 2026-09-28
+# vagcan roadmap — history, 2026-08-02 to 2026-09-30
 
 Moved here verbatim from `todo/README.md` on 2026-09-14, when the roadmap was cut down to
 what is live. Commands are spelled as they were on the day each section was written; the
 old → new table is in `todo/README.md`. Nothing here is current. The 2026-09-15 section came
 on 2026-09-22, the 2026-09-22 one on 2026-09-26, the 2026-09-26 one on 2026-09-27, the
-2026-09-27 one and the first 2026-09-28 one on 2026-09-28, when PRs #15–#18 merged.
+2026-09-27 one and the first 2026-09-28 one on 2026-09-28, when PRs #15–#18 merged; the second 2026-09-28 one on
+2026-09-30, when PR #21 merged.
 
 ---
+
+## Where things stood on 2026-09-28, after PRs #15–#18 merged — a VCDS installation alone
+
+**Milestone: a VCDS installation alone gives the car's channels, and nothing asks for a survey —
+PRs #15–#18 merged 2026-09-28** (`7d895f8`, `c19799a`, `c4f45fd`, `198f51f`). CI green on
+`198f51f`; `cargo test --workspace` 1,997 passed; firmware RAM unchanged (static 139,500 B with
+BLE, 130,048 B without). The 2026-09-27 status and the day's first one moved to
+[`.archive/tasks/roadmap-history.md`](roadmap-history.md) on 2026-09-28.
+
+- **#15 — scalings from a VCDS installation**
+  ([`label-lookup/02`](done/label-lookup/02-vcds-registry.md)): `setup`'s step 5
+  reads the channels of a car's units from VCDS's registry `RM.rod`; a proven row outranks ODIS
+  and ODIS outranks VCDS, per field. On the reference car: 5,314 channels for 14 of 15 units (the
+  BCM has no VCDS file); the owner's `dash.toml` builds from VCDS alone with the same 19 channels
+  as from ODIS.
+- **#16 — `calibrate` removed** entirely (owner).
+- **#17 — `measure` finds its roles by text id**, in the units its consumers read, and ranks a
+  drive-proven row and the powertrain first. The reference car's run is timed from the gearbox's
+  `F40D`, the channel the board's stopwatch reads (it was the BCM's `2B16`); gear and pedal are
+  the gearbox's drive-proven rows; air mass is absent (no row on that engine carries an air-mass
+  id; `2037` is what both sources name a setpoint). Three older defects filed as `measure/01`–`03`.
+- **#18 — `dev survey` removed**
+  ([`label-lookup/03`](done/label-lookup/03-units-without-survey.md)), with
+  `faults --from`, `watch --survey` and the blind sweep. `watch`, `measure` and `units --identify`
+  record the car's units in `~/.vagcan/cars/<VIN>/units.json` and read their VCDS channels the
+  first time; `dev dash build` reads the record offline; the firmware's build refuses a plan unit
+  not read yet and names `dev dash build`. The gateway identifies itself too, four reads a run —
+  the controller's decision, the owner told ([`label-lookup/04`](../../todo/label-lookup/04-vcds-follow-ups.md)
+  item 1).
+- **The owner's data, migrated 2026-09-28:** his car's `units.json` written from the parked
+  survey's identities through `units::record` (15 units; the part numbers match the 2026-09-26
+  capture), and his `dash.toml`'s `survey =` line removed (the file before:
+  `dash.toml.before-units-record-2026-09-28`). On a copy of his data, master's binary builds his
+  plan from the record — 19 channels on 4 units, 5 pages, no VCDS read — identical to the plan the
+  code before #18 built from the survey.
+- **The board in the car** still runs an image from before PR #7: nothing merged since 2026-09-26
+  has been flashed. USB on the car enumerates only when plugged in before OBD power
+  (`research/dash/can-bring-up.md` §9.16). Boards unchanged since 2026-09-22: the old board on 5 V
+  works, the rev v0.4 board is a spare without BLE.
+
+**Not verified on hardware:** everything in #15–#18 on the car (the units record from a live
+`watch`, the gateway's reads, `measure`'s gearbox lead over a real run); and still everything in
+PR #12 (the lever, the pin buttons, the stopwatch, the run's flash write), the retard alarm at
+−6.0 and the blink, over the cable through the board on the car, the moving-car guard, the CANable
+on car traffic, the ESC's channels, `dash/17` §2 item 8, `dash/18` on a real pull.
 
 ## Where things stood on 2026-09-28, before the merges — the car's units without a survey
 

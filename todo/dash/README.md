@@ -63,12 +63,12 @@ drama and a real collapse into a flat line.
 | [`13-screens.md`](13-screens.md) | channel menu for pages |
 | [`14-one-bus-three-clients.md`](14-one-bus-three-clients.md) | design and work order (§7) |
 | [`15-enclosure.md`](15-enclosure.md) | enclosure hand-off |
-| [`17-bench-ble-usb.md`](17-bench-ble-usb.md) | bench plan for the board over BLE and USB; §2 item 8 open (13 passes since 2026-09-22), §4 is the car |
+| [`17-bench-ble-usb.md`](17-bench-ble-usb.md) | bench plan for the board over BLE and USB; §2 item 8 open (13 passes since 2026-09-22), §4 is the car — the ESC's acceleration shows a dash (2026-09-30) |
 | [`18-setpoints-and-drift.md`](18-setpoints-and-drift.md) | a channel's specified value and the drift alarm — merged (PR #4); car pending |
-| [`19-stalk-and-stopwatch.md`](19-stalk-and-stopwatch.md) | the lever and `[[button]]` pins as input, the stopwatch page — merged (PR #12, 2026-09-27); needs the car |
+| [`19-stalk-and-stopwatch.md`](19-stalk-and-stopwatch.md) | the lever and `[[button]]` pins as input, the stopwatch page — merged (PR #12, 2026-09-27); on the car 2026-09-30 the lever pages and the stopwatch and LIMIT work; items 4–6 and the pin buttons open |
 | [`20-fault-count.md`](20-fault-count.md) | the car's stored codes counted once after boot, a triangle and the count in the corner, `?` when there is no count — built 2026-09-27; needs the car |
 | [`21-runs-in-flash.md`](21-runs-in-flash.md) | stopwatch runs kept in flash and read back over BLE; saved on LIMIT — recorded 2026-09-27, after dash/19 |
-| [`22-oled.md`](22-oled.md) | the SSD1322 panel on the board — draws on the bench and in the car (2026-09-30), PR #21; which way up is open |
+| [`22-oled.md`](22-oled.md) | the SSD1322 panel on the board — merged (PR #21, 2026-09-30), draws on the bench and in the car; which way up is open |
 
 Done: `01`, `02`, `03`, `05`, `10`, `11`, `12`, `16` in `.archive/tasks/done/dash/`.
 Superseded: `07`, `08`, `09` in `.archive/specs/dash/`.
