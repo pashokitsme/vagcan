@@ -237,3 +237,13 @@ repository's side of it:
 - **No ledges under the buck and the CAN module** (owner, 2026-09-30): those two boards rest
   on what is soldered under them; their clips did not move.
 - The housing is still 109.7 × 36.9 × 28.2 mm.
+- **The fit-test plate, printed the evening of 2026-09-30 (owner):** the display's pegs hold
+  but are too stiff and break when it comes off; the face's arms stand in the display's way and
+  are flimsy; the buck's beams 1 mm shorter; the CAN clips 0.5 mm closer. The hand-off for the
+  next CAD round: `~/CAD/projects/vagcan/prompts/2026-09-30-housing-round-3.md`.
+- **Round 3 done in `~/CAD`, 2026-10-01 (CAD `b3ab45a`), not printed yet:** the face's arms are
+  gone; at each corner a tongue cut out of the tray's end wall bends in its layers and a lug of
+  the face snaps into it. The display sits on plain pegs and posts of the tray clamp it when the
+  halves close. Buck beams 13, CAN clips 0.5 apart. The display's wires are soldered to its
+  header's pins (owner). Print order and what each piece tells: `print/README.md` — the
+  catch coupon first (~29 min), then the fit plate (~47 min).
