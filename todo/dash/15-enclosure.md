@@ -237,3 +237,7 @@ repository's side of it:
 - **No ledges under the buck and the CAN module** (owner, 2026-09-30): those two boards rest
   on what is soldered under them; their clips did not move.
 - The housing is still 109.7 × 36.9 × 28.2 mm.
+- **The fit-test plate, printed the evening of 2026-09-30 (owner):** the display's pegs hold
+  but are too stiff and break when it comes off; the face's arms stand in the display's way and
+  are flimsy; the buck's beams 1 mm shorter; the CAN clips 0.5 mm closer. The hand-off for the
+  next CAD round: `~/CAD/projects/vagcan/prompts/2026-09-30-housing-round-3.md`.
