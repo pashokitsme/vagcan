@@ -93,8 +93,8 @@ ask; a housing that takes a separate clip later is a fine answer.
   2026-09-27 the three pins take `[[button]]`s (`19`, "Input backends"): a button from the pin
   to GND pages the panel. Whether the owner wants any on the housing, and where — ask.
 - **Unchanged:** CAN module TX input ← `GPIO6`, RX output → `GPIO1`, 3V3 and GND from the
-  buck's rail; CAN-H → OBD 6, CAN-L → OBD 14 as a twisted pair. OLED: CS `GPIO21`,
-  RES `GPIO20`, SCLK `GPIO10`, SDIN `GPIO7`, D/C `GPIO0`, VDD 3V3, VSS GND.
+  buck's rail; CAN-H → OBD 6, CAN-L → OBD 14 as a twisted pair. The OLED's
+  wiring is in `README.md` ("OLED wiring"); it moved on 2026-09-30.
 - **The cable leaving the housing** carries four conductors to the OBD plug: +12 V (pin 1),
   GND, CAN-H, CAN-L. It needs a strain relief — nothing in the old designs had one.
 - **USB-C must stay reachable** with the housing closed. It is how the board is flashed,
@@ -211,3 +211,29 @@ reliefs became rails: every board stands 1.2 mm up, rails clear of pinned ends; 
 USB-end lips (they sat over its pin rows) are gone, replaced by a hole the size of the USB-C
 shell in the wall's inner 0.6 mm behind the plug-sized recess; stops beside castellated rows
 keep 0.4 mm; 5 mm between boards. Housing now 103.9 × 36.9 × 32.4 mm.
+
+**2026-09-26 and 2026-09-30 — two prints, the display on the desk, a fit-test plate.** The
+record of both prints and of every parameter they moved is in the CAD workspace, not here:
+`~/CAD/projects/vagcan/housing.py` (its header) and `print/README.md`. In short, for this
+repository's side of it:
+
+- **The display is the drawing's board** (owner, 2026-09-30): holes 92 × 26 between their
+  edges, 3 across — 95.0 × 28.5 between centres — and the PCB 100.5 long. The owner first
+  gave 10.5 cm; a photo puts the PCB at 1.059 of the long hole spacing, 100.6, and asked, the
+  owner confirmed 100.5. The numbers in §2 stand.
+- **It came with a 2×8 pin header fitted**, not bare holes (§2 said "wires soldered straight
+  in, no pin header"). The header is over the ESP. In the model its pin tips are 7.9 mm clear
+  of the ESP, but jumper plugs on them come out 5 mm short of room (plug 14, 5 to turn the
+  wire — both GUESS). Soldering to the pins or shortening them fits; the owner decides.
+- **The owner's two changes after the second print:** the buck's clip beams 12 → 14 mm; the
+  CAN module's clips 1 mm further apart in all.
+- **The fit-test plate:** the tray cut down to what holds something, with the real face, one
+  job — `print/housing-flat-fit-plate.gcode.3mf`, ~45 min, 15 g (the real tray and face: ~98
+  min, 30 g). Not printed yet.
+- **The display is held by its mounting holes** (owner, 2026-09-30): a split snap peg on each
+  corner stop, through the hole, instead of the four beams in the end bays (which still build,
+  `DISPLAY_HOLD = "beams"`). Not printed; the 8-minute `latch-coupon` — the face's left end
+  with two pegs — tries the holes' diameter and their spacing across the display first.
+- **No ledges under the buck and the CAN module** (owner, 2026-09-30): those two boards rest
+  on what is soldered under them; their clips did not move.
+- The housing is still 109.7 × 36.9 × 28.2 mm.

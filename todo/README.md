@@ -6,6 +6,13 @@ dated status sections moved verbatim to
 [`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-09-14,
 2026-09-15, 2026-09-22, 2026-09-26 and 2026-09-27.
 
+## Since then (2026-09-30)
+
+- **The OLED arrived and the board draws on it** — [`dash/22`](dash/22-oled.md), PR #21.
+- **A drive with it (owner):** the lever pages, the stopwatch and LIMIT work, values show
+  ([`dash/19`](dash/19-stalk-and-stopwatch.md) "On the car"); the DRIVE page's acceleration is
+  a dash the whole time ([`dash/17`](dash/17-bench-ble-usb.md) §4).
+
 ## Where things stand (2026-09-28)
 
 **Milestone: a VCDS installation alone gives the car's channels, and nothing asks for a survey —
@@ -94,7 +101,9 @@ on car traffic, the ESC's channels, `dash/17` §2 item 8, `dash/18` on a real pu
    BOOT no longer pages.
 2. **Runs in flash** — [`dash/21`](dash/21-runs-in-flash.md): how many runs, and when LIMIT
    writes; the owner set both aside on 2026-09-27.
-3. **OLED and enclosure** — `dash/15`; waits for the panel.
+3. **OLED and enclosure** — the panel draws ([`dash/22`](dash/22-oled.md), 2026-09-30); open
+   there: which way up (the burn-in shift is set aside by the owner). The
+   enclosure is `dash/15`, drawn for a module without a pin header — this one has one.
 4. **`measure view`'s speed** — [`measure/03`](measure/03-speed-series-unit.md): the saved speed
    series is m/s drawn as km/h, so the chart is 3.6 times low and a rolling mark is never drawn —
    visible on the owner's own 2026-09-26 session. Then [`measure/02`](measure/02-cross-check-tracks.md)
