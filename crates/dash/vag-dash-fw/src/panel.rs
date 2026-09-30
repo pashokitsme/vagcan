@@ -6,9 +6,10 @@
 //! the page order or the formatting lives on that side; if the simulator were
 //! clever, the thing being tested would be the simulator.
 //!
-//! This exists because the OLED has not been bought yet, and it stays useful
-//! after it has: a panel you can screenshot, diff and read at arm's length is
-//! worth more on the bench than a strip of glass in a vent.
+//! This was written before the OLED was bought, and it stays useful now that
+//! the glass is fitted (`ssd1322.rs` sends it the same rows): a panel you can
+//! screenshot, diff and read at arm's length is worth more on the bench than a
+//! strip of glass in a vent.
 
 use core::convert::Infallible;
 use embedded_graphics::pixelcolor::BinaryColor;
@@ -40,6 +41,18 @@ impl Framebuffer {
 	pub fn get(&self, x: usize, y: usize) -> bool {
 		let index = y * WIDTH + x;
 		self.bits[index / 8] & (0x80 >> (index % 8)) != 0
+	}
+
+	/// Row `y` as it is held: a bit a pixel, most significant bit leftmost — what the glass's
+	/// driver widens and sends.
+	pub fn row(&self, y: usize) -> &[u8; WIDTH / 8] {
+		let start = y * (WIDTH / 8);
+		self.bits[start..start + WIDTH / 8].try_into().expect("a row is WIDTH / 8 bytes")
+	}
+
+	/// Every row, top to bottom.
+	pub fn rows(&self) -> impl Iterator<Item = &[u8; WIDTH / 8]> {
+		(0..HEIGHT).map(|y| self.row(y))
 	}
 
 	fn set(&mut self, x: usize, y: usize, lit: bool) {

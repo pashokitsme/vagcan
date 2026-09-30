@@ -74,3 +74,8 @@ critical-section = { version = "1", features = ["std"] }
 # `examples/stopwatch_parity.rs`: the laptop's stopwatch, run beside the board's on the same
 # samples. Here and not in `vag-cli-measure`, which depends on `vag-cli-core` alone.
 vag-cli-measure = { path = "../../../crates/cli/vag-cli-measure" }
+# `tests/glass_wire.rs`: the firmware's SSD1322 driver, compiled here as it is, against a bus
+# and pins that record what goes down the wire.
+crc = "3"
+embedded-hal = "1"
+embedded-hal-async = "1"

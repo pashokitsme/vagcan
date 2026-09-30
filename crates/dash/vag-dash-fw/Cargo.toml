@@ -34,6 +34,12 @@ path = "./src/bin/rxwatch.rs"
 name = "slcan"
 path = "./src/bin/slcan.rs"
 
+# Does the glass light? Draws a test picture on the SSD1322 and nothing else: no CAN
+# controller is started, so it transmits nothing and needs no `bench` feature.
+[[bin]]
+name = "oledtest"
+path = "./src/bin/oledtest.rs"
+
 # ---- Bench tools: never a car, and not built without `--features bench` ----
 #
 # Each of these drives the pair on its own from power-on — frames nobody asked
@@ -119,6 +125,11 @@ vag-uds-transport = { path = "../../uds/vag-uds-transport", default-features = f
 # `EspTwaiFrame` exposes its id and its data only through `embedded_can::Frame`.
 embedded-can = "0.4.1"
 embedded-graphics = "0.8"
+# The glass's driver (`src/ssd1322.rs`) names its bus, pins and delay by these traits and
+# not by the chip's HAL, so the bench crate can compile it for the laptop. Both are in the
+# tree already, behind `esp-hal`.
+embedded-hal = "1"
+embedded-hal-async = "1"
 crc = "3"
 serde = { version = "1", default-features = false, features = ["derive"] }
 postcard = "1"
