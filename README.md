@@ -49,7 +49,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 
 Everything lives under `~/.vagcan/`. Nothing about any car is built into the tool.
 
-### Dash Display (technically implemented but I didn't assemble it irl yet)
+### Dash Display (implemented, assembled irl & tested)
 
 An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OLED.
 
