@@ -93,11 +93,13 @@ Updated 2026-09-30.
 - [x] `dev survey` removed (2026-09-28): the car's units are recorded by `watch`, `measure` and `units --identify`, and those three read a VCDS installation's channels for them the first time; `dev dash build` reads them offline
 - [ ] Laptop reads the car through the dash while its screen keeps working (BLE passed on the car; the cable waits)
 - [ ] Dash shows how far a channel is from what its control unit asked for, with a drift alarm (built, waiting for the car)
-- [ ] OLED on the board (draws on the bench since 2026-09-30, not in the car yet), and an enclosure with snap-in boards
-- [ ] Page the dash panel with buttons on its pins, or with the cruise-control buttons while cruise is off; LIMIT or a pin button for the stopwatch (built, waiting for the car)
+- [x] OLED on the board: the dash draws on its own 3.12″ panel, in the car since 2026-09-30
+- [x] Page the dash with the cruise-control buttons while cruise is off; LIMIT opens the stopwatch (on the car, 2026-09-30)
+- [ ] An enclosure with snap-in boards (a test print is ready)
+- [ ] Page the dash with buttons on its pins (built, not tried)
 - [ ] `vagcan faults` on the car with fault text from ODIS only
 - [ ] Scalings and names from a VCDS install alone, without an ODIS project (built 2026-09-28; checked offline on the reference car, waits for a drive)
-- [ ] 0–60 and 0–100 km/h stopwatch on the dash (built; a test run needs the car)
+- [ ] 0–60 and 0–100 km/h stopwatch on the dash (works on the car, 2026-09-30; not yet compared with `vagcan measure`)
 - [ ] Dash counts the car's stored fault codes once after start and shows the number with a warning triangle (built, waiting for the car)
 
 Details: [`todo/README.md`](todo/README.md).
