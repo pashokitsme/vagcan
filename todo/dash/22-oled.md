@@ -7,12 +7,17 @@
 
 - **The glass draws `dash`'s pages** on the rev v1.1 board with BLE, bench and car (owner);
   `dashcfg`'s `set brightness N` reaches it. The wiring is in `README.md` ("OLED wiring").
-- **That wiring is the board's, not the plan's.** After the owner rewired CAN on the v1.1 board
-  the glass showed garbage, then stayed dark, while the board drew the right page (its `FRAME`
-  lines over USB). The module worked on the rev v0.4 board, and on the v1.1 board once the
-  firmware followed how it is wired: SDIN on `GPIO8` (the blue LED's pin, so the LED flickers
+- **The wiring in `README.md` is the standard for every board** (owner, 2026-10-03): SCLK
+  `GPIO10`, SDIN `GPIO8`, D/C `GPIO0`, CS `GPIO20`, RES `GPIO21`. It came from the rev v1.1
+  board: after the owner rewired CAN on it the glass showed garbage, then stayed dark, while the
+  board drew the right page (its `FRAME` lines over USB), and it lit again once the firmware
+  followed how that board was wired — SDIN on `GPIO8` (the blue LED's pin, so the LED flickers
   with the data and `dash` no longer blinks it), CS and RES swapped. Whether `GPIO7` on that
-  board is dead was not checked.
+  board is dead was not checked. On 2026-10-03 the rev v0.4 board was wired the same way and
+  draws `dash`'s pages (without BLE) with the image from `master` (owner).
+- **The rev v1.1 board stopped enumerating on USB** (2026-10-03): it takes power, but the Mac
+  sees no device, or one for a second; not diagnosed. Holding BOOT through a reset (download
+  mode) is the next thing to try.
 
 ## The module
 
