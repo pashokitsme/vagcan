@@ -160,6 +160,17 @@ cd vagcan
 cargo install --path crates/cli/vag-cli
 ```
 
+In a clone, [`just`](https://github.com/casey/just) runs the common tasks. `just` alone lists them:
+
+| command | does |
+|---|---|
+| `just install` | installs `vagcan` and `vagcan-measure` |
+| `just plan <VIN>` | builds the dash's plan for a car |
+| `just fw-flash` | builds the dash firmware and flashes the board on USB |
+| `just fw-flash dash noble` | the same without BLE, for a board whose BLE does not start |
+| `just fw-monitor` | the board's console |
+| `just check` | everything CI checks |
+
 Run it with no arguments to see what is connected and what to do next:
 
 ```sh
