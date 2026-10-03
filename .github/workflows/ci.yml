@@ -20,6 +20,9 @@ env:
   GIT_LFS_SKIP_SMUDGE: "1"
   CARGO_TERM_COLOR: always
 
+# Every job runs one recipe of the justfile at the root, so `just check` on a laptop runs what CI
+# runs. A new check goes into a recipe first; the job only calls it.
+
 jobs:
   fmt:
     name: rustfmt
@@ -31,8 +34,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
+      - uses: extractions/setup-just@v2
+      - name: just fmt-check
+        run: just fmt-check
 
   clippy:
     name: clippy
@@ -49,8 +53,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       # --all-targets is correct HERE: clippy should lint tests, benches and
       # examples too. It is only wrong for the dead-code job below.
-      - name: cargo clippy --workspace --all-targets -D warnings
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - uses: extractions/setup-just@v2
+      - name: just clippy
+        run: just clippy
 
   test:
     name: test
@@ -63,8 +68,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: system deps for btleplug (BlueZ over D-Bus)
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
-      - name: cargo test --workspace
-        run: cargo test --workspace
+      - uses: extractions/setup-just@v2
+      - name: just test
+        run: just test
 
   no-std:
     name: no-std
@@ -89,12 +95,9 @@ jobs:
       #
       # The firmware itself is linted by the `firmware` job below: it is outside
       # the workspace, with its own toolchain file and `.cargo/config.toml`.
-      - name: cargo check --no-default-features (vag-uds-transport)
-        run: cargo check -p vag-uds-transport --no-default-features --target riscv32imc-unknown-none-elf
-      - name: cargo check --no-default-features (vag-uds-client)
-        run: cargo check -p vag-uds-client --no-default-features --target riscv32imc-unknown-none-elf
-      - name: cargo check --no-default-features (vag-uds-can)
-        run: cargo check -p vag-uds-can --no-default-features --target riscv32imc-unknown-none-elf
+      - uses: extractions/setup-just@v2
+      - name: just no-std (vag-uds-transport, vag-uds-client, vag-uds-can)
+        run: just no-std
 
   # The board's firmware and the bench rig that stands in for its panel. Both
   # are outside the workspace, so nothing above sees them — which is how a
@@ -103,9 +106,6 @@ jobs:
   firmware:
     name: firmware (vag-dash-fw)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: crates/dash/vag-dash-fw
     env:
       # `build.rs` builds the image's plan from one car under ~/.vagcan, which
       # CI does not have and must not have. This gives the image an empty plan
@@ -129,18 +129,12 @@ jobs:
       # D-Bus), so the host half of this build needs libdbus. libudev: `serialport`.
       - name: system deps for the plan generator (btleplug, serialport)
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libudev-dev pkg-config
-      - name: cargo fmt --check
-        run: cargo fmt -- --check
-      - name: cargo clippy --bins -D warnings
-        run: cargo clippy --release --bins -- -D warnings
-      # `ble` is on by default; a board whose BLE does not start runs without it.
-      - name: cargo clippy --bins --no-default-features -D warnings
-        run: cargo clippy --release --bins --no-default-features -- -D warnings
-      # The only step that lints the `bench` tools — `cantest`, `cantx`, `rxprobe` build
-      # only with `--features bench` — and `rxwatch --features ack`, the car-run build
-      # (Normal mode).
-      - name: cargo clippy --bins --all-features -D warnings
-        run: cargo clippy --release --bins --all-features -- -D warnings
+      - uses: extractions/setup-just@v2
+      # fmt, then clippy three ways: with BLE (the default), without it (a board whose BLE
+      # does not start), and with every feature — the only lint of the `bench` tools
+      # (`cantest`, `cantx`, `rxprobe`) and of `rxwatch --features ack`, the car-run build.
+      - name: just fw-check
+        run: just fw-check
       # The board's RAM (CLAUDE.md, "Firmware RAM"). Builds `dash` with and without BLE
       # and fails when statics (.data + .bss + .noinit) pass a ceiling or the stack the
       # linker leaves (.stack, the rest of the one data-RAM region) falls under a floor.
@@ -148,15 +142,12 @@ jobs:
       # With `CI` set it builds into the default `target`, sharing the host build-deps
       # the clippy steps built; the empty-plan image it leaves there is never flashed —
       # this job flashes nothing.
-      - name: RAM budget (dash, with and without BLE)
-        run: ./ram-budget.sh
+      - name: just fw-ram (dash, with and without BLE)
+        run: just fw-ram
 
   bench-host:
     name: bench host (dashsim, bleecho, bleuds, benchecu)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: research/dash/host
     steps:
       - uses: actions/checkout@v4
         with:
@@ -171,12 +162,9 @@ jobs:
       # its port list) builds `libudev-sys`, which finds libudev via pkg-config.
       - name: system deps for btleplug (BlueZ over D-Bus) and serialport (libudev)
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libudev-dev pkg-config
-      - name: cargo fmt --check
-        run: cargo fmt -- --check
-      - name: cargo clippy --all-targets -D warnings
-        run: cargo clippy --all-targets -- -D warnings
-      - name: cargo test
-        run: cargo test
+      - uses: extractions/setup-just@v2
+      - name: just host-check (fmt, clippy, tests)
+        run: just host-check
 
   dead-code:
     name: dead-code
@@ -194,16 +182,8 @@ jobs:
       # reports ~140 false positives ("fn main is never used"). --force-warn
       # sees through any #[allow(dead_code)]. The lints only WARN (exit 0), so we
       # fail the job ourselves when the check reports anything dead.
-      - name: cargo check --workspace with --force-warn dead_code
-        run: |
-          set -o pipefail
-          log="$(RUSTFLAGS='--force-warn dead_code' cargo check --workspace 2>&1 | tee /dev/stderr)"
-          # Only OUR crates count. --force-warn via RUSTFLAGS also lints every
-          # dependency, and some (e.g. proc-macro2's cfg-gated probe fns) carry
-          # genuinely-unused code — those warnings point into ~/.cargo/registry,
-          # never into crates/. So a dead-code warning fails the job only when the
-          # `-->` location under it is a workspace crate.
-          if grep -E -A2 'never (used|read|constructed)' <<<"$log" | grep -qE '^\s*-->\s.*crates/'; then
-            echo "::error::dead-code detected in a workspace crate — a symbol nobody calls. If it was written to be called, the fix is the missing call site, not deletion (see CLAUDE.md)."
-            exit 1
-          fi
+      - uses: extractions/setup-just@v2
+      # The recipe fails the job itself: the lints only warn, and --force-warn also lints
+      # every dependency, so only a warning pointing into crates/ counts.
+      - name: just dead-code
+        run: just dead-code

@@ -167,7 +167,8 @@ In a clone, [`just`](https://github.com/casey/just) runs the common tasks. `just
 | `just install` | installs `vagcan` and `vagcan-measure` |
 | `just plan <VIN>` | builds the dash's plan for a car |
 | `just fw-flash` | builds the dash firmware and flashes the board on USB |
-| `just fw-flash dash noble` | the same without BLE, for a board whose BLE does not start |
+| `just fw-flash dash --no-default-features` | the same without BLE, for a board whose BLE does not start |
+| `just fw-flash oledtest` | the test picture on the OLED |
 | `just fw-monitor` | the board's console |
 | `just check` | everything CI checks |
 

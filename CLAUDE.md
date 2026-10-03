@@ -12,11 +12,37 @@
 - Keep the `Claude-Session:` trailer line as well.
 - Use Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`…).
 
+## Commands: `just` (MANDATORY)
+
+The [`justfile`](justfile) at the root is how this tree is built, flashed and checked; `just`
+lists the recipes. Use them rather than retyping the cargo lines, so what an agent runs is what
+CI runs.
+
+- **Before a push: `just check`** — every CI job, one recipe each (`fmt-check`, `clippy`,
+  `test`, `no-std`, `host-check`, `fw-check`, `fw-ram`, `dead-code`). A change that touches
+  only one area may run that recipe; the push still has to pass all of them.
+- **CI calls the recipes and nothing else** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
+  a job installs its toolchain and system packages, then runs `just <recipe>`. A new check is
+  a recipe first and a job step second; never a cargo line in the workflow alone.
+- **Firmware:** `just fw-build|fw-flash|fw-run [bin] [cargo flags]` — the image name, then
+  anything cargo takes: `just fw-flash dash --no-default-features` (a board whose BLE does not
+  start), `just fw-flash oledtest`, `just fw-flash slcan`. `fw-run` stays on the console;
+  `just fw-monitor`, `just fw-info`. A new image or variant is a flag, not a new recipe. The board's port is `ESP_PORT` or the one usbmodem that is not the CANable;
+  the car is `VAGCAN_DASH_VIN`, or the one car under `~/.vagcan/dash`. Build into your own
+  `CARGO_TARGET_DIR` when another agent builds at the same time — two reviewers sharing one
+  flashed each other's binaries during PR #14 — the recipes honour it.
+- **`just bench` flashes a transmitting image** (`research/dash/bench.sh`) and does not flash
+  `dash` back: follow it with `just fw-flash`, always (Safety, below).
+- **The laptop side:** `just build`, `just install` (over any earlier install), `just vagcan …`,
+  `just plan <VIN>`, `just dashcfg …`, `just dashsim`, `just host <bin> …`.
+
 ## The dead-code check is `--workspace`, never `--all-targets`
 
 ```
 RUSTFLAGS="--force-warn dead_code" cargo check --workspace
 ```
+
+`just dead-code` runs it and fails on a warning that points into `crates/`, as CI does.
 
 `--force-warn` sees through any `#[allow(dead_code)]`; `--workspace` alone is
 what makes the answer true. **Adding `--all-targets` recompiles the binary a
@@ -51,7 +77,8 @@ touches, so the tree never drifts out of format between `cargo fmt` runs. Notes:
 
 **Two crates the workspace commands never reach.** `research/dash/host` and
 `crates/dash/vag-dash-fw` are not workspace members, so `cargo fmt --all`, `cargo test
---workspace` and workspace clippy skip them — and CI checks each on its own. Before a push
+--workspace` and workspace clippy skip them — and CI checks each on its own (`just host-check`,
+`just fw-check`, `just fw-ram`; `just check` runs them with the rest). Before a push
 that touches them, run `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings` and
 `cargo test` in `research/dash/host`, and in `crates/dash/vag-dash-fw` its `cargo fmt -- --check`
 and clippy on both builds — `VAGCAN_DASH_NO_CAR=1 cargo clippy --release --bins -- -D warnings`,

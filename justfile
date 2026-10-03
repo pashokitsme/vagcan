@@ -17,19 +17,24 @@ default:
 
 # ---- the firmware (crates/dash/vag-dash-fw) ----------------------------------------------
 
-# build an image: `just fw-build` (dash, BLE), `just fw-build dash noble`, `just fw-build oledtest`
-fw-build bin="dash" ble="ble":
-    cd {{fw}} && cargo build --release --bin {{bin}} {{ if ble == "noble" { "--no-default-features" } else { "" } }}
+# Flags after the image name go to cargo: `--no-default-features` for a board whose BLE does not
+# start, `--features bench` for the bench images (they transmit: never in a car).
+_elf bin:
+    @echo "${CARGO_TARGET_DIR:-target}/riscv32imc-unknown-none-elf/release/{{bin}}"
 
-# build and flash an image: `just fw-flash`, `just fw-flash dash noble` (a board whose BLE does not start)
-fw-flash bin="dash" ble="ble": (fw-build bin ble)
+# build an image: `just fw-build`, `just fw-build dash --no-default-features`, `just fw-build oledtest`
+fw-build bin="dash" *flags:
+    cd {{fw}} && cargo build --release --bin {{bin}} {{flags}}
+
+# build and flash an image (oledtest: the test picture; slcan: a plain adapter), same flags
+fw-flash bin="dash" *flags: (fw-build bin flags)
     port="$(just _esp-port)" && cd {{fw}} && espflash flash --chip esp32c3 --partition-table partitions.csv --non-interactive \
-        --port "$port" "${CARGO_TARGET_DIR:-target}/riscv32imc-unknown-none-elf/release/{{bin}}"
+        --port "$port" "$(just _elf {{bin}})"
 
-# build, flash and stay on the board's console (Ctrl-C leaves)
-fw-run bin="dash" ble="ble": (fw-build bin ble)
+# build, flash and stay on the board's console (Ctrl-C leaves), same flags
+fw-run bin="dash" *flags: (fw-build bin flags)
     port="$(just _esp-port)" && cd {{fw}} && espflash flash --chip esp32c3 --partition-table partitions.csv --monitor \
-        --port "$port" "${CARGO_TARGET_DIR:-target}/riscv32imc-unknown-none-elf/release/{{bin}}"
+        --port "$port" "$(just _elf {{bin}})"
 
 # the board's console, without flashing (opening the port resets the board)
 fw-monitor:
@@ -39,19 +44,14 @@ fw-monitor:
 fw-info:
     port="$(just _esp-port)" && espflash board-info --chip esp32c3 --non-interactive --port "$port" | grep -E "Chip type|MAC|Flash size"
 
-# the test picture on the OLED, nothing on CAN: border, `vagcan`, a dim copy, a checkerboard
-fw-oledtest: (fw-flash "oledtest")
-
-# the board as a plain slcan adapter for `vagcan --device` (flash `dash` back afterwards)
-fw-slcan: (fw-flash "slcan")
-
-# fmt and clippy on both builds, as CI runs them (an empty plan: no car needed)
+# CI `firmware`: fmt, clippy with BLE, without it and with every feature; empty plan, no car needed
 fw-check:
     cd {{fw}} && cargo fmt -- --check
     cd {{fw}} && VAGCAN_DASH_NO_CAR=1 cargo clippy --release --bins -- -D warnings
     cd {{fw}} && VAGCAN_DASH_NO_CAR=1 cargo clippy --release --bins --no-default-features -- -D warnings
+    cd {{fw}} && VAGCAN_DASH_NO_CAR=1 cargo clippy --release --bins --all-features -- -D warnings
 
-# the static-RAM budget, with and without BLE (CI's `firmware` job)
+# CI `firmware`: the static-RAM budget, with and without BLE
 fw-ram:
     {{fw}}/ram-budget.sh
 
@@ -68,10 +68,11 @@ bench secs="15" bin="cantx":
 build:
     cargo build --release -p vag-cli -p vag-cli-measure
 
-# install vagcan and vagcan-measure into ~/.cargo/bin
-install:
-    cargo install --path crates/cli/vag-cli
-    cargo install --path crates/cli/vag-cli-measure
+# install vagcan and vagcan-measure into ~/.cargo/bin, over whatever installed them before
+# (an old checkout's `crates/vagcan` package included); extra flags go to cargo: `just install --locked`
+install *args:
+    cargo install --force --path crates/cli/vag-cli {{args}}
+    cargo install --force --path crates/cli/vag-cli-measure {{args}}
 
 # run vagcan from the checkout: `just vagcan info`, `just vagcan watch --device /dev/cu.usbmodem1101`
 vagcan *args:
@@ -93,7 +94,7 @@ host bin *args:
 dashsim *args:
     cd {{host}} && cargo run --release -q --bin dashsim -- {{args}}
 
-# ---- checks ---------------------------------------------------------------------------------
+# ---- checks: each recipe is one CI job, so a green `just check` is a green CI ------------------
 
 # rustfmt everywhere: the workspace, the bench crate and the firmware
 fmt:
@@ -101,22 +102,43 @@ fmt:
     cd {{host}} && cargo fmt
     cd {{fw}} && cargo fmt
 
-# the workspace's tests
+# CI `fmt`: the workspace is rustfmt-clean
+fmt-check:
+    cargo fmt --all -- --check
+
+# CI `clippy`: the workspace, tests and examples included
+clippy:
+    cargo clippy --workspace --all-targets -- -D warnings
+
+# CI `test`: the workspace's tests
 test:
     cargo test --workspace
 
-# everything CI checks: workspace and bench crate (fmt, clippy, tests), firmware (fmt, clippy x2, RAM)
-check: && fw-check fw-ram
-    cargo fmt --all -- --check
-    cargo clippy --workspace --all-targets -- -D warnings
-    cargo test --workspace
+# CI `no-std`: the three crates the board links, without `std`, for the board's target
+no-std:
+    cargo check -p vag-uds-transport --no-default-features --target riscv32imc-unknown-none-elf
+    cargo check -p vag-uds-client --no-default-features --target riscv32imc-unknown-none-elf
+    cargo check -p vag-uds-can --no-default-features --target riscv32imc-unknown-none-elf
+
+# CI `bench-host`: the bench crate outside the workspace (fmt, clippy, tests)
+host-check:
     cd {{host}} && cargo fmt -- --check
     cd {{host}} && cargo clippy --all-targets -- -D warnings
     cd {{host}} && cargo test
 
-# the dead-code check, as CLAUDE.md has it: --workspace, never --all-targets
+# CI `dead-code`: --workspace, never --all-targets (CLAUDE.md); fails on a dead symbol in crates/
 dead-code:
-    RUSTFLAGS="--force-warn dead_code" cargo check --workspace
+    #!/usr/bin/env bash
+    set -euo pipefail
+    log="$(RUSTFLAGS='--force-warn dead_code' cargo check --workspace 2>&1 | tee /dev/stderr)"
+    # --force-warn lints every dependency too; only a warning pointing into crates/ counts
+    if grep -E -A2 'never (used|read|constructed)' <<<"$log" | grep -qE '^\s*-->\s.*crates/'; then
+        echo "dead code in a workspace crate: a symbol nobody calls. If it was written to be called, the fix is the missing call site, not deletion (CLAUDE.md)." >&2
+        exit 1
+    fi
+
+# everything CI checks, in CI's jobs: workspace, no-std, bench crate, firmware, dead code
+check: fmt-check clippy test no-std host-check fw-check fw-ram dead-code
 
 # ---- helpers --------------------------------------------------------------------------------
 
