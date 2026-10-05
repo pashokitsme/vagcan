@@ -155,6 +155,7 @@ One per value the board reads.
 | `decimals` | integer, 0 to 3 | no | from the scaling: 0 for a step of 1 or more, one place per decade under 1, at most 3 | Places after the point. |
 | `hz` | number, above 0, at most 100 | no | 2 | Readings a second while a page showing it is up. |
 | `setpoint` | string: a channel on the same unit | no | none | What the unit asked for. The panel draws the difference under the number; a `drift` alarm watches it. |
+| `zero_at_rest` | `true` or `false` | no | `false` | Shows 0 while the car stands (the stopwatch's `speed` reads 0). For an acceleration sensor, which reads the road's slope as acceleration at a standstill. Needs a `[stopwatch]`. Alarms and charts still see the value as read. |
 
 - The row must scale linearly: a number. An enumeration, or a proven point with no slope, is
   refused.
@@ -316,6 +317,8 @@ marks = [60, 100]
   of `speed` at the same moment. It is 1 when `speed` already reads true km/h.
 - **A wrong factor makes every time wrong, silently.**
 - `marks` are whole numbers: `60.0` is refused.
+- **The panel shows `speed` rounded down**, on the stopwatch page and on any page: a mark counts
+  when the speed reaches it, so `100` shows once the 100 mark is passed, never at 99.5.
 - The page opens with `[stalk]`'s `measure` or a `[[button]]` with `action = "stopwatch"`. With
   neither, the build succeeds and its output says nothing opens the page.
 

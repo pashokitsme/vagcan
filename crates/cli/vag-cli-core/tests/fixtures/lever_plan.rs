@@ -14,12 +14,12 @@ static UNITS: [Unit; 2] = [
 ];
 
 static CHANNELS: [Channel; 6] = [
-	Channel { unit: 0x7E0, did: 0x1001, bit_offset: 0, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "°C", label: "One", proven: false, hz: 2.0, setpoint: None },
-	Channel { unit: 0x7E0, did: 0x3001, bit_offset: 0, bit_length: 16, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "°C", label: "Speed", proven: false, hz: 50.0, setpoint: None },
-	Channel { unit: 0x7E0, did: 0x3002, bit_offset: 0, bit_length: 16, signed: false, big_endian: true, factor: 1.0, offset: -40.0, decimals: 0, unit_text: "°C", label: "Offset speed", proven: false, hz: 2.0, setpoint: None },
-	Channel { unit: 0x75A, did: 0x4C21, bit_offset: 32, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "", label: "Messy", proven: false, hz: 2.0, setpoint: None },
-	Channel { unit: 0x75A, did: 0x4C21, bit_offset: 24, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "", label: "Switch", proven: false, hz: 2.0, setpoint: None },
-	Channel { unit: 0x7E0, did: 0x2001, bit_offset: 0, bit_length: 16, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "", label: "Cruise status", proven: false, hz: 2.0, setpoint: None },
+	Channel { unit: 0x7E0, did: 0x1001, bit_offset: 0, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "°C", label: "One", proven: false, hz: 2.0, setpoint: None, zero_at_rest: false },
+	Channel { unit: 0x7E0, did: 0x3001, bit_offset: 0, bit_length: 16, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "°C", label: "Speed", proven: false, hz: 50.0, setpoint: None, zero_at_rest: false },
+	Channel { unit: 0x7E0, did: 0x3002, bit_offset: 0, bit_length: 16, signed: false, big_endian: true, factor: 1.0, offset: -40.0, decimals: 0, unit_text: "°C", label: "Offset speed", proven: false, hz: 2.0, setpoint: None, zero_at_rest: false },
+	Channel { unit: 0x75A, did: 0x4C21, bit_offset: 32, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "", label: "Messy", proven: false, hz: 2.0, setpoint: None, zero_at_rest: false },
+	Channel { unit: 0x75A, did: 0x4C21, bit_offset: 24, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "", label: "Switch", proven: false, hz: 2.0, setpoint: None, zero_at_rest: false },
+	Channel { unit: 0x7E0, did: 0x2001, bit_offset: 0, bit_length: 16, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "", label: "Cruise status", proven: false, hz: 2.0, setpoint: None, zero_at_rest: false },
 ];
 
 static CELLS_0: [u16; 1] = [0];

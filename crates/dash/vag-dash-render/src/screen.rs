@@ -380,6 +380,7 @@ mod tests {
 			proven: false,
 			hz: 10.0,
 			setpoint: None,
+			zero_at_rest: false,
 		};
 		static CHANNELS: [Channel; 7] = [CH; 7];
 		// The alarm page shows channel 3, which no rule watches, beside its two.

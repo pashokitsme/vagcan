@@ -404,7 +404,11 @@ impl Replay {
 							_ => Deviation::Unknown,
 						},
 					};
-					Cell::new(channel.label, value_of(index), channel.unit_text, channel.decimals).with_deviation(deviation)
+					// As the board shows it: the stopwatch's speed rounded down, a `zero_at_rest`
+					// channel 0 at a standstill (`Plan::shown`).
+					let speed = self.plan.stopwatch.and_then(|stopwatch| value_of(stopwatch.speed));
+					let shown = self.plan.shown(index, value_of(index), speed);
+					Cell::new(channel.label, shown, channel.unit_text, channel.decimals).with_deviation(deviation)
 				}
 				None => Cell::new("?", None, "", 0),
 			};
@@ -594,6 +598,7 @@ mod tests {
 			// Faster than the frames, so every frame reads it.
 			hz: 10.0,
 			setpoint: None,
+			zero_at_rest: false,
 		}
 	}
 

@@ -23,6 +23,7 @@
 //! decimals = 0                     # optional; derived from the scaling otherwise
 //! hz = 10                          # optional; how often the panel reads it, 2 otherwise
 //! setpoint = "01:IDE00190"         # optional; what the unit asked for, on the same unit
+//! zero_at_rest = true              # optional; 0 while the stopwatch's speed reads 0
 //!
 //! [[channel]]
 //! ref = "02:IDE00102"
@@ -216,6 +217,9 @@ pub struct ChannelInput {
 	/// files spell the two halves of a pair three different ways, and a wrong pair shows a
 	/// difference that means nothing.
 	pub setpoint: Option<Reference>,
+	/// `zero_at_rest = true`: shown as 0 while the car stands, the stopwatch's speed reading 0
+	/// (owner, 2026-10-05: the ESC's acceleration reads the road's slope at a standstill).
+	pub zero_at_rest: bool,
 }
 
 /// A channel's rate when `dash.toml` gives none (owner, 2026-09-14).
@@ -427,12 +431,19 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 						.ok_or_else(|| Error::Parse(format!("dash.toml: {reference}: setpoint is not a string")))?,
 				)?),
 			};
+			let zero_at_rest = match table.get("zero_at_rest") {
+				None => false,
+				Some(item) => item
+					.as_bool()
+					.ok_or_else(|| Error::Parse(format!("dash.toml: {reference}: zero_at_rest is not true or false")))?,
+			};
 			channels.push(ChannelInput {
 				reference,
 				label,
 				decimals,
 				hz,
 				setpoint,
+				zero_at_rest,
 			});
 		}
 	}
@@ -921,6 +932,10 @@ pub struct Channel {
 	/// `plan.json` written before setpoints existed has none.
 	#[serde(default)]
 	pub setpoint: Option<u16>,
+	/// Shown as 0 while the car stands (`dash.toml`'s `zero_at_rest`). A `plan.json` written
+	/// before it existed has none.
+	#[serde(default)]
+	pub zero_at_rest: bool,
 }
 
 fn default_hz() -> f64 {
@@ -1085,6 +1100,7 @@ impl Plan {
 				proven: c.proven,
 				hz: c.hz as f32,
 				setpoint: c.setpoint,
+				zero_at_rest: c.zero_at_rest,
 			})
 			.collect();
 		let pages = self
@@ -1251,6 +1267,7 @@ fn index_by_row(
 		decimals: None,
 		hz: None,
 		setpoint: None,
+		zero_at_rest: false,
 	};
 	let Ok(resolved) = resolve_channel(&probe, offered, units, &mut Vec::new()) else {
 		return Named::Unknown;
@@ -1360,6 +1377,7 @@ fn resolve_channel(wanted: &ChannelInput, offered: &[poll::Channel], units: &[Un
 		hz,
 		source,
 		setpoint: None,
+		zero_at_rest: wanted.zero_at_rest,
 	})
 }
 
@@ -1448,6 +1466,7 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 			decimals: wanted.decimals,
 			hz: wanted.hz,
 			setpoint: None,
+			zero_at_rest: false,
 		};
 		// Resolved into a log of its own: a setpoint that turns out to be a channel the input
 		// already has is not added, and a build log saying it was would be a lie.
@@ -1513,6 +1532,16 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 			Some(resolve_stopwatch(wanted, speed, &channels, &mut notes)?)
 		}
 	};
+	// `zero_at_rest` asks the stopwatch's speed whether the car stands: without a stopwatch
+	// there is nothing to ask, and the flag would silently do nothing.
+	if stopwatch.is_none()
+		&& let Some(wanted) = input.channels.iter().find(|c| c.zero_at_rest)
+	{
+		return Err(Error::Parse(format!(
+			"dash.toml: {}: zero_at_rest needs a [stopwatch] — its speed is what says the car stands",
+			wanted.reference
+		)));
+	}
 	// The lever's fields are enumerations, which no `[[channel]]` can be: they join the plan
 	// as channels of their own, on no page, read only for the lever.
 	let stalk = match &input.stalk {
@@ -1848,6 +1877,7 @@ fn board_period_ms(hz: f64) -> u32 {
 		proven: false,
 		hz: hz as f32,
 		setpoint: None,
+		zero_at_rest: false,
 	};
 	channel.period_ms()
 }
@@ -1886,6 +1916,7 @@ fn state_channel(found: &poll::Channel, label: String) -> Channel {
 		hz: DEFAULT_HZ,
 		source: found.text_id.clone().unwrap_or_else(|| def.name.to_string()),
 		setpoint: None,
+		zero_at_rest: false,
 	}
 }
 
@@ -2232,7 +2263,7 @@ pub fn to_rust(plan: &Plan) -> String {
 	for c in &plan.channels {
 		let _ = writeln!(
 			out,
-			"\tChannel {{ unit: 0x{:03X}, did: 0x{:04X}, bit_offset: {}, bit_length: {}, signed: {}, big_endian: {}, factor: {}, offset: {}, decimals: {}, unit_text: {:?}, label: {:?}, proven: {}, hz: {}, setpoint: {} }},",
+			"\tChannel {{ unit: 0x{:03X}, did: 0x{:04X}, bit_offset: {}, bit_length: {}, signed: {}, big_endian: {}, factor: {}, offset: {}, decimals: {}, unit_text: {:?}, label: {:?}, proven: {}, hz: {}, setpoint: {}, zero_at_rest: {} }},",
 			c.unit,
 			c.did,
 			c.bit_offset,
@@ -2249,7 +2280,8 @@ pub fn to_rust(plan: &Plan) -> String {
 			match c.setpoint {
 				Some(index) => format!("Some({index})"),
 				None => "None".to_string(),
-			}
+			},
+			c.zero_at_rest
 		);
 	}
 	let _ = writeln!(out, "];");
@@ -2697,6 +2729,7 @@ mod tests {
 				decimals: None,
 				hz: None,
 				setpoint: Some(parse("02:IDE00190")),
+				zero_at_rest: false,
 			}],
 			pages: Vec::new(),
 			alarms: Vec::new(),
@@ -3255,6 +3288,7 @@ mod tests {
 			proven: c.proven,
 			hz: c.hz as f32,
 			setpoint: c.setpoint,
+			zero_at_rest: c.zero_at_rest,
 		};
 		assert_eq!(device.decode(&[0xB2, 0x02]), Some(690.0), "690 /min, not 45570");
 		assert!(to_rust(&built.plan).contains("big_endian: false"));
@@ -3642,8 +3676,8 @@ mod tests {
 		.unwrap();
 		assert_eq!(built.plan.channels.iter().map(|c| c.hz).collect::<Vec<_>>(), [10.0, DEFAULT_HZ]);
 		let rust = to_rust(&built.plan);
-		assert!(rust.contains("proven: false, hz: 10.0, setpoint: None }"), "{rust}");
-		assert!(rust.contains("proven: false, hz: 2.0, setpoint: None }"), "{rust}");
+		assert!(rust.contains("proven: false, hz: 10.0, setpoint: None, zero_at_rest: false }"), "{rust}");
+		assert!(rust.contains("proven: false, hz: 2.0, setpoint: None, zero_at_rest: false }"), "{rust}");
 		assert!(built.notes[0].contains("at 10 Hz"), "{}", built.notes[0]);
 
 		// A plan.json from before rates reads as the default.
@@ -4179,6 +4213,28 @@ mod tests {
 	fn build_with_lever_and(input: &str, extra: Extra) -> Result<Built, Error> {
 		let here = tempfile::tempdir().unwrap();
 		build_with_lever_in(here.path(), input, extra, |_| {})
+	}
+
+	/// Owner, 2026-10-05: the ESC's acceleration reads the slope while the car stands.
+	#[test]
+	fn zero_at_rest_reaches_both_plans_and_needs_a_stopwatch() {
+		let flagged = "[[channel]]\nref = \"01:IDE00013\"\nzero_at_rest = true\n";
+		let built = build_with_lever(&format!("{WATCH}{flagged}")).unwrap();
+		let zeroed: Vec<u16> = built.plan.channels.iter().filter(|c| c.zero_at_rest).map(|c| c.did).collect();
+		assert_eq!(zeroed, [0x3004], "the flagged channel, and no other");
+		assert!(to_rust(&built.plan).contains("zero_at_rest: true"), "the firmware's plan carries it");
+		let device = built.plan.to_device();
+		assert!(device.channels.iter().any(|c| c.did == 0x3004 && c.zero_at_rest), "and the replay's");
+
+		let refused = build_with_lever(flagged).unwrap_err().to_string();
+		assert!(refused.contains("zero_at_rest needs a [stopwatch]"), "{refused}");
+	}
+
+	#[test]
+	fn zero_at_rest_is_true_or_false() {
+		let text = "vin = \"TESTVIN0000000001\"\n[[channel]]\nref = \"01:IDE00001\"\nzero_at_rest = \"yes\"\n";
+		let why = parse_input(text).unwrap_err().to_string();
+		assert!(why.contains("zero_at_rest is not true or false"), "{why}");
 	}
 
 	#[test]

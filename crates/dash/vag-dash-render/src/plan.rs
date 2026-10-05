@@ -274,6 +274,34 @@ pub struct Channel {
 	/// Both are on the same unit and due together, so the planner asks for them in one `22`
 	/// and the difference is between two numbers from the same moment.
 	pub setpoint: Option<u16>,
+	/// Shown as 0 while the car stands: `dash.toml`'s `zero_at_rest` (owner, 2026-10-05), for
+	/// an acceleration sensor that reads the road's slope as acceleration when the car is
+	/// still. "Stands" is the stopwatch's own test, its speed channel reading 0; the plan
+	/// generator refuses the flag without a `[stopwatch]`. It changes what the glass shows,
+	/// not what alarms or charts watch.
+	pub zero_at_rest: bool,
+}
+
+/// `value` rounded down to `decimals` places, so a formatter that rounds to nearest prints it
+/// as it is: 99.97 with 0 decimals is `99`, not `100`.
+pub fn round_down(value: f32, decimals: u8) -> f32 {
+	let scale = [1.0f32, 10.0, 100.0, 1000.0][usize::from(decimals.min(3))];
+	// The scaled value is close to a whole number already where it should land on one:
+	// 100.0 * 10 is 1000, but 0.3 * 10 is 2.9999998 in f32 and would floor to 2.
+	let scaled = value * scale;
+	let nearest = round(scaled);
+	let floored = if (scaled - nearest).abs() < 1e-3 { nearest } else { floor(scaled) };
+	floored / scale
+}
+
+/// `f32::floor` and `f32::round` are `std`; this crate is `no_std`.
+fn floor(x: f32) -> f32 {
+	let t = x as i64 as f32;
+	if t > x { t - 1.0 } else { t }
+}
+
+fn round(x: f32) -> f32 {
+	floor(x + 0.5)
 }
 
 /// The slowest a channel on no visible page is read: once a second, or its own
@@ -324,6 +352,29 @@ impl Plan {
 	/// The channel a page cell or a configuration index refers to.
 	pub fn channel(&self, index: u16) -> Option<&'static Channel> {
 		self.channels.get(usize::from(index))
+	}
+
+	/// What a cell shows for channel `index` whose reading is `value`, given the stopwatch's
+	/// speed channel reading `speed` (in its own unit, as read). Two things change it, both
+	/// the owner's (2026-10-05):
+	///
+	/// - **The stopwatch's speed is shown rounded down** to its decimals. A mark counts when
+	///   the speed reaches it, so a speed rounded up showed `100` at 99.5 while the run had
+	///   not reached 100 yet, and it looked as if the mark were missed.
+	/// - **A `zero_at_rest` channel shows 0 while the car stands** — the speed reads exactly
+	///   0, as the stopwatch decides it. An unanswered speed changes nothing.
+	pub fn shown(&self, index: u16, value: Option<f32>, speed: Option<f32>) -> Option<f32> {
+		let value = value?;
+		let Some(channel) = self.channel(index) else {
+			return Some(value);
+		};
+		if self.stopwatch.is_some_and(|stopwatch| stopwatch.speed == index) {
+			return Some(round_down(value, channel.decimals));
+		}
+		if channel.zero_at_rest && speed == Some(0.0) {
+			return Some(0.0);
+		}
+		Some(value)
 	}
 
 	/// How many chart pages the plan has — how many histories the panel
@@ -636,6 +687,7 @@ mod tests {
 			proven: false,
 			hz: 2.0,
 			setpoint: None,
+			zero_at_rest: false,
 		}
 	}
 
@@ -703,6 +755,75 @@ mod tests {
 		stopwatch: None,
 		buttons: &[],
 	};
+
+	/// A speed (0 decimals, the stopwatch's), an acceleration that is zeroed at rest, and a
+	/// temperature that is neither.
+	const SHOWN_CHANNELS: [Channel; 3] = [
+		Channel {
+			decimals: 0,
+			..channel(0, 16, false, false, 0.01, 0.0)
+		},
+		Channel {
+			decimals: 1,
+			zero_at_rest: true,
+			..channel(0, 16, false, true, 0.03125, -16.0)
+		},
+		Channel {
+			decimals: 0,
+			..channel(0, 8, false, true, 1.0, -40.0)
+		},
+	];
+	const SHOWN_PLAN: Plan = Plan {
+		vin: "",
+		language: "en",
+		units: &[],
+		channels: &SHOWN_CHANNELS,
+		pages: &[],
+		alarms: &[],
+		stalk: None,
+		stopwatch: Some(StopwatchPlan {
+			speed: 0,
+			km_h_per_unit: 1.0,
+			marks: &[60, 100],
+		}),
+		buttons: &[],
+	};
+
+	/// Owner, 2026-10-05: the glass said `100` and the run did not finish. The mark counts at
+	/// 100.00; rounded to nearest, 99.5 already showed `100`.
+	#[test]
+	fn the_stopwatch_speed_shows_100_only_once_it_is_100() {
+		assert_eq!(SHOWN_PLAN.shown(0, Some(99.97), Some(99.97)), Some(99.0));
+		assert_eq!(SHOWN_PLAN.shown(0, Some(99.5), Some(99.5)), Some(99.0));
+		assert_eq!(SHOWN_PLAN.shown(0, Some(100.0), Some(100.0)), Some(100.0));
+		assert_eq!(SHOWN_PLAN.shown(0, Some(100.4), Some(100.4)), Some(100.0));
+		assert_eq!(SHOWN_PLAN.shown(0, None, None), None, "no answer stays no answer");
+	}
+
+	#[test]
+	fn rounding_down_does_not_lose_a_value_that_is_already_whole_in_f32() {
+		// 0.3 * 10 is 2.9999998 in f32: a plain floor would show 0.2.
+		assert_eq!(round_down(0.3, 1), 0.3);
+		assert_eq!(round_down(1.29, 1), 1.2);
+		assert_eq!(round_down(-0.25, 1), -0.3, "down, not towards zero");
+		assert_eq!(round_down(7.0, 0), 7.0);
+	}
+
+	/// Owner, 2026-10-05: standing, the ESC's acceleration read −0.2 and 0.6 m/s² — the slope.
+	#[test]
+	fn a_zero_at_rest_channel_shows_0_only_while_the_speed_reads_0() {
+		assert_eq!(SHOWN_PLAN.shown(1, Some(0.6), Some(0.0)), Some(0.0));
+		assert_eq!(SHOWN_PLAN.shown(1, Some(-0.2), Some(0.0)), Some(0.0));
+		assert_eq!(SHOWN_PLAN.shown(1, Some(2.5), Some(0.4)), Some(2.5), "rolling, it is the sensor's");
+		assert_eq!(SHOWN_PLAN.shown(1, Some(0.6), None), Some(0.6), "no speed, no claim that the car stands");
+		assert_eq!(SHOWN_PLAN.shown(1, None, Some(0.0)), None, "no answer is not a zero");
+	}
+
+	#[test]
+	fn other_channels_are_shown_as_read() {
+		assert_eq!(SHOWN_PLAN.shown(2, Some(87.6), Some(0.0)), Some(87.6));
+		assert_eq!(PLAN.shown(0, Some(99.97), Some(0.0)), Some(99.97), "no stopwatch, nothing rounded down");
+	}
 
 	#[test]
 	fn buttons_fit_the_board_on_its_free_pins_each_once_at_most_three() {
