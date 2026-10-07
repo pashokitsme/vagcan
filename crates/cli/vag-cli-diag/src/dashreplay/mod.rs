@@ -146,6 +146,7 @@ mod tests {
 			proven: false,
 			hz: 10.0,
 			setpoint: None,
+			zero_at_rest: false,
 		}
 	}
 

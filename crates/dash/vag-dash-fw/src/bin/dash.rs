@@ -3046,7 +3046,11 @@ async fn panel_task(
 							_ => Deviation::Unknown,
 						},
 					};
-					Cell::new(channel.label, value_of(index), channel.unit_text, channel.decimals).with_deviation(deviation)
+					// What the glass shows: the stopwatch's speed rounded down, a `zero_at_rest`
+					// channel 0 at a standstill (`Plan::shown`, as the replay does).
+					let speed = PLAN.stopwatch.and_then(|stopwatch| value_of(stopwatch.speed));
+					let shown = PLAN.shown(index, value_of(index), speed);
+					Cell::new(channel.label, shown, channel.unit_text, channel.decimals).with_deviation(deviation)
 				}
 				None => Cell::new("?", None, "", 0),
 			};

@@ -363,6 +363,7 @@ mod tests {
 			hz: 10.0,
 			source: String::new(),
 			setpoint: None,
+			zero_at_rest: false,
 		}
 	}
 

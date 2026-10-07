@@ -714,7 +714,9 @@ pub fn cells<'a>(
 		Phase::Done if watch.run().is_some_and(|run| run.aborted) => words.aborted,
 		Phase::Done => words.done,
 	};
-	let phase = Cell::new(word, speed_km_h, words.km_h, 0);
+	// Rounded down, as `Plan::shown` shows the speed elsewhere: a mark counts at the speed, so
+	// a `100` here means the 100 mark is behind the car, never 99.5 on its way (owner, 2026-10-05).
+	let phase = Cell::new(word, speed_km_h.map(|v| crate::plan::round_down(v, 0)), words.km_h, 0);
 	// Armed, the cell is drawn inverted: `STOP 0` and `GO 0` differ by a small word otherwise
 	// (PR #12 review). An alarm, the other inverted cell, takes the whole glass.
 	row[0] = if watch.phase() == Phase::Armed { phase.alarmed() } else { phase };
@@ -1570,5 +1572,18 @@ mod tests {
 			assert!((got - want).abs() <= want * 1e-14, "√{x} in f64: {got} vs {want}");
 		}
 		assert_eq!(sqrt64(0.0), 0.0);
+	}
+
+	/// Owner, 2026-10-05: the glass said `100` and the run had not finished. The page's speed
+	/// is rounded down, so `100` shows once the 100 mark is behind the car.
+	#[test]
+	fn the_page_shows_the_speed_rounded_down() {
+		let watch = Stopwatch::new(&MARKS, 1.0);
+		let words = Words::of("en");
+		let labels = Labels::new(&MARKS);
+		let speed = |km_h: f32| cells(&watch, Some(km_h), &[], &words, &labels).0[0].value;
+		assert_eq!(speed(99.6), Some(99.0));
+		assert_eq!(speed(100.0), Some(100.0));
+		assert_eq!(cells(&watch, None, &[], &words, &labels).0[0].value, None);
 	}
 }

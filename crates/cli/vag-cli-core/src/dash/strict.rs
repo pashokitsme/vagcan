@@ -36,7 +36,7 @@ pub(super) const CHANNEL: Keys = Keys {
 	section: "[[channel]]",
 	name: "[[channel]]",
 	kind: None,
-	keys: &["ref", "label", "decimals", "hz", "setpoint"],
+	keys: &["ref", "label", "decimals", "hz", "setpoint", "zero_at_rest"],
 };
 
 pub(super) const VALUES: Keys = Keys {
@@ -395,7 +395,7 @@ marks = [60, 100]
 		assert_eq!(
 			refused(&text),
 			format!(
-				"dash.toml: line {line}: [[channel]] 1: unknown key \"hzz\" — did you mean \"hz\"? [[channel]] takes ref, label, decimals, hz, setpoint"
+				"dash.toml: line {line}: [[channel]] 1: unknown key \"hzz\" — did you mean \"hz\"? [[channel]] takes ref, label, decimals, hz, setpoint, zero_at_rest"
 			)
 		);
 	}
@@ -411,7 +411,7 @@ marks = [60, 100]
 			(
 				"ref = \"01:IDE00001\"",
 				"[[channel]] 1: ",
-				"[[channel]] takes ref, label, decimals, hz, setpoint",
+				"[[channel]] takes ref, label, decimals, hz, setpoint, zero_at_rest",
 			),
 			("title = \"A\"", "[[page]] 1: ", "A values page takes kind, title, cells"),
 			("cell = \"01:IDE00001\"", "[[page]] 2: ", "A chart page takes kind, cell, min, max"),
