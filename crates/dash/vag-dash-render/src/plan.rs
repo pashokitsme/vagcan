@@ -24,6 +24,7 @@
 
 use crate::alarm::{Alarm, ChannelId, Rule};
 use crate::control::{Command, MAX_BUTTONS, is_button_pin};
+use crate::frame::{Strip, Volts};
 use crate::stalk::{Read, StateIndex, States};
 
 /// The whole interface between the laptop and the device.
@@ -56,6 +57,16 @@ pub struct Plan {
 	/// The owner's `[[button]]`s, in the file's order: at most
 	/// [`MAX_BUTTONS`](crate::control::MAX_BUTTONS), each on a pin of its own.
 	pub buttons: &'static [ButtonPlan],
+	/// The status strip's sources, where the owner's `[strip]` names them (owner, 2026-10-19).
+	pub strip: Option<StripPlan>,
+}
+
+/// `[strip]`, resolved: where the strip's voltage comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StripPlan {
+	/// The battery voltage, a plan channel index. Shown on every page whose
+	/// [`Page::volts`] is set and which does not show the channel as a cell already.
+	pub volts: u16,
 }
 
 /// A `[[button]]`: a button on one of the board's free pins, wired to GND, and the one
@@ -326,13 +337,51 @@ pub struct Rate {
 }
 
 /// What one page shows. Indices are into [`Plan::channels`].
+///
+/// Both kinds carry the strip's two settings: the `title` drawn in it (and, on a values page,
+/// the name an alarm raises the page by), and whether the strip shows the voltage there
+/// (`volts`, the owner's `volts = false` to hide it).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Page {
 	/// One channel, large, with its recent history. `min`/`max` are the chart's
 	/// fixed range — never autoscaled, see `02`.
-	Chart { channel: u16, min: f32, max: f32 },
+	Chart {
+		title: &'static str,
+		channel: u16,
+		min: f32,
+		max: f32,
+		volts: bool,
+	},
 	/// Up to four columns, small label over a large number.
-	Values { title: &'static str, cells: &'static [u16] },
+	Values {
+		title: &'static str,
+		cells: &'static [u16],
+		volts: bool,
+	},
+}
+
+impl Page {
+	/// The title the strip shows; empty for none.
+	pub const fn title(&self) -> &'static str {
+		match self {
+			Page::Chart { title, .. } | Page::Values { title, .. } => title,
+		}
+	}
+
+	/// Whether the owner lets the strip show the voltage on this page.
+	pub const fn volts(&self) -> bool {
+		match self {
+			Page::Chart { volts, .. } | Page::Values { volts, .. } => *volts,
+		}
+	}
+
+	/// Whether the page shows the channel at `index` itself: as a cell, or as its chart.
+	pub fn shows(&self, index: u16) -> bool {
+		match self {
+			Page::Chart { channel, .. } => *channel == index,
+			Page::Values { cells, .. } => cells.contains(&index),
+		}
+	}
 }
 
 /// One chart the plan carries: where its history lives and what its axis is.
@@ -375,6 +424,39 @@ impl Plan {
 			return Some(0.0);
 		}
 		Some(value)
+	}
+
+	/// The channel the strip reads its voltage from on page `page` (a plan page index), if it
+	/// shows one there: the plan has a `[strip]`, the page has `volts` set, and the page does not
+	/// show that channel as a cell or a chart already — the same number twice on one page says
+	/// nothing the once does not.
+	pub fn strip_volts(&self, page: usize) -> Option<u16> {
+		let volts = self.strip?.volts;
+		let page = self.pages.get(page)?;
+		(page.volts() && !page.shows(volts)).then_some(volts)
+	}
+
+	/// The strip's channel, where any page's strip shows it — what the bus lists beside every
+	/// page's cells, so it is read on the pages not on the glass as theirs are.
+	pub fn strip_listed(&self) -> Option<u16> {
+		(0..self.pages.len()).find_map(|page| self.strip_volts(page))
+	}
+
+	/// What the strip over page `page` shows, `value_of` giving a channel's current reading:
+	/// the page's title and its voltage ([`Plan::strip_volts`]). A page the plan does not have
+	/// — the stopwatch's — has no strip. The board's panel and `dev recording dash` both draw
+	/// it from here.
+	pub fn strip(&self, page: usize, value_of: impl Fn(u16) -> Option<f32>) -> Strip<'static> {
+		let Some(at) = self.pages.get(page) else {
+			return Strip::NONE;
+		};
+		Strip {
+			title: at.title(),
+			volts: match self.strip_volts(page) {
+				Some(index) => Volts::Shown(value_of(index)),
+				None => Volts::Hidden,
+			},
+		}
 	}
 
 	/// How many chart pages the plan has — how many histories the panel
@@ -427,7 +509,7 @@ impl Plan {
 			.pages
 			.iter()
 			.filter_map(|page| match page {
-				Page::Chart { channel, min, max } => Some((*channel, *min, *max)),
+				Page::Chart { channel, min, max, .. } => Some((*channel, *min, *max)),
 				_ => None,
 			})
 			.enumerate()
@@ -731,17 +813,29 @@ mod tests {
 		channel(0, 8, false, true, 1.0, 0.0),
 	];
 	const PAGES: [Page; 4] = [
-		Page::Values { title: "a", cells: &[0, 1] },
+		Page::Values {
+			title: "a",
+			cells: &[0, 1],
+			volts: true,
+		},
 		Page::Chart {
+			title: "",
 			channel: 1,
 			min: 0.9,
 			max: 2.1,
+			volts: true,
 		},
-		Page::Values { title: "b", cells: &[2] },
+		Page::Values {
+			title: "b",
+			cells: &[2],
+			volts: true,
+		},
 		Page::Chart {
+			title: "",
 			channel: 2,
 			min: 0.0,
 			max: 100.0,
+			volts: true,
 		},
 	];
 	const PLAN: Plan = Plan {
@@ -754,6 +848,7 @@ mod tests {
 		stalk: None,
 		stopwatch: None,
 		buttons: &[],
+		strip: None,
 	};
 
 	/// A speed (0 decimals, the stopwatch's), an acceleration that is zeroed at rest, and a
@@ -787,6 +882,7 @@ mod tests {
 			marks: &[60, 100],
 		}),
 		buttons: &[],
+		strip: None,
 	};
 
 	/// Owner, 2026-10-05: the glass said `100` and the run did not finish. The mark counts at
@@ -1115,7 +1211,11 @@ mod tests {
 			channel(8, 8, false, true, 1.0, 0.0),
 		];
 		static CELLS: [u16; 2] = [0, 2];
-		static PAGES: [Page; 1] = [Page::Values { title: "", cells: &CELLS }];
+		static PAGES: [Page; 1] = [Page::Values {
+			title: "",
+			cells: &CELLS,
+			volts: true,
+		}];
 		static PLAN: Plan = Plan {
 			vin: "VIN",
 			language: "en",
@@ -1126,6 +1226,7 @@ mod tests {
 			stalk: None,
 			stopwatch: None,
 			buttons: &[],
+			strip: None,
 		};
 		let engine: std::vec::Vec<u16> = PLAN.channels_of(&UNITS[0]).map(|(i, _)| i).collect();
 		assert_eq!(engine, [0, 2]);
@@ -1344,5 +1445,108 @@ mod tests {
 				cruise: None
 			}
 		);
+	}
+
+	/// Channel 0 is the battery voltage. Page 0 shows it as a cell, page 1 charts it, page 2
+	/// shows other channels with the voltage on, page 3 has it off, page 4 is a chart of another
+	/// channel with a title.
+	fn strip_plan() -> Plan {
+		static PAGES: [Page; 5] = [
+			Page::Values {
+				title: "BATTERY",
+				cells: &[0, 1],
+				volts: true,
+			},
+			Page::Chart {
+				title: "",
+				channel: 0,
+				min: 10.0,
+				max: 15.0,
+				volts: true,
+			},
+			Page::Values {
+				title: "",
+				cells: &[1, 2],
+				volts: true,
+			},
+			Page::Values {
+				title: "QUIET",
+				cells: &[2],
+				volts: false,
+			},
+			Page::Chart {
+				title: "BOOST",
+				channel: 1,
+				min: 0.0,
+				max: 2.5,
+				volts: true,
+			},
+		];
+		Plan {
+			pages: &PAGES,
+			strip: Some(StripPlan { volts: 0 }),
+			..PLAN
+		}
+	}
+
+	#[test]
+	fn the_strip_shows_the_voltage_where_the_page_lets_it_and_does_not_show_it_already() {
+		let plan = strip_plan();
+		let volts: std::vec::Vec<Option<u16>> = (0..6).map(|page| plan.strip_volts(page)).collect();
+		assert_eq!(
+			volts,
+			[None, None, Some(0), None, Some(0), None],
+			"a cell of its own, its own chart, shown, volts = false, shown over a chart, no such page"
+		);
+		assert_eq!(plan.strip_listed(), Some(0));
+		assert_eq!(PLAN.strip_volts(0), None, "no [strip], no voltage anywhere");
+		assert_eq!(PLAN.strip_listed(), None);
+		let quiet = Plan {
+			pages: &strip_plan().pages[..2],
+			..strip_plan()
+		};
+		assert_eq!(
+			quiet.strip_listed(),
+			None,
+			"no page shows it in the strip: it is read as its pages read it"
+		);
+	}
+
+	#[test]
+	fn the_strip_of_a_page_is_its_title_and_its_voltage_as_read() {
+		let plan = strip_plan();
+		let read = |index: u16| (index == 0).then_some(14.2);
+		assert_eq!(
+			plan.strip(2, read),
+			Strip {
+				title: "",
+				volts: Volts::Shown(Some(14.2))
+			}
+		);
+		assert_eq!(
+			plan.strip(2, |_| None),
+			Strip {
+				title: "",
+				volts: Volts::Shown(None)
+			},
+			"no answer is shown as none, not hidden"
+		);
+		assert_eq!(
+			plan.strip(4, read),
+			Strip {
+				title: "BOOST",
+				volts: Volts::Shown(Some(14.2))
+			},
+			"a chart's title"
+		);
+		assert_eq!(
+			plan.strip(0, read),
+			Strip {
+				title: "BATTERY",
+				volts: Volts::Hidden
+			}
+		);
+		assert!(plan.strip(1, read).is_empty(), "no title and the voltage is the chart: no strip");
+		assert!(plan.strip(9, read).is_empty(), "the stopwatch's page is no plan page");
 	}
 }

@@ -55,6 +55,7 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 
 - **Values page**: up to 4 cells, each with a label, a value and a unit.
 - **Chart page**: one channel shown large, with its recent history on a fixed scale.
+- **Status strip**: a line across the top of a page with its `title` in the middle and the battery voltage (`[strip]`) on the left, `14.2V`. A page turns the voltage off with `volts = false`; a page that shows the voltage channel as a cell has none in its strip. A page with neither has no strip.
 - **Pages** are set per car in `dash.toml` and switched with buttons on the board's pins (`[[button]]`) or with the cruise lever while cruise is off (`[stalk]`).
 - **No input**: with no `[stalk]` and no `next`/`previous` `[[button]]`, only `dashsim` or `dashcfg`'s `set page` turns the page. With no `[stalk]` and no `[[button]]` at all, only `dashsim` silences an alarm; otherwise it stays up until its channel answers in range again. The build says so.
 - **Alarms**: `[[alarm]]` rules in `dash.toml` watch channels on any page. Past the threshold — or, for a `kind = "drift"` rule, once a channel has held far enough from what its unit asked for — the board shows the rule's page with the offending cell inverted: blinking while the value is out, steady for the 2.5 s the page stays up after it is back. A press silences it until the value comes back.
@@ -80,7 +81,7 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 
 ## Roadmap
 
-Updated 2026-09-30.
+Updated 2026-10-19.
 
 **Done**
 - [x] Read the car: identity, units, faults, OBD-II sensors, live values, acceleration timing with html-report
@@ -101,6 +102,8 @@ Updated 2026-09-30.
 - [ ] Scalings and names from a VCDS install alone, without an ODIS project (built 2026-09-28; checked offline on the reference car, waits for a drive)
 - [ ] 0–60 and 0–100 km/h stopwatch on the dash (works on the car, 2026-09-30; not yet compared with `vagcan measure`)
 - [ ] Dash counts the car's stored fault codes once after start and shows the number with a warning triangle (built, waiting for the car)
+- [ ] Dash status strip: the page's title and the battery voltage across the top (built 2026-10-19, waiting for the car)
+- [ ] Electrical consumption in watts in the dash's strip, beside the voltage (not started: needs derived channels, and the currents checked on the car)
 
 Details: [`todo/README.md`](todo/README.md).
 

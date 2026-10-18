@@ -30,7 +30,7 @@ use embedded_graphics::text::Text;
 use u8g2_fonts::FontRenderer;
 use u8g2_fonts::types::{FontColor, HorizontalAlignment, VerticalPosition};
 
-use crate::frame::{Board, Cell, Deviation, Faults, Frame, Links, Rates};
+use crate::frame::{Board, Cell, Deviation, Faults, Frame, Links, Rates, Strip, Volts};
 use crate::theme::{Numerals, Theme};
 
 /// Breathing room each side of a cell's contents.
@@ -238,6 +238,103 @@ pub fn draw_with<D>(frame: &Frame<'_>, board: &Board, theme: &Theme, target: &mu
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
+	draw_frame(frame, board, theme, target, true)
+}
+
+/// Rows the status strip takes at the top of the panel: the label face's line and a dark row
+/// under it, with no rule (owner, 2026-10-19). The page is drawn in the rows under them.
+pub const STRIP_ROWS: u32 = 9;
+
+/// The strip's voltage stands this far in from the left edge.
+const STRIP_LEFT: i32 = 1;
+
+/// Draw one plan page: its [`Strip`] across the top and the frame in the rows under it, with
+/// what the board says about itself as [`draw_with`] draws it — the link icons and the fault
+/// badge land in the page's own corners, under the strip. A strip with nothing to show
+/// ([`Strip::is_empty`]) is no strip, and this is [`draw_with`] on the whole panel. So is the
+/// adapter screen, which is no plan page.
+///
+/// With a title in the strip, a chart's header drops its label — the title says it — and
+/// keeps its range and seconds.
+pub fn draw_page<D>(frame: &Frame<'_>, strip: &Strip<'_>, board: &Board, theme: &Theme, target: &mut D) -> Report
+where
+	D: DrawTarget<Color = BinaryColor>,
+{
+	if strip.is_empty() || matches!(frame, Frame::Adapter(_)) {
+		return draw_with(frame, board, theme, target);
+	}
+	let area = target.bounding_box();
+	// The renderer reads its height from the target, so the page under the strip is the page
+	// on a shorter panel.
+	let below = Rectangle::new(
+		area.top_left + Point::new(0, STRIP_ROWS as i32),
+		Size::new(area.size.width, area.size.height.saturating_sub(STRIP_ROWS)),
+	);
+	let mut report = draw_frame(frame, board, theme, &mut target.cropped(&below), strip.title.is_empty());
+	draw_strip(strip, theme, target, &mut report);
+	report
+}
+
+/// What the strip writes for the voltage: one decimal and `V` — `14.2V` — or `--V` while the
+/// channel has not answered, the dash a cell draws for a missing value.
+fn volts_text(volts: Option<f32>) -> Buf {
+	let mut buf = Buf::new();
+	let _ = match volts {
+		Some(v) => write!(buf, "{v:.1}V"),
+		None => buf.write_str("--V"),
+	};
+	buf
+}
+
+/// The strip: the voltage left-aligned at [`STRIP_LEFT`], the title centred on the panel, both
+/// in the label face from the top row. A title that runs into the voltage or off the panel is
+/// reported and drawn anyway, as a label that overruns its column is.
+fn draw_strip<D>(strip: &Strip<'_>, theme: &Theme, target: &mut D, report: &mut Report)
+where
+	D: DrawTarget<Color = BinaryColor>,
+{
+	let width = target.bounding_box().size.width as i32;
+	let ink = FontColor::Transparent(BinaryColor::On);
+	// One past the voltage's last lit column: the title has to start past it.
+	let mut taken = 0;
+	if let Volts::Shown(volts) = strip.volts {
+		let text = volts_text(volts);
+		match theme
+			.label
+			.render(text.as_str(), Point::new(STRIP_LEFT, 0), VerticalPosition::Top, ink, target)
+		{
+			Ok(dims) => taken = dims.bounding_box.map_or(0, |b| b.top_left.x + b.size.width as i32),
+			Err(_) => report.glyph_missing = true,
+		}
+	}
+	if strip.title.is_empty() {
+		return;
+	}
+	match theme.label.render_aligned(
+		strip.title,
+		Point::new(width / 2, 0),
+		VerticalPosition::Top,
+		HorizontalAlignment::Center,
+		ink,
+		target,
+	) {
+		Ok(ink_box) => {
+			if let Some(b) = ink_box
+				&& (b.top_left.x <= taken || b.top_left.x + b.size.width as i32 > width)
+			{
+				report.label_overrun = true;
+			}
+		}
+		Err(_) => report.glyph_missing = true,
+	}
+}
+
+/// [`draw_with`], and whether a chart's header carries the channel's label: not under a strip
+/// that carries the page's title.
+fn draw_frame<D>(frame: &Frame<'_>, board: &Board, theme: &Theme, target: &mut D, chart_label: bool) -> Report
+where
+	D: DrawTarget<Color = BinaryColor>,
+{
 	let mut report = match frame {
 		Frame::Values { cells } => values(cells, board.links, theme, target),
 		Frame::Chart {
@@ -246,7 +343,7 @@ where
 			max,
 			samples,
 			seconds_per_sample,
-		} => chart(cell, *min, *max, samples, *seconds_per_sample, board.links, theme, target),
+		} => chart(cell, *min, *max, samples, *seconds_per_sample, chart_label, board.links, theme, target),
 		// The host's screen: no link icons there, and no badge either.
 		Frame::Adapter(state) => return adapter(state, board.rates, target),
 	};
@@ -1272,7 +1369,17 @@ fn chart_header(cell: &Cell<'_>, min: f32, max: f32, drawn: usize, seconds_per_s
 }
 
 #[allow(clippy::too_many_arguments)]
-fn chart<D>(cell: &Cell<'_>, min: f32, max: f32, samples: &[f32], seconds_per_sample: f32, links: Links, theme: &Theme, target: &mut D) -> Report
+fn chart<D>(
+	cell: &Cell<'_>,
+	min: f32,
+	max: f32,
+	samples: &[f32],
+	seconds_per_sample: f32,
+	label: bool,
+	links: Links,
+	theme: &Theme,
+	target: &mut D,
+) -> Report
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
@@ -1289,15 +1396,22 @@ where
 	// Drawn in two pieces because it is two alphabets: the label is a word in the
 	// reader's language, the rest is `0.00-2.50bar 19s`. One face has Cyrillic
 	// and the other has `°`, and no face here has both.
-	let head = theme
-		.label
-		.render(cell.label, Point::new(0, 0), VerticalPosition::Top, FontColor::Transparent(ink), target);
-	let after = match &head {
-		Ok(dim) => dim.advance.x + 6,
-		Err(_) => {
-			report.glyph_missing = true;
-			0
+	//
+	// Under a strip that carries the page's title the label goes: the title says what the
+	// chart is, and the same word twice reads as two things (owner, 2026-10-19).
+	let after = if label {
+		match theme
+			.label
+			.render(cell.label, Point::new(0, 0), VerticalPosition::Top, FontColor::Transparent(ink), target)
+		{
+			Ok(dim) => dim.advance.x + 6,
+			Err(_) => {
+				report.glyph_missing = true;
+				0
+			}
 		}
+	} else {
+		0
 	};
 	let buf = number(cell);
 	// A chart gives the number a third of the width; past that the trace has
@@ -2566,5 +2680,188 @@ mod tests {
 		assert!(layout.title.is_some() && layout.speed.is_some(), "the title and the speeds fit");
 		assert!(layout.counters.is_none(), "the counters do not, and are not drawn");
 		lit_only_inside(&display, &layout.boxes().collect::<std::vec::Vec<_>>());
+	}
+
+	// --- the status strip -------------------------------------------------------------
+
+	/// The page under the strip: the panel less the strip's rows.
+	const UNDER: Size = Size::new(256, 64 - STRIP_ROWS);
+
+	fn strip_board() -> Board {
+		Board {
+			links: BLE,
+			rates: None,
+			faults: NINE,
+		}
+	}
+
+	/// `page` drawn with `strip` on the board's panel, and the report.
+	fn paged(frame: &Frame<'_>, strip: &Strip<'_>, board: &Board) -> (SimulatorDisplay<BinaryColor>, Report) {
+		let mut display = tall();
+		let report = draw_page(frame, strip, board, &Theme::bold_mono(), &mut display);
+		(display, report)
+	}
+
+	/// Rows `STRIP_ROWS..` of `display` are, pixel for pixel, `under` — the page drawn alone on a
+	/// panel as tall as what the strip leaves.
+	fn page_under_strip_is(display: &SimulatorDisplay<BinaryColor>, under: &SimulatorDisplay<BinaryColor>) -> bool {
+		Rectangle::new(Point::zero(), UNDER)
+			.points()
+			.all(|p| under.get_pixel(p) == display.get_pixel(p + Point::new(0, STRIP_ROWS as i32)))
+	}
+
+	fn strip_rows() -> Rectangle {
+		Rectangle::new(Point::zero(), Size::new(TALL.width, STRIP_ROWS))
+	}
+
+	#[test]
+	fn the_strip_writes_volts_with_one_decimal_and_a_dash_for_no_answer() {
+		assert_eq!(volts_text(Some(14.24)).as_str(), "14.2V");
+		assert_eq!(volts_text(Some(12.0)).as_str(), "12.0V");
+		assert_eq!(volts_text(None).as_str(), "--V", "no answer is a dash, as in a cell, never 0.0V");
+	}
+
+	#[test]
+	fn a_strip_with_nothing_to_show_is_no_strip_and_the_page_keeps_the_whole_panel() {
+		let cells = temps("ВПУСК");
+		let page = Frame::Values { cells: &cells };
+		let (display, report) = paged(&page, &Strip::NONE, &strip_board());
+		let (plain, plain_report) = with_badge(&page, BLE, NINE);
+		assert_eq!(report, plain_report);
+		assert!(
+			TALL_BOX.points().all(|p| display.get_pixel(p) == plain.get_pixel(p)),
+			"the page as drawn without a strip"
+		);
+		assert!(Strip::NONE.is_empty() && Strip::default().is_empty());
+	}
+
+	const TALL_BOX: Rectangle = Rectangle::new(Point::zero(), TALL);
+
+	#[test]
+	fn a_values_page_under_the_strip_is_the_page_on_the_rows_under_it_icons_and_badge_included() {
+		let cells = temps("ВПУСК");
+		let page = Frame::Values { cells: &cells };
+		let strip = Strip {
+			title: "ТЕМПЕРАТУРЫ",
+			volts: Volts::Shown(Some(14.2)),
+		};
+		let (display, report) = paged(&page, &strip, &strip_board());
+		let mut under: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(UNDER);
+		let alone = draw_with(&page, &strip_board(), &Theme::bold_mono(), &mut under);
+		assert_eq!(report, alone, "the strip itself fits: nothing to report beyond the page's own");
+		let mut full = tall();
+		let whole = draw_with(&page, &strip_board(), &Theme::bold_mono(), &mut full);
+		assert_eq!(alone, whole, "and the page fits its 55 rows as it fits 64: {alone:?}");
+		assert!(
+			page_under_strip_is(&display, &under),
+			"the page, its icons and its badge, moved down by the strip"
+		);
+		// The badge still stands on the floor of the panel, the icons under the strip.
+		let badge = badge_box(NINE, &Theme::bold_mono(), UNDER).unwrap();
+		assert_eq!(badge.top_left.y + badge.size.height as i32 + STRIP_ROWS as i32, TALL.height as i32 - 1);
+		let icons = icon_box(BLE, TALL.width).unwrap();
+		assert!(lit_in(&display, icons.translate(Point::new(0, STRIP_ROWS as i32))));
+
+		// The strip: the voltage at the left, the title in the middle, nothing on its last row
+		// — no rule under it.
+		let ink: std::vec::Vec<Point> = strip_rows().points().filter(|p| display.get_pixel(*p) == BinaryColor::On).collect();
+		assert!(
+			ink.iter().all(|p| p.y < STRIP_ROWS as i32 - 1),
+			"a dark row between the strip and the page"
+		);
+		let volts: std::vec::Vec<i32> = ink.iter().filter(|p| p.x < 64).map(|p| p.x).collect();
+		// Anchored a column in; a `1` has a blank column of its own before its stroke.
+		let first = *volts.iter().min().expect("the voltage is drawn");
+		assert!((STRIP_LEFT..=STRIP_LEFT + 1).contains(&first), "the voltage starts at the left: {first}");
+		let title: std::vec::Vec<i32> = ink.iter().filter(|p| p.x >= 64).map(|p| p.x).collect();
+		let (left, right) = (*title.iter().min().unwrap(), *title.iter().max().unwrap());
+		assert!(
+			((left + right) / 2 - TALL.width as i32 / 2).abs() <= 2,
+			"the title is centred: {left}..{right}"
+		);
+	}
+
+	#[test]
+	fn the_strip_draws_only_what_it_has() {
+		let cells = temps("ВПУСК");
+		let page = Frame::Values { cells: &cells };
+		let title_only = Strip {
+			title: "ТЕМП",
+			volts: Volts::Hidden,
+		};
+		let (display, _) = paged(&page, &title_only, &Board::default());
+		let left = Rectangle::new(Point::zero(), Size::new(64, STRIP_ROWS));
+		assert!(!lit_in(&display, left), "no voltage on a page that hides it");
+		assert!(lit_in(&display, strip_rows()), "the title is there");
+
+		let volts_only = Strip {
+			title: "",
+			volts: Volts::Shown(None),
+		};
+		let (display, report) = paged(&page, &volts_only, &Board::default());
+		assert!(!report.glyph_missing, "{report:?}");
+		let right = Rectangle::new(Point::new(64, 0), Size::new(TALL.width - 64, STRIP_ROWS));
+		assert!(lit_in(&display, left), "`--V`");
+		assert!(!lit_in(&display, right), "and no title");
+	}
+
+	#[test]
+	fn under_a_title_a_charts_header_drops_its_label_and_keeps_its_range_and_seconds() {
+		let samples = [1.5f32; 120];
+		let chart = pinned_chart(&samples);
+		let titled = Strip {
+			title: "НАДДУВ",
+			volts: Volts::Shown(Some(14.2)),
+		};
+		let (display, report) = paged(&chart, &titled, &strip_board());
+		assert_eq!(report, Report::default(), "{report:?}");
+		// `Д` reaches under the line, and still stays off the strip's last row.
+		let last = Rectangle::new(Point::new(0, STRIP_ROWS as i32 - 1), Size::new(TALL.width, 1));
+		assert!(!lit_in(&display, last), "a dark row between the strip and the chart");
+		let theme = Theme::bold_mono();
+		let mut without: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(UNDER);
+		draw_frame(&chart, &strip_board(), &theme, &mut without, false);
+		assert!(page_under_strip_is(&display, &without), "the chart without its label");
+		let mut with: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(UNDER);
+		draw_with(&chart, &strip_board(), &theme, &mut with);
+		assert!(!page_under_strip_is(&display, &with), "which is not the chart with it");
+		// The range and the seconds moved to the left edge: the header's row has ink from there.
+		let header = Rectangle::new(Point::new(0, STRIP_ROWS as i32), Size::new(8, 8));
+		assert!(lit_in(&display, header), "the range starts the header");
+
+		// A strip with the voltage alone keeps the chart's label: nothing else says what it is.
+		let volts_only = Strip {
+			title: "",
+			volts: Volts::Shown(Some(14.2)),
+		};
+		let (display, _) = paged(&chart, &volts_only, &strip_board());
+		assert!(page_under_strip_is(&display, &with), "the chart as it is, under the strip");
+	}
+
+	#[test]
+	fn a_title_that_runs_into_the_voltage_is_reported() {
+		let cells = temps("ВПУСК");
+		let page = Frame::Values { cells: &cells };
+		let long = Strip {
+			title: "ОЧЕНЬ ДЛИННЫЙ ЗАГОЛОВОК СТРАНИЦЫ НА ВЕСЬ ЭКРАН",
+			volts: Volts::Shown(Some(14.2)),
+		};
+		let (_, report) = paged(&page, &long, &Board::default());
+		assert!(report.label_overrun, "{report:?}");
+		assert!(!report.glyph_missing, "Cyrillic is in the label face: {report:?}");
+	}
+
+	#[test]
+	fn the_adapter_screen_draws_no_strip() {
+		let state = adapter_state(Some(500), false);
+		let frame = Frame::Adapter(state);
+		let strip = Strip {
+			title: "Т",
+			volts: Volts::Shown(Some(14.2)),
+		};
+		let (display, _) = paged(&frame, &strip, &Board::default());
+		let mut plain = tall();
+		draw_with(&frame, &Board::default(), &Theme::bold_mono(), &mut plain);
+		assert!(TALL_BOX.points().all(|p| display.get_pixel(p) == plain.get_pixel(p)));
 	}
 }

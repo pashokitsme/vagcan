@@ -127,17 +127,21 @@ mod tests {
 	const BEFORE: &[Page] = &[Page::Values {
 		title: "engine",
 		cells: &[0, 1, 2, 3],
+		volts: true,
 	}];
 	/// And after: the same values page, then a chart.
 	const AFTER: &[Page] = &[
 		Page::Values {
 			title: "engine",
 			cells: &[0, 1, 2, 3],
+			volts: true,
 		},
 		Page::Chart {
+			title: "",
 			channel: 1,
 			min: 0.0,
 			max: 2.5,
+			volts: true,
 		},
 	];
 
@@ -189,16 +193,21 @@ mod tests {
 			Page::Values {
 				title: "a",
 				cells: &[0, 1, 2],
+				volts: true,
 			},
 			Page::Chart {
+				title: "",
 				channel: 0,
 				min: 0.0,
 				max: 1.0,
+				volts: true,
 			},
 			Page::Chart {
+				title: "",
 				channel: 1,
 				min: 0.0,
 				max: 1.0,
+				volts: true,
 			},
 		];
 		let stored: std::vec::Vec<Layout<'_>> = from_plan(wide, 2, 2).collect();

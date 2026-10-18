@@ -385,13 +385,26 @@ mod tests {
 		static CHANNELS: [Channel; 7] = [CH; 7];
 		// The alarm page shows channel 3, which no rule watches, beside its two.
 		static PLAN_PAGES: [Page; 4] = [
-			Page::Values { title: "a", cells: &[0, 1] },
-			Page::Values { title: "b", cells: &[2] },
+			Page::Values {
+				title: "a",
+				cells: &[0, 1],
+				volts: true,
+			},
+			Page::Values {
+				title: "b",
+				cells: &[2],
+				volts: true,
+			},
 			Page::Values {
 				title: "high",
 				cells: &[3, 4, 5],
+				volts: true,
 			},
-			Page::Values { title: "low", cells: &[6] },
+			Page::Values {
+				title: "low",
+				cells: &[6],
+				volts: true,
+			},
 		];
 		let plan = Plan {
 			vin: "",
@@ -403,6 +416,7 @@ mod tests {
 			stalk: None,
 			stopwatch: None,
 			buttons: &[],
+			strip: None,
 		};
 		let cells = |page: u8| match plan.pages[usize::from(page)] {
 			Page::Values { cells, .. } => cells,

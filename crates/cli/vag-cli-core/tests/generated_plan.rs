@@ -1,4 +1,4 @@
-//! The generated source of a plan with a lever, a stopwatch and buttons compiles,
+//! The generated source of a plan with a lever, a stopwatch, buttons and a strip compiles,
 //! warning-free, and says what the plan it came from says. The firmware `include!`s such a
 //! file under `-D warnings`, but CI builds it on an empty plan, so this is where that half
 //! of `dash::to_rust` is compiled. The fixture is written by `dash.rs`'s
@@ -42,4 +42,22 @@ fn the_generated_plan_carries_a_button_on_each_free_pin() {
 		[button(3, Command::Next), button(4, Command::Previous), button(5, Command::Stopwatch)]
 	);
 	assert!(PLAN.buttons.iter().all(|b| is_button_pin(b.pin)));
+}
+
+#[test]
+fn the_generated_plan_carries_the_strip_and_a_titled_chart() {
+	use vag_dash_render::Volts;
+	use vag_dash_render::plan::{Page, StripPlan};
+	assert_eq!(PLAN.strip, Some(StripPlan { volts: 2 }));
+	assert!(matches!(
+		PLAN.pages[1],
+		Page::Chart {
+			title: "Speed",
+			volts: false,
+			..
+		}
+	));
+	// The values page shows the voltage in its strip; the chart has it off.
+	assert_eq!(PLAN.strip(0, |_| Some(14.2)).volts, Volts::Shown(Some(14.2)));
+	assert_eq!(PLAN.strip(1, |_| Some(14.2)).volts, Volts::Hidden);
 }

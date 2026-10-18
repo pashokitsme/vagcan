@@ -2273,14 +2273,18 @@ impl PanelReads {
 				page => page,
 			};
 			// `STOPWATCH_PAGE` is past every page: no cells, and the mode brings the speed.
-			let shown: Vec<u16> = match s.config.pages.get(usize::from(glass)) {
+			let mut shown: Vec<u16> = match s.config.pages.get(usize::from(glass)) {
 				Some(page) if page.kind == PageKind::Chart => page.cells.first().copied().into_iter().collect(),
 				Some(page) => page.cells.iter().copied().collect(),
 				None => Vec::new(),
 			};
+			// The voltage the page's strip shows is read as one of its cells; the stopwatch's page
+			// is no plan page and has no strip.
+			shown.extend(PLAN.strip_volts(usize::from(glass)));
 			// Every page's cells, charts included: a chart samples its channel
-			// every frame whether or not it is shown.
-			let listed: Vec<u16> = s.config.pages.iter().flat_map(|page| page.cells.iter().copied()).collect();
+			// every frame whether or not it is shown — and the strip's voltage, where a page shows it.
+			let mut listed: Vec<u16> = s.config.pages.iter().flat_map(|page| page.cells.iter().copied()).collect();
+			listed.extend(PLAN.strip_listed());
 			(shown, listed)
 		};
 		let mode = self.read_mode();
@@ -2846,7 +2850,7 @@ async fn panel_task(
 	mut oled: Option<&'static mut Oled>,
 ) -> ! {
 	use vag_dash_render::history::History;
-	use vag_dash_render::{Board, Cell, Deviation, Frame, Rates, Theme, draw_with};
+	use vag_dash_render::{Board, Cell, Deviation, Frame, Rates, Theme, draw_page, draw_with};
 	use vag_uds_can::wire::BitRate;
 
 	static FRAMEBUFFER: StaticCell<Framebuffer> = StaticCell::new();
@@ -3061,6 +3065,9 @@ async fn panel_task(
 			}
 		};
 
+		// The page's title and voltage across the top (`Plan::strip`, as the replay draws it).
+		let strip = PLAN.strip(usize::from(glass.page), value_of);
+
 		framebuffer.clear_all();
 		let report = match kind {
 			_ if on_stopwatch => {
@@ -3076,14 +3083,14 @@ async fn panel_task(
 				for index in indices.iter().take(4) {
 					let _ = cells.push(cell_of(*index));
 				}
-				draw_with(&Frame::Values { cells: &cells }, &board, &theme, framebuffer)
+				draw_page(&Frame::Values { cells: &cells }, &strip, &board, &theme, framebuffer)
 			}
 			PageKind::Chart => {
 				let index = indices.first().copied().unwrap_or(0);
 				match PLAN.chart(index) {
 					Some(chart) => {
 						let samples = histories[chart.slot].samples();
-						draw_with(
+						draw_page(
 							&Frame::Chart {
 								cell: cell_of(index),
 								min: chart.min,
@@ -3091,6 +3098,7 @@ async fn panel_task(
 								samples,
 								seconds_per_sample: FRAME_MS as f32 / 1000.0,
 							},
+							&strip,
 							&board,
 							&theme,
 							framebuffer,
@@ -3105,7 +3113,7 @@ async fn panel_task(
 							note!("panel: the plan has no chart range for channel {index} — showing it as a value");
 						}
 						let cells = [cell_of(index)];
-						draw_with(&Frame::Values { cells: &cells }, &board, &theme, framebuffer)
+						draw_page(&Frame::Values { cells: &cells }, &strip, &board, &theme, framebuffer)
 					}
 				}
 			}

@@ -49,8 +49,8 @@ pub mod stalk;
 pub mod stopwatch;
 pub mod theme;
 
-pub use frame::{Board, Cell, Deviation, Faults, Frame, Links, Rates};
-pub use render::{draw, draw_with};
+pub use frame::{Board, Cell, Deviation, Faults, Frame, Links, Rates, Strip, Volts};
+pub use render::{draw, draw_page, draw_with};
 pub use theme::{Numerals, Theme};
 
 use embedded_graphics::geometry::Size;

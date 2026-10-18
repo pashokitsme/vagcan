@@ -43,14 +43,14 @@ pub(super) const VALUES: Keys = Keys {
 	section: "[[page]]",
 	name: "a values page",
 	kind: Some("values"),
-	keys: &["kind", "title", "cells"],
+	keys: &["kind", "title", "cells", "volts"],
 };
 
 pub(super) const CHART: Keys = Keys {
 	section: "[[page]]",
 	name: "a chart page",
 	kind: Some("chart"),
-	keys: &["kind", "cell", "min", "max"],
+	keys: &["kind", "title", "cell", "min", "max", "volts"],
 };
 
 pub(super) const THRESHOLD: Keys = Keys {
@@ -99,11 +99,18 @@ pub(super) const STOPWATCH: Keys = Keys {
 	keys: &["speed", "km_h_per_unit", "marks"],
 };
 
+pub(super) const STRIP: Keys = Keys {
+	section: "[strip]",
+	name: "[strip]",
+	kind: None,
+	keys: &["volts"],
+};
+
 /// Every section the file may hold, as the file writes it, in the reference's order.
-const SECTIONS: [&str; 6] = ["[[channel]]", "[[page]]", "[[alarm]]", "[[button]]", "[stalk]", "[stopwatch]"];
+const SECTIONS: [&str; 7] = ["[[channel]]", "[[page]]", "[strip]", "[[alarm]]", "[[button]]", "[stalk]", "[stopwatch]"];
 
 /// Every table, for a refusal that finds one table's key in another.
-const TABLES: [&Keys; 9] = [&TOP, &CHANNEL, &VALUES, &CHART, &THRESHOLD, &DRIFT, &BUTTON, &STALK, &STOPWATCH];
+const TABLES: [&Keys; 10] = [&TOP, &CHANNEL, &VALUES, &CHART, &STRIP, &THRESHOLD, &DRIFT, &BUTTON, &STALK, &STOPWATCH];
 
 /// One table of the file, read strictly, and where it is — for a refusal to point at.
 pub(super) struct Reader<'a> {
@@ -137,6 +144,11 @@ impl<'a> Reader<'a> {
 	/// not a string — never read as absent.
 	pub(super) fn string(&self, key: &str, expected: &str) -> Result<Option<&'a str>, Error> {
 		self.optional(key, expected, Item::as_str)
+	}
+
+	/// An optional `true` or `false`, the same way.
+	pub(super) fn boolean(&self, key: &str) -> Result<Option<bool>, Error> {
+		self.optional(key, "true or false", Item::as_bool)
 	}
 
 	/// An optional integer, the same way.
@@ -309,12 +321,18 @@ setpoint = "01:IDE00002"
 kind = "values"
 title = "A"
 cells = ["01:IDE00001"]
+volts = true
 
 [[page]]
 kind = "chart"
+title = "C"
 cell = "01:IDE00001"
 min = 0
 max = 10
+volts = false
+
+[strip]
+volts = "01:IDE00001"
 
 [[alarm]]
 channels = ["01:IDE00001"]
@@ -386,7 +404,7 @@ marks = [60, 100]
 	fn the_base_file_parses() {
 		let input = parse_input(BASE).unwrap();
 		assert_eq!((input.channels.len(), input.pages.len(), input.alarms.len()), (1, 2, 2));
-		assert!(input.stalk.is_some() && input.stopwatch.is_some());
+		assert!(input.stalk.is_some() && input.stopwatch.is_some() && input.strip.is_some());
 	}
 
 	#[test]
@@ -406,15 +424,20 @@ marks = [60, 100]
 			(
 				"vin = \"TESTVIN0000000001\"",
 				"",
-				"The top level takes vin, language, [[channel]], [[page]], [[alarm]], [[button]], [stalk], [stopwatch]",
+				"The top level takes vin, language, [[channel]], [[page]], [strip], [[alarm]], [[button]], [stalk], [stopwatch]",
 			),
 			(
 				"ref = \"01:IDE00001\"",
 				"[[channel]] 1: ",
 				"[[channel]] takes ref, label, decimals, hz, setpoint, zero_at_rest",
 			),
-			("title = \"A\"", "[[page]] 1: ", "A values page takes kind, title, cells"),
-			("cell = \"01:IDE00001\"", "[[page]] 2: ", "A chart page takes kind, cell, min, max"),
+			("title = \"A\"", "[[page]] 1: ", "A values page takes kind, title, cells, volts"),
+			(
+				"cell = \"01:IDE00001\"",
+				"[[page]] 2: ",
+				"A chart page takes kind, title, cell, min, max, volts",
+			),
+			("volts = \"01:IDE00001\"", "[strip]: ", "[strip] takes volts"),
 			(
 				"direction = \"above\"",
 				"[[alarm]] 1: ",
@@ -495,8 +518,8 @@ marks = [60, 100]
 			),
 			(
 				"cell = \"01:IDE00001\"",
-				"title = \"B\"",
-				"[[page]] 2: \"title\" is a key of a values page (kind = \"values\"), and this is a chart page. A chart page takes kind, cell, min, max",
+				"cells = [\"01:IDE00001\"]",
+				"[[page]] 2: \"cells\" is a key of a values page (kind = \"values\"), and this is a chart page. A chart page takes kind, title, cell, min, max, volts",
 			),
 			(
 				"kind = \"drift\"",
@@ -663,8 +686,8 @@ marks = [60, 100]
 			.expect("the example is a fenced toml block")
 			.0;
 		let input = parse_input(example).unwrap_or_else(|e| panic!("{e}\n{example}"));
-		assert_eq!((input.channels.len(), input.pages.len(), input.alarms.len()), (3, 2, 2));
-		assert!(input.stalk.is_some() && input.stopwatch.is_some());
+		assert_eq!((input.channels.len(), input.pages.len(), input.alarms.len()), (4, 2, 2));
+		assert!(input.stalk.is_some() && input.stopwatch.is_some() && input.strip.is_some());
 		assert_eq!(input.language, Some(crate::config::Language::Ru));
 	}
 
@@ -700,6 +723,7 @@ marks = [60, 100]
 			("Top level", vec![&TOP]),
 			("[[channel]]", vec![&CHANNEL]),
 			("[[page]]", vec![&VALUES, &CHART]),
+			("[strip]", vec![&STRIP]),
 			("[[alarm]]", vec![&THRESHOLD, &DRIFT]),
 			("[stalk]", vec![&STALK]),
 			("[stopwatch]", vec![&STOPWATCH]),

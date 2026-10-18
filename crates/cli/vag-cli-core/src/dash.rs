@@ -28,13 +28,18 @@
 //! [[channel]]
 //! ref = "02:IDE00102"
 //!
+//! [strip]                          # optional: the battery voltage in the strip over the pages
+//! volts = "01:IDE00018"            # a [[channel]]
+//!
 //! [[page]]
 //! kind = "values"
-//! title = "MAIN"
+//! title = "MAIN"                   # optional; drawn in the strip, and alarms name the page by it
 //! cells = ["01:IDE00025", "02:IDE00102"]
+//! volts = false                    # optional; true by default — the strip's voltage on this page
 //!
 //! [[page]]
 //! kind = "chart"
+//! title = "COOLANT"                # optional; drawn in the strip, in place of the header's label
 //! cell = "01:IDE00025"
 //! min = 70
 //! max = 110
@@ -232,8 +237,35 @@ pub const MAX_HZ: f64 = 100.0;
 /// One `[[page]]` of the input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PageInput {
-	Values { title: String, cells: Vec<Reference> },
-	Chart { cell: Reference, min: f64, max: f64 },
+	Values {
+		title: String,
+		cells: Vec<Reference>,
+		/// `volts`, where the page writes it: whether the strip shows the voltage here. `None`
+		/// is the default, on.
+		volts: Option<bool>,
+	},
+	Chart {
+		title: String,
+		cell: Reference,
+		min: f64,
+		max: f64,
+		volts: Option<bool>,
+	},
+}
+
+impl PageInput {
+	fn volts(&self) -> Option<bool> {
+		match self {
+			PageInput::Values { volts, .. } | PageInput::Chart { volts, .. } => *volts,
+		}
+	}
+}
+
+/// `[strip]`: what the strip over the pages shows besides their titles (owner, 2026-10-19).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StripInput {
+	/// The battery voltage: a `[[channel]]`.
+	pub volts: Reference,
 }
 
 /// Which way a reading has to go for an `[[alarm]]` to fire.
@@ -348,6 +380,7 @@ pub struct Input {
 	pub stopwatch: Option<StopwatchInput>,
 	/// In the file's order.
 	pub buttons: Vec<Button>,
+	pub strip: Option<StripInput>,
 }
 
 /// Parse a build input. Only the shape is checked here; whether the car has
@@ -464,6 +497,7 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 				"values" => {
 					at.takes(&strict::VALUES)?;
 					let title = at.string("title", "a string")?.unwrap_or("").trim().to_string();
+					let volts = at.boolean("volts")?;
 					let cells = table
 						.get("cells")
 						.and_then(Item::as_array)
@@ -475,10 +509,12 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 								.and_then(Reference::parse)
 						})
 						.collect::<Result<Vec<_>, _>>()?;
-					pages.push(PageInput::Values { title, cells });
+					pages.push(PageInput::Values { title, cells, volts });
 				}
 				"chart" => {
 					at.takes(&strict::CHART)?;
+					let title = at.string("title", "a string")?.unwrap_or("").trim().to_string();
+					let volts = at.boolean("volts")?;
 					let cell = Reference::parse(&string(table.get("cell"), &format!("page #{n}'s cell"))?)?;
 					// The board draws the chart in `f32`: an end past what one holds would reach the
 					// generated source as an `inf` the firmware's build cannot read.
@@ -492,7 +528,13 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 						)),
 					};
 					let (min, max) = (end("min")?, end("max")?);
-					pages.push(PageInput::Chart { cell, min, max });
+					pages.push(PageInput::Chart {
+						title,
+						cell,
+						min,
+						max,
+						volts,
+					});
 				}
 				other => {
 					return Err(Error::Parse(format!(
@@ -616,6 +658,10 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 		None => Vec::new(),
 		Some(item) => parse_buttons(item)?,
 	};
+	let strip = match doc.get("strip") {
+		None => None,
+		Some(item) => Some(parse_strip(item, text, &string)?),
+	};
 	Ok(Input {
 		vin,
 		language,
@@ -625,7 +671,19 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 		stalk,
 		stopwatch,
 		buttons,
+		strip,
 	})
+}
+
+/// `[strip]`, shape only: the channel the voltage is read from. Whether it is a `[[channel]]`
+/// is [`build`]'s question.
+fn parse_strip(item: &Item, source: &str, string: &impl Fn(Option<&Item>, &str) -> Result<String, Error>) -> Result<StripInput, Error> {
+	let table = item
+		.as_table()
+		.ok_or_else(|| Error::Parse("dash.toml: strip must be one [strip] table".to_string()))?;
+	Reader::new(source, table, "[strip]".to_string()).takes(&strict::STRIP)?;
+	let volts = Reference::parse(&string(table.get("volts"), "[strip] volts")?)?;
+	Ok(StripInput { volts })
 }
 
 /// `[[button]]`, whole — nothing in it is the car's: each a pin the board has free and an
@@ -848,6 +906,8 @@ pub enum Error {
 	Stalk(String),
 	/// A `[stopwatch]` the plan cannot honour.
 	Stopwatch(String),
+	/// A `[strip]` the plan cannot honour.
+	Strip(String),
 }
 
 impl fmt::Display for Error {
@@ -887,6 +947,7 @@ impl fmt::Display for Error {
 			}
 			Error::Stalk(why) => write!(f, "[stalk] {why}"),
 			Error::Stopwatch(why) => write!(f, "[stopwatch] {why}"),
+			Error::Strip(why) => write!(f, "[strip] {why}"),
 			Error::TooManyAlarms(n) => write!(
 				f,
 				"{n} [[alarm]] rules, and the board holds at most {MAX_ALARMS} — each rule's channels are read at full rate on every page"
@@ -942,11 +1003,38 @@ fn default_hz() -> f64 {
 	DEFAULT_HZ
 }
 
+/// One page. `title` is drawn in the strip over it, and a values page's is the name an alarm
+/// raises it by; `volts` is whether the strip shows the voltage there. A `plan.json` written
+/// before the strip has no chart titles and no `volts`: none, and on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Page {
-	Chart { channel: u16, min: f64, max: f64 },
-	Values { title: String, cells: Vec<u16> },
+	Chart {
+		#[serde(default)]
+		title: String,
+		channel: u16,
+		min: f64,
+		max: f64,
+		#[serde(default = "volts_on")]
+		volts: bool,
+	},
+	Values {
+		title: String,
+		cells: Vec<u16>,
+		#[serde(default = "volts_on")]
+		volts: bool,
+	},
+}
+
+fn volts_on() -> bool {
+	true
+}
+
+/// `[strip]`, resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Strip {
+	/// The battery voltage, by plan index.
+	pub volts: u16,
 }
 
 /// One alarm's rule, resolved. `specified` is indices into the plan's channels, one per
@@ -1046,6 +1134,9 @@ pub struct Plan {
 	/// In the file's order. A `plan.json` written before buttons existed has none.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub buttons: Vec<Button>,
+	/// A `plan.json` written before the strip existed has none.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub strip: Option<Strip>,
 }
 
 impl Plan {
@@ -1107,14 +1198,23 @@ impl Plan {
 			.pages
 			.iter()
 			.map(|p| match p {
-				Page::Chart { channel, min, max } => device::Page::Chart {
+				Page::Chart {
+					title,
+					channel,
+					min,
+					max,
+					volts,
+				} => device::Page::Chart {
+					title: text(title),
 					channel: *channel,
 					min: *min as f32,
 					max: *max as f32,
+					volts: *volts,
 				},
-				Page::Values { title, cells } => device::Page::Values {
+				Page::Values { title, cells, volts } => device::Page::Values {
 					title: text(title),
 					cells: Vec::leak(cells.clone()),
+					volts: *volts,
 				},
 			})
 			.collect();
@@ -1200,6 +1300,7 @@ impl Plan {
 					})
 					.collect(),
 			),
+			strip: self.strip.map(|s| device::StripPlan { volts: s.volts }),
 		}
 	}
 }
@@ -1542,6 +1643,29 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 			wanted.reference
 		)));
 	}
+	// The strip's voltage is one of the owner's `[[channel]]`s too: its rate and its row are
+	// theirs to choose, as the stopwatch's speed is.
+	let strip = match &input.strip {
+		None => None,
+		Some(wanted) => {
+			let volts = match index_by_row(&wanted.volts, &channels, declared, &index_of, &offered, units) {
+				Named::Channel(index) => index,
+				Named::Setpoint => return Err(Error::Strip(format!("volts {}", Named::setpoint_refusal(&wanted.volts)))),
+				Named::Unknown => return Err(Error::Strip(format!("volts {} is not in the [[channel]] list", wanted.volts))),
+			};
+			Some(Strip { volts })
+		}
+	};
+	// A page's `volts` says whether the strip shows the voltage there: without a `[strip]` there
+	// is no voltage, and the key would silently do nothing.
+	if strip.is_none()
+		&& let Some(at) = input.pages.iter().position(|p| p.volts().is_some())
+	{
+		return Err(Error::Parse(format!(
+			"dash.toml: page #{}: volts needs a [strip] — its volts is the channel the voltage is read from",
+			at + 1
+		)));
+	}
 	// The lever's fields are enumerations, which no `[[channel]]` can be: they join the plan
 	// as channels of their own, on no page, read only for the lever.
 	let stalk = match &input.stalk {
@@ -1623,14 +1747,24 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 			}),
 		};
 		match page {
-			PageInput::Values { title, cells } => {
+			PageInput::Values { title, cells, volts } => {
 				if cells.is_empty() || cells.len() > 4 {
 					return Err(Error::Page(n, format!("a values page holds 1 to 4 cells, not {}", cells.len())));
 				}
 				let cells = cells.iter().map(index).collect::<Result<Vec<_>, _>>()?;
-				pages.push(Page::Values { title: title.clone(), cells });
+				pages.push(Page::Values {
+					title: title.clone(),
+					cells,
+					volts: volts.unwrap_or(true),
+				});
 			}
-			PageInput::Chart { cell, min, max } => {
+			PageInput::Chart {
+				title,
+				cell,
+				min,
+				max,
+				volts,
+			} => {
 				// Compared as the board draws them, in `f32`: two ends a hair apart in the file can
 				// be one value there, and the board draws no trace for a scale with no height. A
 				// scale whose height overflows one draws every value on the floor.
@@ -1651,12 +1785,17 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 					return Err(Error::Page(n, format!("{cell} already has a chart page; one range per channel")));
 				}
 				pages.push(Page::Chart {
+					title: title.clone(),
 					channel,
 					min: *min,
 					max: *max,
+					volts: volts.unwrap_or(true),
 				});
 			}
 		}
+	}
+	if let (Some(strip), Some(wanted)) = (strip, &input.strip) {
+		strip_notes(strip, &wanted.volts, &channels, &pages, &mut notes);
 	}
 
 	// Alarms last: a rule names channels and a page, and both are resolved by now.
@@ -1679,13 +1818,14 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 				Named::Unknown => Err(refuse(format!("{r} is not in the [[channel]] list"))),
 			})
 			.collect::<Result<Vec<u16>, _>>()?;
-		// The page is named by title, and only a values page has one: a takeover shows
-		// cells, and a chart has one cell and no room to invert it.
+		// The page is named by title, and only a values page can be raised: a takeover shows
+		// cells, and a chart has one cell and no room to invert it. A chart's title is the
+		// strip's, never an alarm's.
 		let titled: Vec<(usize, &Vec<u16>)> = pages
 			.iter()
 			.enumerate()
 			.filter_map(|(p, page)| match page {
-				Page::Values { title, cells } if *title == wanted.page => Some((p, cells)),
+				Page::Values { title, cells, .. } if *title == wanted.page => Some((p, cells)),
 				_ => None,
 			})
 			.collect();
@@ -1693,7 +1833,7 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 			[one] => *one,
 			[] => {
 				return Err(refuse(format!(
-					"no values page is titled {:?} — a chart page has no title and cannot explain an alarm",
+					"no values page is titled {:?} — an alarm raises a values page, never a chart",
 					wanted.page
 				)));
 			}
@@ -1794,9 +1934,46 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 			stalk,
 			stopwatch,
 			buttons: input.buttons.clone(),
+			strip,
 		},
 		notes,
 	})
+}
+
+/// What the build says of the strip: which pages show the voltage, and a channel that does not
+/// read in volts, which the strip writes it as.
+fn strip_notes(strip: Strip, reference: &Reference, channels: &[Channel], pages: &[Page], notes: &mut Vec<String>) {
+	let shown: Vec<String> = pages
+		.iter()
+		.enumerate()
+		.filter(|(_, page)| page.volts() && !page.shows(strip.volts))
+		.map(|(at, _)| (at + 1).to_string())
+		.collect();
+	notes.push(match shown.as_slice() {
+		[] => format!("strip: volts {reference} is on no page — each has volts = false or shows it itself"),
+		[one] => format!("strip: volts {reference} on page {one}"),
+		many => format!("strip: volts {reference} on pages {}", many.join(", ")),
+	});
+	let unit = &channels[usize::from(strip.volts)].unit_text;
+	if unit != "V" {
+		notes.push(format!("strip: volts {reference} reads in {unit:?}, and the strip writes it as V"));
+	}
+}
+
+impl Page {
+	fn volts(&self) -> bool {
+		match self {
+			Page::Chart { volts, .. } | Page::Values { volts, .. } => *volts,
+		}
+	}
+
+	/// Whether the page shows the channel at `index` itself, as a cell or as its chart.
+	fn shows(&self, index: u16) -> bool {
+		match self {
+			Page::Chart { channel, .. } => *channel == index,
+			Page::Values { cells, .. } => cells.contains(&index),
+		}
+	}
 }
 
 /// `[stopwatch]` against the resolved channels: the speed is a `[[channel]]` whose scaling
@@ -2207,6 +2384,9 @@ pub fn to_rust(plan: &Plan) -> String {
 	if !plan.buttons.is_empty() {
 		plan_types.push("ButtonPlan");
 	}
+	if plan.strip.is_some() {
+		plan_types.push("StripPlan");
+	}
 	plan_types.sort_unstable();
 	let _ = writeln!(out, "use vag_dash_render::plan::{{{}}};", plan_types.join(", "));
 	if plan.stalk.is_some() {
@@ -2243,9 +2423,13 @@ pub fn to_rust(plan: &Plan) -> String {
 	};
 	// No buttons is `&[]`, so the source names neither `ButtonPlan` nor `Command`.
 	let buttons = if plan.buttons.is_empty() { "&[]" } else { "&BUTTONS" };
+	let strip = match &plan.strip {
+		None => "None".to_string(),
+		Some(s) => format!("Some(StripPlan {{ volts: {} }})", s.volts),
+	};
 	let _ = writeln!(
 		out,
-		"pub static PLAN: Plan = Plan {{ vin: {:?}, language: {:?}, units: &UNITS, channels: &CHANNELS, pages: &PAGES, alarms: &ALARMS, stalk: {stalk}, stopwatch: {stopwatch}, buttons: {buttons} }};",
+		"pub static PLAN: Plan = Plan {{ vin: {:?}, language: {:?}, units: &UNITS, channels: &CHANNELS, pages: &PAGES, alarms: &ALARMS, stalk: {stalk}, stopwatch: {stopwatch}, buttons: {buttons}, strip: {strip} }};",
 		plan.vin, plan.language
 	);
 	let _ = writeln!(out);
@@ -2295,11 +2479,22 @@ pub fn to_rust(plan: &Plan) -> String {
 	let _ = writeln!(out, "static PAGES: [Page; {}] = [", plan.pages.len());
 	for (i, p) in plan.pages.iter().enumerate() {
 		match p {
-			Page::Chart { channel, min, max } => {
-				let _ = writeln!(out, "\tPage::Chart {{ channel: {channel}, min: {}, max: {} }},", float(*min), float(*max));
+			Page::Chart {
+				title,
+				channel,
+				min,
+				max,
+				volts,
+			} => {
+				let _ = writeln!(
+					out,
+					"\tPage::Chart {{ title: {title:?}, channel: {channel}, min: {}, max: {}, volts: {volts} }},",
+					float(*min),
+					float(*max)
+				);
 			}
-			Page::Values { title, .. } => {
-				let _ = writeln!(out, "\tPage::Values {{ title: {title:?}, cells: &CELLS_{i} }},");
+			Page::Values { title, volts, .. } => {
+				let _ = writeln!(out, "\tPage::Values {{ title: {title:?}, cells: &CELLS_{i}, volts: {volts} }},");
 			}
 		}
 	}
@@ -2547,7 +2742,7 @@ pub fn resolve(inputs: Inputs) -> anyhow::Result<Resolved> {
 }
 
 /// The units a build input reads: its channels and their specified values, the stalk's
-/// read and its cruise status, the stopwatch's speed. A page or an alarm names a channel
+/// read and its cruise status, the stopwatch's speed, the strip's voltage. A page or an alarm names a channel
 /// from that list, so the channels are the whole of it — what has to have had its
 /// channels read before the plan can be built, and nothing else.
 pub fn referenced_units(input: &Input) -> std::collections::BTreeSet<u16> {
@@ -2562,6 +2757,9 @@ pub fn referenced_units(input: &Input) -> std::collections::BTreeSet<u16> {
 	}
 	if let Some(stopwatch) = &input.stopwatch {
 		units.insert(stopwatch.speed.request());
+	}
+	if let Some(strip) = &input.strip {
+		units.insert(strip.volts.request());
 	}
 	units
 }
@@ -2751,8 +2949,11 @@ mod tests {
 				marks: Vec::new(),
 			}),
 			buttons: Vec::new(),
+			strip: Some(StripInput {
+				volts: parse("710:IDE00018"),
+			}),
 		};
-		assert_eq!(referenced_units(&input), [ENGINE, GEARBOX, 0x70C, 0x713].into());
+		assert_eq!(referenced_units(&input), [ENGINE, GEARBOX, 0x70C, 0x710, 0x713].into());
 		let smallest = self::input(&["01:F423"], &values_page(&["01:F423"]));
 		assert_eq!(referenced_units(&smallest), [ENGINE].into());
 
@@ -3098,7 +3299,7 @@ mod tests {
 				.plan
 				.pages
 				.iter()
-				.any(|p| matches!(p, Page::Values { title, cells } if title == "B" && cells == &vec![0]))
+				.any(|p| matches!(p, Page::Values { title, cells, .. } if title == "B" && cells == &vec![0]))
 		);
 		assert_eq!(built.plan.alarms[0].channels, vec![0]);
 	}
@@ -3162,12 +3363,22 @@ mod tests {
 		assert_eq!(
 			device.pages,
 			[
-				DevicePage::Values { title: "A", cells: &[0, 1] },
-				DevicePage::Values { title: "B", cells: &[2] },
+				DevicePage::Values {
+					title: "A",
+					cells: &[0, 1],
+					volts: true
+				},
+				DevicePage::Values {
+					title: "B",
+					cells: &[2],
+					volts: true
+				},
 				DevicePage::Chart {
+					title: "",
 					channel: 0,
 					min: 0.0,
-					max: 10.0
+					max: 10.0,
+					volts: true
 				},
 			]
 		);
@@ -3324,7 +3535,8 @@ mod tests {
 			built.plan.pages,
 			vec![Page::Values {
 				title: "T".to_string(),
-				cells: vec![0, 1]
+				cells: vec![0, 1],
+				volts: true
 			}]
 		);
 	}
@@ -3510,7 +3722,7 @@ mod tests {
 		assert!(rust.contains("language: \"ru\""), "{rust}");
 		assert!(rust.contains("did: 0xF405, bit_offset: 0, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: -40.0, decimals: 0, unit_text: \"°C\", label: \"ОЖ\", proven: false, hz: 2.0"), "{rust}");
 		assert!(rust.contains("static CELLS_0: [u16; 1] = [0];"), "{rust}");
-		assert!(rust.contains("Page::Values { title: \"T\", cells: &CELLS_0 }"), "{rust}");
+		assert!(rust.contains("Page::Values { title: \"T\", cells: &CELLS_0, volts: true }"), "{rust}");
 		assert!(rust.contains("do not commit"), "{rust}");
 	}
 
@@ -3751,7 +3963,10 @@ mod tests {
 			rust.contains("use vag_dash_render::alarm::{Alarm, ChannelId, Direction, PageId, Rule};"),
 			"{rust}"
 		);
-		assert!(rust.contains("alarms: &ALARMS, stalk: None, stopwatch: None, buttons: &[] }"), "{rust}");
+		assert!(
+			rust.contains("alarms: &ALARMS, stalk: None, stopwatch: None, buttons: &[], strip: None }"),
+			"{rust}"
+		);
 		assert!(
 			rust.contains("static ALARM_CHANNELS_1: [ChannelId; 2] = [ChannelId(1), ChannelId(0)];"),
 			"{rust}"
@@ -3786,7 +4001,7 @@ mod tests {
 		assert_eq!(refused(&alarm(&[], "A", "below", 0.0, 1.0)), "alarm #1: watches no channels");
 		assert_eq!(
 			refused(&alarm(&["01:IDE00001"], "NOPE", "below", 0.0, 1.0)),
-			"alarm #1: no values page is titled \"NOPE\" — a chart page has no title and cannot explain an alarm"
+			"alarm #1: no values page is titled \"NOPE\" — an alarm raises a values page, never a chart"
 		);
 		assert_eq!(
 			refused(&format!(
@@ -4230,6 +4445,149 @@ mod tests {
 		assert!(refused.contains("zero_at_rest needs a [stopwatch]"), "{refused}");
 	}
 
+	/// The fixture's voltage: a `[[channel]]` (`01:IDE00011`) on no page of its own, a titled
+	/// chart of another channel with the voltage off, and a values page with it as a cell.
+	const STRIP: &str = "[strip]\nvolts = \"01:IDE00011\"\n";
+	const SPEED_CHART: &str = "[[page]]\nkind = \"chart\"\ntitle = \"Speed\"\ncell = \"01:IDE00010\"\nmin = 0\nmax = 250\nvolts = false\n";
+	const VOLTS_PAGE: &str = "[[page]]\nkind = \"values\"\ntitle = \"Volts\"\ncells = [\"01:IDE00011\", \"01:IDE00001\"]\n";
+
+	/// Owner, 2026-10-19: the battery voltage in a strip over the pages, beside their titles.
+	#[test]
+	fn the_strip_reaches_both_plans_with_the_pages_titles_and_their_volts() {
+		let built = build_with_lever(&format!("{STRIP}{SPEED_CHART}{VOLTS_PAGE}")).unwrap();
+		assert_eq!(built.plan.strip, Some(Strip { volts: 2 }), "the [[channel]] it names");
+		assert_eq!(
+			built.plan.pages[1],
+			Page::Chart {
+				title: "Speed".into(),
+				channel: 1,
+				min: 0.0,
+				max: 250.0,
+				volts: false
+			},
+			"a chart has a title now"
+		);
+		assert!(
+			built.plan.pages.iter().filter(|p| !matches!(p, Page::Chart { .. })).all(Page::volts),
+			"on unless a page says off"
+		);
+
+		let rust = to_rust(&built.plan);
+		for wanted in [
+			"strip: Some(StripPlan { volts: 2 }) };",
+			"Page::Chart { title: \"Speed\", channel: 1, min: 0.0, max: 250.0, volts: false },",
+			"Page::Values { title: \"Volts\", cells: &CELLS_2, volts: true },",
+			"use vag_dash_render::plan::{Channel, Page, Plan, StripPlan, Unit};",
+		] {
+			assert!(rust.contains(wanted), "{wanted}\n{rust}");
+		}
+		let device = built.plan.to_device();
+		assert_eq!(device.strip, Some(vag_dash_render::plan::StripPlan { volts: 2 }));
+		let shown: Vec<Option<u16>> = (0..3).map(|page| device.strip_volts(page)).collect();
+		assert_eq!(
+			shown,
+			[Some(2), None, None],
+			"page 1 shows it; the chart has it off; page 3 has it as a cell"
+		);
+		assert_eq!(device.strip(1, |_| None).title, "Speed");
+
+		assert!(built.notes.iter().any(|n| n == "strip: volts 01:IDE00011 on page 1"), "{:?}", built.notes);
+		assert!(
+			built
+				.notes
+				.iter()
+				.any(|n| n == "strip: volts 01:IDE00011 reads in \"°C\", and the strip writes it as V"),
+			"the fixture's rows are all °C: {:?}",
+			built.notes
+		);
+		let json = built.plan.to_json();
+		assert_eq!(Plan::from_json(&json).unwrap(), built.plan);
+	}
+
+	#[test]
+	fn without_a_strip_the_plan_has_none_and_a_pages_volts_is_refused() {
+		let built = build_with_lever("").unwrap();
+		assert_eq!(built.plan.strip, None);
+		assert!(to_rust(&built.plan).contains("strip: None };"));
+		assert!(!built.notes.iter().any(|n| n.starts_with("strip:")), "{:?}", built.notes);
+
+		for volts in ["true", "false"] {
+			let page = format!("[[page]]\nkind = \"values\"\ncells = [\"01:IDE00001\"]\nvolts = {volts}\n");
+			let why = build_with_lever(&page).unwrap_err().to_string();
+			assert_eq!(
+				why, "dash.toml: page #2: volts needs a [strip] — its volts is the channel the voltage is read from",
+				"{volts}"
+			);
+		}
+	}
+
+	#[test]
+	fn the_strips_volts_is_a_channel_of_the_input() {
+		let why = build_with_lever("[strip]\nvolts = \"01:IDE00013\"\n").unwrap_err().to_string();
+		assert_eq!(why, "[strip] volts 01:IDE00013 is not in the [[channel]] list");
+		// The same row spelled by its identifier is the same channel.
+		let built = build_with_lever("[strip]\nvolts = \"01:3002\"\n").unwrap();
+		assert_eq!(built.plan.strip, Some(Strip { volts: 2 }));
+	}
+
+	#[test]
+	fn the_strip_is_one_table_with_volts_and_a_pages_volts_is_true_or_false() {
+		let text = |extra: &str| {
+			format!(
+				"vin = \"TESTVIN0000000001\"\n[[channel]]\nref = \"01:IDE00001\"\n{}{extra}",
+				values_page(&["01:IDE00001"])
+			)
+		};
+		assert_eq!(
+			parse_input(&text("[strip]\n")).unwrap_err().to_string(),
+			"dash.toml: [strip] volts is missing or not a string"
+		);
+		assert_eq!(
+			parse_input(&text("[[strip]]\nvolts = \"01:IDE00001\"\n")).unwrap_err().to_string(),
+			"dash.toml: strip must be one [strip] table"
+		);
+		let parsed = parse_input(&text("[strip]\nvolts = \"01:IDE00001\"\n")).unwrap();
+		assert_eq!(
+			parsed.strip,
+			Some(StripInput {
+				volts: Reference::parse("01:IDE00001").unwrap()
+			})
+		);
+		let why = parse_input(&text("").replace("cells =", "volts = \"yes\"\ncells ="))
+			.unwrap_err()
+			.to_string();
+		assert!(why.ends_with("[[page]] 1: volts must be true or false, not a string"), "{why}");
+	}
+
+	#[test]
+	fn an_alarm_never_raises_a_chart_whatever_its_title() {
+		let alarm = "[[alarm]]\nchannels = [\"01:IDE00010\"]\npage = \"Speed\"\ndirection = \"above\"\ntrip = 200\nrelease = 190\n";
+		let why = build_with_lever(&format!("{SPEED_CHART}{STRIP}{alarm}")).unwrap_err().to_string();
+		assert_eq!(
+			why,
+			"alarm #1: no values page is titled \"Speed\" — an alarm raises a values page, never a chart"
+		);
+	}
+
+	/// A `plan.json` written before the strip: no `strip`, no chart titles, no `volts`.
+	#[test]
+	fn a_plan_json_from_before_the_strip_reads_as_no_strip_and_volts_on() {
+		let built = build_with_lever(&format!("{STRIP}{SPEED_CHART}")).unwrap();
+		let mut json: serde_json::Value = serde_json::from_str(&built.plan.to_json()).unwrap();
+		json.as_object_mut().unwrap().remove("strip");
+		for page in json["pages"].as_array_mut().unwrap() {
+			let page = page.as_object_mut().unwrap();
+			page.remove("volts");
+			if page["kind"] == "chart" {
+				page.remove("title");
+			}
+		}
+		let old = Plan::from_json(&json.to_string()).unwrap();
+		assert_eq!(old.strip, None);
+		assert!(old.pages.iter().all(Page::volts));
+		assert!(matches!(&old.pages[1], Page::Chart { title, .. } if title.is_empty()));
+	}
+
 	#[test]
 	fn zero_at_rest_is_true_or_false() {
 		let text = "vin = \"TESTVIN0000000001\"\n[[channel]]\nref = \"01:IDE00001\"\nzero_at_rest = \"yes\"\n";
@@ -4537,7 +4895,7 @@ mod tests {
 		build_with_lever_and(&LEVER.replacen("01:2001", "75A:4C22", 1), beside).expect("another answer");
 	}
 
-	/// The generated source of a plan with a lever, a stopwatch and buttons, checked in and
+	/// The generated source of a plan with a lever, a stopwatch, buttons and a strip, checked in and
 	/// compiled by `tests/generated_plan.rs` under `deny(warnings)`: CI builds the firmware on
 	/// an empty plan, so nothing else ever compiles the `[stalk]` / `[stopwatch]` /
 	/// `[[button]]` half of `to_rust`. Built from this module's made-up fixture.
@@ -4549,7 +4907,11 @@ mod tests {
 	fn the_generated_source_of_a_lever_plan_is_the_one_checked_in() {
 		// The rocker on the ladder with unbounded states, so their literals are compiled too.
 		let lever = LEVER.replacen("\"Rocker\"", "\"Messy\"", 1);
-		let built = build_with_lever(&format!("{lever}{}{EVERY_ACTION}", WATCH.replacen("0.0", "0.0271", 1))).unwrap();
+		let built = build_with_lever(&format!(
+			"{lever}{}{EVERY_ACTION}{STRIP}{SPEED_CHART}",
+			WATCH.replacen("0.0", "0.0271", 1)
+		))
+		.unwrap();
 		let rust = to_rust(&built.plan);
 		// The generator's header names a VIN and says not to commit; the fixture says what it is.
 		let body = rust.splitn(3, '\n').nth(2).expect("a header of two lines");
@@ -4611,7 +4973,7 @@ mod tests {
 		// A plan without either says so, and names nothing it does not use.
 		let bare = build_with_lever("").unwrap();
 		let rust = to_rust(&bare.plan);
-		assert!(rust.contains("stalk: None, stopwatch: None, buttons: &[] };"), "{rust}");
+		assert!(rust.contains("stalk: None, stopwatch: None, buttons: &[], strip: None };"), "{rust}");
 		assert!(
 			rust.contains("use vag_dash_render::plan::{Channel, Page, Plan, Unit};") && !rust.contains("States"),
 			"{rust}"
@@ -4769,7 +5131,7 @@ mod tests {
 		for wanted in [
 			"use vag_dash_render::control::Command;",
 			"use vag_dash_render::plan::{ButtonPlan, Channel, Page, Plan, StopwatchPlan, Unit};",
-			"stopwatch: Some(StopwatchPlan { speed: 1, km_h_per_unit: 0.0, marks: &MARKS }), buttons: &BUTTONS };",
+			"stopwatch: Some(StopwatchPlan { speed: 1, km_h_per_unit: 0.0, marks: &MARKS }), buttons: &BUTTONS, strip: None };",
 			"static BUTTONS: [ButtonPlan; 3] = [\n\tButtonPlan { pin: 3, action: Command::Next },\n\tButtonPlan { pin: 4, action: Command::Previous },\n\tButtonPlan { pin: 5, action: Command::Stopwatch },\n];",
 		] {
 			assert!(rust.contains(wanted), "{wanted}\n{rust}");
@@ -4791,7 +5153,7 @@ mod tests {
 		assert!(!json.contains("buttons"), "an old reader sees the plan it knew: {json}");
 		assert!(Plan::from_json(&json).unwrap().buttons.is_empty());
 		let rust = to_rust(&bare.plan);
-		assert!(rust.contains("buttons: &[] };"), "{rust}");
+		assert!(rust.contains("buttons: &[], strip: None };"), "{rust}");
 		assert!(
 			!rust.contains("Command") && !rust.contains("ButtonPlan"),
 			"nothing imported unused: {rust}"
