@@ -496,6 +496,8 @@ impl Replay {
 		let number = page + 1;
 		match self.plan.pages.get(usize::from(page)) {
 			Some(Page::Values { title, .. }) => format!("page {number} \"{title}\""),
+			// A chart's title is the strip's (`dash.toml`'s `title`); without one, the channel says what it is.
+			Some(Page::Chart { title, .. }) if !title.is_empty() => format!("page {number} \"{title}\""),
 			Some(Page::Chart { channel, .. }) => format!("page {number} (chart of {})", self.channel_name(*channel)),
 			None => format!("page {number}"),
 		}
@@ -901,6 +903,40 @@ mod tests {
 		strip: Some(StripPlan { volts: 4 }),
 		..PLAN
 	};
+
+	/// A chart is named in the log by its title when it has one, by its channel otherwise.
+	#[test]
+	fn the_log_names_a_chart_by_its_title() {
+		static CHART_PAGES: [Page; 3] = [
+			Page::Values {
+				title: "MAIN",
+				cells: &[0, 1],
+				volts: true,
+			},
+			Page::Chart {
+				title: "BOOST",
+				channel: 2,
+				min: -5.0,
+				max: 5.0,
+				volts: true,
+			},
+			Page::Chart {
+				title: "",
+				channel: 3,
+				min: -5.0,
+				max: 5.0,
+				volts: true,
+			},
+		];
+		static CHARTS: Plan = Plan {
+			pages: &CHART_PAGES,
+			alarms: &[],
+			..PLAN
+		};
+		let replay = Replay::new(&CHARTS, vec![None; 4], vec![], 0, 1_000).unwrap();
+		assert_eq!(replay.page_name(1), "page 2 \"BOOST\"");
+		assert_eq!(replay.page_name(2), "page 3 (chart of D (01:1004))");
+	}
 
 	/// The strip's voltage is read with the page on the glass and drawn over it, as on the board.
 	#[test]

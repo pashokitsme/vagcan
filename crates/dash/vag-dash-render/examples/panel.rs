@@ -16,7 +16,7 @@
 use embedded_graphics::geometry::Size;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics_simulator::{BinaryColorTheme, OutputSettingsBuilder, SimulatorDisplay};
-use vag_dash_render::{Board, Cell, Faults, Frame, Links, PANEL, Strip, Theme, Volts, draw, draw_page};
+use vag_dash_render::{Board, Cell, Deviation, Faults, Frame, Links, PANEL, Strip, Theme, Volts, draw, draw_page};
 
 fn main() {
 	let dir = std::env::args().nth(1).unwrap_or_else(|| ".".into());
@@ -131,6 +131,12 @@ fn main() {
 			failing_now: false,
 		}),
 	};
+	let shot_with = |name: &str, frame: &Frame<'_>, strip: &Strip<'_>, board: &Board| {
+		let mut display = SimulatorDisplay::<BinaryColor>::new(size);
+		let report = draw_page(frame, strip, board, &Theme::bold_mono(), &mut display);
+		display.to_rgb_output_image(&settings).save_png(format!("{dir}/{name}.png")).unwrap();
+		println!("{name:<28} {report:?}");
+	};
 	let strip_shot = |name: &str, frame: &Frame<'_>, strip: &Strip<'_>| {
 		let mut display = SimulatorDisplay::<BinaryColor>::new(size);
 		let report = draw_page(frame, strip, &board, &Theme::bold_mono(), &mut display);
@@ -169,4 +175,28 @@ fn main() {
 		volts: Volts::Shown(None),
 	};
 	strip_shot("14-strip-no-answer", &Frame::Values { cells: &temps_strip }, &unanswered);
+
+	// 9. A drive page under the strip with a host on the cable and one over BLE: the second
+	// icon stands beside the rightmost number. `128` fits left of the icons and slides there;
+	// `-3.4` — four characters — fits at no step, stays, and the report says `icon_overlap`.
+	let both = Board {
+		links: Links { usb: true, ble: true },
+		..board
+	};
+	let drive = |last: Cell<'static>| {
+		[
+			Cell::new("СКОРОСТЬ", Some(87.0), "km/h", 0),
+			Cell::new("ОБОРОТЫ", Some(2840.0), "", 0),
+			Cell::new("НАДДУВ", Some(1.42), "bar", 2).with_deviation(Deviation::Value(-0.06)),
+			last,
+		]
+	};
+	let ride = Strip {
+		title: "ЕДЕМ",
+		volts: Volts::Shown(Some(13.9)),
+	};
+	let slid = drive(Cell::new("СКОРОСТЬ", Some(128.0), "km/h", 0).with_deviation(Deviation::Value(-2.0)));
+	shot_with("15-strip-two-icons-slid", &Frame::Values { cells: &slid }, &ride, &both);
+	let stays = drive(Cell::new("УСКОРЕНИЕ", Some(-3.4), "m/s2", 1).with_deviation(Deviation::Value(-0.2)));
+	shot_with("16-strip-two-icons-overlap", &Frame::Values { cells: &stays }, &ride, &both);
 }

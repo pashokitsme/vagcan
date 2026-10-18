@@ -78,6 +78,9 @@ pub struct Report {
 	/// panel simply had no degree sign on it. Text that vanishes is worse than
 	/// text that overruns, because nothing on the screen says it happened.
 	pub glyph_missing: bool,
+	/// Something in the rightmost cell stands beside the link icons and had no room left of
+	/// them, even slid to the cell's left edge: drawn anyway, and it runs into them.
+	pub icon_overlap: bool,
 }
 
 /// A stack buffer for one formatted string.
@@ -919,7 +922,29 @@ where
 	let inner = cell_w.saturating_sub(PAD * 2);
 	let icons = icon_box(links, width);
 
-	let layout = row_layout(cells, theme, inner, height, &mut report);
+	let mut layout = row_layout(cells, theme, inner, height, &mut report);
+	// The icons stand in the rightmost cell's top-right corner. One stands beside the label
+	// alone, which is narrowed for it; a second reaches the number's rows, and under the status
+	// strip the number stands higher still (review, 2026-10-19: `6500` ran 11 rows into the BLE
+	// rune). Where they stand beside the number, the row is laid out again with the rightmost
+	// number's room ending before them — the row takes one face, so the whole row comes down a
+	// step — and taken only if the number then fits there. Four characters do not, at any step
+	// of the ladder in a quarter of the panel: that number stays where it was, and
+	// `Report::icon_overlap` says it collides (`Room::centre`).
+	if let Some(icons) = icons
+		&& layout.tiered
+		&& beside(icons, layout.band.0, layout.band.1)
+	{
+		let left = ((cells.len() as u32 - 1) * cell_w + PAD) as i32;
+		let room = (icons.top_left.x - ICON_CLEARANCE - left).max(0) as u32;
+		let last = number(&cells[cells.len() - 1]);
+		let mut narrowed = Report::default();
+		let again = row_layout_in(cells, theme, inner, room, height, &mut narrowed);
+		if measure(&theme.numerals[layout.step], last.as_str()) > room && measure(&theme.numerals[again.step], last.as_str()) <= room {
+			report = narrowed;
+			layout = again;
+		}
+	}
 	if layout.step > 0 {
 		report.value_shrunk = true;
 	}
@@ -962,7 +987,10 @@ where
 			target,
 			&mut report,
 		);
-		draw_value(cell, centre, inner, height, theme, ink, &layout, target, &mut report);
+		// The rightmost cell's lines stay left of the icons where they stand beside them.
+		let beside = if i + 1 == cells.len() { icons } else { None };
+		let room = Room { left, icons: beside };
+		draw_value(cell, centre, inner, height, theme, ink, &layout, room, target, &mut report);
 	}
 	// Last, over the rightmost column's ground: dark on an alarmed one, or they vanish.
 	let ink = right_column_ground(&Frame::Values { cells }).invert();
@@ -1012,12 +1040,19 @@ struct RowLayout {
 /// means anything, so the eye reads the odd cell as the important one — exactly
 /// backwards on a panel whose whole job is to make the important cell obvious.
 fn row_layout(cells: &[Cell<'_>], theme: &Theme, inner: u32, height: u32, report: &mut Report) -> RowLayout {
+	row_layout_in(cells, theme, inner, inner, height, report)
+}
+
+/// [`row_layout`], with the rightmost cell's number given `last_inner` columns rather than
+/// `inner`: what the link icons leave it where they stand beside it.
+fn row_layout_in(cells: &[Cell<'_>], theme: &Theme, inner: u32, last_inner: u32, height: u32, report: &mut Report) -> RowLayout {
 	// First ask what the numbers alone need. Stacking the unit takes it out of
 	// the width competition entirely, so this is also the best face available
 	// if the three tiers turn out to fit.
 	let mut stacked_step = 0usize;
-	for cell in cells {
-		let (s, _, _) = fit(&theme.numerals, number(cell).as_str(), 0, inner);
+	for (i, cell) in cells.iter().enumerate() {
+		let room = if i + 1 == cells.len() { last_inner } else { inner };
+		let (s, _, _) = fit(&theme.numerals, number(cell).as_str(), 0, room);
 		stacked_step = stacked_step.max(s);
 	}
 
@@ -1183,6 +1218,45 @@ where
 	}
 }
 
+/// Whether ink on rows `top..=bottom` stands beside the icons' box.
+fn beside(icons: Rectangle, top: i32, bottom: i32) -> bool {
+	top < icons.top_left.y + icons.size.height as i32 && bottom >= icons.top_left.y
+}
+
+/// What a cell's lines may not cross: its left edge, and — in the rightmost cell — the link
+/// icons, where they stand.
+#[derive(Debug, Clone, Copy)]
+struct Room {
+	/// The first column a line may use: the cell's, less its padding.
+	left: i32,
+	/// The icons' box, in the rightmost cell while a host is connected.
+	icons: Option<Rectangle>,
+}
+
+impl Room {
+	/// The centre for a line `w` wide wanted at `centre`, whose ink spans rows `top..=bottom`.
+	///
+	/// A line beside the icons ends [`ICON_CLEARANCE`] left of them, slid only as far as it
+	/// must — the rule a label in the narrowed column follows (`draw_label`). A line with no
+	/// room left of them even at the cell's left edge is not moved: it stays over its label and
+	/// under its neighbours' level, runs into the icons, and [`Report::icon_overlap`] says so.
+	/// Half a slide would still collide and no longer line up.
+	fn centre(&self, centre: i32, w: i32, top: i32, bottom: i32, report: &mut Report) -> i32 {
+		let Some(icons) = self.icons else {
+			return centre;
+		};
+		let right = icons.top_left.x - ICON_CLEARANCE;
+		if !beside(icons, top, bottom) || centre - w / 2 + w <= right {
+			return centre;
+		}
+		if right - w < self.left {
+			report.icon_overlap = true;
+			return centre;
+		}
+		right - w + w / 2
+	}
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_value<D>(
 	cell: &Cell<'_>,
@@ -1192,6 +1266,7 @@ fn draw_value<D>(
 	theme: &Theme,
 	ink: BinaryColor,
 	layout: &RowLayout,
+	room: Room,
 	target: &mut D,
 	report: &mut Report,
 ) where
@@ -1212,18 +1287,23 @@ fn draw_value<D>(
 		let value_h = numeral_height(numerals, text);
 		let (top, bottom) = layout.band;
 		let baseline = top + (bottom - top - value_h as i32) / 2 + value_h as i32;
-		draw_numerals(numerals, text, Point::new(centre - value_w as i32 / 2, baseline), ink, target);
+		let at = room.centre(centre, value_w as i32, baseline - value_h as i32, baseline, report);
+		draw_numerals(numerals, text, Point::new(at - value_w as i32 / 2, baseline), ink, target);
 		if let (Some(baseline), Some(text)) = (layout.dev_baseline, difference(cell)) {
-			draw_difference(&text, centre, baseline, theme, ink, target, report);
+			let (w, h) = (difference_width(theme, &text) as i32, text_height(&theme.label, "0") as i32);
+			let at = room.centre(centre, w, baseline - h, baseline, report);
+			draw_difference(&text, at, baseline, theme, ink, target, report);
 		}
 		if layout.with_unit && !cell.unit.is_empty() {
 			// Unit last, on the floor, centred under the number. It is the
 			// smallest thing on the panel and the one you look at least.
+			let (w, h) = (text_width(&theme.unit, cell.unit) as i32, text_height(&theme.unit, cell.unit) as i32);
+			let at = room.centre(centre, w, layout.unit_baseline - h, layout.unit_baseline, report);
 			if theme
 				.unit
 				.render_aligned(
 					cell.unit,
-					Point::new(centre, layout.unit_baseline),
+					Point::new(at, layout.unit_baseline),
 					VerticalPosition::Baseline,
 					HorizontalAlignment::Center,
 					FontColor::Transparent(ink),
@@ -2836,6 +2916,135 @@ mod tests {
 		};
 		let (display, _) = paged(&chart, &volts_only, &strip_board());
 		assert!(page_under_strip_is(&display, &with), "the chart as it is, under the strip");
+	}
+
+	/// A drive page: four cells, the last with a specified value, so its number stands high.
+	fn drive(last: Cell<'_>) -> [Cell<'_>; 4] {
+		[
+			Cell::new("СКОРОСТЬ", Some(87.0), "km/h", 0),
+			Cell::new("ОБОРОТЫ", Some(2840.0), "", 0),
+			Cell::new("НАДДУВ", Some(1.42), "bar", 2).with_deviation(Deviation::Value(-0.06)),
+			last,
+		]
+	}
+
+	/// The icons' column under the strip, with the clearance left of it, and the two icons drawn
+	/// alone where the page puts them.
+	fn icon_column_under_the_strip() -> (Rectangle, SimulatorDisplay<BinaryColor>) {
+		let down = Point::new(0, STRIP_ROWS as i32);
+		let icons = icon_box(BOTH, TALL.width).unwrap().translate(down);
+		let column = Rectangle::new(
+			icons.top_left - Point::new(ICON_CLEARANCE, 0),
+			icons.size + Size::new(ICON_CLEARANCE as u32, 0),
+		);
+		let mut alone = tall();
+		draw_icons(BOTH, TALL.width, BinaryColor::On, &mut alone.translated(down));
+		(column, alone)
+	}
+
+	/// Whether `display` holds nothing but the icons in their column and its clearance.
+	fn clear_of_icons(display: &SimulatorDisplay<BinaryColor>) -> bool {
+		let (column, alone) = icon_column_under_the_strip();
+		column.points().all(|p| display.get_pixel(p) == alone.get_pixel(p))
+	}
+
+	const DRIVE_STRIP: Strip<'static> = Strip {
+		title: "ЕДЕМ",
+		volts: Volts::Shown(Some(13.9)),
+	};
+
+	const BOTH_LINKS: Board = Board {
+		links: BOTH,
+		rates: None,
+		faults: None,
+	};
+
+	/// Review, 2026-10-19: under the strip, with a host on the cable and one over BLE, the
+	/// rightmost number ran into the second icon. A number that fits left of them goes there:
+	/// slid at the row's face, or with the row a step down when only that makes it fit.
+	#[test]
+	fn under_the_strip_two_icons_keep_a_number_that_fits_left_of_them_clear() {
+		// Slid: the row's face is the four-digit cells', and `128` fits beside the icons at it.
+		let slid = drive(Cell::new("СКОРОСТЬ", Some(128.0), "km/h", 0).with_deviation(Deviation::Value(-2.0)));
+		let (display, report) = paged(&Frame::Values { cells: &slid }, &DRIVE_STRIP, &BOTH_LINKS);
+		assert!(!report.icon_overlap, "{report:?}");
+		assert!(clear_of_icons(&display), "slid left of the icons");
+
+		// A step down: two-digit cells take the largest face, where `128` does not fit beside
+		// the icons; the row comes down one step and it does.
+		let short = [
+			Cell::new("ОЖ", Some(93.0), "°C", 0),
+			Cell::new("МАСЛО", Some(99.0), "°C", 0),
+			Cell::new("ВПУСК", Some(34.0), "°C", 0),
+			Cell::new("СКОРОСТЬ", Some(128.0), "km/h", 0).with_deviation(Deviation::Value(-2.0)),
+		];
+		let page = Frame::Values { cells: &short };
+		let (display, report) = paged(&page, &DRIVE_STRIP, &BOTH_LINKS);
+		assert!(!report.icon_overlap, "{report:?}");
+		assert!(clear_of_icons(&display), "a step down, left of the icons");
+		let (_, alone) = paged(&page, &DRIVE_STRIP, &Board::default());
+		assert!(!alone.value_shrunk && report.value_shrunk, "the row came down for the icons: {report:?}");
+	}
+
+	/// Four characters fit nowhere left of two icons — not at any step of the ladder in a
+	/// quarter of the panel. The number stays where the row puts it and the report says it
+	/// collides: the DRIVE page's `-3.4`, `6500` and `1.85`, each with its difference.
+	#[test]
+	fn under_the_strip_a_number_that_cannot_clear_two_icons_is_reported_and_not_moved() {
+		for last in [
+			Cell::new("УСКОРЕНИЕ", Some(-3.4), "m/s2", 1).with_deviation(Deviation::Value(-0.2)),
+			Cell::new("ОБОРОТЫ", Some(6500.0), "", 0).with_deviation(Deviation::Value(-120.0)),
+			Cell::new("НАДДУВ", Some(1.85), "bar", 2).with_deviation(Deviation::Value(-0.06)),
+		] {
+			let label = last.label;
+			let cells = drive(last);
+			let page = Frame::Values { cells: &cells };
+			let (with, report) = paged(&page, &DRIVE_STRIP, &BOTH_LINKS);
+			assert!(report.icon_overlap, "{label}: {report:?}");
+			// The number did not move: in its band, outside the icons, the page is the page with
+			// no host. (The label above it is narrowed for the icons, as it always was.)
+			let (without, _) = paged(&page, &DRIVE_STRIP, &Board::default());
+			let layout = row_layout(&cells, &Theme::bold_mono(), INNER, UNDER.height, &mut Report::default());
+			let down = STRIP_ROWS as i32;
+			let band = Rectangle::new(
+				Point::new(0, layout.band.0 + down),
+				Size::new(TALL.width, (layout.band.1 - layout.band.0) as u32),
+			);
+			let icons = icon_box(BOTH, TALL.width).unwrap().translate(Point::new(0, down));
+			assert!(
+				band
+					.points()
+					.filter(|p| !icons.contains(*p))
+					.all(|p| with.get_pixel(p) == without.get_pixel(p)),
+				"{label}: not slid half way"
+			);
+		}
+	}
+
+	/// One icon stands beside the label alone, which is narrowed already: nothing moves.
+	#[test]
+	fn under_the_strip_one_icon_moves_nothing() {
+		let cells = drive(Cell::new("ОБОРОТЫ", Some(6500.0), "", 0).with_deviation(Deviation::Value(-120.0)));
+		let strip = Strip {
+			title: "ЕДЕМ",
+			volts: Volts::Shown(Some(13.9)),
+		};
+		let page = Frame::Values { cells: &cells };
+		let ble = Board {
+			links: BLE,
+			..Board::default()
+		};
+		let (with, report) = paged(&page, &strip, &ble);
+		let (without, _) = paged(&page, &strip, &Board::default());
+		assert!(!report.icon_overlap, "{report:?}");
+		let icons = icon_box(BLE, TALL.width).unwrap().translate(Point::new(0, STRIP_ROWS as i32));
+		assert!(
+			TALL_BOX
+				.points()
+				.filter(|p| !icons.contains(*p))
+				.all(|p| with.get_pixel(p) == without.get_pixel(p)),
+			"outside the icon, the page is the page with no host"
+		);
 	}
 
 	#[test]

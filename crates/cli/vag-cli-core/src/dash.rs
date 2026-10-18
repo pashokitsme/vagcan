@@ -4950,7 +4950,7 @@ mod tests {
 		}
 	}
 
-	const GENERATED_HEADER: &str = "// `to_rust` on the test fixture of `src/dash.rs` (a lever, a stopwatch and buttons), not on\n// any car's data. Compiled by `tests/generated_plan.rs`. Do not edit by hand: rewrite it with\n// `BLESS=1 cargo test -p vag-cli-core generated_source`, then run the tests again.\n";
+	const GENERATED_HEADER: &str = "// `to_rust` on the test fixture of `src/dash.rs` (a lever, a stopwatch, buttons and a strip),\n// not on any car's data. Compiled by `tests/generated_plan.rs`. Do not edit by hand: rewrite it with\n// `BLESS=1 cargo test -p vag-cli-core generated_source`, then run the tests again.\n";
 
 	#[test]
 	fn the_lever_and_the_stopwatch_reach_plan_json_and_the_rust_source() {

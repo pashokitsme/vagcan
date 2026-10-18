@@ -55,7 +55,10 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 
 - **Values page**: up to 4 cells, each with a label, a value and a unit.
 - **Chart page**: one channel shown large, with its recent history on a fixed scale.
-- **Status strip**: a line across the top of a page with its `title` in the middle and the battery voltage (`[strip]`) on the left, `14.2V`. A page turns the voltage off with `volts = false`; a page that shows the voltage channel as a cell has none in its strip. A page with neither has no strip.
+- **Status strip**: a line across the top of a page: its `title` in the middle, the battery voltage on the left (`14.2V`).
+- **Strip voltage**: from the channel `[strip]` names. Off on a page with `volts = false`.
+- **No voltage twice**: a page that shows the voltage channel as a cell has none in its strip.
+- **No strip**: a page with no `title` and no voltage uses the whole panel.
 - **Pages** are set per car in `dash.toml` and switched with buttons on the board's pins (`[[button]]`) or with the cruise lever while cruise is off (`[stalk]`).
 - **No input**: with no `[stalk]` and no `next`/`previous` `[[button]]`, only `dashsim` or `dashcfg`'s `set page` turns the page. With no `[stalk]` and no `[[button]]` at all, only `dashsim` silences an alarm; otherwise it stays up until its channel answers in range again. The build says so.
 - **Alarms**: `[[alarm]]` rules in `dash.toml` watch channels on any page. Past the threshold — or, for a `kind = "drift"` rule, once a channel has held far enough from what its unit asked for — the board shows the rule's page with the offending cell inverted: blinking while the value is out, steady for the 2.5 s the page stays up after it is back. A press silences it until the value comes back.
