@@ -43,8 +43,8 @@
 //!   has answered, the bus task reads the gateway's list of units and each unit's stored codes
 //!   through the planner, in the background, never while the board's stopwatch is up or a host
 //!   holds its timing channel, each exchange ending 2 s from its start, the send included
-//!   ([`vag_dash_fw::faults`]). The panel draws the count as a triangle in the bottom-right
-//!   corner, `?` when there is no count; `state` says `faults=`.
+//!   ([`vag_dash_fw::faults`]). The panel draws the count beside a triangle at the status
+//!   strip's right end, `?` when there is no count; `state` says `faults=`.
 //!
 //! There is no Battery Service (0x180F). Phones show its level as the device's
 //! battery, and this board has no battery and no reading of the rail (the
@@ -604,7 +604,7 @@ fn set_visibility(v: Visibility) {
 	VISIBILITY.store(v as u8, Ordering::Relaxed);
 }
 
-/// Which hosts the board is serving, for the icons in the panel's corner: a host on the
+/// Which hosts the board is serving, for the icons at the status strip's right end: a host on the
 /// cable that said Hello ([`USB_LINKED`]), and a BLE central connected
 /// ([`Visibility::Connected`]), `dashcfg` included.
 fn links() -> vag_dash_render::Links {
@@ -3053,6 +3053,7 @@ async fn panel_task(
 					.stopwatch
 					.and_then(|plan| value_of(plan.speed).map(|value| value * plan.km_h_per_unit));
 				let (cells, count) = stopwatch::cells(&watch, speed, &saved, &words, &labels);
+				// Under a strip with no title or voltage, which holds the link icons and the badge.
 				draw_with(&Frame::Values { cells: &cells[..count] }, &board, &theme, framebuffer)
 			}
 			Page::Values { cells: indices, .. } => {

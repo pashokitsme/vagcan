@@ -6,7 +6,7 @@
 //! and, later, files CI can diff.
 //!
 //! Usage: `cargo run -p vag-dash-render --example panel -- <output directory>`, and `--tall`
-//! for the board's 256×64 (the status strip's pictures, 10 to 14, are laid out for it).
+//! for the board's 256×64 (the status strip's pictures, 10 to 21, are laid out for it).
 //!
 //! The values are stand-ins with the right shape, not readings from the car.
 //! Every channel named here is one the catalog declares for the reference car
@@ -16,6 +16,7 @@
 use embedded_graphics::geometry::Size;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics_simulator::{BinaryColorTheme, OutputSettingsBuilder, SimulatorDisplay};
+use vag_dash_render::stopwatch::{self, Labels, Stopwatch, Words};
 use vag_dash_render::{Board, Cell, Deviation, Faults, Frame, Links, PANEL, Strip, Theme, Volts, draw, draw_page};
 
 fn main() {
@@ -121,8 +122,7 @@ fn main() {
 	shot("9-chart-cold", &chart_short, &Theme::bold_mono());
 
 	// 8. The status strip over a page: the title in the middle, the voltage at the left, the
-	// page in the rows under it — with a BLE host and a fault count, so the icons and the
-	// badge show where they land.
+	// page in the rows under it — with a BLE host and a fault count at the strip's right end.
 	let board = Board {
 		links: Links { usb: false, ble: true },
 		rates: None,
@@ -167,7 +167,7 @@ fn main() {
 	strip_shot("11-strip-volts-is-a-cell", &Frame::Values { cells: &battery }, &no_volts);
 	// Under a title the chart's header drops its label and keeps its range and seconds.
 	strip_shot("12-strip-chart", &chart, &titled("НАДДУВ"));
-	// No title and no voltage: no strip, the page on the whole panel.
+	// No title and no voltage: the strip all the same, with the board's rune and badge in it.
 	strip_shot("13-strip-none", &Frame::Values { cells: &temps_strip }, &Strip::NONE);
 	// The voltage has not answered: a dash, never a zero.
 	let unanswered = Strip {
@@ -176,27 +176,54 @@ fn main() {
 	};
 	strip_shot("14-strip-no-answer", &Frame::Values { cells: &temps_strip }, &unanswered);
 
-	// 9. A drive page under the strip with a host on the cable and one over BLE: the second
-	// icon stands beside the rightmost number. `128` fits left of the icons and slides there;
-	// `-3.4` — four characters — fits at no step, stays, and the report says `icon_overlap`.
-	let both = Board {
-		links: Links { usb: true, ble: true },
-		..board
-	};
-	let drive = |last: Cell<'static>| {
-		[
-			Cell::new("СКОРОСТЬ", Some(87.0), "km/h", 0),
-			Cell::new("ОБОРОТЫ", Some(2840.0), "", 0),
-			Cell::new("НАДДУВ", Some(1.42), "bar", 2).with_deviation(Deviation::Value(-0.06)),
-			last,
-		]
-	};
+	// 9. The strip's right end for each thing the board says, over a drive page whose last cell
+	// is a four-character number: the page under the strip is the same picture in every one.
+	let drive = [
+		Cell::new("СКОРОСТЬ", Some(87.0), "km/h", 0),
+		Cell::new("ОБОРОТЫ", Some(2840.0), "", 0),
+		Cell::new("НАДДУВ", Some(1.42), "bar", 2).with_deviation(Deviation::Value(-0.06)),
+		Cell::new("ОБОРОТЫ", Some(6500.0), "", 0).with_deviation(Deviation::Value(-120.0)),
+	];
 	let ride = Strip {
 		title: "ЕДЕМ",
 		volts: Volts::Shown(Some(13.9)),
 	};
-	let slid = drive(Cell::new("СКОРОСТЬ", Some(128.0), "km/h", 0).with_deviation(Deviation::Value(-2.0)));
-	shot_with("15-strip-two-icons-slid", &Frame::Values { cells: &slid }, &ride, &both);
-	let stays = drive(Cell::new("УСКОРЕНИЕ", Some(-3.4), "m/s2", 1).with_deviation(Deviation::Value(-0.2)));
-	shot_with("16-strip-two-icons-overlap", &Frame::Values { cells: &stays }, &ride, &both);
+	let both = Links { usb: true, ble: true };
+	let said = |links, faults| Board { links, rates: None, faults };
+	let two = |failing_now| Some(Faults::Counted { stored: 2, failing_now });
+	let drive = Frame::Values { cells: &drive };
+	shot_with("15-strip-both-faults-2", &drive, &ride, &said(both, two(false)));
+	shot_with("16-strip-both-faults-2-failing", &drive, &ride, &said(both, two(true)));
+	shot_with("17-strip-both-faults-failed", &drive, &ride, &said(both, Some(Faults::Failed)));
+	shot_with("18-strip-nothing-connected", &drive, &ride, &said(Links::NONE, None));
+	shot_with(
+		"19-strip-usb-faults-12",
+		&drive,
+		&ride,
+		&said(
+			Links { usb: true, ble: false },
+			Some(Faults::Counted {
+				stored: 12,
+				failing_now: false,
+			}),
+		),
+	);
+	// The chart, and a page with no title and no voltage, with both hosts and the count.
+	shot_with("20-strip-chart-both-faults-2", &chart, &titled("НАДДУВ"), &said(both, two(false)));
+	shot_with("21-strip-untitled-both-faults-2", &drive, &Strip::NONE, &said(both, two(false)));
+	// The stopwatch page, as the board draws it: a strip with no title or voltage over it.
+	let marks = [60u16, 100, 150];
+	let labels = Labels::new(&marks);
+	let words = Words::of("ru");
+	let mut armed = Stopwatch::new(&marks, 0.01);
+	armed.sample(Some(0.0), 0);
+	armed.sample(Some(0.0), stopwatch::ARMING_HOLD_MS);
+	let saved = [(60u16, 5.43f32), (100, 9.87), (150, 18.4)];
+	let (row, count) = stopwatch::cells(&armed, Some(0.0), &saved, &words, &labels);
+	shot_with(
+		"22-stopwatch-both-faults-2-failing",
+		&Frame::Values { cells: &row[..count] },
+		&Strip::NONE,
+		&said(both, two(true)),
+	);
 }

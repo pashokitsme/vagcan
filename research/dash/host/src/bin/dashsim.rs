@@ -736,7 +736,8 @@ mod preview {
 
 	fn shot(name: &str, frame: &Frame<'_>, board: Board) -> Shot {
 		let mut canvas = Canvas::new(PANEL);
-		// The theme the firmware draws with (`vag-dash-fw`'s `panel_task`).
+		// The theme the firmware draws with (`vag-dash-fw`'s `panel_task`): the page under a strip
+		// with no title or voltage, the board's runes and badge at its right end.
 		let report = draw_with(frame, &board, &Theme::bold_mono(), &mut canvas);
 		Shot {
 			name: format!("preview-{name}"),
@@ -779,7 +780,8 @@ mod preview {
 		let two = [Cell::new("ОЖ", Some(93.0), "°C", 0), Cell::new("НАДДУВ", Some(1.82), "bar", 2)];
 		shots.push(shot("values2-links-usb-ble", &Frame::Values { cells: &two }, linked(BOTH)));
 
-		// The rightmost label fits its column alone and not beside the icons.
+		// The longest label a quarter of the panel holds, in the rightmost cell, under the strip's
+		// runes: they no longer take room from it.
 		let long = [
 			Cell::new("ОЖ", Some(93.0), "°C", 0),
 			Cell::new("НАДДУВ", Some(1.82), "bar", 2),
@@ -826,8 +828,9 @@ mod preview {
 		};
 		shots.push(shot("chart-boost-deviation-links-usb-ble", &chart_deviation, linked(BOTH)));
 
-		// The fault badge (`dash/20`) in the corner of every kind of page: counts of one, two
-		// and three digits, inverted for a code failing now, and `?` for a count that failed.
+		// The fault badge (`dash/20`) at the strip's right end over every kind of page: counts of
+		// one, two and three digits, inverted for a code failing now, and `?` for a count that
+		// failed.
 		let faulted = |links, stored, failing_now| Board {
 			links,
 			rates: None,
@@ -870,8 +873,8 @@ mod preview {
 			&Frame::Values { cells: &alarmed },
 			faulted(BOTH, 3, false),
 		));
-		// Over the alarmed cell's lit ground the badge takes the cell's colours, as the icons do
-		// (owner, 2026-09-27): failing now is a dark box with lit glyphs.
+		// The alarm inverts its cell under the strip; the badge stays on the strip's dark ground,
+		// failing now as a lit box with dark glyphs.
 		shots.push(shot(
 			"values4-alarm-faults-3-failing-links-usb-ble",
 			&Frame::Values { cells: &alarmed },
@@ -881,8 +884,8 @@ mod preview {
 		shots.push(shot("chart-boost-faults-100-links-usb-ble", &chart, faulted(BOTH, 100, false)));
 		shots.push(shot("chart-boost-faults-3-failing-links-none", &chart, faulted(Links::NONE, 3, true)));
 
-		// The stopwatch page (`dash/19`) under the badge: two marks, and three, the last
-		// finished run's times on show.
+		// The stopwatch page (`dash/19`) under its strip, which holds the runes and the badge: two
+		// marks, and three, the last finished run's times on show.
 		let words = Words::of("ru");
 		let two_marks: [u16; 2] = [60, 100];
 		let three_marks: [u16; 3] = [60, 100, 150];

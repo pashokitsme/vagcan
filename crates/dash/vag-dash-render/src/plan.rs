@@ -450,8 +450,8 @@ impl Plan {
 
 	/// What the strip over page `page` shows, `value_of` giving a channel's current reading:
 	/// the page's title and its voltage ([`Plan::strip_volts`]). A page the plan does not have
-	/// — the stopwatch's — has no strip. The board's panel and `dev recording dash` both draw
-	/// it from here.
+	/// — the stopwatch's — has no title or voltage ([`Strip::NONE`]). The board's panel and
+	/// `dev recording dash` both draw it from here.
 	pub fn strip(&self, page: usize, value_of: impl Fn(u16) -> Option<f32>) -> Strip<'static> {
 		let Some(at) = self.pages.get(page) else {
 			return Strip::NONE;
@@ -1548,7 +1548,7 @@ mod tests {
 				volts: Volts::Hidden
 			}
 		);
-		assert!(plan.strip(1, read).is_empty(), "no title and the voltage is the chart: no strip");
-		assert!(plan.strip(9, read).is_empty(), "the stopwatch's page is no plan page");
+		assert_eq!(plan.strip(1, read), Strip::NONE, "no title, and the voltage is the chart");
+		assert_eq!(plan.strip(9, read), Strip::NONE, "the stopwatch's page is no plan page");
 	}
 }

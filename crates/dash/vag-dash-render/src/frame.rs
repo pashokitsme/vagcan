@@ -120,11 +120,11 @@ pub enum Frame<'a> {
 
 /// The status strip across the top of a page (owner, 2026-10-19): the page's title in the
 /// middle and the battery voltage at the left, in the rows [`STRIP_ROWS`](crate::render::STRIP_ROWS)
-/// above the page, which is drawn in the rows under them. A strip with nothing to show is no
-/// strip, and the page keeps the whole panel ([`Strip::is_empty`]).
+/// above the page, which is drawn in the rows under them; the right end is the [`Board`]'s, its
+/// link runes and fault badge. Every values and chart page has one, the stopwatch page
+/// included ([`Strip::NONE`]); the adapter screen has none ([`crate::render::draw_page`]).
 ///
-/// Not part of [`Frame`], for the reason [`Board`] is not: every `Frame` literal stays valid,
-/// and the stopwatch page and the adapter screen, which no plan page is, draw none.
+/// Not part of [`Frame`], for the reason [`Board`] is not: every `Frame` literal stays valid.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Strip<'a> {
 	/// The page's `title`, as the plan wrote it; empty for none. On a chart page it replaces
@@ -146,40 +146,37 @@ pub enum Volts {
 }
 
 impl Strip<'_> {
-	/// No strip at all: no title and no voltage.
+	/// No title and no voltage: a strip that holds only what the board says about itself — the
+	/// stopwatch page's, and a plan page's that has neither.
 	pub const NONE: Strip<'static> = Strip {
 		title: "",
 		volts: Volts::Hidden,
 	};
-
-	/// Whether there is nothing to draw, so the page keeps every row of the panel.
-	pub fn is_empty(&self) -> bool {
-		self.title.is_empty() && self.volts == Volts::Hidden
-	}
 }
 
-/// What the board says about itself, drawn over whichever page is up.
+/// What the board says about itself, drawn at the right end of the strip over whichever page
+/// is up ([`crate::render::draw_page`]).
 ///
 /// Not part of [`Frame`], and on purpose: a page is built from the plan and the car's
 /// values, while these come from the board's own links — a different owner. It also keeps
 /// every `Frame` literal the firmware writes today valid: a field added to a variant
 /// would break each of them, and wiring these in is its own change. [`crate::draw`]
-/// draws with the default, which is nothing connected and no rates measured.
+/// draws none of it: the frame alone, with no strip.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Board {
-	/// Which hosts are connected. Drawn as icons in the top-right corner of the values
-	/// and chart pages; the adapter screen draws none, its `SLCAN` already says the
-	/// host is on the cable.
+	/// Which hosts are connected. Drawn as runes at the strip's right end, the plug left of the
+	/// Bluetooth rune; the adapter screen draws none, its `SLCAN` already says the host is on
+	/// the cable.
 	pub links: Links,
 	/// The bus traffic the adapter screen's main line shows. `None` until the board
 	/// measures it, and drawn as `--`, never as a zero.
 	pub rates: Option<Rates>,
-	/// The car's stored fault codes, counted once after boot. Drawn as a warning triangle
-	/// and the count in the bottom-right corner of the values and chart pages — alarm pages
-	/// and the stopwatch included — with `?` for the number when the count failed, and not
-	/// at all while there is no count or it is zero. In the colours of the cell under it, as
-	/// the link icons: dark on an alarmed rightmost cell's lit ground. The adapter screen
-	/// draws none, as it draws no link icons.
+	/// The car's stored fault codes, counted once after boot. Drawn as a warning triangle and
+	/// the count in the strip, left of the link runes, on every values and chart page — alarm
+	/// pages and the stopwatch included — with `?` for the number when the count failed, and
+	/// not at all while there is no count or it is zero. Always on the strip's dark ground: an
+	/// alarmed cell under the strip changes nothing in it. The adapter screen draws none, as it
+	/// draws no link runes.
 	pub faults: Option<Faults>,
 }
 
@@ -191,9 +188,8 @@ pub enum Faults {
 		/// Stored codes — confirmed, as `vagcan faults` counts them — across every unit that
 		/// answered. None stored draws no badge.
 		stored: u32,
-		/// At least one of them is failing now: the badge is drawn inverted against the cell
-		/// under it. Steady, never blinking of its own — blinking is an alarm's, and over an
-		/// alarmed cell the badge blinks with it.
+		/// At least one of them is failing now: the badge is drawn inverted, dark on a lit
+		/// ground. Steady, never blinking — blinking is an alarm's.
 		failing_now: bool,
 	},
 	/// No count could be made: on the board, the gateway gave no list of its units, a list the
