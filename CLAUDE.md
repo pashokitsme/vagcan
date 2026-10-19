@@ -98,7 +98,7 @@ biggest statics, and fails when statics (`.data`+`.bss`+`.noinit`) pass a ceilin
 falls under a floor. CI's `firmware` job runs it. The limits and what they were measured at
 live in the script and nowhere else.
 
-- A change to `vag-dash-fw`, or to a `no_std` crate it links (`vag-uds-*`, `vag-dash-render`),
+- A change to `vag-dash-fw`, or to a `no_std` crate it links (`vag-uds-*`, `vag-dash-render`, `vag-dash-core`),
   reports its static-RAM delta: run the script before and after.
 - Growth over 1 KB is flagged in the PR and justified.
 - Raising a limit is a change to `ram-budget.sh` with its reason beside it.
@@ -204,6 +204,8 @@ crates/            all Rust. Three families and the product.
     vag-data-db        SQLite cache over the parsed label files
   dash/              the OLED device, all of it — laptop side and board side.
     vag-dash-render    a Frame in, pixels out, on any DrawTarget
+    vag-dash-core      the board's pure modules and the frame/value core the board and the
+                       replay share; no_std
     vag-dash-ble       BLE client (btleplug): scan, pick, open a NUS pipe
     vag-dash-cfg       binary `dashcfg` — configures the dash over BLE
     vag-dash-wasm      the renderer as WebAssembly for `dev dash edit`'s page; built
