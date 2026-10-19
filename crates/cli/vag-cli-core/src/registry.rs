@@ -324,7 +324,14 @@ impl Summary {
 	/// The sentence a report gives for the read: what was written, for how many
 	/// units, and what the listed rows that brought nothing were.
 	pub fn detail(&self) -> String {
-		let mut detail = format!("{} channels for {} of {} unit{}", self.written, self.read, self.asked, plural(self.asked));
+		let mut detail = format!(
+			"{} channel{} for {} of {} unit{}",
+			self.written,
+			plural(self.written),
+			self.read,
+			self.asked,
+			plural(self.asked)
+		);
 		if self.not_channels > 0 {
 			detail.push_str(&format!("; {} listed rows are not channels", self.not_channels));
 		}
@@ -525,7 +532,7 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 		dropped += usize::from(rows.first_row_dropped);
 		// Said as each unit is done: the searches can take minutes, and a run that
 		// prints nothing for that long reads as hung.
-		progress.done(&format!("{odx}: {} channels", channels.len()));
+		progress.done(&format!("{odx}: {} channel{}", channels.len(), plural(channels.len())));
 		variants.insert(stem, channels);
 	}
 	if lossy > 0 {

@@ -1052,7 +1052,9 @@ fn glossary_command() -> Result<()> {
 		seeded.blank
 	);
 	println!(
-		"Write in the `{}` column and it wins over ODIS and VCDS wherever that \n         channel is shown. The `current` column is what it is called today and is \n         not read back. Change which column is used with `language` in {}.",
+		"Write in the `{}` column and it wins over ODIS and VCDS wherever that\n\
+         channel is shown. The `current` column is what it is called today and is\n\
+         not read back. Change which column is used with `language` in {}.",
 		language.code(),
 		config::path()?.display()
 	);
