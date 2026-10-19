@@ -134,6 +134,58 @@ use crate::plan::{self as poll, UnitIdentity};
 mod strict;
 use strict::Reader;
 
+/// Where a person finds the ids `dash.toml` names channels by. `watch`'s settings screen spells
+/// the setting and its value this way; a test in `vag-cli-diag`'s `watch` holds the two together.
+pub const FIND_IDS: &str = "find your car's ids with `vagcan watch`: press `,` and set \"Key at the end of each row\" to shown";
+
+/// The smallest `dash.toml` that builds: one value on one page. `<VIN>` is the car's.
+///
+/// One text for three readers: README's "Building the dash" shows it (a test holds the README
+/// to it), `dev dash build --help` prints it, and a build with no file answers with it.
+pub const SMALLEST_INPUT: &str = "vin = \"<VIN>\"
+
+[[channel]]
+ref = \"01:IDE00025\"    # coolant temperature: unit 01, channel id IDE00025
+
+[[page]]
+kind = \"values\"
+cells = [\"01:IDE00025\"]
+";
+
+/// The reference for every key of `dash.toml`, as a path in the repository.
+pub const REFERENCE_DOC: &str = "docs/dash/dash-toml.md";
+
+/// What a build with no `dash.toml` says: where to write one, the smallest one, and where every
+/// key is described.
+pub fn no_input(vin: &str, path: &Path) -> String {
+	format!(
+		"no dash.toml for {vin} yet. Write {}; the smallest one, one value on one page:\n\n{}\nEvery key: {REFERENCE_DOC} in the vagcan repository. To {FIND_IDS}.",
+		path.display(),
+		SMALLEST_INPUT.replace("<VIN>", vin)
+	)
+}
+
+/// What a build whose input is not at `path` says, without an errno (UX review, 2026-10-19).
+/// A path the build was `given` (`--input`) is a mistyped path, not a car with no file yet: it
+/// gets no starter.
+fn missing_input(vin: &str, path: &Path, given: bool) -> String {
+	if given {
+		format!("no file at {}", path.display())
+	} else {
+		no_input(vin, path)
+	}
+}
+
+/// What a build for a car with no record of its units says: the commands that write it, in one
+/// line. `units --identify` with no unit named, not `--identify <unit>`: that one is a sweep of
+/// one unit, and the record of every unit is what the build needs.
+pub fn no_record(vin: &str, record: &Path) -> String {
+	format!(
+		"no record of {vin}'s control units — connect to the car and run `vagcan units --identify` or `vagcan watch` once; either writes {}",
+		record.display()
+	)
+}
+
 /// Whether the board, which holds this number as an `f32`, holds it at all: finite here, and
 /// not an infinity once narrowed.
 fn fits_f32(v: f64) -> bool {
@@ -441,6 +493,16 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 	}
 
 	top.takes(&strict::TOP)?;
+	// `[channel]` for `[[channel]]`: TOML reads it as one table, which is not the list the
+	// build reads, so without this it was "no [[channel]]" under a channel in plain sight.
+	for name in ["channel", "page", "button"] {
+		if doc.get(name).is_some_and(Item::is_table) {
+			return Err(top.refuse(
+				name,
+				format!("[{name}] has one pair of brackets — write [[{name}]], two pairs: the file holds a list of them"),
+			));
+		}
+	}
 	let string = |item: Option<&Item>, what: &str| -> Result<String, Error> {
 		item
 			.and_then(Item::as_str)
@@ -1020,6 +1082,17 @@ pub enum Error {
 	NoResponseRule(u16),
 	/// The resolved variant does not declare it and nothing proved it.
 	Undeclared(Reference),
+	/// A channel's name where its id goes — `01:Engine Coolant Temperature`, or a text with a
+	/// space no row is named. `ids` are the rows on that unit carrying that name that a numeric
+	/// cell takes, each spelled the way the build reads it as that row; `not_linear`, that the
+	/// name is carried only by rows the board cannot show.
+	NameNotId {
+		reference: Reference,
+		ids: Vec<String>,
+		not_linear: bool,
+	},
+	/// The unit is on the car's record, and the project has no channel at all for it.
+	NoChannels(Reference),
 	/// More than one row answers to it; the input has to say which.
 	Ambiguous(Reference, Vec<String>),
 	/// Declared, but with a scaling the device cannot apply.
@@ -1071,7 +1144,48 @@ impl fmt::Display for Error {
 				 `vagcan units --identify` with the car records every unit that answers"
 			),
 			Error::NoResponseRule(r) => write!(f, "unit {r:03X}: no rule for which id it answers on"),
-			Error::Undeclared(r) => write!(f, "{r}: the car's variant does not declare this channel and nothing has proven it"),
+			Error::Undeclared(r) => {
+				let unit = r.to_string();
+				let unit = unit.split(':').next().unwrap_or_default();
+				let what = match r {
+					Reference::TextId { text_id, .. } => format!("no channel with the id {text_id}"),
+					Reference::Field { did, bit_offset, .. } => format!("no channel at identifier {did:04X}, bit {bit_offset}"),
+				};
+				write!(
+					f,
+					"{r}: unit {unit} has {what} in this car's project data, and none was measured on a car — {FIND_IDS}"
+				)
+			}
+			Error::NameNotId { reference, ids, not_linear } => {
+				let Reference::TextId { text_id, .. } = reference else {
+					return write!(f, "{reference}: a name, not a channel id — {FIND_IDS}");
+				};
+				match ids.as_slice() {
+					[] if *not_linear => write!(
+						f,
+						"{reference}: {text_id:?} is the name of a channel the board cannot show — its scaling is not linear; pick a numeric one: {FIND_IDS}"
+					),
+					[] => write!(
+						f,
+						"{reference}: {text_id:?} is a name or a mistyped id, and dash.toml takes a channel's id — {FIND_IDS}"
+					),
+					[one] => write!(f, "{reference}: {text_id:?} is the channel's name — write its id: {one}"),
+					many => write!(
+						f,
+						"{reference}: {text_id:?} is the name of {} channels — write the id of one: {}",
+						many.len(),
+						many.join(", ")
+					),
+				}
+			}
+			Error::NoChannels(r) => {
+				let unit = r.to_string();
+				let unit = unit.split(':').next().unwrap_or_default();
+				write!(
+					f,
+					"{r}: unit {unit} is in the car's record, but the project data has no channels for its variant — pick a channel of another unit; {FIND_IDS}"
+				)
+			}
 			Error::Ambiguous(r, rows) => write!(
 				f,
 				"{r}: {} rows answer to it — name one by identifier and bit offset: {}",
@@ -1689,7 +1803,7 @@ fn resolve_channel(wanted: &ChannelInput, offered: &[poll::Channel], units: &[Un
 		.partition(|c| matches!(c.def.as_ref().map(|d| &d.scaling), Some(Scaling::Linear(_))));
 	let found = match (linear.as_slice(), other.as_slice()) {
 		([one], _) => *one,
-		([], []) => return Err(Error::Undeclared(wanted.reference.clone())),
+		([], []) => return Err(no_such_channel(&wanted.reference, offered)),
 		([], [first, ..]) => {
 			let kind = match first.def.as_ref().map(|d| &d.scaling) {
 				Some(Scaling::Enum { .. }) => "an enumeration",
@@ -1739,12 +1853,12 @@ fn resolve_channel(wanted: &ChannelInput, offered: &[poll::Channel], units: &[Un
 	let source = found.text_id.clone().unwrap_or_else(|| def.name.to_string());
 	let hz = wanted.hz.unwrap_or(DEFAULT_HZ);
 	notes.push(format!(
-		"{label} ← {} {did:04X}@{bit_offset}/{bit_length} {} {}{} ×{factor} {offset:+} at {hz} Hz {} ({})",
+		"{label} ← {} {did:04X}@{bit_offset}/{bit_length} {} {}{} ×{factor} {offset:+} at {hz} Hz, {} ({})",
 		wanted.reference,
 		if signed { "i" } else { "u" },
 		if big_endian { "BE" } else { "LE" },
 		if bit_length % 8 == 0 { "" } else { " bits" },
-		if found.proven { "proven" } else { "declared" },
+		if found.proven { "measured on a car" } else { "from the project's data" },
 		source
 	));
 	Ok(Channel {
@@ -1765,6 +1879,65 @@ fn resolve_channel(wanted: &ChannelInput, offered: &[poll::Channel], units: &[Un
 		setpoint: None,
 		zero_at_rest: wanted.zero_at_rest,
 	})
+}
+
+/// Why nothing on a recorded unit answers to `reference`, in the three ways a person gets there
+/// (UX review, 2026-10-19): the unit has no channels in the project at all; a channel's name was
+/// written where its id goes; or the id is simply not this car's.
+fn no_such_channel(reference: &Reference, offered: &[poll::Channel]) -> Error {
+	let request = reference.request();
+	let on_unit: Vec<&poll::Channel> = offered.iter().filter(|c| c.request == request && c.def.is_some()).collect();
+	if on_unit.is_empty() {
+		return Error::NoChannels(reference.clone());
+	}
+	let Reference::TextId { text_id, .. } = reference else {
+		return Error::Undeclared(reference.clone());
+	};
+	let wanted = text_id.trim().to_lowercase();
+	let named: Vec<&poll::Channel> = on_unit
+		.iter()
+		.copied()
+		.filter(|c| c.label().trim().to_lowercase() == wanted || c.def.as_ref().is_some_and(|d| d.name.trim().to_lowercase() == wanted))
+		.collect();
+	// No text id of any project carries a space; a name nearly always does.
+	if named.is_empty() && !text_id.contains(char::is_whitespace) {
+		return Error::Undeclared(reference.clone());
+	}
+	// Only what a numeric cell takes is worth suggesting, and only in a spelling the build reads
+	// as that row: its text id where that is the one linear row carrying it — the rule of
+	// [`resolve_channel`] — its identifier and bit where that is, and nothing where neither is.
+	let is_linear = |c: &poll::Channel| matches!(c.def.as_ref().map(|d| &d.scaling), Some(Scaling::Linear(_)));
+	let bit_of = |c: &poll::Channel| c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset());
+	let linear: Vec<&poll::Channel> = on_unit.iter().copied().filter(|c| is_linear(c)).collect();
+	let mut ids: Vec<String> = Vec::new();
+	for c in named.iter().copied().filter(|c| is_linear(c)) {
+		let by_text = c
+			.text_id
+			.as_ref()
+			.filter(|id| linear.iter().filter(|o| o.text_id.as_ref() == Some(*id)).count() == 1);
+		let by_field = linear.iter().filter(|o| o.did == c.did && bit_of(o) == bit_of(c)).count() == 1;
+		let spelled = match (by_text, by_field) {
+			(Some(id), _) => Reference::TextId {
+				request,
+				text_id: id.clone(),
+			},
+			(None, true) => Reference::Field {
+				request,
+				did: c.did,
+				bit_offset: bit_of(c),
+			},
+			(None, false) => continue,
+		}
+		.to_string();
+		if !ids.contains(&spelled) {
+			ids.push(spelled);
+		}
+	}
+	Error::NameNotId {
+		reference: reference.clone(),
+		not_linear: !named.is_empty() && !named.iter().any(|c| is_linear(c)),
+		ids,
+	}
 }
 
 /// One row as an [`Error::Ambiguous`] lists it: what to write instead — its identifier and bit
@@ -3058,18 +3231,17 @@ pub fn read_inputs(vin: &str, input: Option<&Path>) -> anyhow::Result<Inputs> {
 	use anyhow::Context as _;
 	let dir = crate::datadir::dash_dir(vin)?;
 	let input_path = input.map(Path::to_path_buf).unwrap_or_else(|| dir.join("dash.toml"));
-	let text = std::fs::read_to_string(&input_path).with_context(|| format!("no build input at {}", input_path.display()))?;
+	let text = match std::fs::read_to_string(&input_path) {
+		Ok(text) => text,
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => anyhow::bail!(missing_input(vin, &input_path, input.is_some())),
+		Err(e) => return Err(e).with_context(|| format!("reading the build input {}", input_path.display())),
+	};
 	let parsed = parse_input(&text)?;
 	if !parsed.vin.eq_ignore_ascii_case(vin.trim()) {
 		anyhow::bail!("{} is for VIN {} but the build asked for {vin}", input_path.display(), parsed.vin);
 	}
 	let record = crate::datadir::units_record(vin)?;
-	let units = crate::units::read_record(&record)?.ok_or_else(|| {
-		anyhow::anyhow!(
-			"no record of {vin}'s control units at {} — connect to the car once with `vagcan units --identify`, or `vagcan watch`, and it is written",
-			record.display()
-		)
-	})?;
+	let units = crate::units::read_record(&record)?.ok_or_else(|| anyhow::anyhow!("{}", no_record(vin, &record)))?;
 	Ok(Inputs {
 		vin: vin.to_string(),
 		parsed,
@@ -4037,7 +4209,7 @@ mod tests {
 		assert!(c.proven);
 		assert_eq!(c.factor, 0.002);
 		assert_eq!(c.label, "Boost (driven)");
-		assert!(built.notes[0].contains("proven"), "{}", built.notes[0]);
+		assert!(built.notes[0].contains("at 2 Hz, measured on a car (IDE00191)"), "{}", built.notes[0]);
 	}
 
 	/// The reference car puts every OBD-II parameter's text id on two fields:
@@ -4064,6 +4236,11 @@ mod tests {
 		)
 		.unwrap();
 		assert_eq!(built.plan.channels.len(), 1);
+		// The line `docs/dash/dash-toml.md` decodes under "Reading the build's output".
+		assert_eq!(
+			built.notes[0],
+			"Engine Coolant Temperature ← 01:IDE00025 F405@0/8 u BE ×1 -40 at 2 Hz, from the project's data (IDE00025)"
+		);
 		assert_eq!(
 			(
 				built.plan.channels[0].did,
@@ -4072,6 +4249,207 @@ mod tests {
 			),
 			(0xF405, 8, -40.0)
 		);
+	}
+
+	/// Three ways to name nothing on a recorded unit, each said apart, each with what to do
+	/// next (UX review, 2026-10-19: all three read "the car's variant does not declare this
+	/// channel and nothing has proven it").
+	#[test]
+	fn an_unknown_id_a_name_and_a_unit_without_channels_are_three_refusals() {
+		let here = tempfile::tempdir().unwrap();
+		let extracted = extracted_with(
+			here.path(),
+			&[(
+				"EV_Test_001",
+				vec![
+					reading(0xF405, "Engine Coolant Temperature", "IDE00025", 0, 8, false, true, 1.0, -40.0),
+					reading(0x202A, "Boost", "IDE00191", 0, 16, false, true, 0.001, 0.0),
+				],
+			)],
+			&[],
+		);
+		let store = CatalogStore::open(here.path().join("proven"));
+		let units = [identity(ENGINE, "PART1", "EV_Test"), identity(GEARBOX, "PART2", "EV_Nothing")];
+		let refuse = |r: &str| build(&input(&[r], &values_page(&[r])), &store, &extracted, &units, Language::En).unwrap_err();
+
+		let unknown = refuse("01:IDE99999");
+		assert_eq!(unknown, Error::Undeclared(Reference::parse("01:IDE99999").unwrap()));
+		let said = unknown.to_string();
+		assert!(said.starts_with("01:IDE99999: unit 01 has no channel with the id IDE99999"), "{said}");
+		assert!(said.contains(FIND_IDS), "the next step: {said}");
+		// The identifier form, in its own words.
+		let at = refuse("01:1234@8");
+		assert_eq!(at, Error::Undeclared(Reference::parse("01:1234@8").unwrap()));
+		assert!(
+			at.to_string()
+				.starts_with("01:1234@8: unit 01 has no channel at identifier 1234, bit 8 in this car's project data"),
+			"{at}"
+		);
+
+		let name = refuse("01:Engine Coolant Temperature");
+		assert_eq!(
+			name,
+			Error::NameNotId {
+				reference: Reference::parse("01:Engine Coolant Temperature").unwrap(),
+				ids: vec!["01:IDE00025".to_string()],
+				not_linear: false,
+			}
+		);
+		assert_eq!(
+			name.to_string(),
+			"01:Engine Coolant Temperature: \"Engine Coolant Temperature\" is the channel's name — write its id: 01:IDE00025"
+		);
+		// Not the case of the project's spelling, and not a name of this car's: still a name.
+		assert!(matches!(refuse("01:engine coolant temperature"), Error::NameNotId { ids, .. } if ids == ["01:IDE00025"]));
+		// A text with a space no row is named: a name, or an id typed wrong — not "a name" for sure.
+		let stranger = refuse("01:Oil Level");
+		assert!(
+			matches!(&stranger, Error::NameNotId { ids, not_linear: false, .. } if ids.is_empty()),
+			"{stranger}"
+		);
+		assert_eq!(
+			stranger.to_string(),
+			format!("01:Oil Level: \"Oil Level\" is a name or a mistyped id, and dash.toml takes a channel's id — {FIND_IDS}")
+		);
+
+		let empty = refuse("02:IDE00191");
+		assert_eq!(empty, Error::NoChannels(Reference::parse("02:IDE00191").unwrap()));
+		assert!(
+			empty
+				.to_string()
+				.contains("unit 02 is in the car's record, but the project data has no channels for its variant"),
+			"{empty}"
+		);
+
+		// The three say three different things.
+		let texts = [unknown.to_string(), name.to_string(), empty.to_string()];
+		assert!(texts[0] != texts[1] && texts[1] != texts[2] && texts[0] != texts[2]);
+	}
+
+	/// A name's suggestions are what a numeric cell takes, each in a spelling the build reads as
+	/// that row (review, 2026-10-19): no enumeration, and no text id two linear rows share.
+	#[test]
+	fn a_name_suggests_only_linear_rows_spelled_the_way_the_build_takes_them() {
+		let here = tempfile::tempdir().unwrap();
+		let enumeration = |did: u16, name: &str, text_id: &str| Reading {
+			unit: None,
+			scaling: Scaling::Enum {
+				levels: vec![Level::point(0, "off"), Level::point(1, "on")],
+			},
+			..reading(did, name, text_id, 0, 8, false, true, 1.0, 0.0)
+		};
+		let extracted = extracted_with(
+			here.path(),
+			&[(
+				"EV_Test_001",
+				vec![
+					// One name on an enumeration and a linear row sharing a text id: the linear
+					// one, by that id — the build's pick of the two.
+					enumeration(0x1003, "Gear", "IDE00003"),
+					reading(0x1006, "Gear", "IDE00003", 0, 8, false, true, 1.0, 0.0),
+					// One name and one text id on two linear rows: the id names neither, so each
+					// by identifier.
+					reading(0x1007, "Load", "IDE00007", 0, 8, false, true, 1.0, 0.0),
+					reading(0x1008, "Load", "IDE00007", 0, 8, false, true, 1.0, 0.0),
+					// A name only an enumeration carries.
+					enumeration(0x1009, "Door State", "IDE00009"),
+				],
+			)],
+			&[],
+		);
+		let store = CatalogStore::open(here.path().join("proven"));
+		let units = [identity(ENGINE, "PART1", "EV_Test")];
+		let refuse = |r: &str| build(&input(&[r], &values_page(&[r])), &store, &extracted, &units, Language::En).unwrap_err();
+
+		assert!(matches!(refuse("01:Gear"), Error::NameNotId { ids, .. } if ids == ["01:IDE00003"]));
+		assert!(matches!(refuse("01:Load"), Error::NameNotId { ids, .. } if ids == ["01:1007", "01:1008"]));
+		// Every suggestion builds, as the very row it was offered for.
+		for (spelled, did) in [("01:IDE00003", 0x1006), ("01:1007", 0x1007), ("01:1008", 0x1008)] {
+			let built =
+				build(&input(&[spelled], &values_page(&[spelled])), &store, &extracted, &units, Language::En).unwrap_or_else(|e| panic!("{spelled}: {e}"));
+			assert_eq!(built.plan.channels[0].did, did, "{spelled}");
+		}
+		let door = refuse("01:Door State");
+		assert!(
+			matches!(&door, Error::NameNotId { ids, not_linear: true, .. } if ids.is_empty()),
+			"{door}"
+		);
+		assert!(
+			door
+				.to_string()
+				.starts_with("01:Door State: \"Door State\" is the name of a channel the board cannot show"),
+			"{door}"
+		);
+	}
+
+	#[test]
+	fn a_missing_build_input_says_what_to_write_and_where_without_an_errno() {
+		let here = tempfile::tempdir().unwrap();
+		let path = here.path().join("dash.toml");
+		// `--input` names a file that is not there: a path typed wrong, nothing to start from.
+		let given = format!("{:#}", read_inputs("TESTVIN0000000001", Some(&path)).unwrap_err());
+		assert_eq!(given, format!("no file at {}", path.display()));
+		// The car's own dash.toml is not there yet: what to write.
+		let why = missing_input("TESTVIN0000000001", &path, false);
+		assert!(why.starts_with("no dash.toml for TESTVIN0000000001 yet. Write "), "{why}");
+		assert!(why.contains(&path.display().to_string()), "where: {why}");
+		assert!(why.contains(&SMALLEST_INPUT.replace("<VIN>", "TESTVIN0000000001")), "what: {why}");
+		assert!(why.contains(REFERENCE_DOC), "{why}");
+		assert!(!why.contains("os error") && !why.contains("No such file"), "no errno: {why}");
+	}
+
+	#[test]
+	fn the_smallest_input_builds_and_is_the_one_the_readme_shows() {
+		let text = SMALLEST_INPUT.replace("<VIN>", "TESTVIN0000000001");
+		let parsed = parse_input(&text).unwrap();
+		assert_eq!(parsed.channels.len(), 1);
+		assert_eq!(parsed.pages.len(), 1);
+		let readme = include_str!("../../../../README.md");
+		assert!(
+			readme.contains(&format!("```toml\n{SMALLEST_INPUT}```")),
+			"README's \"Building the dash\" shows SMALLEST_INPUT verbatim"
+		);
+		assert!(
+			std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../"))
+				.join(REFERENCE_DOC)
+				.is_file()
+		);
+	}
+
+	#[test]
+	fn a_list_written_with_one_pair_of_brackets_is_told_to_have_two() {
+		for (name, text) in [
+			(
+				"channel",
+				"vin = \"V\"\n[channel]\nref = \"01:IDE00025\"\n[[page]]\nkind = \"values\"\ncells = [\"01:IDE00025\"]\n",
+			),
+			(
+				"page",
+				"vin = \"V\"\n[[channel]]\nref = \"01:IDE00025\"\n[page]\nkind = \"values\"\ncells = [\"01:IDE00025\"]\n",
+			),
+			(
+				"button",
+				"vin = \"V\"\n[[channel]]\nref = \"01:IDE00025\"\n[[page]]\nkind = \"values\"\ncells = [\"01:IDE00025\"]\n[button]\npin = 3\naction = \"next\"\n",
+			),
+		] {
+			let Error::Parse(why) = parse_input(text).unwrap_err() else {
+				panic!("not a parse refusal");
+			};
+			assert!(
+				why.contains(&format!("[{name}] has one pair of brackets — write [[{name}]], two pairs")),
+				"{why}"
+			);
+			assert!(why.contains("line "), "it points at the line: {why}");
+		}
+	}
+
+	#[test]
+	fn the_record_refusal_names_the_commands_that_write_it_in_one_line() {
+		let said = no_record("TESTVIN0000000001", Path::new("/home/x/.vagcan/cars/TESTVIN0000000001/units.json"));
+		assert!(said.starts_with("no record of TESTVIN0000000001's control units — "), "{said}");
+		assert!(said.contains("`vagcan units --identify`") && said.contains("`vagcan watch`"), "{said}");
+		assert!(said.ends_with("units.json"), "{said}");
+		assert!(!said.contains('\n'), "one line: {said}");
 	}
 
 	#[test]
@@ -5841,7 +6219,7 @@ mod tests {
 		let refused = |extra: &str| input_with(extra).unwrap_err().to_string();
 		assert_eq!(
 			refused("[button]\npin = 3\naction = \"next\"\n"),
-			"dash.toml: button must be written as [[button]] tables, one per button"
+			"dash.toml: line 8: [button] has one pair of brackets — write [[button]], two pairs: the file holds a list of them"
 		);
 		assert_eq!(
 			refused(&["3", "4", "5", "3"].map(|pin| button(pin, "\"next\"")).concat()),

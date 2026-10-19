@@ -23,7 +23,8 @@ the stopwatch's speed shown rounded down; `zero_at_rest` for the ESC's accelerat
   fixed — moving the icons into the strip's free right end is the owner's call. Watts beside
   the voltage are [`dash/23`](dash/23-power-consumption.md), not started.
 - **The owner's layout** (2026-10-19), from [`research/dash/layout-editor/`](../research/dash/layout-editor/README.md)
-  (the real renderer in WebAssembly, every channel `dash::build` resolves — 6,583 on the car):
+  (the real renderer in WebAssembly, every channel `dash::build` resolves — 6,583 on the car;
+  since 2026-10-19 the command `vagcan dev dash edit <VIN>`):
   DRIVE, TEMPERATURES, an RPM chart, IGNITION TIMING ANGLE (the knock-retard cylinders),
   MISFIRE, BRAKES; English labels; three new channels (ambient air `F446`, brake booster
   `2005`, brake pressure `3803` on the gearbox) and the strip's `01:IDE00018`. In

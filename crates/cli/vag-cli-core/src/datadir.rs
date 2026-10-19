@@ -315,6 +315,16 @@ pub fn dash_dir(vin: &str) -> anyhow::Result<PathBuf> {
 	Ok(vagcan_dir()?.join("dash").join(car_folder(vin)?))
 }
 
+/// What `vagcan dev dash edit` serves for a car — `~/.vagcan/dash/<VIN>/editor/`: the page, the
+/// renderer as WebAssembly, the car's channels (`channels.json`, kept between runs while what it
+/// was made from is unchanged) and the layout of its `dash.toml`.
+///
+/// Beside the plan and not in the checkout, for the plan's reason: `channels.json` is the
+/// project's label data resolved for one car. Everything in it is rebuilt by the next run.
+pub fn dash_editor_dir(vin: &str) -> anyhow::Result<PathBuf> {
+	Ok(dash_dir(vin)?.join("editor"))
+}
+
 /// The VIN, checked hard enough to be a directory name.
 ///
 /// It arrives from the bus, so it is not trusted as a path: a unit answering

@@ -4110,6 +4110,18 @@ mod tests {
 		assert!(!next.channels[0].selected, "only what was marked");
 	}
 
+	/// The dash build's refusals send a person here for a channel's id, naming the setting and
+	/// the value to set it to: both have to be what this screen says.
+	#[test]
+	fn the_dash_build_names_the_key_setting_as_this_screen_spells_it() {
+		let mut a = App::new(vec![unselected(proven(0x7E0, 0x202A, "Boost pressure", "bar"))]);
+		a.show_key = true;
+		let said = vag_cli_core::dash::FIND_IDS;
+		assert!(said.contains("vagcan watch") && said.contains("press `,`"), "{said}");
+		assert!(said.contains(&format!("\"{}\"", Setting::ShowKey.label())), "{said}");
+		assert!(said.ends_with(&format!("to {}", a.setting_value(Setting::ShowKey))), "{said}");
+	}
+
 	#[test]
 	fn the_settings_screen_shows_what_each_setting_is_and_what_it_reads() {
 		// A settings screen whose rows are only labels makes somebody guess,

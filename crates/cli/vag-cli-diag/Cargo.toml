@@ -16,7 +16,8 @@ vag-uds-can = { path = "../../uds/vag-uds-can", features = ["slcan"] }
 vag-uds-capture = { path = "../../uds/vag-uds-capture" }
 vag-data-labels = { path = "../../data/vag-data-labels" }
 vag-data-db = { path = "../../data/vag-data-db" }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "sync", "time"] }
+# `net`: `dev dash edit`'s page server, on 127.0.0.1.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "sync", "time", "net"] }
 anyhow = "1"
 # The ODIS parse fans out one variant per task over rayon's pool.
 rayon = { workspace = true }

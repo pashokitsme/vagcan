@@ -1,0 +1,20 @@
+[package]
+name = "vag-dash-wasm"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+# The dash renderer for the browser: `vagcan dev dash edit`'s page draws its panel with it, so
+# what the editor shows is what the board draws. `vag-cli-diag`'s build script compiles it for
+# `wasm32-unknown-unknown` (profile `dash-wasm`, in the workspace's Cargo.toml) when that target
+# is installed; as a workspace member it is also compiled for the host, which is what keeps a
+# change to the renderer's API from breaking it unseen.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vag-dash-render = { path = "../vag-dash-render" }
+embedded-graphics = "0.8"
+serde.workspace = true
+serde_json.workspace = true

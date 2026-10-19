@@ -54,7 +54,7 @@ board's settings.
 One line per channel:
 
 ```
-COOLANT ← 01:IDE00025 F405@0/8 u BE ×1 -40 at 2 Hz declared (IDE00025)
+COOLANT ← 01:IDE00025 F405@0/8 u BE ×1 -40 at 2 Hz, from the project's data (IDE00025)
 ```
 
 | part | means |
@@ -67,7 +67,7 @@ COOLANT ← 01:IDE00025 F405@0/8 u BE ×1 -40 at 2 Hz declared (IDE00025)
 | `BE` / `LE` | big-endian / little-endian |
 | `×1 -40` | the scaling: raw value × 1, then − 40 |
 | `at 2 Hz` | readings a second while its page is up |
-| `declared` / `proven` | from the project's label data (ODIS or VCDS) / measured on a car |
+| `from the project's data` / `measured on a car` | the scaling comes from the project's label data (ODIS or VCDS) / was measured on a car |
 | `(IDE00025)` | VW's channel id, or the row's name when it has none |
 
 ## A full example
@@ -453,6 +453,7 @@ Two spellings, both `<unit>:<row>`:
 |---|---|
 | the units the car has, and their numbers | `vagcan units` |
 | a channel's unit, identifier and channel id | `vagcan watch`, press `,` for settings, set "Key at the end of each row" to shown. The Unit, DID and Key columns are the control unit, the identifier and the channel id. |
+| channels for pages, by name, unit or unit of measure | `vagcan dev dash edit <VIN>`: a page in the browser lists every channel the build accepts, draws your pages on the board's renderer, and shows the `[[page]]` and `[[channel]]` blocks to copy. |
 | a channel id by the channel's name | `vagcan dev glossary` writes `~/.vagcan/names.csv`: every channel id the project knows, with its name in the `current` column. Search it. It does not say which unit. |
 | a bit offset | Write the channel id. When several rows answer to it, the build refuses and lists each as `DID@bit name`. Copy one as `<unit>:<DID>@<bit>`. An identifier with no `@` is bit 0: a row that starts at another bit is refused as one the unit does not have, with no list. |
 | the lever's identifier | Record `vagcan watch --out lever.csv` with the identifiers of the lever's unit selected, working the lever. Then `vagcan dev recording discover --log lever.csv` sorts the identifiers into never moved, stepped and continuous. |
@@ -496,15 +497,16 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `line N: [stopwatch]: "language" is a top-level key: write it above the first section` | Move it above the first section. |
 | `line N: [[page]] 1: "hz" is a key of [[channel]]` | Move it under that section. |
 | `line N: [[channel]] 1: label must be a string, not an integer` | Write the type this reference gives. The same for every optional key but `hz` and `setpoint`, whose refusals are under **Channels**. |
-| `no build input at <path>` | Write `~/.vagcan/dash/<VIN>/dash.toml`, or pass `--input`. |
+| `no dash.toml for <VIN> yet. Write <path>; the smallest one, …` | Write the file it shows at that path, or pass `--input`. |
 | `vin is missing or not a string` | Add `vin = "<VIN>"`. |
 | `<path> is for VIN X but the build asked for Y` | Build for X, or correct `vin`. |
 | `language "xx" is not one this build has words for` | `"en"` or `"ru"`. |
 | ``line N: `survey` is no longer read — delete the line`` | Delete it. The units come from the car's record, not from a file named here. |
-| `no record of <VIN>'s control units at <path>` | Connect to the car once: `vagcan units --identify` or `vagcan watch` writes it. |
+| `no record of <VIN>'s control units — connect to the car and run …` | Connect to the car once: `vagcan units --identify` or `vagcan watch` writes it. |
 | `the channels of N control units … have not been read from the VCDS installation (…)` | Only the units the configuration uses count. Run `vagcan dev dash build <VIN>` once: it reads them from the installation, offline, then builds. If the refusal goes on to say the installation `is not on this machine any more`, or names the project's own note of it, re-run `vagcan setup <VCDS installation>` first. If `dev dash build` is what just ran, the lines above it say what stopped the read. |
 | `the channels of N control units … (…), which the plan does not use` | Not a refusal: a note among the build's lines, and the build goes on. Those units' channels are read by the next `watch`, `measure` or `units --identify` with the car, or by `vagcan dev dash build <VIN>`; when the note says the installation is gone, re-run `vagcan setup <VCDS installation>` if you want them. |
-| `no [[channel]]` / `no [[page]]` | Add one. A single `[channel]` or `[page]` with one pair of brackets counts as none. |
+| `no [[channel]]` / `no [[page]]` | Add one. |
+| `line N: [channel] has one pair of brackets — write [[channel]], two pairs` | Two pairs of brackets. The same for `[page]` and `[button]`. |
 | `stalk must be one [stalk] table` / `stopwatch must be one [stopwatch] table` | One pair of brackets. |
 | `<key> is missing or not a string` | Add the key, quoted. |
 
@@ -530,7 +532,12 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `setpoint is not a string` | Quote it. |
 | `unit XXX is not in the car's record of its units` | Connect to the car with that unit answering (`vagcan units --identify`), or fix the unit. |
 | `unit XXX: the car's record has no part number (F187) for it` | Run `vagcan units --identify` again. The board checks the unit by that number. |
-| `X: the car's variant does not declare this channel and nothing has proven it` | This car's unit has no such row. Pick another from `vagcan watch`. |
+| `X: unit NN has no channel with the id … in this car's project data, and none was measured on a car` | This car's unit has no such row. Find its ids in `vagcan watch`: press `,` and set "Key at the end of each row" to shown. |
+| `X: unit NN has no channel at identifier DDDD, bit B in this car's project data, and none was measured on a car` | No row at that identifier and bit on this car's unit. Check the identifier and the `@` bit, or find the row in `vagcan watch` as above. |
+| `X: "…" is the channel's name — write its id: NN:ID` (or `is the name of N channels — write the id of one`) | Write one of the listed ids instead of the name. |
+| `X: "…" is a name or a mistyped id, and dash.toml takes a channel's id` | Find the id in `vagcan watch` as above. |
+| `X: "…" is the name of a channel the board cannot show — its scaling is not linear` | The board shows numbers only. Pick a numeric row. |
+| `X: unit NN is in the car's record, but the project data has no channels for its variant` | The project describes nothing on that unit. Pick a channel of another unit. |
 | `X: N rows answer to it — name one by identifier and bit offset: DID@bit name, …` | Write one of the listed rows as `<unit>:<DID>@<bit>`. |
 | `X: scaling is an enumeration, not linear` (or `a single proven point with no slope`) | The board shows numbers only. Pick a numeric row. |
 | `X: its scaling is not a finite number the board's 32-bit float holds` | Pick another row. Also for a factor the board would hold as 0. |

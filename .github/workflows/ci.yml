@@ -65,11 +65,16 @@ jobs:
         with:
           lfs: false
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          # `vag-cli-diag`'s build script compiles the dash renderer for `dev dash edit` to
+          # WebAssembly. `just test` sets VAGCAN_DASH_WASM_REQUIRED, so a renderer that no
+          # longer builds for wasm fails this job instead of shipping an empty one.
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: system deps for btleplug (BlueZ over D-Bus)
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - uses: extractions/setup-just@v2
-      - name: just test
+      - name: just test (with the renderer for wasm)
         run: just test
 
   no-std:

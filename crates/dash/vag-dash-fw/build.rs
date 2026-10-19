@@ -49,8 +49,8 @@ fn plan() {
 
 	let written = match vag_cli_core::dash::build_for_car(&vin, None) {
 		Ok(written) => written,
-		// `{:#}` prints the whole chain — "no build input at …", "channel X
-		// is not declared by variant Y" — which is what the person needs.
+		// `{:#}` prints the whole chain — "no dash.toml for <VIN> yet. Write …",
+		// "X: unit NN has no channel with the id …" — which is what the person needs.
 		Err(e) => panic!("dash plan for VIN {vin}: {e:#}"),
 	};
 
