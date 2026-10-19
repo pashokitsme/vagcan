@@ -155,10 +155,23 @@ pub fn open(project: &crate::project::Project) -> Extracted {
 }
 
 /// Each source's variants, in the order the sources rank.
+///
+/// A cache that will not open holds none. One an older vagcan wrote, or a file that is not a
+/// database, is also said, once, on stderr: every channel the project would give is
+/// missing, and the line says what to run.
 fn variants_by_source(cache: &std::path::Path) -> Vec<(&'static str, Vec<String>)> {
+	let mut said = false;
 	[vag_data_db::ODIS, vag_data_db::VCDS]
 		.into_iter()
-		.map(|kind| (kind, vag_data_db::reading_variants_of(cache, kind).unwrap_or_default()))
+		.map(|kind| match vag_data_db::reading_variants_of(cache, kind) {
+			Ok(variants) => (kind, variants),
+			Err(why) => {
+				if matches!(why, vag_data_db::Error::OlderCache { .. } | vag_data_db::Error::NotACache { .. }) && !std::mem::replace(&mut said, true) {
+					eprintln!("{why}");
+				}
+				(kind, Vec::new())
+			}
+		})
 		.collect()
 }
 

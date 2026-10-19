@@ -6708,8 +6708,8 @@ mod tests {
 		assert_eq!(built.plan.stalk.unwrap().rocker_states[0].upper, 60);
 	}
 
-	/// A cache written before the levels kept their upper ends has every state as its lower
-	/// end alone: the rocker would never read as pressed. Refused, with what to do.
+	/// A cache an older vagcan added the levels' upper ends to in place has every state as
+	/// its lower end alone: the rocker would never read as pressed. Refused, with what to do.
 	#[test]
 	fn a_cache_whose_states_predate_their_bands_is_refused_with_what_to_run() {
 		let here = tempfile::tempdir().unwrap();
@@ -6717,14 +6717,7 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let old_shape = |cache: &Path| {
 			let conn = rusqlite::Connection::open(cache).unwrap();
-			conn
-				.execute_batch(
-					"ALTER TABLE reading_level RENAME TO reading_level_new;\
-					 CREATE TABLE reading_level (reading_id INTEGER NOT NULL REFERENCES reading(id), raw INTEGER NOT NULL, meaning TEXT NOT NULL);\
-					 INSERT INTO reading_level (reading_id, raw, meaning) SELECT reading_id, raw, meaning FROM reading_level_new ORDER BY rowid;\
-					 DROP TABLE reading_level_new;",
-				)
-				.unwrap();
+			conn.execute("UPDATE reading_level SET upper = NULL", []).unwrap();
 		};
 		let why = build_with_lever_in(here.path(), LEVER, Extra::default(), old_shape)
 			.unwrap_err()

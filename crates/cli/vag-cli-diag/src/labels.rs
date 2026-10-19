@@ -93,6 +93,8 @@ pub fn load_cached(dir: &Path, cache: &Path, refresh: bool) -> anyhow::Result<La
 	if fresh {
 		match vag_data_db::load_db(cache) {
 			Ok(db) => return Ok(db),
+			// Rebuilding would meet the same refusal: say what to run instead.
+			Err(e @ (vag_data_db::Error::OlderCache { .. } | vag_data_db::Error::NotACache { .. })) => anyhow::bail!("{e}"),
 			// A corrupt or half-written cache is a reason to rebuild, not to
 			// fail the command.
 			Err(e) => eprintln!("cache {} unusable ({e}) — rebuilding", cache.display()),
