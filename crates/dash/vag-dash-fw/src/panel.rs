@@ -1,6 +1,6 @@
 //! A panel made of memory, and the wire format that carries it to a laptop.
 //!
-//! The board renders the *real* thing — `vag_dash_render::draw` onto a framebuffer —
+//! The board renders the *real* thing — `vag_dash_render::draw_page` onto a framebuffer —
 //! and ships the pixels out of the USB port it is already logged through. A
 //! program on the laptop draws them in a terminal. Nothing about the layout,
 //! the page order or the formatting lives on that side; if the simulator were

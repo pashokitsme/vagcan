@@ -6,7 +6,7 @@
 //! and, later, files CI can diff.
 //!
 //! Usage: `cargo run -p vag-dash-render --example panel -- <output directory>`, and `--tall`
-//! for the board's 256×64 (the status strip's pictures, 10 to 21, are laid out for it).
+//! for the board's 256×64 (the status strip's pictures, 10 to 22, are laid out for it).
 //!
 //! The values are stand-ins with the right shape, not readings from the car.
 //! Every channel named here is one the catalog declares for the reference car

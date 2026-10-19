@@ -323,13 +323,17 @@ where
 	// The title's last lit column has a dark one after it before the right end, as its first
 	// has one after the voltage; with nothing at the right end, the panel's edge is the limit.
 	let limit = corner.left.map_or(width as i32, |left| left - 1);
+	// A title too long for the room it has is cut there, never drawn over the voltage or the
+	// right end: a host connecting narrows the room, and the board's own state stays readable
+	// whatever the title (review, 2026-10-19). The overrun is reported either way.
+	let room = Rectangle::new(Point::new(taken + 1, 0), Size::new((limit - taken - 1).max(0) as u32, STRIP_ROWS));
 	match theme.label.render_aligned(
 		strip.title,
 		Point::new(width as i32 / 2, 0),
 		VerticalPosition::Top,
 		HorizontalAlignment::Center,
 		ink,
-		target,
+		&mut target.clipped(&room),
 	) {
 		Ok(ink_box) => {
 			if let Some(b) = ink_box
@@ -2548,6 +2552,39 @@ mod tests {
 		};
 		assert!(fits(34));
 		assert!(!fits(35));
+	}
+
+	/// A title that fits with nothing connected and overruns once both hosts and a count arrive
+	/// is cut at the right end: the runes and the badge are the same pixels as under no title.
+	#[test]
+	fn a_title_too_long_is_cut_before_the_right_end_never_drawn_over_it() {
+		let cells = temps("ВПУСК");
+		let page = Frame::Values { cells: &cells };
+		let widest = board(
+			BOTH,
+			Some(Faults::Counted {
+				stored: 99,
+				failing_now: true,
+			}),
+		);
+		let title: std::string::String = core::iter::repeat_n('W', 40).collect();
+		let long = Strip {
+			title: &title,
+			volts: Volts::Shown(Some(14.2)),
+		};
+		let none = Strip { title: "", ..long };
+		let (with_title, report) = paged(&page, &long, &widest);
+		let (without, _) = paged(&page, &none, &widest);
+		assert!(report.label_overrun);
+		// The right end's first lit column, as drawn under no title.
+		let left = (0..256)
+			.find(|&x| x > 128 && (0..STRIP_ROWS as i32).any(|y| lit(&without, x, y)))
+			.expect("the right end draws");
+		for x in left..256 {
+			for y in 0..STRIP_ROWS as i32 {
+				assert_eq!(lit(&with_title, x, y), lit(&without, x, y), "({x}, {y})");
+			}
+		}
 	}
 
 	#[test]

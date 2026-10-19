@@ -2258,7 +2258,7 @@ impl PanelReads {
 			// `STOPWATCH_PAGE` is past every page: no cells, and the mode brings the speed.
 			let mut shown: Vec<u16> = PLAN.pages.get(usize::from(glass)).map_or(&[][..], pages::cells).to_vec();
 			// The voltage the page's strip shows is read as one of its cells; the stopwatch's page
-			// is no plan page and has no strip.
+			// is no plan page and shows no voltage.
 			shown.extend(PLAN.strip_volts(usize::from(glass)));
 			// Every page's cells, charts included: a chart samples its channel
 			// every frame whether or not it is shown — and the strip's voltage, where a page shows it.
@@ -2793,7 +2793,7 @@ impl Oled {
 
 /// Draws the current page and leaves its pixels for the USB port.
 ///
-/// This is the real renderer on real pixels: `vag_dash_render::draw` into a 256×64
+/// This is the real renderer on real pixels: `vag_dash_render::draw_page` into a 256×64
 /// framebuffer. What the laptop shows is not an impression of the panel, it is
 /// the panel.
 ///
