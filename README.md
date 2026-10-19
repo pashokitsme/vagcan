@@ -17,8 +17,8 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 | `vagcan` | Shows where you stand: adapter, car data, what to type next |
 | `vagcan setup` | Reads an ODIS project or a VCDS installation, offline. Takes seconds for ODIS, up to tens of minutes the first time for VCDS |
 | `vagcan devices` | Lists USB-CAN adapters and dash boards on USB |
-| `vagcan info` | VIN, engine and gearbox identity |
-| `vagcan units` | The car's list of control units. `--identify` makes each one name itself |
+| `vagcan info` | VIN, and the engine's and gearbox's part numbers and software versions |
+| `vagcan units` | The car's control units, named from your label files and earlier `--identify` runs. `--identify` makes each one name itself |
 | `vagcan faults` | Stored fault codes with VW's own text. `[faults] language` in the config picks the language |
 | `vagcan sensors` | Standard OBD-II readings |
 | `vagcan watch` | Live values from several units at once, with a chart of up to 6 channels. States show by name. `--out` records to CSV |
@@ -107,6 +107,7 @@ Details: [`todo/README.md`](todo/README.md).
 
 - **Rust stable**, edition 2024.
 - **An slcan USB-CAN adapter.** Developed and tested mainly on `MKS CANable V2.0 Pro`. No driver is needed: the adapter shows up as a serial port.
+- **espflash**, to flash the dash board: `cargo install espflash --locked` (tested with 4.1.0).
 - **Diagnostic data**, for names and numbers instead of raw bytes: the **ODIS-Service project** for your car's platform, or a **VCDS installation**. See [Setting up](#setting-up). `vagcan setup` offers to download VCDS if you have neither.
 
 ## Tested on
@@ -169,14 +170,26 @@ In a clone, [`just`](https://github.com/casey/just) runs the common tasks. `just
 
 | command | does |
 |---|---|
-| `just install` | installs `vagcan` and `vagcan-measure` |
+| `just install` | installs `vagcan` |
+| `just vagcan …` | runs `vagcan` from the checkout |
 | `just plan <VIN>` | builds the dash configuration for a car, as `vagcan dev dash build <VIN>` |
 | `just fw-flash` | builds the dash firmware and flashes the board on USB |
 | `just fw-flash dash --no-default-features` | the same without BLE, for a board whose BLE does not start |
 | `just fw-flash oledtest` | the test picture on the OLED |
+| `just fw-run` | flashes and stays on the board's console |
 | `just fw-monitor` | the board's console |
-| `just dashcfg` | the board's settings over BLE |
+| `just fw-info` | the board's chip revision and MAC |
+| `just dashcfg` | the board's settings over BLE, from Terminal.app |
+| `just dashsim` | the board's screen in this terminal, over USB |
 | `just check` | everything CI checks |
+
+An older `just install` also put `vagcan-measure` there; `cargo uninstall vag-cli-measure` removes it.
+
+`just fw-flash` finds the board by its USB id. With no board found, or several, set the port:
+
+```sh
+ESP_PORT=/dev/cu.usbmodem1101 just fw-flash
+```
 
 Run `vagcan` with no arguments to see what is connected and what to do next:
 
@@ -256,7 +269,10 @@ vagcan faults             # stored fault codes with their text (after setup)
 vagcan watch              # live values from several units at once
 ```
 
-**Through the dash board over BLE:** no cable needed. Add `--ble`: `vagcan` finds the board and says which one it uses, or asks when there are several. The ignition must be on. On macOS, the app you run it from needs Bluetooth access (System Settings → Privacy & Security → Bluetooth); Terminal.app asks on first use.
+**Through the dash board over BLE:** no cable needed. Add `--ble`: `vagcan` finds the board and says which one it uses, or asks when there are several. The ignition must be on. On macOS:
+
+- The terminal app needs Bluetooth permission: System Settings → Privacy & Security → Bluetooth.
+- A terminal inside another app (an IDE, an agent) may be stopped without a message. Run `vagcan --ble` and `dashcfg` from Terminal.app.
 
 | `--device` | What it uses |
 |---|---|
@@ -314,7 +330,7 @@ It prints one line per channel, or what it refused and why. Fix the file until i
 **4. Flash the board.** Plug the board into USB, then:
 
 ```sh
-cargo install espflash   # once
+cargo install espflash --locked   # once
 just fw-flash
 ```
 
@@ -322,7 +338,7 @@ just fw-flash
 |---|---|
 | several cars under `~/.vagcan/dash/` | `VAGCAN_DASH_VIN=<VIN> just fw-flash` |
 | the board's BLE does not start | `just fw-flash dash --no-default-features` |
-| several boards on USB | `ESP_PORT=/dev/cu.usbmodem… just fw-flash` |
+| no board found, or several | `ESP_PORT=/dev/cu.usbmodem1101 just fw-flash` |
 
 **5. Set the brightness.** With the board powered, over BLE:
 
@@ -339,6 +355,12 @@ q
 ```
 
 `save` keeps the setting after power-off. On macOS, run it from Terminal.app: it needs Bluetooth access.
+
+| `dashcfg`, in a clone | connects to |
+|---|---|
+| `just dashcfg` | the board named `vagcan-dash` |
+| `just dashcfg <name>` | the board with that Bluetooth name |
+| `just dashcfg --help` | nothing; lists the commands you can type once connected |
 
 ## Where files are stored
 

@@ -19,7 +19,7 @@ The steps from a new car to a flashed board are in the README: [Building the das
 | what you want | run |
 |---|---|
 | see the dash configuration and the reasons, no firmware | `vagcan dev dash build <VIN>` |
-| build and flash the board, in a clone | `just fw-flash` (needs `cargo install espflash` once) |
+| build and flash the board, in a clone | `just fw-flash` (needs `cargo install espflash --locked` once) |
 | build the firmware for that car | `VAGCAN_DASH_VIN=<VIN> cargo build --release --bin dash` in `crates/dash/vag-dash-fw` |
 | check the firmware compiles, no car | `VAGCAN_DASH_NO_CAR=1 cargo build --release --bin dash` (an empty configuration — do not flash it) |
 
@@ -421,6 +421,8 @@ Two spellings, both `<unit>:<row>`:
 - A **channel id** is VW's own id for a measurement, such as `IDE00025`. The build's messages call it a "text id".
 - An identifier is exactly four hex digits. Anything else after the colon is a channel id.
 - A channel id takes no `@`.
+- `vagcan watch --did` takes the same spellings as `ref`: `<unit>:<DID>`, `<unit>:<channel id>`,
+  `<unit>:<DID>@<bit>`.
 - Which variant of the unit the car has is not written here. It comes from the car's record of its units.
 - One row is one channel however it is spelled. `01:IDE00191` and `01:202A` are the same row:
   declaring both is refused, and a page, an alarm, a `setpoint` or `speed` may use either
