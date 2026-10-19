@@ -395,24 +395,77 @@ pub fn parse_spec(spec: &str) -> Result<Vec<Wanted>, String> {
 			Some((unit, rest)) => (unit.to_string(), rest),
 			None => (format!("{ENGINE:03X}"), group),
 		};
-		for item in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-			let did_part = item.split_once('@').map_or(item, |(did, _)| did);
-			// Hex too short to be an identifier is a mistyped one, not a text id:
-			// both vendors' text ids are longer than four characters.
-			if did_part.len() < 4 && did_part.chars().all(|c| c.is_ascii_hexdigit()) {
-				return Err(format!("{item:?}: an identifier is four hex digits, like 2029"));
+		for listed in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+			// `A/B` is how the Key column shows an actual/target pair: typed back, it is
+			// both rows.
+			let halves: Vec<&str> = listed.split('/').map(str::trim).collect();
+			if halves.iter().any(|half| half.is_empty()) {
+				return Err(format!("{listed:?}: a pair is two text ids, like IDE00191/IDE00192"));
 			}
-			let reference = Reference::parse(&format!("{unit}:{item}")).map_err(|e| e.to_string())?;
-			out.push(match reference {
-				Reference::Field { request, did, .. } if !item.contains('@') => Wanted::Identifier { request, did },
-				row => Wanted::Row(row),
-			});
+			for item in halves {
+				let did_part = item.split_once('@').map_or(item, |(did, _)| did);
+				// Hex too short to be an identifier is a mistyped one, not a text id:
+				// both vendors' text ids are longer than four characters.
+				if did_part.len() < 4 && did_part.chars().all(|c| c.is_ascii_hexdigit()) {
+					return Err(format!("{item:?}: an identifier is four hex digits, like 2029"));
+				}
+				let reference = Reference::parse(&format!("{unit}:{item}")).map_err(|e| e.to_string())?;
+				out.push(match reference {
+					Reference::Field { request, did, .. } if !item.contains('@') => Wanted::Identifier { request, did },
+					row => Wanted::Row(row),
+				});
+			}
 		}
 	}
 	if out.is_empty() {
 		return Err("no identifiers given".to_string());
 	}
 	Ok(out)
+}
+
+/// [`parse_spec`], and every text id in it checked against this machine's label
+/// data ([`check_text_ids`]) — all before the adapter is opened.
+pub fn parse_checked(spec: &str) -> Result<Vec<Wanted>, String> {
+	let wanted = parse_spec(spec)?;
+	let names_a_text_id = wanted.iter().any(|w| matches!(w, Wanted::Row(crate::dash::Reference::TextId { .. })));
+	if names_a_text_id && let Some(known) = known_text_ids() {
+		check_text_ids(&wanted, &known)?;
+	}
+	Ok(wanted)
+}
+
+/// Refuse a text id no row of this machine's label data carries.
+///
+/// What a text id looks like differs by source — `IDE00191`, `MAS04415`, VCDS's
+/// six digits, a 32-digit key on some ODIS rows — so it is looked up, not judged
+/// by its shape. Whether *this car's* unit has the row is known only once the car
+/// has said what it is ([`select_wanted`]); this catches the typo before then:
+/// `01:202A9` and `01:2O2A` are no identifier and no text id.
+pub fn check_text_ids(wanted: &[Wanted], known: &std::collections::BTreeSet<String>) -> Result<(), String> {
+	use crate::dash::Reference;
+	for want in wanted {
+		if let Wanted::Row(row @ Reference::TextId { text_id, .. }) = want
+			&& !known.contains(text_id)
+		{
+			return Err(format!(
+				"{row}: not a four-digit identifier like 01:202A, and no row in this machine's label data has that \
+				 text id — `watch` shows each row's in its Key column, turned on in its settings"
+			));
+		}
+	}
+	Ok(())
+}
+
+/// Every text id the current project's label data carries: none without a label
+/// cache, and `None` — nothing can be said before the car is asked — when the
+/// project cannot be resolved or its cache will not read; [`select_wanted`] then
+/// says it once the units are known.
+fn known_text_ids() -> Option<std::collections::BTreeSet<String>> {
+	let cache = crate::project::current().ok()?.cache();
+	if !cache.is_file() {
+		return Some(Default::default());
+	}
+	vag_data_db::text_ids(&cache).ok().map(|ids| ids.into_iter().map(|(id, _)| id).collect())
 }
 
 /// Select what `--did` asked for among the channels this car offers.
@@ -831,6 +884,52 @@ mod tests {
 		assert!(parse_spec("02:3816@x").is_err());
 		let short = parse_spec("01:202").unwrap_err();
 		assert!(short.contains("four hex digits"), "{short}");
+	}
+
+	/// The Key column shows an actual/target pair as `A/B`; typed back, it is both rows.
+	#[test]
+	fn a_pair_as_the_key_column_shows_it_is_both_of_its_rows() {
+		use crate::dash::Reference;
+		let row = |id: &str| Wanted::Row(Reference::parse(&format!("01:{id}")).unwrap());
+		assert_eq!(parse_spec("01:IDE00191/IDE00192").unwrap(), vec![row("IDE00191"), row("IDE00192")]);
+		assert_eq!(
+			parse_spec("01:2029,IDE00191/IDE00192").unwrap(),
+			vec![
+				Wanted::Identifier {
+					request: ENGINE,
+					did: 0x2029
+				},
+				row("IDE00191"),
+				row("IDE00192")
+			]
+		);
+		assert!(parse_spec("01:IDE00191/").is_err(), "half a pair");
+		assert!(parse_spec("01:/IDE00192").is_err(), "half a pair");
+	}
+
+	/// A text id is checked against the label data before the adapter opens: master
+	/// refused `01:202A9` and `01:2O2A` at the parse, and this tree took them as text ids
+	/// and refused them only after connecting and identifying every unit.
+	#[test]
+	fn a_text_id_no_row_on_this_machine_has_is_refused_before_the_car_is_asked() {
+		let known: std::collections::BTreeSet<String> = ["IDE00191", "123456", "19E50EAB364F4022A571D4D3351B7B28"]
+			.iter()
+			.map(|s| s.to_string())
+			.collect();
+		let check = |spec: &str, known: &std::collections::BTreeSet<String>| check_text_ids(&parse_spec(spec).unwrap(), known);
+		// Every shape the data holds passes when the data holds it: ODIS's, VCDS's six
+		// digits, a GUID-keyed row. Identifiers and bits are not text ids.
+		assert_eq!(check("01:IDE00191 713:123456 01:19E50EAB364F4022A571D4D3351B7B28", &known), Ok(()));
+		assert_eq!(check("01:2029 02:3816@4", &known), Ok(()));
+		for typo in ["01:202A9", "01:2O2A", "01:IDE0019"] {
+			let why = check(typo, &known).unwrap_err();
+			assert!(why.starts_with(&format!("{typo}: ")), "the spelling typed: {why}");
+			assert!(why.contains("like 01:202A"), "an example: {why}");
+			assert!(why.contains("Key column"), "where a text id is found: {why}");
+		}
+		// No label data at all: no text id can match, and that is said the same way.
+		assert!(check("01:IDE00191", &Default::default()).is_err());
+		assert_eq!(check("01:2029", &Default::default()), Ok(()));
 	}
 
 	fn bare(request: u16, did: u16, text_id: Option<&str>, bit: Option<u32>) -> Channel {

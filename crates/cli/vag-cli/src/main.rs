@@ -383,7 +383,8 @@ enum Command {
 		///
 		/// An identifier selects every field it carries, and one nothing
 		/// describes is shown as bytes. A text id is what the Key column shows
-		/// (turned on in the settings), the unit what the Unit column shows.
+		/// (turned on in the settings), and a pair it shows as `A/B` is both
+		/// rows; the unit is what the Unit column shows.
 		#[arg(long, value_name = "SPEC")]
 		did: Option<String>,
 		/// Poll rate for this run. Without it, the rate last set on the settings
@@ -732,7 +733,7 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 			..
 		} => {
 			let preselect = match did.as_deref() {
-				Some(spec) => plan::parse_spec(spec).map_err(|e| anyhow::anyhow!("--did: {e}"))?,
+				Some(spec) => plan::parse_checked(spec).map_err(|e| anyhow::anyhow!("--did: {e}"))?,
 				None => Vec::new(),
 			};
 			// A pipe, a log file or an agent gets the plain-console view
