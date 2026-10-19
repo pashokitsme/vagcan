@@ -2734,15 +2734,15 @@ async fn store(index: usize, value: Option<f32>, fresh_for: Duration) {
 /// before it changes, five frames long.
 const RATE_WINDOW_MS: u64 = 1000;
 
-/// The longest `FRAME` line: two hex digits per run of pixels at worst, and its header.
-const FRAME_LINE: usize = vag_dash_core::panel::WIDTH * vag_dash_core::panel::HEIGHT / 8 * 2 + 32;
+/// The last frame drawn, for `usb_writer_task`, which encodes its `FRAME` line as it writes
+/// it ([`Framebuffer::frame_line`]): no buffer holds the line, which is up to
+/// [`LINE_MAX`](vag_dash_core::panel::LINE_MAX) — 32 KB — for a picture of single-pixel runs. A
+/// copy and not the panel task's framebuffer, so the next frame draws while this one goes out;
+/// a static and not a task local, because two kilobytes in the embassy arena, which every task
+/// shares, is a tenth of it.
+static PANEL_PICTURE: Mutex<CriticalSectionRawMutex, Framebuffer> = Mutex::new(Framebuffer::new());
 
-/// The last frame drawn, as its `FRAME` line, for `usb_writer_task`. A static and not
-/// a task local: four kilobytes in the embassy arena, which every task shares, is a
-/// fifth of it.
-static PANEL_LINE: Mutex<CriticalSectionRawMutex, heapless::String<FRAME_LINE>> = Mutex::new(heapless::String::new());
-
-/// Raised when [`PANEL_LINE`] holds a frame not yet written.
+/// Raised when [`PANEL_PICTURE`] holds a frame not yet written.
 static PANEL_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// Every this many frames the glass is sent the whole picture, changed or not: ten seconds.
@@ -3044,11 +3044,8 @@ async fn panel_task(
 		}
 
 		// Left for the writer, which puts it on the wire whole between everything else.
-		let mut line = PANEL_LINE.lock().await;
-		line.clear();
-		if framebuffer.write_frame(&mut *line).is_ok() {
-			PANEL_READY.signal(());
-		}
+		PANEL_PICTURE.lock().await.copy_from(framebuffer);
+		PANEL_READY.signal(());
 	}
 }
 
@@ -3318,8 +3315,21 @@ async fn usb_writer_task(usb: UsbSerialJtagTx<'static, Async>) -> ! {
 			}
 			Either4::Fourth(()) => {
 				if !adapter_mode() {
-					let line = PANEL_LINE.lock().await;
-					if writer.put(line.as_bytes(), false).await {
+					let picture = PANEL_PICTURE.lock().await;
+					// Encoded a packet at a time, so every packet but the last is full, as when
+					// the line was written whole; a packet not taken ends it, as it did then.
+					let mut line = picture.frame_line();
+					let mut piece = [0u8; USB_PACKET];
+					let whole = loop {
+						let n = line.fill(&mut piece);
+						if n == 0 {
+							break true;
+						}
+						if !writer.put(&piece[..n], false).await {
+							break false;
+						}
+					};
+					if whole {
 						writer.put(b"\r\n", false).await;
 					}
 				}

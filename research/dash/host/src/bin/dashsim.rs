@@ -298,9 +298,9 @@ const SNAP_SKIP: usize = 2;
 /// How long a snap waits for its frame. A board in adapter mode sends none.
 const SNAP_WAIT: Duration = Duration::from_secs(5);
 
-/// Bytes past which a line with no `\n` is thrown away: twice the buffer the firmware keeps
-/// its `FRAME` line in (`FRAME_LINE` in `vag-dash-fw`'s `dash.rs`), so no panel line is cut.
-const SNAP_LINE_MAX: usize = 2 * (256 * 64 / 8 * 2 + 32);
+/// Bytes past which a line with no `\n` is thrown away: twice the longest `FRAME` line the
+/// board can send (`vag_dash_core::panel::LINE_MAX`), so no panel line is cut.
+const SNAP_LINE_MAX: usize = 2 * vag_dash_core::panel::LINE_MAX;
 
 /// One frame off the board, as `--preview` writes its scenarios.
 fn snap(port_name: &str, file: &std::path::Path, hello: bool) -> Result<()> {

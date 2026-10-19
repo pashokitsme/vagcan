@@ -48,6 +48,9 @@ vag-dash-ble = { path = "../../../crates/dash/vag-dash-ble" }
 # For one number: the gap under which two presses are one, so `dashsim` and
 # the board disagree about nothing.
 vag-dash-render = { path = "../../../crates/dash/vag-dash-render" }
+# The board's `FRAME` line: how long it can be (`dashsim`), and its encoder, which
+# `src/frame.rs`'s tests decode.
+vag-dash-core = { path = "../../../crates/dash/vag-dash-core" }
 # The link codec `bleuds` speaks, the same source the board links.
 vag-uds-transport = { path = "../../../crates/uds/vag-uds-transport" }
 # `benchecu`: the slcan backend it answers through, and the rule pairing a
@@ -62,8 +65,6 @@ embedded-graphics = "0.8"
 png = "0.17"
 
 [dev-dependencies]
-# `src/frame.rs`'s tests: the board's own encoder, `vag_dash_core::panel::Framebuffer`, decoded here.
-vag-dash-core = { path = "../../../crates/dash/vag-dash-core" }
 # `examples/stopwatch_parity.rs`: the laptop's stopwatch, run beside the board's on the same
 # samples. Here and not in `vag-cli-measure`, which depends on `vag-cli-core` alone.
 vag-cli-measure = { path = "../../../crates/cli/vag-cli-measure" }

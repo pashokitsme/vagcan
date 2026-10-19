@@ -274,6 +274,29 @@ mod tests {
 		}
 	}
 
+	/// The longest line the board sends — every pixel a run of its own, a checkerboard — decodes
+	/// pixel for pixel, and fits what `dashsim` reads a line into.
+	#[test]
+	fn the_boards_longest_line_decodes() {
+		use embedded_graphics::pixelcolor::BinaryColor;
+		use embedded_graphics::prelude::*;
+		use vag_dash_core::panel::{Framebuffer, HEIGHT, LINE_MAX, WIDTH};
+
+		for checker in [|x: usize, _: usize| x.is_multiple_of(2), |x: usize, y: usize| (x + y).is_multiple_of(2)] {
+			let mut frame = Framebuffer::new();
+			let pixels = (0..HEIGHT).flat_map(|y| (0..WIDTH).map(move |x| (x, y)));
+			let lit = pixels
+				.filter(|&(x, y)| checker(x, y))
+				.map(|(x, y)| Pixel(Point::new(x as i32, y as i32), BinaryColor::On));
+			frame.draw_iter(lit).unwrap();
+			let mut line = String::new();
+			frame.write_frame(&mut line).unwrap();
+			assert!(line.len() <= LINE_MAX);
+			let bitmap = decode(&line).unwrap();
+			assert!((0..HEIGHT).all(|y| (0..WIDTH).all(|x| bitmap.get(x as u32, y as u32) == checker(x, y))));
+		}
+	}
+
 	#[test]
 	fn a_short_frame_is_refused_rather_than_padded() {
 		let err = decode("FRAME 256 64 0102").unwrap_err();

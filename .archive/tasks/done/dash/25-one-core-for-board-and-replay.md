@@ -60,9 +60,17 @@ renderer is what `vag-dash-wasm` compiles for the browser — it keeps depending
 Left as it was: the replay's model of the bus (when a read is due) is the replay's own, as the
 board's planner is not run there. The firmware's CAN and scheduler code is untouched but for
 `RESPONSE_TIMEOUT`'s path, one comment, and the store under it: `PanelReads::fresh_for` asks
-`fresh_for_ms`, `store` and `fresh` write and read a `Slot`. `FRAME_LINE` (the USB line's buffer, `W × H / 8 × 2 +
-32`) is not the longest line a picture can make — every other pixel lit is two hex digits a
-pixel — and such a frame is not sent; unchanged, noted.
+`fresh_for_ms`, `store` and `fresh` write and read a `Slot`.
+
+**The `FRAME` line no longer has a buffer to outgrow** (2026-10-20, after review). The board
+kept the line in a 4,128-byte `PANEL_LINE` (`W × H / 8 × 2 + 32`), and a picture of single-pixel
+runs makes a line of `LINE_MAX` = 32,783 bytes: such a frame was never sent. Now the panel task
+copies its framebuffer into `PANEL_PICTURE` (2 KB, a bit a pixel) and `usb_writer_task` encodes
+the line as it writes it, a USB packet at a time (`Framebuffer::frame_line`, `FrameLine::fill`);
+`write_frame` is the same encoder. `dashsim` reads a line up to `2 × LINE_MAX`. Tests: the
+stripes' line is `LINE_MAX` exactly, the checkerboard's within it; every piece size adds up to
+the old encoder's line for six pictures; the host decodes both worst cases pixel for pixel.
+Static RAM −2,096 B with BLE, −2,088 B without.
 
 ## Checks
 
@@ -75,7 +83,8 @@ pixel — and such a frame is not sent; unchanged, noted.
 - The owner's plan, built offline from a copy of `~/.vagcan`: the firmware's clippy clean with BLE
   and without.
 - Firmware static RAM (`ram-budget.sh`, empty plan): 140,976 → 141,000 B with BLE, 131,516 →
-  131,540 B without (+24). With the empty plan `master`'s compiler saw no page and dropped the
+  131,540 B without (+24) for the core; then 138,904 B and 129,452 B with the streamed `FRAME`
+  line, on `master` with #32. With the empty plan `master`'s compiler saw no page and dropped the
   page drawing whole — `draw_page`, the float formatting; `Frames` holds the plan behind a
   pointer, so the empty-plan image links them now (+34 KB flash, the 24 B of `.data` with them).
   On the owner's plan, where both images draw: 142,788 → 142,604 B with BLE, 133,608 → 133,424 B
