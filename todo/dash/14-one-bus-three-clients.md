@@ -40,7 +40,7 @@ that into a queue of *requests* with three sources and a rate each:
 |---|---|---|---|
 | **panel** | the visible page's channels | as fast as the page wants (≈50 Hz for four cells) | normal |
 | **panel, background** | channels of pages not shown | slow (1 Hz) or none | low |
-| **stopwatch** | the speed channel while the page is up | its own `hz` in `dash.toml` (at most 100) | foreground; `Class::Timing` (the board's timing channel) while armed or running, unless a host holds it; with the stopwatch page on the glass no page cell is foreground, in any phase; an alarm's page over it drops to background while armed or running (`19`) |
+| **stopwatch** | the speed channel while the page is up | its own `hz` in `dash.toml` (at most 50) | foreground; `Class::Timing` (the board's timing channel) while armed or running, unless a host holds it; with the stopwatch page on the glass no page cell is foreground, in any phase; an alarm's page over it drops to background while armed or running (`19`) |
 | **lever** | the rocker's identifier, the cruise status | fixed in code (`plan.rs`): 2 / 20 Hz by the gate, 10 Hz while the stopwatch is up with a factor; cruise status 5 Hz (`19`) | foreground |
 | **laptop** | whole UDS PDUs the host sends (§3) | as they arrive | normal, interleaved |
 

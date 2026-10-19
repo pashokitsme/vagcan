@@ -2,7 +2,7 @@
 //!
 //! What decides the glass is the board's own code: [`Screen`] (the page cursor, the alarms
 //! and the commands the board's inputs give), [`Plan::rates`] (what the bus reads, and how often, for the page on
-//! the glass) and [`pages::cells`] (what a page shows). What this module adds is
+//! the glass) and [`Page::reads`] (what a page reads). What this module adds is
 //! the part of `vag-dash-fw`'s `bin/dash.rs` that is not a library — the frame loop, the value
 //! store with its staleness rule, and the cell composition in `panel_task` — mirrored here
 //! because the firmware cannot be built for the host. Where a constant is the board's, it
@@ -19,7 +19,6 @@ use vag_dash_render::alarm::{BLINK_MS, ChannelId, Rule, Slot as AlarmSlot};
 use vag_dash_render::button::{Button, Press as ButtonPress};
 use vag_dash_render::control::{self, Command};
 use vag_dash_render::history::History;
-use vag_dash_render::pages;
 use vag_dash_render::plan::{MAX_VALUE_CELLS, Page, Plan};
 use vag_dash_render::screen::{Change, Glass, Outcome, Screen};
 use vag_dash_render::{Board, Cell, Deviation, Frame, Links, Theme, draw_page};
@@ -301,11 +300,9 @@ impl Replay {
 	fn read(&mut self, t: u64) {
 		let glass = self.drawn.unwrap_or(self.cursor);
 		// The page's cells and the voltage its strip shows, as the board's bus task reads them.
-		let mut shown: Vec<u16> = self.plan.pages.get(usize::from(glass)).map_or(&[][..], pages::cells).to_vec();
-		shown.extend(self.plan.strip_volts(usize::from(glass)));
-		// Every page's cells, charts included: a chart samples its channel every frame.
-		let mut listed: Vec<u16> = self.plan.pages.iter().flat_map(|page| pages::cells(page).iter().copied()).collect();
-		listed.extend(self.plan.strip_listed());
+		let shown: Vec<u16> = self.plan.pages.get(usize::from(glass)).into_iter().flat_map(Page::reads).collect();
+		// Every page's, charts included: a chart samples its channel every frame.
+		let listed: Vec<u16> = self.plan.pages.iter().flat_map(Page::reads).collect();
 		let mut wanted = vec![None; self.plan.channels.len()];
 		for rate in self.plan.rates(&shown, &listed) {
 			wanted[usize::from(rate.channel)] = Some((rate.foreground, rate.period_ms));
@@ -350,6 +347,8 @@ impl Replay {
 			return;
 		};
 		let value_of = |i: u16| current(&self.slots, i, t);
+		// Whether the car stands, once for the frame (`Plan::stands`, as the board decides it).
+		let stands = self.plan.stands(value_of);
 		let cell_of = |index: u16| {
 			let cell = match self.plan.channel(index) {
 				Some(channel) => {
@@ -362,8 +361,7 @@ impl Replay {
 					};
 					// As the board shows it: the stopwatch's speed rounded down, a `zero_at_rest`
 					// channel 0 at a standstill (`Plan::shown`).
-					let speed = self.plan.stopwatch.and_then(|stopwatch| value_of(stopwatch.speed));
-					let shown = self.plan.shown(index, value_of(index), speed);
+					let shown = self.plan.shown(index, value_of(index), stands);
 					Cell::new(channel.label, shown, channel.unit_text, channel.decimals).with_deviation(deviation)
 				}
 				None => Cell::new("?", None, "", 0),
@@ -384,28 +382,21 @@ impl Replay {
 		let theme = Theme::bold_mono();
 		// The page's title and voltage over it, as the board draws them (`Plan::strip`).
 		let strip = self.plan.strip(usize::from(glass.page), value_of);
-		let index = match page {
+		match *page {
 			Page::Values { cells, .. } => {
 				let cells: Vec<Cell<'_>> = cells.iter().take(MAX_VALUE_CELLS).map(|&index| cell_of(index)).collect();
 				draw_page(&Frame::Values { cells: &cells }, &strip, &board, &theme, target);
-				return;
 			}
-			Page::Chart { channel, .. } => *channel,
-		};
-		match self.plan.chart(index) {
-			Some(chart) => {
+			// Its range and its history's slot are the page's, as the generator joined them.
+			Page::Chart { channel, slot, min, max, .. } => {
 				let frame = Frame::Chart {
-					cell: cell_of(index),
-					min: chart.min,
-					max: chart.max,
-					samples: self.histories[chart.slot].samples(),
+					cell: cell_of(channel),
+					min,
+					max,
+					samples: self.histories[usize::from(slot)].samples(),
 					seconds_per_sample: FRAME_MS as f32 / 1000.0,
 				};
 				draw_page(&frame, &strip, &board, &theme, target);
-			}
-			// No range, no chart: the value as a one-cell page, as the board does.
-			None => {
-				draw_page(&Frame::Values { cells: &[cell_of(index)] }, &strip, &board, &theme, target);
 			}
 		}
 	}
@@ -460,7 +451,7 @@ impl Replay {
 
 	fn channel_name(&self, index: u16) -> String {
 		match self.plan.channel(index) {
-			Some(c) => channel_name(c.label, c.unit, c.did, c.bit_offset),
+			Some(c) => channel_name(c.label, self.plan.unit(c).request, c.did, c.bit_offset),
 			None => format!("channel {index}"),
 		}
 	}
@@ -543,12 +534,12 @@ mod tests {
 	use super::*;
 	use crate::dashreplay::glass::Canvas;
 	use vag_dash_render::alarm::{Alarm, Bound, HOLD_MS, PageId};
-	use vag_dash_render::plan::{Channel, StripPlan, Unit};
+	use vag_dash_render::plan::{Channel, Standstill, StopwatchPlan, Unit};
 	use vag_dash_render::{Strip, Volts};
 
 	const fn channel(did: u16, label: &'static str) -> Channel {
 		Channel {
-			unit: 0x7E0,
+			unit: 0,
 			did,
 			bit_offset: 0,
 			bit_length: 16,
@@ -574,12 +565,12 @@ mod tests {
 		Page::Values {
 			title: "MAIN",
 			cells: &[0, 1],
-			volts: true,
+			volts: None,
 		},
 		Page::Values {
 			title: "WATCH",
 			cells: &[2, 3],
-			volts: true,
+			volts: None,
 		},
 	];
 	const LOW: Rule = Rule::Bounds {
@@ -613,7 +604,7 @@ mod tests {
 		stalk: None,
 		stopwatch: None,
 		buttons: &[],
-		strip: None,
+		standstill: None,
 	};
 
 	/// A reading every 100 ms from 0 to `end_ms`, of what `value` says at that moment.
@@ -859,9 +850,22 @@ mod tests {
 		channel(0x1004, "D"),
 		channel(0x1005, "V"),
 	];
+	/// Both pages show the voltage in their strip: neither has it as a cell.
+	static STRIP_PAGES: [Page; 2] = [
+		Page::Values {
+			title: "MAIN",
+			cells: &[0, 1],
+			volts: Some(4),
+		},
+		Page::Values {
+			title: "WATCH",
+			cells: &[2, 3],
+			volts: Some(4),
+		},
+	];
 	static STRIP_PLAN: Plan = Plan {
 		channels: &STRIP_CHANNELS,
-		strip: Some(StripPlan { volts: 4 }),
+		pages: &STRIP_PAGES,
 		..PLAN
 	};
 
@@ -872,21 +876,23 @@ mod tests {
 			Page::Values {
 				title: "MAIN",
 				cells: &[0, 1],
-				volts: true,
+				volts: None,
 			},
 			Page::Chart {
 				title: "BOOST",
 				channel: 2,
+				slot: 0,
 				min: -5.0,
 				max: 5.0,
-				volts: true,
+				volts: None,
 			},
 			Page::Chart {
 				title: "",
 				channel: 3,
+				slot: 1,
 				min: -5.0,
 				max: 5.0,
-				volts: true,
+				volts: None,
 			},
 		];
 		static CHARTS: Plan = Plan {
@@ -925,6 +931,133 @@ mod tests {
 		assert_eq!(text(&drawn), text(&expected));
 		// Read in the foreground, at its own rate, as a cell of the page on the glass is.
 		assert_eq!(replay.subs[4].map(|sub| (sub.foreground, sub.period_ms)), Some((true, 100)));
+	}
+
+	/// `todo/dash/27`: a channel shown only on a chart page carries an alarm. Its chart takes
+	/// the glass and its header blinks inverted — the board's composition of a chart page, the
+	/// history the replay kept, drawn by the renderer itself.
+	#[test]
+	fn an_alarm_on_a_chart_only_channel_raises_the_chart_with_its_header_blinking() {
+		static CHART_PAGES: [Page; 2] = [
+			Page::Values {
+				title: "MAIN",
+				cells: &[0, 1],
+				volts: None,
+			},
+			Page::Chart {
+				title: "WATCH",
+				channel: 2,
+				slot: 0,
+				min: -5.0,
+				max: 5.0,
+				volts: None,
+			},
+		];
+		static CHART_RULES: [Alarm; 1] = [RULES[0]];
+		static CHARTED: Plan = Plan {
+			pages: &CHART_PAGES,
+			alarms: &CHART_RULES,
+			..PLAN
+		};
+		let panel = |end_ms: u64| {
+			let calm = || every_100ms(end_ms, |_| 0.0);
+			let excursion = every_100ms(end_ms, |t| if t >= 1_000 { -3.0 } else { 0.0 });
+			let mut replay = Replay::new(&CHARTED, vec![calm(), calm(), excursion, calm()], vec![], 0, end_ms).unwrap();
+			while replay.step().is_some() {}
+			assert_eq!(replay.last.map(|(_, glass)| glass.page), Some(1), "the chart took the glass");
+			let mut drawn = Canvas::new(WIDTH, HEIGHT);
+			replay.draw(&mut drawn);
+			(drawn, replay)
+		};
+		let composed = |replay: &Replay, inverted: bool| {
+			let cell = Cell::new("C", Some(-3.0), "", 1);
+			let frame = Frame::Chart {
+				cell: if inverted { cell.alarmed() } else { cell },
+				min: -5.0,
+				max: 5.0,
+				samples: replay.histories[0].samples(),
+				seconds_per_sample: FRAME_MS as f32 / 1000.0,
+			};
+			let board = Board {
+				links: Links::NONE,
+				rates: None,
+				faults: None,
+			};
+			let strip = Strip {
+				title: "WATCH",
+				volts: Volts::Hidden,
+			};
+			let mut expected = Canvas::new(WIDTH, HEIGHT);
+			draw_page(&frame, &strip, &board, &Theme::bold_mono(), &mut expected);
+			expected
+		};
+		let text = crate::dashreplay::glass::half_blocks;
+		let (inverted, at_1800) = panel(1_800);
+		assert_eq!(text(&inverted), text(&composed(&at_1800, true)), "the inverted half");
+		let (plain, at_1400) = panel(1_400);
+		assert_eq!(text(&plain), text(&composed(&at_1400, false)), "the plain half");
+		assert_ne!(text(&composed(&at_1800, true)), text(&composed(&at_1800, false)));
+	}
+
+	/// `todo/dash/26`: whether the car stands is decided once a frame, from the plan's source,
+	/// as on the board — a `zero_at_rest` cell shows 0 while the speed reads 0, and the speed is
+	/// read with it though no page shows it.
+	#[test]
+	fn a_zero_at_rest_cell_is_0_while_the_plans_standstill_says_the_car_stands() {
+		static REST_CHANNELS: [Channel; 4] = [
+			channel(0x1001, "A"),
+			Channel {
+				zero_at_rest: true,
+				..channel(0x1002, "B")
+			},
+			channel(0x1003, "C"),
+			channel(0x1004, "SPEED"),
+		];
+		static RESTING: Plan = Plan {
+			channels: &REST_CHANNELS,
+			alarms: &[],
+			stopwatch: Some(StopwatchPlan {
+				speed: 3,
+				km_h_per_unit: 1.0,
+				marks: &[100],
+			}),
+			standstill: Some(Standstill::Speed(3)),
+			..PLAN
+		};
+		let panel = |speed: f32| {
+			let calm = || every_100ms(2_000, |_| 0.0);
+			let slope = every_100ms(2_000, |_| 0.6);
+			let mut replay = Replay::new(&RESTING, vec![calm(), slope, calm(), every_100ms(2_000, |_| speed)], vec![], 0, 2_000).unwrap();
+			while replay.step().is_some() {}
+			let mut drawn = Canvas::new(WIDTH, HEIGHT);
+			replay.draw(&mut drawn);
+			(drawn, replay)
+		};
+		let composed = |b: f32| {
+			let cells = [Cell::new("A", Some(0.0), "", 1), Cell::new("B", Some(b), "", 1)];
+			let board = Board {
+				links: Links::NONE,
+				rates: None,
+				faults: None,
+			};
+			let strip = Strip {
+				title: "MAIN",
+				volts: Volts::Hidden,
+			};
+			let mut expected = Canvas::new(WIDTH, HEIGHT);
+			draw_page(&Frame::Values { cells: &cells }, &strip, &board, &Theme::bold_mono(), &mut expected);
+			expected
+		};
+		let text = crate::dashreplay::glass::half_blocks;
+		let (standing, replay) = panel(0.0);
+		assert_eq!(text(&standing), text(&composed(0.0)), "standing: 0, not the slope");
+		assert_eq!(
+			replay.subs[3].map(|sub| (sub.foreground, sub.period_ms)),
+			Some((true, 100)),
+			"the speed is read with the cell, on no page of its own"
+		);
+		let (rolling, _) = panel(12.0);
+		assert_eq!(text(&rolling), text(&composed(0.6)), "rolling: the sensor's");
 	}
 
 	#[test]

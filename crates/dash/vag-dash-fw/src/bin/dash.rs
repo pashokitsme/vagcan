@@ -26,9 +26,9 @@
 //!   ends on `C`, or when the host's start-of-frame packets stop (the cable pulled).
 //! * **Alarms** (`todo/dash/04`): every channel with an alarm in `dash.toml`
 //!   (`alarm_max`, `alarm_min`, `drift_*`) is read at its rate on every page; past its
-//!   bound the first values page showing it takes the glass with its cell blinking
-//!   inverted (steady through the hold once the value is back), every other channel out on
-//!   that page with it, and any press silences what is on the glass
+//!   bound the first values page showing it — else its chart page, the header for the cell —
+//!   takes the glass with its cell blinking inverted (steady through the hold once the value
+//!   is back), every other channel out on that page with it, and any press silences what is on the glass
 //!   ([`vag_dash_render::screen`]). The adapter screen runs none.
 //! * **Input** (`todo/dash/19`, "Input backends"): the plan's `[[button]]`s on GPIO 3, 4 and
 //!   5, the cruise lever and `dashsim`'s presses each turn a press into a [`Command`]; every
@@ -119,6 +119,7 @@ use vag_dash_fw::ui::{Button, DEBOUNCE_MS, Press, Visibility};
 use vag_dash_fw::usb;
 use vag_dash_render::alarm::{self, ChannelId, Slot as AlarmSlot};
 use vag_dash_render::control::{self, Command, PinButton};
+#[cfg(feature = "ble")]
 use vag_dash_render::pages;
 use vag_dash_render::plan::{Mode as ReadMode, Page, PartAnswer, PartCheck, Timing};
 use vag_dash_render::screen::{Change, Outcome, Screen};
@@ -246,15 +247,27 @@ static BUS: StaticCell<Bus> = StaticCell::new();
 /// BLE request does not wait for the panel's next due read.
 static BUS_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// Raised whenever the pages or the page on the glass may have changed, so the
-/// panel's subscriptions follow.
+/// Raised by whatever changes what the panel's subscriptions follow, so the bus task re-reads
+/// it: the page on the glass ([`ON_GLASS`]), the cursor, the lever's gate, the stopwatch's mode
+/// and phase, whether the lever's unit answers, and a host's timing subscriptions. **The one
+/// way the bus task learns of it** (`todo/dash/27`, archived): every change raises it, so no
+/// poll stands behind it — a change that does not raise it is the bug, not something a recheck
+/// would catch a second later.
 static PAGES_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// The page the panel last drew — the cursor's, or an alarm's during a takeover — for the
-/// bus task, which reads the page on the glass in the foreground. [`NO_PAGE`] before the
-/// first frame, when the cursor's page is the one about to be drawn.
-static GLASS_PAGE: AtomicU8 = AtomicU8::new(NO_PAGE);
-const NO_PAGE: u8 = u8::MAX;
+/// What the panel last drew, for the bus task, which reads the page on the glass in the
+/// foreground: written by the panel each frame, raising [`PAGES_CHANGED`] when it moves.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OnGlass {
+	/// Before the first frame: the cursor's page, about to be drawn.
+	Cursor,
+	/// A plan page — the cursor's, or an alarm's during a takeover.
+	Page(u8),
+	/// The stopwatch: no page's cells are in the foreground, the speed is (`Plan::rates_in`).
+	Stopwatch,
+}
+
+static ON_GLASS: BlockingMutex<CriticalSectionRawMutex, core::cell::Cell<OnGlass>> = BlockingMutex::new(core::cell::Cell::new(OnGlass::Cursor));
 
 /// Raised whenever something a connected client would want to know changes.
 static STATE_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
@@ -1125,6 +1138,23 @@ async fn serve<P: PacketPool>(
 	bus.lock(|planner| session.close(ms(), &mut planner.borrow_mut()));
 	BLE_CLIENT.publish(session);
 	BUS_WAKE.signal(());
+	// A timing channel it held is free again: a run's speed takes it back.
+	PAGES_CHANGED.signal(());
+}
+
+/// How many timing subscriptions the planner holds, every client's — what a host's session step
+/// is compared by ([`host_timing_moved`]).
+fn timing_held(bus: &Bus) -> usize {
+	bus.lock(|p| p.borrow().timing_subscriptions())
+}
+
+/// A host's session step moved the planner's timing subscriptions — the host took the board's
+/// timing channel or let it go — so a run's speed yields to it or takes it back
+/// ([`host_clock`]): the panel's subscriptions follow.
+fn host_timing_moved(bus: &Bus, before: usize) {
+	if timing_held(bus) != before {
+		PAGES_CHANGED.signal(());
+	}
 }
 
 /// The bytes of one notification: the negotiated ATT MTU less the 3-byte
@@ -1335,6 +1365,7 @@ async fn uds_server(session: &mut Session, settings: &'static Shared, bus: &'sta
 			TIMING_TAKEN.wait(),
 		)
 		.await;
+		let timing = timing_held(bus);
 		let out = match event {
 			Either3::First(Either4::First(chunk)) => {
 				let mut out = Vec::new();
@@ -1357,9 +1388,11 @@ async fn uds_server(session: &mut Session, settings: &'static Shared, bus: &'sta
 			Either3::Second(()) => mode_changed(session, bus),
 		};
 		// Whatever the session did may have given the planner work, and changed which
-		// subscriptions are its.
+		// subscriptions are its. The radio never takes the timing channel from a run (it is
+		// refused while one holds it), so a count that moved is all the panel needs to hear.
 		client.publish(session);
 		BUS_WAKE.signal(());
+		host_timing_moved(bus, timing);
 		for message in out {
 			match link::encode(&message) {
 				Ok(frame) => {
@@ -1564,8 +1597,6 @@ const PENDING_DEADLINE: Duration = Duration::from_secs(10);
 const SEND_DEADLINE: Duration = Duration::from_secs(1);
 /// After a bus-off, before the restarted controller is asked anything.
 const BUS_OFF_GAP: Duration = Duration::from_secs(1);
-/// How often the bus task looks at the pages when nothing has said they changed.
-const PAGE_RECHECK: Duration = Duration::from_secs(1);
 /// The waits above, as every exchange's [`Waits`] reads them.
 const TIMEOUTS: Timeouts = Timeouts {
 	answer_ms: RESPONSE_TIMEOUT.as_millis() as u64,
@@ -1869,15 +1900,17 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 	let mut swept_said = false;
 	let mut strays_said = false;
 	let mut bus_off = false;
-	let mut pages_seen = Instant::MIN;
+	// Into panel mode, at boot or back from the adapter: the subscriptions follow the pages
+	// once before anything has said they changed.
+	PAGES_CHANGED.signal(());
 
 	loop {
 		if adapter_wanted() {
 			return;
 		}
-		if PAGES_CHANGED.signaled() || pages_seen.elapsed() >= PAGE_RECHECK {
+		// Reset before the pages are read, so a change after the read raises it again.
+		if PAGES_CHANGED.signaled() {
 			PAGES_CHANGED.reset();
-			pages_seen = Instant::now();
 			panel.follow_pages(bus, settings).await;
 		}
 		panel.ask_again_when_due(bus);
@@ -1943,14 +1976,17 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 				deliver(deliveries, panel, bus).await;
 			}
 			Next::Idle { until_ms } => {
-				let recheck = pages_seen + PAGE_RECHECK;
-				let recheck = panel.next_retry().map_or(recheck, |retry| retry.min(recheck));
-				let recheck = panel.next_close().map_or(recheck, |close| close.min(recheck));
-				let recheck = panel
-					.count
-					.wake_ms(ms())
-					.map_or(recheck, |start| Instant::from_millis(start).min(recheck));
-				let until = until_ms.map_or(recheck, |t| Instant::from_millis(t).min(recheck));
+				// The earliest of what has a time of its own; with none, a signal wakes it.
+				let until = [
+					panel.next_retry(),
+					panel.next_close(),
+					panel.count.wake_ms(ms()).map(Instant::from_millis),
+					until_ms.map(Instant::from_millis),
+				]
+				.into_iter()
+				.flatten()
+				.min()
+				.unwrap_or(Instant::MAX);
 				let woke = select4(Timer::at(until), BUS_WAKE.wait(), PAGES_CHANGED.wait(), adapter_requested()).await;
 				if let Either4::Third(()) = woke {
 					// `wait` consumed the signal; the top of the loop looks for it.
@@ -2069,10 +2105,6 @@ struct Panel {
 	screen: &'static ScreenCell,
 	stopwatch: &'static StopwatchCell,
 }
-
-/// The stopwatch drawn instead of a page: what [`GLASS_PAGE`] holds while it is up — no
-/// page's cells are in the foreground, the speed is (`Plan::rates_in`).
-const STOPWATCH_PAGE: u8 = u8::MAX - 1;
 
 /// How old the cruise status may be and still open the gate: three of its periods. Older is
 /// no answer, and no answer keeps the lever cruise's.
@@ -2251,19 +2283,21 @@ impl PanelReads {
 			let s = settings.lock().await;
 			// The page on the glass, which during a takeover is the alarm's and not the
 			// cursor's: its cells are the ones being looked at (`Glass::page_changed`).
-			let glass = match GLASS_PAGE.load(Ordering::Relaxed) {
-				NO_PAGE => s.config.active_page,
-				page => page,
+			let glass = match ON_GLASS.lock(|glass| glass.get()) {
+				OnGlass::Cursor => Some(s.config.active_page),
+				OnGlass::Page(page) => Some(page),
+				// No page's cells, no voltage: the mode brings the speed.
+				OnGlass::Stopwatch => None,
 			};
-			// `STOPWATCH_PAGE` is past every page: no cells, and the mode brings the speed.
-			let mut shown: Vec<u16> = PLAN.pages.get(usize::from(glass)).map_or(&[][..], pages::cells).to_vec();
-			// The voltage the page's strip shows is read as one of its cells; the stopwatch's page
-			// is no plan page and shows no voltage.
-			shown.extend(PLAN.strip_volts(usize::from(glass)));
-			// Every page's cells, charts included: a chart samples its channel
-			// every frame whether or not it is shown — and the strip's voltage, where a page shows it.
-			let mut listed: Vec<u16> = PLAN.pages.iter().flat_map(|page| pages::cells(page).iter().copied()).collect();
-			listed.extend(PLAN.strip_listed());
+			// Its cells and the voltage its strip shows (`Page::reads`, as the replay reads them).
+			let shown: Vec<u16> = glass
+				.and_then(|page| PLAN.pages.get(usize::from(page)))
+				.into_iter()
+				.flat_map(Page::reads)
+				.collect();
+			// Every page's, charts included: a chart samples its channel every frame whether or
+			// not it is shown.
+			let listed: Vec<u16> = PLAN.pages.iter().flat_map(Page::reads).collect();
 			(shown, listed)
 		};
 		let mode = self.read_mode();
@@ -2305,7 +2339,6 @@ impl PanelReads {
 	/// the two share one read, which goes at the host's timing rank anyway.
 	fn subscribe_unit(&mut self, u: usize, bus: &Bus) {
 		let unit = unit_of(u);
-		let request = PLAN.units[u].request;
 		let mut wanted: [Option<(Class, u32)>; CHANNEL_COUNT] = [None; CHANNEL_COUNT];
 		for rate in PLAN.rates_in(&self.shown, &self.listed, self.mode) {
 			let class = match (rate.timing, rate.foreground) {
@@ -2318,10 +2351,8 @@ impl PanelReads {
 		let now = ms();
 		bus.lock(|p| {
 			let mut planner = p.borrow_mut();
-			for (index, channel) in PLAN.channels.iter().enumerate() {
-				if channel.unit != request {
-					continue;
-				}
+			for (index, channel) in PLAN.channels_of(u) {
+				let index = usize::from(index);
 				let current = self.subs[index];
 				match (current, wanted[index]) {
 					(Some(sub), Some((class, period_ms))) if sub.class == class && sub.period_ms == period_ms && planner.holds(sub.id) => {}
@@ -2342,17 +2373,15 @@ impl PanelReads {
 
 	/// Drop every subscription of one unit and clear its values.
 	async fn unsubscribe_unit(&mut self, u: usize, bus: &Bus) {
-		let request = PLAN.units[u].request;
-		for (index, channel) in PLAN.channels.iter().enumerate() {
-			if channel.unit == request {
-				if let Some(sub) = self.subs[index].take() {
-					bus.lock(|p| p.borrow_mut().unsubscribe(sub.id));
-				}
-				store(index, None, STALE).await;
-				// The rocker's own miss may never arrive once its subscription is gone: a read
-				// that did not come breaks a press's pair, so the lever hears of it here.
-				self.lever_read(index, None).await;
+		for (index, _) in PLAN.channels_of(u) {
+			let index = usize::from(index);
+			if let Some(sub) = self.subs[index].take() {
+				bus.lock(|p| p.borrow_mut().unsubscribe(sub.id));
 			}
+			store(index, None, STALE).await;
+			// The rocker's own miss may never arrive once its subscription is gone: a read
+			// that did not come breaks a press's pair, so the lever hears of it here.
+			self.lever_read(index, None).await;
 		}
 	}
 
@@ -2399,13 +2428,18 @@ impl PanelReads {
 					match value {
 						None => note!(
 							"can: {:03X} {:04X} answered {} byte(s), the plan wants bits {}+{}",
-							channel.unit,
+							PLAN.unit(channel).request,
 							channel.did,
 							data.len(),
 							channel.bit_offset,
 							channel.bit_length
 						),
-						Some(_) => note!("can: {:03X} {:04X} {} is answering", channel.unit, channel.did, channel.label),
+						Some(_) => note!(
+							"can: {:03X} {:04X} {} is answering",
+							PLAN.unit(channel).request,
+							channel.did,
+							channel.label
+						),
 					}
 				}
 				None
@@ -2420,21 +2454,24 @@ impl PanelReads {
 				self.lever_read(index, None).await;
 				if self.answering[index] != Some(false) {
 					self.answering[index] = Some(false);
-					note!("can: {:03X} {:04X} {}: {}", channel.unit, channel.did, channel.label, miss_text(*why));
+					note!(
+						"can: {:03X} {:04X} {}: {}",
+						PLAN.unit(channel).request,
+						channel.did,
+						channel.label,
+						miss_text(*why)
+					);
 				}
 				// A unit that stops answering is asked one thing — its part
 				// number — until it speaks, not every channel.
-				if *why == Miss::NoAnswer {
-					if let Some(u) = PLAN.units.iter().position(|unit| unit.request == channel.unit) {
-						if self.checks[u] == Check::Matched {
-							self.checks[u] = Check::Absent;
-							note!("can: {:03X} went silent — will keep asking", channel.unit);
-							self.unsubscribe_unit(u, bus).await;
-							self.ask_part_number(u, bus);
-							self.checked(u, Check::Matched);
-							self.say_dead_bus();
-						}
-					}
+				let u = usize::from(channel.unit);
+				if *why == Miss::NoAnswer && self.checks[u] == Check::Matched {
+					self.checks[u] = Check::Absent;
+					note!("can: {:03X} went silent — will keep asking", PLAN.units[u].request);
+					self.unsubscribe_unit(u, bus).await;
+					self.ask_part_number(u, bus);
+					self.checked(u, Check::Matched);
+					self.say_dead_bus();
 				}
 				None
 			}
@@ -2604,10 +2641,9 @@ fn host_clock(planner: &Planner, subs: &[Option<PanelSub>]) -> bool {
 	planner.timing_subscriptions() > own
 }
 
-/// The plan's unit the rocker is read from, if the plan has a lever.
+/// The plan's unit the rocker is read from, by index, if the plan has a lever.
 fn lever_unit() -> Option<usize> {
-	let rocker = PLAN.channels.get(usize::from(PLAN.stalk?.rocker))?;
-	PLAN.units.iter().position(|unit| unit.request == rocker.unit)
+	Some(usize::from(PLAN.channels[usize::from(PLAN.stalk?.rocker)].unit))
 }
 
 fn unit_of(u: usize) -> Unit {
@@ -2844,8 +2880,8 @@ async fn panel_task(
 		}
 	}
 
-	// One history per chart the plan has, in the plan's order — `PLAN.chart`
-	// says which slot a channel's is. Every one of them takes a sample **every
+	// One history per chart the plan has, in the plan's order — a chart page's
+	// own `slot` says which is its. Every one of them takes a sample **every
 	// frame, whether or not a chart is on the glass**, so the chart page comes
 	// up with its last `WIDTH × FRAME_MS` already drawn. Sampling only while
 	// the chart was shown, and starting over on each entry, is why it used to
@@ -2859,8 +2895,6 @@ async fn panel_task(
 	static HISTORIES: StaticCell<[History<{ vag_dash_fw::panel::WIDTH }>; CHART_COUNT]> = StaticCell::new();
 	let histories = HISTORIES.init(core::array::from_fn(|_| History::new()));
 	let mut last_compromised = false;
-	// A chart page whose channel the plan gives no range for is said once.
-	let mut no_range_said: Option<u16> = None;
 	// An alarm page this board does not hold is said once per miss.
 	let mut missed_said: Option<u16> = None;
 	// The adapter screen's kb/s, `(tx, rx)`: fresh on every entry into adapter mode, so its
@@ -2976,10 +3010,8 @@ async fn panel_task(
 		// The bus reads the page on the glass in the foreground, so a takeover and a
 		// hand-back move its subscriptions as much as a page turn does — and the stopwatch is
 		// on the glass through an alarm's hand-back too, not the cursor's page under it.
-		let drawn = if on_stopwatch { STOPWATCH_PAGE } else { glass.page };
-		// `load` then `store`: riscv32imc has no atomic swap, and this task is the one writer.
-		let before = GLASS_PAGE.load(Ordering::Relaxed);
-		GLASS_PAGE.store(drawn, Ordering::Relaxed);
+		let drawn = if on_stopwatch { OnGlass::Stopwatch } else { OnGlass::Page(glass.page) };
+		let before = ON_GLASS.lock(|on| on.replace(drawn));
 		if before != drawn || glass.page_changed {
 			PAGES_CHANGED.signal(());
 		}
@@ -3009,6 +3041,8 @@ async fn panel_task(
 		for chart in PLAN.charts() {
 			histories[chart.slot].push(chart.channel, value_of(chart.channel));
 		}
+		// Whether the car stands, once for the frame (`Plan::stands`, as the replay decides it).
+		let stands = PLAN.stands(value_of);
 		// A cell the plan cannot name draws as a question mark rather than
 		// vanishing: a missing column hides the fault, a wrong one shows it. Every channel
 		// an alarm on the glass points at is drawn inverted — blinking while it is out,
@@ -3029,8 +3063,7 @@ async fn panel_task(
 					};
 					// What the glass shows: the stopwatch's speed rounded down, a `zero_at_rest`
 					// channel 0 at a standstill (`Plan::shown`, as the replay does).
-					let speed = PLAN.stopwatch.and_then(|stopwatch| value_of(stopwatch.speed));
-					let shown = PLAN.shown(index, value_of(index), speed);
+					let shown = PLAN.shown(index, value_of(index), stands);
 					Cell::new(channel.label, shown, channel.unit_text, channel.decimals).with_deviation(deviation)
 				}
 				None => Cell::new("?", None, "", 0),
@@ -3063,37 +3096,21 @@ async fn panel_task(
 				}
 				draw_page(&Frame::Values { cells: &cells }, &strip, &board, &theme, framebuffer)
 			}
-			&Page::Chart { channel: index, .. } => {
-				match PLAN.chart(index) {
-					Some(chart) => {
-						let samples = histories[chart.slot].samples();
-						draw_page(
-							&Frame::Chart {
-								cell: cell_of(index),
-								min: chart.min,
-								max: chart.max,
-								samples,
-								seconds_per_sample: FRAME_MS as f32 / 1000.0,
-							},
-							&strip,
-							&board,
-							&theme,
-							framebuffer,
-						)
-					}
-					// No range means no chart: the range is fixed by the plan
-					// or there is none, and autoscale is not a fallback (`02`).
-					// The value is still shown, as a one-cell page.
-					None => {
-						if no_range_said != Some(index) {
-							no_range_said = Some(index);
-							note!("panel: the plan has no chart range for channel {index} — showing it as a value");
-						}
-						let cells = [cell_of(index)];
-						draw_page(&Frame::Values { cells: &cells }, &strip, &board, &theme, framebuffer)
-					}
-				}
-			}
+			// Its range and its history's slot are the page's, as the generator joined them
+			// (`Plan::joins_hold` checks the slot when the image is built).
+			&Page::Chart { channel, slot, min, max, .. } => draw_page(
+				&Frame::Chart {
+					cell: cell_of(channel),
+					min,
+					max,
+					samples: histories[usize::from(slot)].samples(),
+					seconds_per_sample: FRAME_MS as f32 / 1000.0,
+				},
+				&strip,
+				&board,
+				&theme,
+				framebuffer,
+			),
 		};
 		// The renderer reports what it had to compromise — a label too long, a unit or a
 		// difference it had to drop. Compared against the whole default rather than field by
@@ -3626,6 +3643,7 @@ async fn usb_session_task(bus: &'static Bus) -> ! {
 			USB_GONE_FOR_SESSION.wait(),
 		)
 		.await;
+		let timing = timing_held(bus);
 		let out = match event {
 			Either3::First(Either4::First(message)) => {
 				inbound(0, pdu_bytes(&message));
@@ -3640,8 +3658,8 @@ async fn usb_session_task(bus: &'static Bus) -> ! {
 				// A cable subscribe may have taken the board's timing channel from the radio
 				// (S-F3); wake the BLE session so it ends that subscription and tells its host.
 				TIMING_TAKEN.signal(());
-				// Or from the panel's run: its speed follows at once, in the foreground, rather
-				// than going unread until the next recheck of the pages.
+				// Or from the panel's run, which leaves the count as it was: its speed follows at
+				// once, in the foreground.
 				if subscribe {
 					PAGES_CHANGED.signal(());
 				}
@@ -3659,6 +3677,7 @@ async fn usb_session_task(bus: &'static Bus) -> ! {
 		client.publish(&session);
 		USB_ROOM.signal(());
 		BUS_WAKE.signal(());
+		host_timing_moved(bus, timing);
 		for message in out {
 			let frame = match link::encode(&message) {
 				Ok(frame) => frame,
@@ -3689,6 +3708,8 @@ fn close_usb_session(session: &mut Session, bus: &Bus) {
 	USB_CLIENT.publish(session);
 	USB_ROOM.signal(());
 	BUS_WAKE.signal(());
+	// A timing channel it held is free again: a run's speed takes it back.
+	PAGES_CHANGED.signal(());
 }
 
 /// The configuration protocol, in its first and deliberately dumbest form:

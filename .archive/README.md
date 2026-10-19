@@ -138,6 +138,8 @@ live tree. New finished tasks retire here from `todo/` per the workflow in
 | [`dash`](tasks/done/dash/11-ble.md) | BLE on the C3: what it carries, measured |
 | [`dash`](tasks/done/dash/12-settings.md) | settings stored on the board, set over BLE |
 | [`dash`](tasks/done/dash/16-uds-over-ble.md) | UDS over BLE and the board's own guards (merged in PR #2, 2026-09-14; the car check is `todo/dash/17` §4) |
+| [`dash`](tasks/done/dash/26-car-standing.md) | "the car stands" as one fact of the plan (2026-10-19; which source is best is `todo/README.md` Next 11a, on the car) |
+| [`dash`](tasks/done/dash/27-plan-joins-and-signals.md) | the board indexes the joins the generator writes; one signal for "the pages changed"; one 50 Hz cap; an alarm on a chart-only channel (2026-10-19) |
 | [`generic-can`](tasks/done/generic-can/01-generic-can-backend.md) | generic CAN backend (the bypass that replaced the cable) |
 | [`init-handshake`](tasks/done/init-handshake/01-plaintext-handshake.md) | plaintext open handshake (HEX-clone) |
 | [`label-lookup`](tasks/done/label-lookup/01-fast-lookup.md) | fast label lookup (`vag-data`/`vag-db`) |

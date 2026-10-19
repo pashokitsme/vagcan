@@ -8,7 +8,8 @@
 максимальное»), on `feat/dash-thresholds`: `alarm_max` / `alarm_min` with their off values
 (`alarm_max_off` / `alarm_min_off`, 5 % inside by default, at least one step of the channel's
 resolution) and the drift keys (`drift_percent`, `drift_off_percent`, `drift_hold_ms`,
-`drift_min_setpoint`). An alarm raises the first values page that shows its channel;
+`drift_min_setpoint`). An alarm raises the first values page that shows its channel (its chart
+page where no values page does, since `dash/27`);
 `alarm_priority`, then the file's order, is the priority. `[[alarm]]` is refused with its
 rewrite; `MAX_ALARMS` is gone, and nothing replaces it but the build's informational `bus:` line
 (owner, 2026-10-19: a bus-time check is its own task, after the architectural review). The
@@ -42,8 +43,8 @@ alarm_min_off = 45     # off at or above; default alarm_min + 5 % of |alarm_min|
 ```
 
 - **One rule per channel and kind**: a channel's bounds are one rule, its drift another. The
-  page is the first values page with the channel as a cell; a channel with an alarm and no
-  such page is refused.
+  page is the first values page with the channel as a cell, else its chart page (header
+  inverted, `dash/27`); a channel with an alarm on no page is refused.
 - **Priority**: `alarm_priority` (integer ≥ 1, 1 first; only on a channel with an alarm), then
   the `[[channel]]` order for ties and channels without it; bounds before drift.
 - **Several out on one page**: every channel out that the page on the glass shows is marked —

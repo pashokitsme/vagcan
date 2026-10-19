@@ -201,8 +201,8 @@ holds one `Count` (a `StaticCell` in `can_task`, in `.bss`, not the arena), give
   permanent +12 V with the ignition off counts once the ignition comes on. A plan with no units
   starts at 10 s. Not while a stopwatch runs (below); not in adapter mode (`panel_bus` does not
   run there). Once per boot, no retry. The bus task wakes for 10 s (`Count::wake_ms`, never a
-  moment gone by); what starts it later comes with a wake of its own, or within the second the
-  bus task looks at the pages anyway.
+  moment gone by); what starts it later comes with a wake of its own — a host's timing channel
+  freed raises `PAGES_CHANGED`, which wakes the bus task (the 1 s page poll is gone, `dash/27`).
 - **Through the planner:** each `Step::Ask` is `planner.exchange(now, Class::Background, unit,
   pdu)`; the `Delivery::Raw` is recognised by its `ReqId`, fed to `answered`, and the next one is
   queued at the next turn. One request of the count's with the planner at a time; a host's raw

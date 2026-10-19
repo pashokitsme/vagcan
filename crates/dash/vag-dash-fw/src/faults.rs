@@ -409,9 +409,9 @@ impl Count {
 	/// When the bus task has to look again for the count's sake, at `now_ms`: at [`START_MS`],
 	/// while that is still to come and the count has not started. Never a moment gone by, which
 	/// would wake it at once, for ever. Everything else that moves the count comes with a wake of
-	/// its own — a part check's answer, the stopwatch closing, the panel back from adapter mode —
-	/// or within the second the bus task looks at the pages anyway (a host's timing channel
-	/// freed).
+	/// its own — a part check's answer, the stopwatch closing, the panel back from adapter mode,
+	/// and a host's timing channel freed, which raises `PAGES_CHANGED` (the host's session step
+	/// that let it go, or the session closing) and so wakes the bus task.
 	pub fn wake_ms(&self, now_ms: u64) -> Option<u64> {
 		(self.started_ms.is_none() && now_ms < START_MS).then_some(START_MS)
 	}

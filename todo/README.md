@@ -128,9 +128,12 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 9. **Which way up the glass hangs** — [`dash/22`](dash/22-oled.md): `turned`, with the housing.
 9a. **The review's architecture** (2026-10-19): [`dash/25`](dash/25-one-core-for-board-and-replay.md)
    one core for the board and the replay (the frame loop and staleness written twice today);
-   [`dash/27`](dash/27-plan-joins-and-signals.md) the board indexes the plan's joins, one way to
-   say the pages changed; [`dash/24`](dash/24-bus-time-check.md) the bus-time check's simulation
-   (its one constant needs the car).
+   [`dash/24`](dash/24-bus-time-check.md) the bus-time check's simulation (its one constant needs
+   the car). `dash/27` (the board indexes the plan's joins, one way to say the pages changed, an
+   alarm on a chart-only channel, one rate cap of 50 Hz) and `dash/26` ("the car stands" as one
+   fact of the plan) are built on `refactor/dash-plan-joins` (2026-10-19), archived in
+   [`.archive/tasks/done/dash/`](../.archive/tasks/done/dash/27-plan-joins-and-signals.md); the plan
+   id moves for every plan with it.
 
 **With the car**
 
@@ -140,9 +143,11 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
     the whole drive (2026-09-30); `zero_at_rest` (PR #23) does not touch that. The board's
     console on the car (USB plugged in before OBD power) says whether `713` is polled and what
     `1822` answers; then `vagcan watch --did 713:1822` parked.
-11a. **Where "the car stands" comes from** — [`dash/26`](dash/26-car-standing.md):
+11a. **Where "the car stands" comes from** — [`dash/26`](../.archive/tasks/done/dash/26-car-standing.md)
+    (built: one fact of the plan, today the stopwatch's speed at 0):
     `vagcan watch --did 70A:25E0,01:414B` stopping and moving off (the parking aid's standstill
-    state, the engine's stop counter), against the gearbox's speed at 0.
+    state, the engine's stop counter), against the gearbox's speed at 0 — whether either is worth
+    a `[standstill]` source.
 12. **The gearbox's clutch temperatures** — `vagcan watch --did 02:102A,102B,102C` at idle,
     then after a few launches: whether they answer (outside the August survey's pages) and move;
     if so, on a page with 250/200 ([`research/dash/alarm-thresholds.md`](../research/dash/alarm-thresholds.md)).
@@ -181,8 +186,6 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 | [`dash/21-runs-in-flash.md`](dash/21-runs-in-flash.md) | stopwatch runs in flash, read over BLE, saved on LIMIT; recorded 2026-09-27, open questions for the owner |
 | [`dash/24-bus-time-check.md`](dash/24-bus-time-check.md) | the plan's bus share from the planner simulated offline and an exchange time measured on the car — recorded 2026-10-19 |
 | [`dash/25-one-core-for-board-and-replay.md`](dash/25-one-core-for-board-and-replay.md) | the frame loop, staleness and panel geometry in one crate for the board and the replay — recorded 2026-10-19 |
-| [`dash/26-car-standing.md`](dash/26-car-standing.md) | "the car stands" as one plan fact, not the stopwatch's; candidates incl. the parking aid's standstill state — recorded 2026-10-19 |
-| [`dash/27-plan-joins-and-signals.md`](dash/27-plan-joins-and-signals.md) | the generator resolves joins the board searches for; one page-change mechanism; smaller review items — recorded 2026-10-19 |
 | [`dash/23-power-consumption.md`](dash/23-power-consumption.md) | watts in the status strip — recorded 2026-10-19, not started: needs a derived channel and the currents verified on the car |
 | [`label-lookup/04-vcds-follow-ups.md`](label-lookup/04-vcds-follow-ups.md) | what `label-lookup/02` and `03` left open — filed 2026-09-28; three items for the owner to decide |
 | [`measure/01-pedal-at-rest.md`](measure/01-pedal-at-rest.md) | the engine's absolute pedal reads 15 % at rest and the coastdown waits for 1 % — found in review 2026-09-28; the owner's call |
@@ -191,7 +194,9 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 
 Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, moved there on
 2026-09-15 — its car check is `dash/17` §4; `label-lookup/02` and `03`, merged as PRs #15 and
-#18, moved there on 2026-09-28); superseded designs in `.archive/specs/`.
+#18, moved there on 2026-09-28; `dash/26` and `dash/27`, built on `refactor/dash-plan-joins`,
+moved there on 2026-10-19 — `dash/26`'s car check is Next item 11a); superseded designs in
+`.archive/specs/`.
 
 ## Command names in older documents
 

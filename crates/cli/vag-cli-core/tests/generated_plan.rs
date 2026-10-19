@@ -37,7 +37,7 @@ fn the_generated_lever_plan_compiles_and_carries_the_lever_and_the_stopwatch() {
 #[test]
 fn the_generated_source_names_its_plan() {
 	// The fixture's own id; what it is the hash of is `src/dash.rs`'s to test.
-	assert_eq!(PLAN_ID, 0xc417_2274_8e87_5190);
+	assert_eq!(PLAN_ID, 0x1a93_b72a_285c_90a2);
 }
 
 #[test]
@@ -53,16 +53,22 @@ fn the_generated_plan_carries_a_button_on_each_free_pin() {
 #[test]
 fn the_generated_plan_carries_the_strip_and_a_titled_chart() {
 	use vag_dash_render::Volts;
-	use vag_dash_render::plan::{Page, StripPlan};
-	assert_eq!(PLAN.strip, Some(StripPlan { volts: 2 }));
+	use vag_dash_render::plan::{Page, Standstill};
+	// The joins as indices (`todo/dash/27`): the values page reads the voltage from channel 2,
+	// the chart has it off and holds the first history slot.
+	assert!(PLAN.joins_hold());
+	assert_eq!(PLAN.pages[0].volts(), Some(2));
 	assert!(matches!(
 		PLAN.pages[1],
 		Page::Chart {
 			title: "Speed",
-			volts: false,
+			slot: 0,
+			volts: None,
 			..
 		}
 	));
+	assert_eq!(PLAN.unit(&PLAN.channels[3]).request, 0x75A, "the rocker's unit, by its index");
+	assert_eq!(PLAN.standstill, Some(Standstill::Speed(1)), "the stopwatch's speed");
 	// The values page shows the voltage in its strip; the chart has it off.
 	assert_eq!(PLAN.strip(0, |_| Some(14.2)).volts, Volts::Shown(Some(14.2)));
 	assert_eq!(PLAN.strip(1, |_| Some(14.2)).volts, Volts::Hidden);

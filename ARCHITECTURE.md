@@ -536,7 +536,8 @@ RESET buttons are not inputs; `GPIO9` is left to the ROM.
 
 **An alarm is part of a channel** (owner, 2026-10-19): a channel's `alarm_max`, `alarm_min` and
 drift keys, not a rule of its own. Each is one rule in the plan, raising the first values page
-that shows its channel; `alarm_priority`, then the order in the file, is the priority. The
+that shows its channel, else its chart page; `alarm_priority`, then the order in the file, is
+the priority. The
 board's alarm state is sized by the plan, so nothing counts the rules. The build says what the
 board reads on every page ahead of the page on the glass — alarm channels at their `hz`, the
 strip's voltage, the lever — and refuses nothing: that count is identifiers, the planner batches

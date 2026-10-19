@@ -8,8 +8,9 @@
 //!
 //! - **Standstill is the channel's zero, held.** The laptop decides it on the
 //!   raw integer the unit answered; here it is the channel's value being exactly
-//!   `0.0`, which is the same thing for a linear scaling with no offset — a
-//!   speed channel with one is for the plan generator to refuse. Zero must hold for
+//!   `0.0` ([`stands_at`](crate::plan::stands_at), the plan's own test), which is
+//!   the same thing for a linear scaling with no offset — a speed channel with one
+//!   is for the plan generator to refuse. Zero must hold for
 //!   [`ARMING_HOLD_MS`] (`session::ARMING_HOLD_S`), so a crawling queue does not
 //!   arm in every gap. A sample the unit did not answer moves no state.
 //! - **The clock's origin is the launch, and the launch is reconstructed.** The
@@ -276,7 +277,9 @@ impl<'a> Stopwatch<'a> {
 		let Some(value) = value.filter(|v| v.is_finite()) else {
 			return silent;
 		};
-		let standing = value == 0.0;
+		// The plan's own test of a speed (`plan::stands_at`), so the stopwatch and a `zero_at_rest`
+		// cell never disagree about one reading.
+		let standing = crate::plan::stands_at(value);
 		let kmh = value * self.km_h_per_unit;
 
 		let mut event = None;

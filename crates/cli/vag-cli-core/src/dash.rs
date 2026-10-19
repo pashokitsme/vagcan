@@ -23,7 +23,7 @@
 //! decimals = 0                     # optional; derived from the scaling otherwise
 //! hz = 10                          # optional; how often the panel reads it, 2 otherwise
 //! setpoint = "01:IDE00190"         # optional; what the unit asked for, on the same unit
-//! zero_at_rest = true              # optional; 0 while the stopwatch's speed reads 0
+//! zero_at_rest = true              # optional; 0 while the car stands (the stopwatch's speed reads 0)
 //! alarm_max = 105                  # optional; an alarm at or above this, on every page
 //! alarm_max_off = 100              # optional; it goes off at or under this; 5 % under by default
 //! alarm_min = 40                   # optional; an alarm at or below this (either bound, or both)
@@ -77,7 +77,7 @@
 //! action = "next"                  # next | previous | stopwatch
 //! ```
 //!
-//! An alarm raises the first values page that shows its channel. Its priority is the channel's
+//! An alarm raises the first values page that shows its channel, else its chart page. Its priority is the channel's
 //! `alarm_priority` (1 first), then the channels' order in the file. The build's `bus:` line says
 //! what the board reads on every page ahead of the page on the glass — it informs, and refuses
 //! nothing.
@@ -125,6 +125,7 @@ use vag_dash_render::stopwatch::{MAX_MARKS, MIN_FIT_SAMPLES, SLOWEST_SPEED_PERIO
 use vag_data_labels::catalog::{CatalogStore, Level, ReadId, Scaling};
 use vag_data_labels::measure::RawForm;
 use vag_uds_client::address::{self, UnitAddress};
+use vag_uds_client::guard::MIN_PERIOD_MS;
 
 use crate::config::Language;
 use crate::extracted::Extracted;
@@ -224,8 +225,9 @@ pub struct ChannelInput {
 	/// files spell the two halves of a pair three different ways, and a wrong pair shows a
 	/// difference that means nothing.
 	pub setpoint: Option<Reference>,
-	/// `zero_at_rest = true`: shown as 0 while the car stands, the stopwatch's speed reading 0
-	/// (owner, 2026-10-05: the ESC's acceleration reads the road's slope at a standstill).
+	/// `zero_at_rest = true`: shown as 0 while the car stands — the plan's standstill, today the
+	/// stopwatch's speed reading 0 (owner, 2026-10-05: the ESC's acceleration reads the road's
+	/// slope at a standstill).
 	pub zero_at_rest: bool,
 	/// `alarm_max` and its `alarm_max_off`, where the channel has an upper bound.
 	pub alarm_max: Option<BoundInput>,
@@ -284,10 +286,12 @@ pub const DEFAULT_OFF_SHARE: f64 = 0.05;
 
 /// A channel's rate when `dash.toml` gives none (owner, 2026-09-14).
 pub const DEFAULT_HZ: f64 = 2.0;
-/// The fastest rate a channel may ask for: the board's whole ceiling of exchanges
-/// a second (`vag_uds_client::schedule::Budget::ceiling_per_s`), so one channel can
-/// never ask for more than the bus is given.
-pub const MAX_HZ: f64 = 100.0;
+/// The fastest rate a channel may ask for: one read every [`MIN_PERIOD_MS`], the floor the
+/// board's guard holds every host's subscription to — 50 Hz, what `measure` reads road speed
+/// at. One cap on one bus (`todo/dash/27`, archived): the panel asks no faster than a host may,
+/// and `watch`'s own ceiling (`config::MAX_HZ`) is the same 50. It was the planner's whole
+/// ceiling of exchanges a second (100) before, which let one channel ask for all of them.
+pub const MAX_HZ: f64 = 1000.0 / MIN_PERIOD_MS as f64;
 
 /// One `[[page]]` of the input.
 #[derive(Debug, Clone, PartialEq)]
@@ -1210,7 +1214,7 @@ pub enum AlarmRule {
 }
 
 /// One alarm, resolved: one channel's bounds or its drift, and the first values page that
-/// shows the channel — indices into the plan's channels and pages, which is what
+/// shows the channel, else its chart page — indices into the plan's channels and pages, which is what
 /// `vag_dash_render::alarm::ChannelId` and `PageId` are for an image built for one plan.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Alarm {
@@ -1293,6 +1297,43 @@ pub struct Plan {
 	/// A `plan.json` written before the strip existed has none.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub strip: Option<Strip>,
+	/// Where the plan learns that the car stands. A `plan.json` written before it existed takes
+	/// its stopwatch's speed, which is what its `zero_at_rest` asked ([`Plan::from_json`]).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub standstill: Option<Standstill>,
+}
+
+/// Where "the car stands" comes from, resolved: one fact of the plan, not of the stopwatch
+/// (`todo/dash/26`, archived). Spelled `{"kind": "speed", "channel": N}` in `plan.json`, so a
+/// later source is another `kind` and a file of today reads unchanged.
+///
+/// `dash.toml` names no source of its own today: the plan takes `[stopwatch]`'s `speed`. A
+/// later source — a unit's own standstill state, which needs the car first — is an optional
+/// `[standstill]` table, and a file without one keeps the stopwatch's speed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Standstill {
+	/// A speed channel, by plan index: the car stands while it reads exactly 0.
+	Speed { channel: u16 },
+}
+
+impl Standstill {
+	/// The channel the fact is read from.
+	pub fn channel(&self) -> u16 {
+		match *self {
+			Standstill::Speed { channel } => channel,
+		}
+	}
+}
+
+/// The joins the board indexes by, resolved from what `plan.json` spells for a person
+/// (`todo/dash/27`, archived): each channel's unit as its index into the plan's units, each
+/// page's strip voltage, each chart page's history slot. [`Plan::to_device`] and [`to_rust`]
+/// both write these, so the replay and the board index the same thing.
+struct Joins {
+	units: Vec<u8>,
+	volts: Vec<Option<u16>>,
+	slots: Vec<Option<u8>>,
 }
 
 impl Plan {
@@ -1328,7 +1369,69 @@ impl Plan {
 				 (docs/dash/dash-toml.md, \"Alarms\") and build the plan again with `vagcan dev dash build <VIN>`",
 			));
 		}
-		serde_json::from_value(value)
+		let mut plan: Plan = serde_json::from_value(value)?;
+		// Written before the standstill was the plan's: its `zero_at_rest` asked the stopwatch's
+		// speed, and that is the source it had.
+		if plan.standstill.is_none()
+			&& let Some(stopwatch) = &plan.stopwatch
+		{
+			plan.standstill = Some(Standstill::Speed { channel: stopwatch.speed });
+		}
+		// A generated file: one whose indices do not join is refused, never guessed at.
+		if let Err(why) = plan.joins() {
+			return Err(serde_json::Error::custom(format!(
+				"this plan.json does not hold together — {why}; build it again with `vagcan dev dash build <VIN>`"
+			)));
+		}
+		Ok(plan)
+	}
+
+	/// The joins the board indexes by ([`Joins`]). `Err` where a channel's unit is not among the
+	/// plan's units, or there are more units than an index of the board holds — a `plan.json`
+	/// edited by hand, since [`build`] lists every channel's unit.
+	fn joins(&self) -> Result<Joins, String> {
+		let units = self
+			.channels
+			.iter()
+			.map(|c| {
+				let at = self.units.iter().position(|u| u.request == c.unit).ok_or_else(|| {
+					format!(
+						"channel {:03X}:{:04X} is read from unit {:03X}, which its units do not list",
+						c.unit, c.did, c.unit
+					)
+				})?;
+				u8::try_from(at).map_err(|_| format!("{} units, more than the board's {} by index", self.units.len(), u8::MAX))
+			})
+			.collect::<Result<Vec<u8>, String>>()?;
+		// The strip shows the voltage where the page lets it and does not show the channel itself
+		// already, as a cell or as its chart: the same number twice on one page says nothing the
+		// once does not.
+		let volts = self
+			.pages
+			.iter()
+			.map(|page| self.strip.filter(|s| page.volts() && !page.shows(s.volts)).map(|s| s.volts))
+			.collect();
+		if let Some(standstill) = self.standstill
+			&& usize::from(standstill.channel()) >= self.channels.len()
+		{
+			return Err(format!(
+				"its standstill is read from channel {}, which it does not have",
+				standstill.channel()
+			));
+		}
+		let mut charts = 0u8;
+		let slots = self
+			.pages
+			.iter()
+			.map(|page| match page {
+				Page::Chart { .. } => {
+					charts += 1;
+					Some(charts - 1)
+				}
+				Page::Values { .. } => None,
+			})
+			.collect();
+		Ok(Joins { units, volts, slots })
 	}
 
 	/// The plan as the board holds it — what [`to_rust`] writes as source, built in memory
@@ -1338,9 +1441,15 @@ impl Plan {
 	/// **It leaks.** The board's plan is `&'static` throughout because on the board it is a
 	/// `static`; a host process builds one per run and keeps it to the end, so the few
 	/// kilobytes are the process's for its lifetime either way.
+	///
+	/// # Panics
+	///
+	/// On a plan whose joins do not hold ([`Plan::joins`]): [`build`] makes none, and
+	/// [`Plan::from_json`] refuses one.
 	pub fn to_device(&self) -> vag_dash_render::plan::Plan {
 		use vag_dash_render::alarm::{self as device_alarm, ChannelId, PageId};
 		use vag_dash_render::plan as device;
+		let joins = self.joins().expect("a plan from `build` or `from_json` joins");
 		fn text(s: &str) -> &'static str {
 			String::leak(s.to_string())
 		}
@@ -1362,8 +1471,9 @@ impl Plan {
 		let channels = self
 			.channels
 			.iter()
-			.map(|c| device::Channel {
-				unit: c.unit,
+			.zip(&joins.units)
+			.map(|(c, &unit)| device::Channel {
+				unit,
 				did: c.did,
 				bit_offset: c.bit_offset,
 				bit_length: c.bit_length,
@@ -1383,24 +1493,22 @@ impl Plan {
 		let pages = self
 			.pages
 			.iter()
-			.map(|p| match p {
+			.zip(joins.volts.iter().zip(&joins.slots))
+			.map(|(p, (&volts, &slot))| match p {
 				Page::Chart {
-					title,
-					channel,
-					min,
-					max,
-					volts,
+					title, channel, min, max, ..
 				} => device::Page::Chart {
 					title: text(title),
 					channel: *channel,
+					slot: slot.expect("a chart page has a slot"),
 					min: *min as f32,
 					max: *max as f32,
-					volts: *volts,
+					volts,
 				},
-				Page::Values { title, cells, volts } => device::Page::Values {
+				Page::Values { title, cells, .. } => device::Page::Values {
 					title: text(title),
 					cells: Vec::leak(cells.clone()),
-					volts: *volts,
+					volts,
 				},
 			})
 			.collect();
@@ -1482,7 +1590,9 @@ impl Plan {
 					})
 					.collect(),
 			),
-			strip: self.strip.map(|s| device::StripPlan { volts: s.volts }),
+			standstill: self.standstill.map(|s| match s {
+				Standstill::Speed { channel } => device::Standstill::Speed(channel),
+			}),
 		}
 	}
 }
@@ -1805,13 +1915,17 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 			Some(resolve_stopwatch(wanted, speed, &channels, &mut notes)?)
 		}
 	};
-	// `zero_at_rest` asks the stopwatch's speed whether the car stands: without a stopwatch
-	// there is nothing to ask, and the flag would silently do nothing.
-	if stopwatch.is_none()
+	// Whether the car stands is one fact of the plan (`todo/dash/26`, archived), and its one
+	// source today is the stopwatch's speed reading 0 — a later one, a unit's own standstill
+	// state, would be a `[standstill]` table, and needs the car first.
+	let standstill = stopwatch.as_ref().map(|s| Standstill::Speed { channel: s.speed });
+	// `zero_at_rest` asks the plan whether the car stands: with no source there is nothing to
+	// ask, and the flag would silently do nothing.
+	if standstill.is_none()
 		&& let Some(wanted) = input.channels.iter().find(|c| c.zero_at_rest)
 	{
 		return Err(Error::Parse(format!(
-			"dash.toml: {}: zero_at_rest needs a [stopwatch] — its speed is what says the car stands",
+			"dash.toml: {}: zero_at_rest needs a source for whether the car stands — today a [stopwatch], whose speed reading 0 says it",
 			wanted.reference
 		)));
 	}
@@ -1977,8 +2091,8 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 		strip_notes(strip, &wanted.volts, &channels, &pages, &mut notes);
 	}
 
-	// Alarms last: a channel's alarm raises the first values page that shows it, and the pages
-	// are resolved by now.
+	// Alarms last: a channel's alarm raises the first values page that shows it, else its chart,
+	// and the pages are resolved by now.
 	let alarms = resolve_alarms(input, &channels, &pages, &mut notes)?;
 	let plan = Plan {
 		vin: input.vin.clone(),
@@ -1991,7 +2105,11 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 		stopwatch,
 		buttons: input.buttons.clone(),
 		strip,
+		standstill,
 	};
+	// Every join the board indexes by resolves: `plan_units` lists every channel's unit, so only
+	// a count past what an index holds could fail here.
+	plan.joins().map_err(Error::Parse)?;
 	// What the board reads whatever the page shows, said and never refused: a count of
 	// identifiers is not bus time (owner, 2026-10-19).
 	notes.push(bus_note(&plan, &input.channels));
@@ -2000,7 +2118,7 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 
 /// Every `[[channel]]`'s alarms, in priority order — `alarm_priority` ascending, then the file's
 /// order; a channel's bounds before its drift — each raising the first values page that shows
-/// the channel. `channels[i]` is `input`'s i-th.
+/// the channel, else its chart page. `channels[i]` is `input`'s i-th.
 fn resolve_alarms(input: &Input, channels: &[Channel], pages: &[Page], notes: &mut Vec<String>) -> Result<Vec<Alarm>, Error> {
 	// Each rule with its channel's priority, for the sort at the end.
 	let mut alarms: Vec<(Option<u32>, Alarm)> = Vec::new();
@@ -2014,17 +2132,19 @@ fn resolve_alarms(input: &Input, channels: &[Channel], pages: &[Page], notes: &m
 		let refuse = |why: String| Error::Alarm(wanted.reference.clone(), why);
 		let index = i as u16;
 		let channel = &channels[i];
-		// Only a values page can be raised: a takeover inverts a cell, and a chart has none.
-		let Some(page) = pages
+		// The first values page with it as a cell, where its cell is inverted; else its chart page,
+		// whose header is (`todo/dash/27`, archived).
+		let values = pages
 			.iter()
-			.position(|p| matches!(p, Page::Values { cells, .. } if cells.contains(&index)))
-		else {
+			.position(|p| matches!(p, Page::Values { cells, .. } if cells.contains(&index)));
+		let chart = || pages.iter().position(|p| matches!(p, Page::Chart { channel, .. } if *channel == index));
+		let Some(page) = values.or_else(chart) else {
 			return Err(refuse(format!(
-				"{first_key} needs a values page that shows the channel — the alarm raises the first one with it as a cell, and no [[page]] of kind \"values\" has it"
+				"{first_key} needs a page that shows the channel — the alarm raises the first values page with it as a cell, else its chart page, and no [[page]] has it"
 			)));
 		};
 		let raises = match &pages[page] {
-			Page::Values { title, .. } if !title.is_empty() => format!("page {} {title:?}", page + 1),
+			Page::Values { title, .. } | Page::Chart { title, .. } if !title.is_empty() => format!("page {} {title:?}", page + 1),
 			_ => format!("page {}", page + 1),
 		};
 		let priority = wanted.alarm_priority.map_or_else(String::new, |n| format!(", priority {n}"));
@@ -2674,6 +2794,7 @@ fn source(plan: &Plan) -> String {
 	let mut out = String::new();
 	let _ = writeln!(out, "// Generated by `vagcan dev dash build` for VIN {}.", plan.vin);
 	let _ = writeln!(out, "// Derived from VW's data and one owner's car: do not edit, do not commit.");
+	let joins = plan.joins().expect("a plan from `build` or `from_json` joins");
 	let mut plan_types = vec!["Channel", "Page", "Plan", "Unit"];
 	if plan.stalk.is_some() {
 		plan_types.extend(["Band", "StalkPlan"]);
@@ -2684,8 +2805,8 @@ fn source(plan: &Plan) -> String {
 	if !plan.buttons.is_empty() {
 		plan_types.push("ButtonPlan");
 	}
-	if plan.strip.is_some() {
-		plan_types.push("StripPlan");
+	if plan.standstill.is_some() {
+		plan_types.push("Standstill");
 	}
 	plan_types.sort_unstable();
 	let _ = writeln!(out, "use vag_dash_render::plan::{{{}}};", plan_types.join(", "));
@@ -2723,32 +2844,34 @@ fn source(plan: &Plan) -> String {
 	};
 	// No buttons is `&[]`, so the source names neither `ButtonPlan` nor `Command`.
 	let buttons = if plan.buttons.is_empty() { "&[]" } else { "&BUTTONS" };
-	let strip = match &plan.strip {
+	let standstill = match plan.standstill {
 		None => "None".to_string(),
-		Some(s) => format!("Some(StripPlan {{ volts: {} }})", s.volts),
+		Some(Standstill::Speed { channel }) => format!("Some(Standstill::Speed({channel}))"),
 	};
+	let index = |v: Option<u16>| v.map_or_else(|| "None".to_string(), |v| format!("Some({v})"));
 	let _ = writeln!(
 		out,
-		"pub static PLAN: Plan = Plan {{ vin: {:?}, language: {:?}, units: &UNITS, channels: &CHANNELS, pages: &PAGES, alarms: &ALARMS, stalk: {stalk}, stopwatch: {stopwatch}, buttons: {buttons}, strip: {strip} }};",
+		"pub static PLAN: Plan = Plan {{ vin: {:?}, language: {:?}, units: &UNITS, channels: &CHANNELS, pages: &PAGES, alarms: &ALARMS, stalk: {stalk}, stopwatch: {stopwatch}, buttons: {buttons}, standstill: {standstill} }};",
 		plan.vin, plan.language
 	);
 	let _ = writeln!(out);
 	let _ = writeln!(out, "static UNITS: [Unit; {}] = [", plan.units.len());
-	for u in &plan.units {
+	// Numbered: a channel names its unit by this index.
+	for (at, u) in plan.units.iter().enumerate() {
 		let _ = writeln!(
 			out,
-			"\tUnit {{ request: 0x{:03X}, response: 0x{:03X}, part_number: {:?} }},",
+			"\tUnit {{ request: 0x{:03X}, response: 0x{:03X}, part_number: {:?} }}, // {at}",
 			u.request, u.response, u.part_number
 		);
 	}
 	let _ = writeln!(out, "];");
 	let _ = writeln!(out);
 	let _ = writeln!(out, "static CHANNELS: [Channel; {}] = [", plan.channels.len());
-	for c in &plan.channels {
+	for (c, unit) in plan.channels.iter().zip(&joins.units) {
 		let _ = writeln!(
 			out,
-			"\tChannel {{ unit: 0x{:03X}, did: 0x{:04X}, bit_offset: {}, bit_length: {}, signed: {}, big_endian: {}, factor: {}, offset: {}, decimals: {}, unit_text: {:?}, label: {:?}, proven: {}, hz: {}, setpoint: {}, zero_at_rest: {} }},",
-			c.unit,
+			"\tChannel {{ unit: {}, did: 0x{:04X}, bit_offset: {}, bit_length: {}, signed: {}, big_endian: {}, factor: {}, offset: {}, decimals: {}, unit_text: {:?}, label: {:?}, proven: {}, hz: {}, setpoint: {}, zero_at_rest: {} }},",
+			unit,
 			c.did,
 			c.bit_offset,
 			c.bit_length,
@@ -2780,21 +2903,23 @@ fn source(plan: &Plan) -> String {
 	for (i, p) in plan.pages.iter().enumerate() {
 		match p {
 			Page::Chart {
-				title,
-				channel,
-				min,
-				max,
-				volts,
+				title, channel, min, max, ..
 			} => {
 				let _ = writeln!(
 					out,
-					"\tPage::Chart {{ title: {title:?}, channel: {channel}, min: {}, max: {}, volts: {volts} }},",
+					"\tPage::Chart {{ title: {title:?}, channel: {channel}, slot: {}, min: {}, max: {}, volts: {} }},",
+					joins.slots[i].expect("a chart page has a slot"),
 					float(*min),
-					float(*max)
+					float(*max),
+					index(joins.volts[i])
 				);
 			}
-			Page::Values { title, volts, .. } => {
-				let _ = writeln!(out, "\tPage::Values {{ title: {title:?}, cells: &CELLS_{i}, volts: {volts} }},");
+			Page::Values { title, .. } => {
+				let _ = writeln!(
+					out,
+					"\tPage::Values {{ title: {title:?}, cells: &CELLS_{i}, volts: {} }},",
+					index(joins.volts[i])
+				);
 			}
 		}
 	}
@@ -3706,7 +3831,9 @@ mod tests {
 		assert_eq!((device.units[0].request, device.units[0].part_number), (ENGINE, "PART1"));
 		assert_eq!(device.channels.len(), 3);
 		for (c, d) in built.plan.channels.iter().zip(device.channels) {
-			assert_eq!((d.unit, d.did, d.bit_offset, d.bit_length), (c.unit, c.did, c.bit_offset, c.bit_length));
+			// The unit by its index, the board's join: the plan's units name the request id.
+			assert_eq!(device.unit(d).request, c.unit);
+			assert_eq!((d.did, d.bit_offset, d.bit_length), (c.did, c.bit_offset, c.bit_length));
 			assert_eq!((d.factor, d.offset, d.hz), (c.factor as f32, c.offset as f32, c.hz as f32));
 			assert_eq!((d.label, d.unit_text, d.decimals), (c.label.as_str(), c.unit_text.as_str(), c.decimals));
 			// The source says the same numbers the memory holds.
@@ -3718,22 +3845,24 @@ mod tests {
 				DevicePage::Values {
 					title: "A",
 					cells: &[0, 1],
-					volts: true
+					volts: None
 				},
 				DevicePage::Values {
 					title: "B",
 					cells: &[2],
-					volts: true
+					volts: None
 				},
 				DevicePage::Chart {
 					title: "",
 					channel: 0,
+					slot: 0,
 					min: 0.0,
 					max: 10.0,
-					volts: true
+					volts: None
 				},
 			]
 		);
+		assert!(device.joins_hold(), "every index the board takes names something");
 		assert_eq!(device.alarms.len(), 1);
 		assert_eq!((device.alarms[0].channel, device.alarms[0].page), (ChannelId(1), PageId(0)));
 		assert_eq!(
@@ -3835,23 +3964,8 @@ mod tests {
 		)
 		.unwrap();
 		let c = &built.plan.channels[0];
-		let device = vag_dash_render::plan::Channel {
-			unit: c.unit,
-			did: c.did,
-			bit_offset: c.bit_offset,
-			bit_length: c.bit_length,
-			signed: c.signed,
-			big_endian: c.big_endian,
-			factor: c.factor as f32,
-			offset: c.offset as f32,
-			decimals: c.decimals,
-			unit_text: "",
-			label: "",
-			proven: c.proven,
-			hz: c.hz as f32,
-			setpoint: c.setpoint,
-			zero_at_rest: c.zero_at_rest,
-		};
+		assert_eq!(c.unit, GEARBOX);
+		let device = built.plan.to_device().channels[0];
 		assert_eq!(device.decode(&[0xB2, 0x02]), Some(690.0), "690 /min, not 45570");
 		assert!(to_rust(&built.plan).contains("big_endian: false"));
 	}
@@ -4073,7 +4187,12 @@ mod tests {
 		assert!(rust.contains("language: \"ru\""), "{rust}");
 		assert!(rust.contains("did: 0xF405, bit_offset: 0, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: -40.0, decimals: 0, unit_text: \"°C\", label: \"ОЖ\", proven: false, hz: 2.0"), "{rust}");
 		assert!(rust.contains("static CELLS_0: [u16; 1] = [0];"), "{rust}");
-		assert!(rust.contains("Page::Values { title: \"T\", cells: &CELLS_0, volts: true }"), "{rust}");
+		assert!(rust.contains("Page::Values { title: \"T\", cells: &CELLS_0, volts: None }"), "{rust}");
+		assert!(rust.contains("Channel { unit: 0, did: 0xF405,"), "a unit by its index: {rust}");
+		assert!(
+			rust.contains("Unit { request: 0x7E0, response: 0x7E8, part_number: \"PART1\" }, // 0"),
+			"{rust}"
+		);
 		assert!(rust.contains("do not commit"), "{rust}");
 	}
 
@@ -4252,7 +4371,8 @@ mod tests {
 
 	#[test]
 	fn a_rate_that_is_not_a_positive_number_within_the_ceiling_is_refused() {
-		for bad in ["0", "-1", "100.5", "\"fast\"", "nan"] {
+		// Past 50 Hz, the guard's floor of 20 ms a read, which the panel keeps too.
+		for bad in ["0", "-1", "50.5", "100", "\"fast\"", "nan"] {
 			let text = format!(
 				"vin = \"X\"\n[[channel]]\nref = \"01:IDE00025\"\nhz = {bad}\n{}",
 				values_page(&["01:IDE00025"])
@@ -4261,7 +4381,7 @@ mod tests {
 			assert!(err.to_string().contains("hz must be"), "{bad}: {err}");
 		}
 		let text = format!(
-			"vin = \"X\"\n[[channel]]\nref = \"01:IDE00025\"\nhz = 100\n{}",
+			"vin = \"X\"\n[[channel]]\nref = \"01:IDE00025\"\nhz = 50\n{}",
 			values_page(&["01:IDE00025"])
 		);
 		assert_eq!(parse_input(&text).unwrap().channels[0].hz, Some(MAX_HZ));
@@ -4325,7 +4445,7 @@ mod tests {
 			"{rust}"
 		);
 		assert!(
-			rust.contains("alarms: &ALARMS, stalk: None, stopwatch: None, buttons: &[], strip: None }"),
+			rust.contains("alarms: &ALARMS, stalk: None, stopwatch: None, buttons: &[], standstill: None }"),
 			"{rust}"
 		);
 		assert!(rust.contains("static ALARMS: [Alarm; 3] = ["), "{rust}");
@@ -4491,12 +4611,12 @@ mod tests {
 			built.notes
 		);
 		// Far more than the old budget's 75: built, and said.
-		let built = build_with_alarms(["alarm_max = 5\nhz = 100", "alarm_max = 5\nhz = 100", "alarm_max = 5\nhz = 100"], "").unwrap();
+		let built = build_with_alarms(["alarm_max = 5\nhz = 50", "alarm_max = 5\nhz = 50", "alarm_max = 5\nhz = 50"], "").unwrap();
 		assert!(
 			built
 				.notes
 				.iter()
-				.any(|n| n.starts_with("bus: on every page, ahead of the page on the glass, 300 reads a second — by unit 01 300/s;")),
+				.any(|n| n.starts_with("bus: on every page, ahead of the page on the glass, 150 reads a second — by unit 01 150/s;")),
 			"{:?}",
 			built.notes
 		);
@@ -4914,7 +5034,7 @@ mod tests {
 
 	/// Owner, 2026-10-05: the ESC's acceleration reads the slope while the car stands.
 	#[test]
-	fn zero_at_rest_reaches_both_plans_and_needs_a_stopwatch() {
+	fn zero_at_rest_reaches_both_plans_and_needs_a_standstill_source() {
 		let flagged = "[[channel]]\nref = \"01:IDE00013\"\nzero_at_rest = true\n";
 		let built = build_with_lever(&format!("{WATCH}{flagged}")).unwrap();
 		let zeroed: Vec<u16> = built.plan.channels.iter().filter(|c| c.zero_at_rest).map(|c| c.did).collect();
@@ -4924,7 +5044,66 @@ mod tests {
 		assert!(device.channels.iter().any(|c| c.did == 0x3004 && c.zero_at_rest), "and the replay's");
 
 		let refused = build_with_lever(flagged).unwrap_err().to_string();
-		assert!(refused.contains("zero_at_rest needs a [stopwatch]"), "{refused}");
+		assert!(
+			refused.contains("zero_at_rest needs a source for whether the car stands — today a [stopwatch]"),
+			"{refused}"
+		);
+	}
+
+	/// `todo/dash/26`: whether the car stands is one fact of the plan, today the stopwatch's speed
+	/// reading 0 — in both plans, and in `plan.json` as a kind a later source can sit beside.
+	#[test]
+	fn the_plan_takes_its_standstill_from_the_stopwatchs_speed_today() {
+		use vag_dash_render::plan::Standstill as DeviceStandstill;
+		let built = build_with_lever(WATCH).unwrap();
+		assert_eq!(built.plan.standstill, Some(Standstill::Speed { channel: 1 }), "the stopwatch's speed");
+		assert_eq!(built.plan.to_device().standstill, Some(DeviceStandstill::Speed(1)));
+		let rust = to_rust(&built.plan);
+		assert!(rust.contains("standstill: Some(Standstill::Speed(1)) };"), "{rust}");
+		let json = built.plan.to_json();
+		assert!(
+			json.contains("\"standstill\": {\n    \"kind\": \"speed\",\n    \"channel\": 1\n  }"),
+			"{json}"
+		);
+		assert_eq!(Plan::from_json(&json).unwrap(), built.plan);
+
+		// No table of its own yet: a later source is a `[standstill]`, refused until it exists.
+		let text = format!(
+			"vin = \"X\"\n[[channel]]\nref = \"01:IDE00025\"\n{}[standstill]\nspeed = \"01:IDE00025\"\n",
+			values_page(&["01:IDE00025"])
+		);
+		assert!(parse_input(&text).is_err(), "[standstill] is not a table yet");
+
+		let none = build_with_lever("").unwrap();
+		assert_eq!(none.plan.standstill, None, "no stopwatch, no source");
+		assert!(to_rust(&none.plan).contains("standstill: None };"));
+		assert!(!none.plan.to_json().contains("standstill"));
+	}
+
+	/// A `plan.json` written before the standstill was the plan's: its `zero_at_rest` asked the
+	/// stopwatch's speed, so that is its source.
+	#[test]
+	fn a_plan_json_from_before_the_standstill_takes_the_stopwatchs_speed() {
+		let built = build_with_lever(WATCH).unwrap();
+		let mut json: serde_json::Value = serde_json::from_str(&built.plan.to_json()).unwrap();
+		json.as_object_mut().unwrap().remove("standstill");
+		assert_eq!(Plan::from_json(&json.to_string()).unwrap(), built.plan);
+	}
+
+	/// `todo/dash/27`: `plan.json` names a channel's unit by its request id, for a person; the
+	/// board takes an index. A file whose ids do not join is a generated file gone wrong, and is
+	/// refused rather than guessed at.
+	#[test]
+	fn a_plan_json_whose_channel_names_no_unit_of_it_is_refused() {
+		let built = build_with_lever("").unwrap();
+		let mut json: serde_json::Value = serde_json::from_str(&built.plan.to_json()).unwrap();
+		json["channels"][0]["unit"] = serde_json::json!(0x7E5);
+		let why = Plan::from_json(&json.to_string()).unwrap_err().to_string();
+		assert!(
+			why.starts_with("this plan.json does not hold together — channel 7E5:1001 is read from unit 7E5, which its units do not list"),
+			"{why}"
+		);
+		assert!(why.contains("vagcan dev dash build <VIN>"), "{why}");
 	}
 
 	/// The fixture's voltage: a `[[channel]]` (`01:IDE00011`) on no page of its own, a titled
@@ -4933,7 +5112,8 @@ mod tests {
 	const SPEED_CHART: &str = "[[page]]\nkind = \"chart\"\ntitle = \"Speed\"\ncell = \"01:IDE00010\"\nmin = 0\nmax = 250\nvolts = false\n";
 	const VOLTS_PAGE: &str = "[[page]]\nkind = \"values\"\ntitle = \"Volts\"\ncells = [\"01:IDE00011\", \"01:IDE00001\"]\n";
 
-	/// Owner, 2026-10-19: the battery voltage in a strip over the pages, beside their titles.
+	/// Owner, 2026-10-19: the battery voltage in a strip over the pages, beside their titles. The
+	/// generator decides on which pages (`todo/dash/27`): the board reads each page's own.
 	#[test]
 	fn the_strip_reaches_both_plans_with_the_pages_titles_and_their_volts() {
 		let built = build_with_lever(&format!("{STRIP}{SPEED_CHART}{VOLTS_PAGE}")).unwrap();
@@ -4956,21 +5136,20 @@ mod tests {
 
 		let rust = to_rust(&built.plan);
 		for wanted in [
-			"strip: Some(StripPlan { volts: 2 }) };",
-			"Page::Chart { title: \"Speed\", channel: 1, min: 0.0, max: 250.0, volts: false },",
-			"Page::Values { title: \"Volts\", cells: &CELLS_2, volts: true },",
-			"use vag_dash_render::plan::{Channel, Page, Plan, StripPlan, Unit};",
+			"Page::Values { title: \"T\", cells: &CELLS_0, volts: Some(2) },",
+			"Page::Chart { title: \"Speed\", channel: 1, slot: 0, min: 0.0, max: 250.0, volts: None },",
+			"Page::Values { title: \"Volts\", cells: &CELLS_2, volts: None },",
 		] {
 			assert!(rust.contains(wanted), "{wanted}\n{rust}");
 		}
 		let device = built.plan.to_device();
-		assert_eq!(device.strip, Some(vag_dash_render::plan::StripPlan { volts: 2 }));
-		let shown: Vec<Option<u16>> = (0..3).map(|page| device.strip_volts(page)).collect();
+		let shown: Vec<Option<u16>> = device.pages.iter().map(vag_dash_render::plan::Page::volts).collect();
 		assert_eq!(
 			shown,
 			[Some(2), None, None],
 			"page 1 shows it; the chart has it off; page 3 has it as a cell"
 		);
+		assert_eq!(device.strip_listed(), Some(2));
 		assert_eq!(device.strip(1, |_| None).title, "Speed");
 
 		assert!(built.notes.iter().any(|n| n == "strip: volts 01:IDE00011 on page 1"), "{:?}", built.notes);
@@ -4990,7 +5169,8 @@ mod tests {
 	fn without_a_strip_the_plan_has_none_and_a_pages_volts_is_refused() {
 		let built = build_with_lever("").unwrap();
 		assert_eq!(built.plan.strip, None);
-		assert!(to_rust(&built.plan).contains("strip: None };"));
+		assert!(built.plan.to_device().pages.iter().all(|p| p.volts().is_none()));
+		assert!(to_rust(&built.plan).contains("cells: &CELLS_0, volts: None },"));
 		assert!(!built.notes.iter().any(|n| n.starts_with("strip:")), "{:?}", built.notes);
 
 		for volts in ["true", "false"] {
@@ -5041,18 +5221,32 @@ mod tests {
 		assert!(why.ends_with("[[page]] 1: volts must be true or false, not a string"), "{why}");
 	}
 
+	/// `todo/dash/27`: a channel shown only on a chart page may carry an alarm — it raises the
+	/// chart, whose header the board inverts. A values page with it as a cell still comes first.
 	#[test]
-	fn an_alarm_never_raises_a_chart() {
-		let speed_alarm = Extra {
+	fn an_alarm_on_a_chart_only_channel_raises_its_chart_and_a_values_page_comes_first() {
+		let speed_alarm = || Extra {
 			keys: ["", "alarm_max = 200", ""],
 			..Extra::default()
 		};
-		let why = build_with_lever_and(&format!("{SPEED_CHART}{STRIP}"), speed_alarm)
-			.unwrap_err()
-			.to_string();
+		let built = build_with_lever_and(&format!("{SPEED_CHART}{STRIP}"), speed_alarm()).unwrap();
+		assert_eq!((built.plan.alarms[0].channel, built.plan.alarms[0].page), (1, 1), "the chart page");
+		assert!(
+			built
+				.notes
+				.iter()
+				.any(|n| n.starts_with("alarm: 01:IDE00010 at or above 200") && n.ends_with("→ page 2 \"Speed\"")),
+			"{:?}",
+			built.notes
+		);
+		let shown_too = "[[page]]\nkind = \"values\"\ncells = [\"01:IDE00010\"]\n";
+		let built = build_with_lever_and(&format!("{SPEED_CHART}{shown_too}{STRIP}"), speed_alarm()).unwrap();
+		assert_eq!(built.plan.alarms[0].page, 2, "the values page, after the chart in the file");
+
+		let why = build_with_lever_and(STRIP, speed_alarm()).unwrap_err().to_string();
 		assert_eq!(
 			why,
-			"01:IDE00010: alarm_max needs a values page that shows the channel — the alarm raises the first one with it as a cell, and no [[page]] of kind \"values\" has it"
+			"01:IDE00010: alarm_max needs a page that shows the channel — the alarm raises the first values page with it as a cell, else its chart page, and no [[page]] has it"
 		);
 	}
 
@@ -5459,7 +5653,7 @@ mod tests {
 		let base = every_part();
 		let id = plan_id(&base);
 		type Change = (&'static str, fn(&mut Plan));
-		let changes: [Change; 12] = [
+		let changes: [Change; 13] = [
 			("a page title", |p| match &mut p.pages[0] {
 				Page::Values { title, .. } | Page::Chart { title, .. } => title.push('!'),
 			}),
@@ -5474,6 +5668,7 @@ mod tests {
 			("the stopwatch's marks", |p| p.stopwatch.as_mut().unwrap().marks.push(130)),
 			("a button's action", |p| p.buttons.swap(0, 1)),
 			("the strip", |p| p.strip = None),
+			("the standstill", |p| p.standstill = None),
 			("the lever's states", |p| p.stalk.as_mut().unwrap().rocker_states[0].upper -= 1),
 			("the language", |p| p.language = "ru".to_string()),
 		];
@@ -5516,8 +5711,9 @@ mod tests {
 			stopwatch: None,
 			buttons: Vec::new(),
 			strip: None,
+			standstill: None,
 		};
-		assert_eq!(format!("{:016x}", plan_id(&empty)), "5928f96f2b2f2d7e");
+		assert_eq!(format!("{:016x}", plan_id(&empty)), "edfbdbaf3754546a");
 		assert_ne!(plan_id(&empty), plan_id(&every_part()));
 	}
 
@@ -5560,7 +5756,7 @@ mod tests {
 		assert!(json.contains("\"name\": \"limit\""), "a person reads the states by name: {json}");
 		let rust = to_rust(&built.plan);
 		for wanted in [
-			"use vag_dash_render::plan::{Band, Channel, Page, Plan, StalkPlan, StopwatchPlan, Unit};",
+			"use vag_dash_render::plan::{Band, Channel, Page, Plan, StalkPlan, Standstill, StopwatchPlan, Unit};",
 			"use vag_dash_render::stalk::{StateIndex, States};",
 			"stalk: Some(StalkPlan { rocker: 3, switch: 4, cruise: 5, rocker_states: &STALK_ROCKER, switch_states: &STALK_SWITCH, cruise_states: &STALK_CRUISE, states: States { next: StateIndex(1), previous: StateIndex(2), measure: StateIndex(3), switch_off: StateIndex(1), cruise_off: StateIndex(0) } })",
 			"stopwatch: Some(StopwatchPlan { speed: 1, km_h_per_unit: 0.0, marks: &MARKS })",
@@ -5573,7 +5769,7 @@ mod tests {
 		// A plan without either says so, and names nothing it does not use.
 		let bare = build_with_lever("").unwrap();
 		let rust = to_rust(&bare.plan);
-		assert!(rust.contains("stalk: None, stopwatch: None, buttons: &[], strip: None };"), "{rust}");
+		assert!(rust.contains("stalk: None, stopwatch: None, buttons: &[], standstill: None };"), "{rust}");
 		assert!(
 			rust.contains("use vag_dash_render::plan::{Channel, Page, Plan, Unit};") && !rust.contains("States"),
 			"{rust}"
@@ -5730,8 +5926,8 @@ mod tests {
 		let rust = to_rust(&built.plan);
 		for wanted in [
 			"use vag_dash_render::control::Command;",
-			"use vag_dash_render::plan::{ButtonPlan, Channel, Page, Plan, StopwatchPlan, Unit};",
-			"stopwatch: Some(StopwatchPlan { speed: 1, km_h_per_unit: 0.0, marks: &MARKS }), buttons: &BUTTONS, strip: None };",
+			"use vag_dash_render::plan::{ButtonPlan, Channel, Page, Plan, Standstill, StopwatchPlan, Unit};",
+			"stopwatch: Some(StopwatchPlan { speed: 1, km_h_per_unit: 0.0, marks: &MARKS }), buttons: &BUTTONS, standstill: Some(Standstill::Speed(1)) };",
 			"static BUTTONS: [ButtonPlan; 3] = [\n\tButtonPlan { pin: 3, action: Command::Next },\n\tButtonPlan { pin: 4, action: Command::Previous },\n\tButtonPlan { pin: 5, action: Command::Stopwatch },\n];",
 		] {
 			assert!(rust.contains(wanted), "{wanted}\n{rust}");
@@ -5753,7 +5949,7 @@ mod tests {
 		assert!(!json.contains("buttons"), "an old reader sees the plan it knew: {json}");
 		assert!(Plan::from_json(&json).unwrap().buttons.is_empty());
 		let rust = to_rust(&bare.plan);
-		assert!(rust.contains("buttons: &[], strip: None };"), "{rust}");
+		assert!(rust.contains("buttons: &[], standstill: None };"), "{rust}");
 		assert!(
 			!rust.contains("Command") && !rust.contains("ButtonPlan"),
 			"nothing imported unused: {rust}"
@@ -5943,7 +6139,7 @@ mod tests {
 			);
 		}
 		// The rate the message names is one the board polls fast enough.
-		for hz in ["7.5", "8", "50", "100"] {
+		for hz in ["7.5", "8", "50"] {
 			at(hz).unwrap_or_else(|e| panic!("{hz} Hz: {e}"));
 		}
 	}

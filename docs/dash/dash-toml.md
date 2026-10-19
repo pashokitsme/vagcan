@@ -180,9 +180,9 @@ One per value the board reads.
 | `ref` | string: a channel | yes | — | Which unit, which row. See [Naming a channel](#naming-a-channel). |
 | `label` | string | no | `names.csv` in `language`, then the project's wording | The name on the panel. Ten characters fit a page of four cells; longer collides with the next cell. |
 | `decimals` | integer, 0 to 3 | no | from the scaling: 0 for a step of 1 or more, one place per decade under 1, at most 3 | Places after the point. |
-| `hz` | number, above 0, at most 100 | no | 2 | Readings a second while a page showing it is up. |
+| `hz` | number, above 0, at most 50 | no | 2 | Readings a second while a page showing it is up. |
 | `setpoint` | string: a channel on the same unit | no | none | The channel's target value, as its unit sets it. The panel draws the distance from target under the number; a drift alarm watches it. |
-| `zero_at_rest` | `true` or `false` | no | `false` | Shows 0 while the car stands (the stopwatch's `speed` reads 0). For an acceleration sensor, which reads the road's slope as acceleration at a standstill. Needs a `[stopwatch]`. Alarms and charts still see the value as read. |
+| `zero_at_rest` | `true` or `false` | no | `false` | Shows 0 while the car stands: while the stopwatch's `speed` reads 0. The speed is then read whenever this channel is, at the slower of its own `hz` and this channel's — at its own where a page shows it or the stopwatch is up. For an acceleration sensor, which reads the road's slope as acceleration at a standstill. Needs a `[stopwatch]`. Alarms and charts still see the value as read. |
 | `alarm_max` | number | no | none | An alarm at this value or above. See [Alarms](#alarms). |
 | `alarm_max_off` | number, under `alarm_max` | no | `alarm_max` less 5 % of its size, at least one step of the channel's resolution | The alarm goes off once the value is back at this or under. Needs `alarm_max`. |
 | `alarm_min` | number | no | none | An alarm at this value or below. Either bound, or both. |
@@ -223,8 +223,8 @@ alarm_min_off = 45
 ```
 
 - **The page.** An alarm raises the **first values page that shows the channel**, with the
-  channel's cell inverted. A channel with an alarm must be a cell of a values page: a chart has
-  no cell to invert.
+  channel's cell inverted. A channel on no values page raises its chart page, with the chart's
+  header inverted. A channel with an alarm must be on a page.
 - **Priority:** channels with `alarm_priority` first, 1 highest; without it, the order in the
   file decides — for ties too. A channel's bounds come before its drift. With alarms out on two
   pages, the higher one's page is shown.
@@ -250,7 +250,7 @@ each channel, taken from the file's own rules:
 | `direction = "above"`, `trip = A`, `release = B` | `alarm_max = A`, `alarm_max_off = B` |
 | `direction = "below"`, `trip = A`, `release = B` | `alarm_min = A`, `alarm_min_off = B` |
 | `kind = "drift"`, `percent`, `release_percent`, `hold_ms`, `min_setpoint` | `drift_percent`, `drift_off_percent`, `drift_hold_ms`, `drift_min_setpoint`, the same numbers |
-| `page` | nothing: the alarm raises the first values page with the channel |
+| `page` | nothing: the alarm raises the first values page with the channel, else its chart |
 
 Where the old rules' order is not the channels' order in the file, each block also has the
 `alarm_priority` that keeps it: no channel has to move.
@@ -283,7 +283,8 @@ Pages come in the file's order. 1 to 8 of them. `kind` picks the page.
 - The board holds `min` and `max` as 32-bit floats: each must fit one, and `min` must stay below
   `max` in it.
 - One chart per channel.
-- An alarm raises only a values page. A chart's `title` is for the strip.
+- An alarm raises a chart only for a channel no values page shows; the chart's header is
+  inverted. A chart's `title` is for the strip.
 - A key of the other kind (`min` on a values page, `cells` on a chart) is refused.
 
 ### `[strip]`
@@ -469,7 +470,7 @@ Two spellings, both `<unit>:<row>`:
 | chart pages per channel | 1 |
 | alarms | any number; the build's `bus:` line says what they read |
 | `alarm_priority` | 1 or more |
-| `hz` | above 0, at most 100; 2 when absent |
+| `hz` | above 0, at most 50; 2 when absent |
 | `hz` of the stopwatch's `speed` | 7.5 or more; 50 recommended |
 | `decimals` | 0 to 3 |
 | `label` | ten characters on a page of four cells |
@@ -524,7 +525,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 | refusal | what to do |
 |---|---|
 | `decimals N is not 0..=3` | 0 to 3. |
-| `hz must be a number above 0 and at most 100` | Fix `hz`. |
+| `hz must be a number above 0 and at most 50` | Fix `hz`. |
 | `hz V is too small for the board, which would hold it as 0` | A larger `hz`. |
 | `setpoint is not a string` | Quote it. |
 | `unit XXX is not in the car's record of its units` | Connect to the car with that unit answering (`vagcan units --identify`), or fix the unit. |
@@ -587,7 +588,7 @@ name the channel, `X: …`.
 | `drift_off_percent A is not under drift_percent B` | Lower `drift_off_percent`. |
 | `drift_hold_ms must be whole milliseconds, 0 or more` | An integer, `1000` not `1000.0`. |
 | `drift_min_setpoint V is below zero` | 0 or more. |
-| `X: alarm_max needs a values page that shows the channel` (or `alarm_min`, `drift_percent`) | Put X on a values page. |
+| `X: alarm_max needs a page that shows the channel` (or `alarm_min`, `drift_percent`) | Put X on a values page or a chart. |
 | `X: alarm_min_off A is not under alarm_max_off B — no value would be off for both` | Move the two off values apart. `(its default)` marks one the build derived: write it. |
 | `X: alarm_max_off A (its default) is alarm_max B on the board` (or `alarm_min_off`) | Write the off value. |
 | `X: drift_percent needs a setpoint` | Give X a `setpoint`, or remove the `drift_*` keys. |
@@ -718,8 +719,8 @@ name the channel, `X: …`.
 **Alarms on the board**
 
 - A channel with an alarm is watched whatever is on screen, the stopwatch included.
-- When it crosses, the first values page with it comes up, its cell blinking 0.4 s on and 0.4 s
-  off while the value is out. Another channel out on that page blinks too.
+- When it crosses, the first values page with it comes up — its chart, if no values page has it —
+  its cell (a chart's header) blinking 0.4 s on and 0.4 s off while the value is out. Another channel out on that page blinks too.
 - Once the value is back at its off value, the page stays 2.5 s with the cell steadily inverted.
   Then the screen goes back to where it was.
 - A press — a `[[button]]`, the lever or `dashsim` — silences every alarm on the screen until
