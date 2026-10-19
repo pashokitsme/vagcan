@@ -354,8 +354,8 @@ enum Command {
 	Sensors {
 		#[command(flatten)]
 		device: DeviceArg,
-		/// Control unit: a short number (01 engine, 02 gearbox, 09, 16, 17) or
-		/// a request id (713, 70E). `vagcan units` lists this car's.
+		/// Control unit: a short number or a request id, as `vagcan units` lists
+		/// them, e.g. 01 (the engine) or 713.
 		//
 		// `--ecu` was its name until 2026-10-19 and still parses, unlisted.
 		#[arg(long, alias = "ecu", default_value = "01", value_name = "UNIT")]
@@ -732,6 +732,8 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 			r#for,
 			..
 		} => {
+			// What `units` lists, `--did` and the Unit column use: 44 as well as 712.
+			labels::install_recorded_units();
 			let preselect = match did.as_deref() {
 				Some(spec) => plan::parse_checked(spec).map_err(|e| anyhow::anyhow!("--did: {e}"))?,
 				None => Vec::new(),
@@ -938,6 +940,7 @@ async fn sensors<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, ecu_text: &
 	use render::SensorLine;
 	use vag_data_labels::obd::{self, PIDS};
 
+	labels::install_recorded_units();
 	let unit = parse_ecu("--unit", ecu_text)?;
 	let established = unit.is_emissions_related();
 	let mut uds = address_unit(open().await?, unit);
@@ -971,6 +974,7 @@ async fn sensors<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, ecu_text: &
 async fn odx_name_from_car<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, ecu_text: &str) -> Result<String> {
 	const ODX_FILE_NAME: u16 = 0xF19E;
 
+	labels::install_recorded_units();
 	let unit = parse_ecu("--unit", ecu_text)?;
 	let mut uds = address_unit(open().await?, unit);
 	let data = uds

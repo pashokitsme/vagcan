@@ -368,6 +368,8 @@ pub async fn run<L: UnitLink>(
 	// The keys are per project (`rod-keys.json`) unless `--iv-cache` names a file.
 	let keys = crate::datadir::or_default(iv_cache, || Ok(crate::project::current()?.rod_keys()))?;
 	let mut namers = Namers::open(&keys, iv_cache.is_some())?;
+	// The numbers `vagcan units` lists, for `--unit` and for the headings below.
+	crate::labels::install_recorded_units();
 	let requested = only.map(|spec| unit_list("--unit", spec)).transpose()?;
 
 	let mut backend = open().await?;
