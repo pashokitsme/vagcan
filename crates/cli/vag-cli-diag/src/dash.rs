@@ -50,10 +50,8 @@ pub enum Tool {
 	/// input was read from — and the plan's id, which a board flashed with it
 	/// names in `vagcan devices` and `dashcfg`.
 	///
-	/// If there is no input yet, the smallest one that builds is `vin =
-	/// "<VIN>"`, then a `[[channel]]` with `ref = "01:IDE00025"`, then a
-	/// `[[page]]` with `kind = "values"`, `title = "MAIN"` and `cells =
-	/// ["01:IDE00025"]`. A channel is `<unit>:<text id>` or
+	/// If there is no input yet, the smallest one that builds is at the end of
+	/// this help. A channel is `<unit>:<text id>` or
 	/// `<unit>:<DID>[@<bit offset>]`, and may carry its own `label`,
 	/// `decimals` and `hz` (readings a second while shown, 2 otherwise); a page is `values` (1 to 4 cells) or `chart` (one `cell`
 	/// between `min` and `max`). A channel may carry an alarm: `alarm_max` and/or
@@ -75,6 +73,7 @@ pub enum Tool {
 	/// step before the firmware build only when no command with the car has
 	/// read the channels of the plan's units yet, and otherwise for reading the
 	/// result and the reasons.
+	#[command(after_long_help = format!("The smallest dash.toml, one value on one page:\n\n{}", dash::SMALLEST_INPUT))]
 	Build {
 		/// The car to build for, as `vagcan info` reports it.
 		#[arg(value_name = "VIN")]
