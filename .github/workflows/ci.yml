@@ -101,7 +101,7 @@ jobs:
       # The firmware itself is linted by the `firmware` job below: it is outside
       # the workspace, with its own toolchain file and `.cargo/config.toml`.
       - uses: extractions/setup-just@v2
-      - name: just no-std (vag-uds-transport, vag-uds-client, vag-uds-can)
+      - name: just no-std (vag-uds-transport, vag-uds-client, vag-uds-can, vag-dash-core)
         run: just no-std
 
   # The board's firmware and the bench rig that stands in for its panel. Both
