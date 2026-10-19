@@ -269,6 +269,8 @@ vagcan faults             # stored fault codes with their text (after setup)
 vagcan watch              # live values from several units at once
 ```
 
+A unit is named as `vagcan units` lists it: its number or its request id (`vagcan faults --unit 01,713`, `vagcan watch --did 713:IDE00001`).
+
 **Through the dash board over BLE:** no cable needed. Add `--ble`: `vagcan` finds the board and says which one it uses, or asks when there are several. The ignition must be on. On macOS:
 
 - The terminal app needs Bluetooth permission: System Settings → Privacy & Security → Bluetooth.

@@ -422,7 +422,7 @@ Two spellings, both `<unit>:<row>`:
 - An identifier is exactly four hex digits. Anything else after the colon is a channel id.
 - A channel id takes no `@`.
 - `vagcan watch --did` takes the same spellings as `ref`: `<unit>:<DID>`, `<unit>:<channel id>`,
-  `<unit>:<DID>@<bit>`.
+  `<unit>:<DID>@<bit>`. It also takes a pair as the Key column shows it, `01:IDE00191/IDE00190`: both rows.
 - Which variant of the unit the car has is not written here. It comes from the car's record of its units.
 - One row is one channel however it is spelled. `01:IDE00191` and `01:202A` are the same row:
   declaring both is refused, and a page, an alarm, a `setpoint` or `speed` may use either
