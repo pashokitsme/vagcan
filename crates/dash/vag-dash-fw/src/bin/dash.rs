@@ -104,6 +104,7 @@ use log::{info, warn};
 use static_cell::StaticCell;
 #[cfg(feature = "ble")]
 use trouble_host::prelude::*;
+use vag_dash_fw::bus_rate::{self, BusRate, ConsoleLine};
 use vag_dash_fw::can::TwaiBackend;
 use vag_dash_fw::config::{Config, Fitted, SavedAgainst};
 use vag_dash_fw::exchange::{Ended, Heard, Timeouts, Waits};
@@ -277,6 +278,12 @@ static STATE_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// `core::cell::Cell` (the panel's `Cell` is a cell of a page) behind a blocking mutex, held
 /// for a copy of 12 bytes.
 static FAULTS: BlockingMutex<CriticalSectionRawMutex, core::cell::Cell<Option<Found>>> = BlockingMutex::new(core::cell::Cell::new(None));
+
+/// The bus's last closed window of [`bus_rate::WINDOW_MS`], for `state`'s `exch=`: `None` until
+/// one closes in panel mode, and again while the board is an adapter. Written by the bus task
+/// once a window, read by `state`; about 50 bytes, held for a copy. No push on a change: a client
+/// polls it.
+static BUS_RATE: BlockingMutex<CriticalSectionRawMutex, core::cell::Cell<Option<bus_rate::Window>>> = BlockingMutex::new(core::cell::Cell::new(None));
 
 /// Publish what the fault count found, and tell a connected client once it changes.
 fn publish_faults(found: Option<Found>) {
@@ -1454,12 +1461,14 @@ fn kind_of(page: &Page) -> &'static str {
 
 /// The longest line [`state_line`] writes: every key at its widest — a `u8` page and count,
 /// a `u32` generation, the plan's id, the adapter's mode, the fault count's two `u32`s and its
-/// units, a values page of [`MAX_VALUE_CELLS`](vag_dash_render::plan::MAX_VALUE_CELLS) five-digit cells: 205 bytes.
+/// units, the bus's rate at its cap, a values page of
+/// [`MAX_VALUE_CELLS`](vag_dash_render::plan::MAX_VALUE_CELLS) five-digit cells: 234 bytes.
 #[cfg(feature = "ble")]
 const STATE_LINE_LONGEST: usize = "state page=255/255 brightness=255 unsaved=1 run_pending=1 gen=4294967295".len()
 	+ " plan=0123456789abcdef".len()
 	+ " mode=adapter".len()
 	+ faults::STATE_LONGEST
+	+ bus_rate::STATE_LONGEST
 	+ " kind=values cells=[".len()
 	+ vag_dash_render::plan::MAX_VALUE_CELLS * "65535".len()
 	+ (vag_dash_render::plan::MAX_VALUE_CELLS - 1) * ", ".len()
@@ -1496,6 +1505,9 @@ async fn state_line(settings: &Shared) -> heapless::String<UART_MTU> {
 	// The fault count: `faults=9 failing=1 units=17/18`, `faults=?`, or `faults=-` until it ends
 	// (`todo/dash/20`).
 	let _ = write!(out, "{}", faults::State(FAULTS.lock(|faults| faults.get())));
+	// The bus's exchanges a second and how long an answered one takes, over the last window
+	// (`bus_rate.rs`): the per-exchange time the build's bus estimate waits for.
+	let _ = write!(out, "{}", bus_rate::StateKeys(BUS_RATE.lock(|r| r.get())));
 	if let Some(page) = PLAN.pages.get(usize::from(s.config.active_page)) {
 		let _ = write!(out, " kind={} cells={:?}", kind_of(page), pages::cells(page));
 	}
@@ -1862,6 +1874,8 @@ async fn can_task(twai0: TWAI0<'static>, rx_pin: GPIO1<'static>, tx_pin: GPIO6<'
 			continue;
 		}
 		panel_bus(open_panel_bus(twai, rx, tx), &mut panel, bus, settings).await;
+		// An adapter's exchanges are the host's: `exch=` says nothing of them.
+		BUS_RATE.lock(|r| r.set(None));
 		// Nothing of the lever is read while the board is an adapter.
 		panel.stalk.lost();
 		panel.closer.lost();
@@ -1900,6 +1914,8 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 	let mut swept_said = false;
 	let mut strays_said = false;
 	let mut bus_off = false;
+	// Every exchange that ends, counted a window at a time (`bus_rate.rs`).
+	let mut rate = BusRate::new(ms());
 	// Into panel mode, at boot or back from the adapter: the subscriptions follow the pages
 	// once before anything has said they changed.
 	PAGES_CHANGED.signal(());
@@ -1907,6 +1923,11 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 	loop {
 		if adapter_wanted() {
 			return;
+		}
+		// A window of the bus closed: said on the console, kept for `state`'s `exch=`.
+		if let Some(window) = rate.tick(ms()) {
+			BUS_RATE.lock(|r| r.set(Some(window)));
+			note!("{}", ConsoleLine(&window));
 		}
 		// Reset before the pages are read, so a change after the read raises it again.
 		if PAGES_CHANGED.signaled() {
@@ -1932,6 +1953,7 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 				// The mode is polled first, every time the two are woken: once the board is an
 				// adapter the exchange is not polled again, so no frame of it — a flow control
 				// half way through an answer — starts after that.
+				let sent = ms();
 				let exchanged = select(adapter_requested(), exchange(&mut backend, out.unit, &out.pdu, limit_ms)).await;
 				let done = match exchanged {
 					Either::Second(done) => done,
@@ -1952,6 +1974,8 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 				};
 				let at = ms();
 				let Exchanged { result, swept, waits } = done;
+				// Answered is any answer PDU, a refusal too: the unit took the time to say it.
+				rate.ended(out.unit.request, sent, at, result.is_ok());
 				if swept > 0 && !swept_said {
 					swept_said = true;
 					note!(
@@ -1982,6 +2006,8 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 					panel.next_close(),
 					panel.count.wake_ms(ms()).map(Instant::from_millis),
 					until_ms.map(Instant::from_millis),
+					// An idle bus still closes its window: `exch=` says the bus went quiet.
+					Some(Instant::from_millis(rate.closes_at_ms())),
 				]
 				.into_iter()
 				.flatten()

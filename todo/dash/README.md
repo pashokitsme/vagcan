@@ -58,7 +58,7 @@ drama and a real collapse into a flat line.
 
 | file | state |
 |---|---|
-| [`04-alarms.md`](04-alarms.md) | alarms as keys of a channel since 2026-10-19 (`feat/dash-thresholds`): max, min, off values, drift, `alarm_priority`; no cap of four, an informational `bus:` line; the replay (PR #6), the blink (PR #7); a car run open |
+| [`04-alarms.md`](04-alarms.md) | alarms as keys of a channel since 2026-10-19 (`feat/dash-thresholds`): max, min, off values, drift, `alarm_priority`; no cap of four, `bus:` lines estimating bus time (`24`, refusing nothing); the replay (PR #6), the blink (PR #7); a car run open |
 | [`06-car-and-bench.md`](06-car-and-bench.md) | questions only the car answers |
 | [`13-screens.md`](13-screens.md) | channel menu for pages |
 | [`14-one-bus-three-clients.md`](14-one-bus-three-clients.md) | design and work order (§7) |
@@ -70,5 +70,5 @@ drama and a real collapse into a flat line.
 | [`21-runs-in-flash.md`](21-runs-in-flash.md) | stopwatch runs kept in flash and read back over BLE; saved on LIMIT — recorded 2026-09-27, after dash/19 |
 | [`22-oled.md`](22-oled.md) | the SSD1322 panel on the board — merged (PR #21, 2026-09-30), draws on the bench and in the car; which way up is open |
 
-Done: `01`, `02`, `03`, `05`, `10`, `11`, `12`, `16` in `.archive/tasks/done/dash/`.
+Done: `01`, `02`, `03`, `05`, `10`, `11`, `12`, `16`, `24` in `.archive/tasks/done/dash/`.
 Superseded: `07`, `08`, `09` in `.archive/specs/dash/`.

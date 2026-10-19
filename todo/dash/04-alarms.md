@@ -183,8 +183,8 @@ accepts per request is still a bench measurement — see `06`.
   index and `PageId` its page index, because an image is built for one plan. `Plan::rates`
   keeps watched channels foreground.
 - **`vag-cli-core/src/dash.rs`** — a channel's alarm keys parsed, checked, resolved to one
-  rule per channel and kind with its page, ordered by `alarm_priority`, the `bus:` line
-  (`bus_note`), written to
+  rule per channel and kind with its page, ordered by `alarm_priority`, the `bus:` lines
+  (`bus_notes`, an estimate from `dash/bus_time.rs`), written to
   `plan.json` and `plan.rs`; an `[[alarm]]` table refused with its rewrite (`migrate_alarms`).
 - **`vag-dash-fw/src/bin/dash.rs`** — every panel frame calls `Screen::frame` with the
   cursor and the value store (`None` when stale, the existing `STALE` rule), draws

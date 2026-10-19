@@ -158,7 +158,8 @@ type: `decimals = "2"` is refused, never read as absent.
 
 Check the build's output after every edit. It prints one line per channel (with its rate) and per
 target value, then one for the stopwatch, the lever and each button, then one per alarm, then
-the bus line (see [Alarms](#alarms)). Notes come in between, such as nothing turning the page.
+the bus lines (**Bus time**, under [What the board does with it](#what-the-board-does-with-it)).
+Notes come in between, such as nothing turning the page.
 
 ### Top level
 
@@ -238,9 +239,8 @@ alarm_min_off = 45
   build's line for the alarm says which off values are defaults.
 - Every number must fit a 32-bit float. They are compared as the board holds them.
 - **The bus.** The board reads every alarm's channel at its `hz` on every page, and its
-  `setpoint` with it, ahead of the page on screen. The build's `bus:` line says what that comes
-  to with `[strip]`'s voltage, the lever and the cruise status, in reads a second, by unit and by
-  channel. It refuses nothing: the board puts up to eight reads of one unit in one request.
+  `setpoint` with it, ahead of the page on screen. The build's `bus:` lines estimate what that
+  costs on each page (**Bus time**, under [What the board does with it](#what-the-board-does-with-it)).
 
 **Replacing `[[alarm]]`.** `[[alarm]]` tables are refused. The refusal lists the keys to add to
 each channel, taken from the file's own rules:
@@ -469,7 +469,7 @@ Two spellings, both `<unit>:<row>`:
 | `[[page]]` | 1 to 8 |
 | cells on a values page | 1 to 4 |
 | chart pages per channel | 1 |
-| alarms | any number; the build's `bus:` line says what they read |
+| alarms | any number; the build's `bus:` lines estimate what they cost |
 | `alarm_priority` | 1 or more |
 | `hz` | above 0, at most 50; 2 when absent |
 | `hz` of the stopwatch's `speed` | 7.5 or more; 50 recommended |
@@ -664,10 +664,27 @@ name the channel, `X: …`.
 - Any other channel on no page: not read, except the stopwatch's `speed` while the stopwatch is
   on.
 - All channels together: at most 100 requests a second. Asked for more, the board reads them
-  more slowly than their `hz`. The build's `bus:` line says what is read ahead of the page on
-  screen whatever page is up — alarms, the strip's voltage, the lever ([Alarms](#alarms)).
+  more slowly than their `hz` (**Bus time**, below).
 - At start-up the board checks each unit's part number (`F187`) against the one the dash was built
   for. A unit that answers another number is not read: after replacing a unit, run `vagcan units --identify` and rebuild.
+
+**Bus time**
+
+- The board asks one control unit at a time. One request carries up to 8 channels of one unit,
+  so a page costs its units more than its channels.
+- The build estimates each page: the board's scheduler run over the plan, every exchange taken as
+  34 ms. That is an upper bound, from a BLE recording on the reference car.
+- One line per page on screen, with cruise off (the lever read 20 times a second) and on (2), and
+  one for a stopwatch run. A read the estimate would serve slower than its `hz` is named:
+
+  ```
+  bus: page 2 "TEMPERATURES" ~93 % with cruise off, ~41 % with it on — reads the lever 17.4/s of 20
+  ```
+
+- The build refuses nothing for bus time.
+- The board measures the real number: `dashcfg`'s `bus` line (the board's `exch=…/s exch_ms=…`)
+  says its exchanges a second, and how long an answered one took, over the last 10 s. Its USB
+  console says the same every 10 s, by unit.
 
 **Paging**
 

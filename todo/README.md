@@ -34,12 +34,20 @@ the stopwatch's speed shown rounded down; `zero_at_rest` for the ESC's accelerat
 - **Thresholds on the channel** — branch `feat/dash-thresholds` (`010adb6` on `e855a3b`, not a
   PR yet, in review 2026-10-19): `alarm_max`/`alarm_min` with `alarm_max_off`/`alarm_min_off`
   and `drift_*` keys on `[[channel]]`, an explicit `alarm_priority`; `[[alarm]]` refused with
-  its rewrite; `MAX_ALARMS` gone, and no count or budget refuses a plan: the build prints the
-  background reads, and the real bus-time check is [`dash/24`](dash/24-bus-time-check.md)
-  (the review of 2026-10-19 showed a reads-a-second budget is the wrong unit). After it merges, the
+  its rewrite; `MAX_ALARMS` gone, and no count or budget refuses a plan: the build estimates bus
+  time, below (the review of 2026-10-19 showed a reads-a-second budget is the wrong unit). After it merges, the
   owner's file moves to the new keys, plus oil 115/110 and the gearbox's control module
   120/110 ([`research/dash/alarm-thresholds.md`](../research/dash/alarm-thresholds.md), 2026-10-19:
   the Škoda manual's 80–110 °C oil; SSP 390's 139 °C torque cut on the 0AM, inferred for the 0CW).
+- **Bus time** — branch `feat/dash-bus-time` (2026-10-20, not merged;
+  [`dash/24`](../.archive/tasks/done/dash/24-bus-time-check.md)): the build runs the board's
+  planner over the plan offline, each page on the glass with cruise off and on and a stopwatch
+  run, at 34 ms an exchange (the car's 10 Hz BLE `watch` of 2026-09-26, an upper bound), and
+  prints each page's estimated share and the reads it would thin. **It refuses nothing**
+  (2026-10-20): at 34 ms it called every page of the owner's plan short, and that plan runs on
+  the car — the constant is radio and host time, not CAN time. The board now counts its own
+  exchanges (`exch=…/s exch_ms=…` in `state`, a `bus:` console line every 10 s); a drive with it
+  gives the car's number, and a strict check can follow that measurement.
 - **The board in the car** runs a `dash` built before PR #23 (the commit was not recorded);
   neither #23 nor #24 is on it. Its glass is wired SDIN `GPIO8`, CS `GPIO20`, RES `GPIO21`
   (`365c21e`), the standard since 2026-10-03.
@@ -94,7 +102,7 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 | Scan clock `B3 F1`; burn-in shift set aside, burn-in will not come quickly (owner, 2026-09-30) | `dash/22` |
 | `oledtest`'s clock sweep and the `oledpins` multimeter probe removed from PR #21 before the merge (owner, 2026-09-30); `oledtest`'s test picture stays | `dash/22` |
 | A status strip on every page: the voltage at the left, the page's title in the middle, no rule; the voltage per page, never twice on one page (owner, 2026-10-19) | PR #24 |
-| An alarm is a channel's threshold — a max and/or a min, each with the value it goes off at — and no cap on how many; what limits them is bus time, measured, not a count ([`dash/24`](dash/24-bus-time-check.md)); priority explicit, `alarm_priority` (owner, 2026-10-19) | `feat/dash-thresholds` |
+| An alarm is a channel's threshold — a max and/or a min, each with the value it goes off at — and no cap on how many; what limits them is bus time, measured, not a count ([`dash/24`](../.archive/tasks/done/dash/24-bus-time-check.md)); priority explicit, `alarm_priority` (owner, 2026-10-19) | `feat/dash-thresholds` |
 | Oil alarm 115/110, the gearbox's control module 120/110, as researched (owner, 2026-10-19) | `research/dash/alarm-thresholds.md` |
 | The enclosure off the README roadmap (owner, 2026-10-19); the CAD work goes on in `~/CAD` | `dash/15` |
 
@@ -129,10 +137,11 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 9. **Which way up the glass hangs** — [`dash/22`](dash/22-oled.md): `turned`, with the housing.
 9a. **The review's architecture** (2026-10-19): [`dash/25`](dash/25-one-core-for-board-and-replay.md)
    one core for the board and the replay (the frame loop and staleness written twice today);
-   [`dash/24`](dash/24-bus-time-check.md) the bus-time check's simulation (its one constant needs
-   the car). `dash/27` (the board indexes the plan's joins, one way to say the pages changed, an
-   alarm on a chart-only channel, one rate cap of 50 Hz) and `dash/26` ("the car stands" as one
-   fact of the plan) are built on `refactor/dash-plan-joins` (2026-10-19), archived in
+   [`dash/24`](../.archive/tasks/done/dash/24-bus-time-check.md), the bus-time estimate, is built
+   on `feat/dash-bus-time` (its constant waits for the board's `exch=` on the car). `dash/27`
+   (the board indexes the plan's joins, one way to say the pages changed, an alarm on a
+   chart-only channel, one rate cap of 50 Hz) and `dash/26` ("the car stands" as one fact of
+   the plan) are built on `refactor/dash-plan-joins` (2026-10-19), archived in
    [`.archive/tasks/done/dash/`](../.archive/tasks/done/dash/27-plan-joins-and-signals.md); the plan
    id moves for every plan with it.
 
@@ -185,7 +194,6 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 | [`dash/22-oled.md`](dash/22-oled.md) | the SSD1322 on the board — merged (PR #21, 2026-09-30), draws on the bench and in the car; GPIO8/20/21 the standard (2026-10-03); which way up is open |
 | [`dash/20-fault-count.md`](dash/20-fault-count.md) | the car's stored codes counted once after boot, a triangle and the count at the status strip's right end, `?` when there is no count — built 2026-09-27; needs the car |
 | [`dash/21-runs-in-flash.md`](dash/21-runs-in-flash.md) | stopwatch runs in flash, read over BLE, saved on LIMIT; recorded 2026-09-27, open questions for the owner |
-| [`dash/24-bus-time-check.md`](dash/24-bus-time-check.md) | the plan's bus share from the planner simulated offline and an exchange time measured on the car — recorded 2026-10-19 |
 | [`dash/25-one-core-for-board-and-replay.md`](dash/25-one-core-for-board-and-replay.md) | the frame loop, staleness and panel geometry in one crate for the board and the replay — recorded 2026-10-19 |
 | [`dash/23-power-consumption.md`](dash/23-power-consumption.md) | watts in the status strip — recorded 2026-10-19, not started: needs a derived channel and the currents verified on the car |
 | [`label-lookup/04-vcds-follow-ups.md`](label-lookup/04-vcds-follow-ups.md) | what `label-lookup/02` and `03` left open — filed 2026-09-28; three items for the owner to decide |

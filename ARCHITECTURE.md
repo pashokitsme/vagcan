@@ -511,7 +511,7 @@ three are pure and tested on the host. The panel draws a warning triangle and th
 the status strip's right end, left of the link icons, inverted while a code is failing now.
 `?` means no count: the gateway gave no list, the walk would pass 64 units, or no unit could
 be counted — the USB log says which. `state` says `faults=9 failing=1 units=17/18`,
-`faults=?`, or `faults=-` before the count ends.
+`faults=?`, or `faults=-` before the count ends, then `exch=…/s exch_ms=…`, the bus's own rate.
 
 **Every exchange drops a late answer to another request.** An answer to another service,
 identifier or sub-function, or a refusal naming another service, that arrives while an
@@ -539,10 +539,16 @@ RESET buttons are not inputs; `GPIO9` is left to the ROM.
 drift keys, not a rule of its own. Each is one rule in the plan, raising the first values page
 that shows its channel, else its chart page; `alarm_priority`, then the order in the file, is
 the priority. The
-board's alarm state is sized by the plan, so nothing counts the rules. The build says what the
-board reads on every page ahead of the page on the glass — alarm channels at their `hz`, the
-strip's voltage, the lever — and refuses nothing: that count is identifiers, the planner batches
-up to eight a request, and bus time would need the planner run at a measured cost per exchange.
+board's alarm state is sized by the plan, so nothing counts the rules. What limits them is bus
+time, and the build estimates it: the board's own planner run over the plan offline, each page on
+the glass with cruise off and on and a stopwatch run, every exchange at one cost
+(`dash/bus_time.rs`). A count of identifiers would be the wrong unit: the planner batches up to
+eight of one unit in a request, so a page costs its units, not its channels. The estimate refuses
+nothing (2026-10-20): its cost, 34 ms, is an upper bound from a BLE recording, and at it the
+owner's plan, which runs on the car, came out short on every page. The board counts its own
+exchanges (`vag_dash_fw::bus_rate`, pure, tested on the host): `state` says `exch=…/s
+exch_ms=…` over the last 10 s, the USB console the same by unit. A strict check is for after a
+drive has given that number.
 
 **Rendering is shared with the laptop.** `vag-dash-render` turns a `Frame` (a values page
 of up to four cells, or a chart page) into pixels on any `embedded-graphics` target. On
