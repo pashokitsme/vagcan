@@ -1,11 +1,48 @@
-# vagcan roadmap — history, 2026-08-02 to 2026-09-30
+# vagcan roadmap — history, 2026-08-02 to 2026-10-19
 
 Moved here verbatim from `todo/README.md` on 2026-09-14, when the roadmap was cut down to
 what is live. Commands are spelled as they were on the day each section was written; the
 old → new table is in `todo/README.md`. Nothing here is current. The 2026-09-15 section came
 on 2026-09-22, the 2026-09-22 one on 2026-09-26, the 2026-09-26 one on 2026-09-27, the
 2026-09-27 one and the first 2026-09-28 one on 2026-09-28, when PRs #15–#18 merged; the second 2026-09-28 one on
-2026-09-30, when PR #21 merged.
+2026-09-30, when PR #21 merged; the 2026-09-30 one on 2026-10-19, after PRs #22–#24.
+
+---
+
+## Where things stood on 2026-09-30, after PR #21 merged — the board draws on its OLED
+
+**Milestone: the board draws on its own OLED, and the lever and the stopwatch work on the car —
+PR #21 merged 2026-09-30** (`959c6d5`). `cargo test --workspace` 1,997 passed, `research/dash/host`
+95; firmware static RAM 140,996 B with BLE, 131,536 B without (+1,496 / +1,488 for the glass,
+explained in the PR). The 2026-09-28 status moved to
+[`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-09-30.
+
+- **The glass** ([`dash/22`](dash/22-oled.md)): an SSD1322 3.12″ 256×64 module on SPI, set to
+  4-wire by one moved 0 Ω link; `dash` sends every frame to it (changed rows only, everything
+  every 10 s); the settings' `brightness` drives it; scan clock `B3 F1`. Pins as the rev v1.1
+  board is wired — `README.md`, "OLED wiring" — after an afternoon when the glass went dark
+  on that board until the firmware followed its wiring.
+- **The board in the car** is the rev v1.1 board with BLE. It runs `dash` built from PR #21's
+  branch at `46ddfb8` with the owner's plan — the same `dash` code as `959c6d5` (the squash
+  dropped only `oledtest`'s clock sweep, a driver method `dash` never called, and the
+  `oledpins` probe). So every merged change since PR #7 is on it now. The rev v0.4 board is a
+  spare, and the glass works on it too (without BLE).
+- **A drive with it (owner, 2026-09-30):** the lever pages, the stopwatch works and LIMIT opens
+  it, the values show ([`dash/19`](dash/19-stalk-and-stopwatch.md) "On the car"); the DRIVE
+  page's acceleration (`713:1822`) is a dash the whole time
+  ([`dash/17`](dash/17-bench-ble-usb.md) §4); the speed matches the cluster at a steady speed
+  and differs while it changes, either way.
+- **The housing** (CAD in `~/CAD/projects/vagcan/`, [`dash/15`](dash/15-enclosure.md)): the
+  module is the drawing's board; the display is held by snap pegs through its mounting holes;
+  no ledges under the buck and the CAN module; a fit-test plate (~45 min) and a peg coupon
+  (~8 min) are sliced. Jumper plugs on the display's pin header do not fit over the ESP in the
+  model. Nothing of this printed yet.
+
+**Not verified on hardware:** the fault count on the car, the pin buttons, `+`/`−` never opening
+the stopwatch, a 0–100 against `vagcan measure`, the run saved before `GO`, the retard alarm and
+the blink on a drive, the cable through the board on the car, the moving-car guard, the CANable
+on car traffic, `dash/17` §2 item 8, `dash/18` on a real pull, and everything in #15–#18 on the
+car.
 
 ---
 

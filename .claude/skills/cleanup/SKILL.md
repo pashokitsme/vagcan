@@ -327,6 +327,20 @@ mixed in.
   once, when a row here said the display would take wires soldered into bare holes after the
   module had come with a pin header.
 
+### Rules established on the 2026-10-19 pass
+
+- **Crates outside the workspace and outside CI are built in Phase 1.** `research/dash/layout-editor/`
+  holds two (`wasm/`, `catalog/`) with path dependencies on the workspace; PR #24 added
+  `dash::Input::strip` and the catalog stopped compiling the same day, with every gate green.
+  `cargo check` in each (the wasm one with `--target wasm32-unknown-unknown`), or its `build.sh`
+  against the car; a break is fixed in the pass, not noted.
+- **A file an agent prepared from the owner's data is checked against that data's mtime.** The
+  thresholds engineer wrote the owner's migrated `dash.toml` from the file as it was when it
+  started; the owner's new layout was written into the live file an hour later, so the migration
+  carried the old pages. Before applying anything an agent derived from `~/.vagcan/`, compare the
+  live file with what the agent read (`diff`, or its `.before-*` backup's time) and redo it on
+  the current file.
+
 ## What a cleanup pass produces
 
 Five things, and no more:
