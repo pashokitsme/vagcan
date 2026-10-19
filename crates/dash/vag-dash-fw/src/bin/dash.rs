@@ -3190,7 +3190,10 @@ fn write_run(s: &mut Settings) {
 	};
 	let config = match (s.saving.at_standstill(flash), stored) {
 		(RunWrite::Whole, _) => s.config.clone(),
-		(RunWrite::AddToStored, Some(mut stored)) => {
+		// What a boot would make of the stored record — this plan's id, its page in range — with
+		// the run added, so a record this image writes never names another plan (PR review).
+		(RunWrite::AddToStored, Some(stored)) => {
+			let mut stored = stored.fit().config;
 			stored.last_run = s.config.last_run.clone();
 			stored
 		}
