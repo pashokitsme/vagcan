@@ -167,16 +167,9 @@ impl Namers {
 	/// not open.
 	pub fn open(iv_cache: &str) -> Result<Namers> {
 		let vcds_root = crate::project::rod_pool()?;
-		let vcds = if crate::faultnames::has_fault_labels(&vcds_root) {
-			Some(crate::faultnames::Namer::open(&vcds_root, &crate::datadir::resolve(iv_cache))?)
-		} else {
-			None
-		};
-		Ok(Namers {
-			odis: crate::odisfaults::OdisFaults::open(),
-			vcds,
-			vcds_root,
-		})
+		let odis = crate::odisfaults::OdisFaults::open();
+		let vcds = open_vcds(&vcds_root, &crate::datadir::resolve(iv_cache), odis.is_some())?;
+		Ok(Namers { odis, vcds, vcds_root })
 	}
 
 	/// Whether there is nothing at all to name a code with.
@@ -258,6 +251,21 @@ impl Namers {
 		let project_has_it = unit.odis.as_ref().is_some_and(|u| !u.is_empty());
 		compose(odis, vcds, self.odis.as_ref().is_some_and(|o| o.prefers_vcds()), project_has_it)
 	}
+}
+
+/// The VCDS half of [`Namers`], or `None` where this project has no VCDS text.
+///
+/// The pool of raw VCDS files is shared by every project and the keys that open
+/// it are per project ([`crate::project::Project::rod_keys`]), so a project set
+/// up from an ODIS project alone meets a full pool — another project's — and no
+/// keys. That is "this project has no VCDS text", not a refusal: its faults are
+/// named from ODIS. Only a project with nothing else to name a code with is
+/// told the keys are missing, since there the keys are the whole answer.
+fn open_vcds(root: &std::path::Path, keys: &std::path::Path, odis_present: bool) -> Result<Option<crate::faultnames::Namer>> {
+	if !crate::faultnames::has_fault_labels(root) || (odis_present && !keys.is_file()) {
+		return Ok(None);
+	}
+	crate::faultnames::Namer::open(root, keys).map(Some)
 }
 
 /// The order the two chains are asked in, as one function over their answers.
@@ -571,6 +579,28 @@ mod tests {
 		// build, not of one car — while the keys that open it are per project,
 		// because a key is a property of one file's bytes (design §4.2).
 		assert_eq!(crate::datadir::rod_pool_dir().unwrap(), crate::datadir::vagcan_dir().unwrap().join("rod"));
+	}
+
+	#[test]
+	fn a_project_from_odis_alone_is_not_refused_for_another_projects_vcds_pool() {
+		// The pool holds another project's VCDS files and this project has no
+		// `rod-keys.json`: with ODIS fault text there, `faults` names from ODIS
+		// rather than refusing before the adapter is opened. With nothing else to
+		// name a code with, the missing keys are still what the reader is told.
+		let base = std::env::temp_dir().join(format!("vagcan-odis-only-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&base);
+		std::fs::create_dir_all(base.join("UDS_EV")).unwrap();
+		std::fs::write(base.join("UDS_EV").join(vag_data_labels::dtc::REGISTRY_FILE), b"x").unwrap();
+		std::fs::write(base.join(crate::setup::CODES_FILES[0]), b"x").unwrap();
+		let keys = base.join("project").join("rod-keys.json");
+		assert!(crate::faultnames::has_fault_labels(&base), "the fixture is a filled pool");
+
+		assert!(open_vcds(&base, &keys, true).expect("ODIS present: no refusal").is_none());
+		let refused = open_vcds(&base, &keys, false).err().expect("nothing else to name with");
+		assert!(refused.to_string().contains("rod-keys.json"), "{refused}");
+		// An empty pool is no VCDS text either way.
+		assert!(open_vcds(&base.join("empty"), &keys, false).unwrap().is_none());
+		let _ = std::fs::remove_dir_all(&base);
 	}
 
 	/// An ODIS row as the reference project's two textless ones are shaped: a
