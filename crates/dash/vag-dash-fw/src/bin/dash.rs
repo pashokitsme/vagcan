@@ -691,6 +691,7 @@ async fn main(spawner: Spawner) {
 	let bus: &'static Bus = BUS.init(BlockingMutex::new(RefCell::new(Planner::new(Budget::board()))));
 	let screen: &'static ScreenCell = SCREEN.init(BlockingMutex::new(RefCell::new(Screen::new(
 		PLAN.alarms,
+		PLAN.pages,
 		[AlarmSlot::CLEAR; ALARM_COUNT],
 		PLAN.stopwatch.is_some(),
 	))));

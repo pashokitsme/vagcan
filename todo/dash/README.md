@@ -58,7 +58,7 @@ drama and a real collapse into a flat line.
 
 | file | state |
 |---|---|
-| [`04-alarms.md`](04-alarms.md) | alarms as keys of a channel since 2026-10-19 (`feat/dash-thresholds`): max, min, off values, drift; a bus budget instead of four rules; the replay (PR #6), the blink (PR #7); a car run open |
+| [`04-alarms.md`](04-alarms.md) | alarms as keys of a channel since 2026-10-19 (`feat/dash-thresholds`): max, min, off values, drift, `alarm_priority`; no cap of four, an informational `bus:` line; the replay (PR #6), the blink (PR #7); a car run open |
 | [`06-car-and-bench.md`](06-car-and-bench.md) | questions only the car answers |
 | [`13-screens.md`](13-screens.md) | channel menu for pages |
 | [`14-one-bus-three-clients.md`](14-one-bus-three-clients.md) | design and work order (§7) |

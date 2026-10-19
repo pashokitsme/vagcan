@@ -180,13 +180,14 @@ One per value the board reads.
 | `setpoint` | string: a channel on the same unit | no | none | The channel's target value, as its unit sets it. The panel draws the distance from target under the number; a drift alarm watches it. |
 | `zero_at_rest` | `true` or `false` | no | `false` | Shows 0 while the car stands (the stopwatch's `speed` reads 0). For an acceleration sensor, which reads the road's slope as acceleration at a standstill. Needs a `[stopwatch]`. Alarms and charts still see the value as read. |
 | `alarm_max` | number | no | none | An alarm at this value or above. See [Alarms](#alarms). |
-| `alarm_max_off` | number, under `alarm_max` | no | `alarm_max` less 5 % of its size, at least one display step | The alarm goes off once the value is back at this or under. Needs `alarm_max`. |
+| `alarm_max_off` | number, under `alarm_max` | no | `alarm_max` less 5 % of its size, at least one step of the channel's resolution | The alarm goes off once the value is back at this or under. Needs `alarm_max`. |
 | `alarm_min` | number | no | none | An alarm at this value or below. Either bound, or both. |
-| `alarm_min_off` | number, over `alarm_min` | no | `alarm_min` plus 5 % of its size, at least one display step | The alarm goes off once the value is back at this or above. Needs `alarm_min`. |
+| `alarm_min_off` | number, over `alarm_min` | no | `alarm_min` plus 5 % of its size, at least one step of the channel's resolution | The alarm goes off once the value is back at this or above. Needs `alarm_min`. |
 | `drift_percent` | number, above 0 | no | none | A drift alarm: the channel this far from its `setpoint`, in percent of the specified value, or further… Needs a `setpoint`, and the three keys below. |
 | `drift_hold_ms` | integer, 0 or more | with `drift_percent` | — | …for this many milliseconds without a break. |
 | `drift_off_percent` | number, above 0, under `drift_percent` | with `drift_percent` | — | The alarm goes off once the drift is back at this share or under. |
 | `drift_min_setpoint` | number, 0 or more | with `drift_percent` | — | While the specified value is nearer 0 than this, either side, the drift alarm says nothing. In the channel's unit. |
+| `alarm_priority` | integer, 1 or more | no | none | The alarm's priority, 1 first. Needs an alarm on the channel. See [Alarms](#alarms). |
 
 - The row must scale linearly: a number. An enumeration, or a single point measured on a car with no
   slope, is refused.
@@ -220,19 +221,22 @@ alarm_min_off = 45
 - **The page.** An alarm raises the **first values page that shows the channel**, with the
   channel's cell inverted. A channel with an alarm must be a cell of a values page: a chart has
   no cell to invert.
-- **Priority** is the order of the `[[channel]]`s, first highest; a channel's bounds before its
-  drift. With alarms out on two pages, the higher one's page is shown.
+- **Priority:** channels with `alarm_priority` first, 1 highest; without it, the order in the
+  file decides — for ties too. A channel's bounds come before its drift. With alarms out on two
+  pages, the higher one's page is shown.
 - **Several on one page:** every channel out on the page shown is inverted, each blinking while
-  it is out and steady once it is back. One press silences all of them.
+  it is out and steady once it is back — also one whose own alarm raises another page. One press
+  silences all of them.
 - **Off values.** `alarm_max_off` is under `alarm_max`; `alarm_min_off` is over `alarm_min`. With
   both bounds, `alarm_min_off` must be under `alarm_max_off`. Left out, an off value is 5 % of
-  the bound inside it, and never less than one step of the channel's `decimals` (`1` for 0
-  decimals, `0.1` for 1). The build's line for the alarm says which off values are defaults.
+  the bound inside it, and never less than one step of the channel's resolution — what one count
+  of its raw value is worth (`0.1` for a channel that scales by 0.1, whatever its `decimals`). The
+  build's line for the alarm says which off values are defaults.
 - Every number must fit a 32-bit float. They are compared as the board holds them.
-- **The bus budget.** The board reads every alarm's channel at its `hz` on every page, and its
-  `setpoint` with it. Together with the lever, the cruise status and the channels of the pages
-  not on screen (once a second each), that may come to at most **75 reads a second**. A plan over
-  it is refused, with each channel's share. The build's `bus:` line says how much a plan uses.
+- **The bus.** The board reads every alarm's channel at its `hz` on every page, and its
+  `setpoint` with it, ahead of the page on screen. The build's `bus:` line says what that comes
+  to with `[strip]`'s voltage, the lever and the cruise status, in reads a second, by unit and by
+  channel. It refuses nothing: the board puts up to eight reads of one unit in one request.
 
 **Replacing `[[alarm]]`.** `[[alarm]]` tables are refused. The refusal lists the keys to add to
 each channel, taken from the file's own rules:
@@ -244,7 +248,8 @@ each channel, taken from the file's own rules:
 | `kind = "drift"`, `percent`, `release_percent`, `hold_ms`, `min_setpoint` | `drift_percent`, `drift_off_percent`, `drift_hold_ms`, `drift_min_setpoint`, the same numbers |
 | `page` | nothing: the alarm raises the first values page with the channel |
 
-Order the `[[channel]]`s by the old rules' order to keep their priority.
+Where the old rules' order is not the channels' order in the file, each block also has the
+`alarm_priority` that keeps it: no channel has to move.
 
 ### `[[page]]`
 
@@ -456,7 +461,8 @@ Two spellings, both `<unit>:<row>`:
 | `[[page]]` | 1 to 8 |
 | cells on a values page | 1 to 4 |
 | chart pages per channel | 1 |
-| alarms | any number, within the bus budget: 75 reads a second on every page |
+| alarms | any number; the build's `bus:` line says what they read |
+| `alarm_priority` | 1 or more |
 | `hz` | above 0, at most 100; 2 when absent |
 | `hz` of the stopwatch's `speed` | 7.5 or more; 50 recommended |
 | `decimals` | 0 to 3 |
@@ -578,7 +584,8 @@ name the channel, `X: …`.
 | `X: alarm_min_off A is not under alarm_max_off B — no value would be off for both` | Move the two off values apart. `(its default)` marks one the build derived: write it. |
 | `X: alarm_max_off A (its default) is alarm_max B on the board` (or `alarm_min_off`) | Write the off value. |
 | `X: drift_percent needs a setpoint` | Give X a `setpoint`, or remove the `drift_*` keys. |
-| `the board would read N identifiers a second on every page, over its bus budget of 75 — alarms …; the lever …; …` | Lower the `hz` of an alarm's channel, or take an alarm off one. The message lists each channel's share. |
+| `alarm_priority V is not a whole number, 1 or more` / `alarm_priority must be a whole number, 1 or more, not …` | 1, 2, 3 … unquoted. |
+| `alarm_priority needs an alarm on the channel` | Add the alarm, or remove `alarm_priority`. |
 
 **`[stalk]`**
 
@@ -642,8 +649,8 @@ name the channel, `X: …`.
 - Any other channel on no page: not read, except the stopwatch's `speed` while the stopwatch is
   on.
 - All channels together: at most 100 requests a second. Asked for more, the board reads them
-  more slowly than their `hz`. The build checks only what is read on every page: at most 75 a
-  second ([Alarms](#alarms)).
+  more slowly than their `hz`. The build's `bus:` line says what is read ahead of the page on
+  screen whatever page is up — alarms, the strip's voltage, the lever ([Alarms](#alarms)).
 - At start-up the board checks each unit's part number (`F187`) against the one the dash was built
   for. A unit that answers another number is not read: after replacing a unit, run `vagcan units --identify` and rebuild.
 

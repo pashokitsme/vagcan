@@ -35,9 +35,11 @@
 //!
 //! - **The page is the first showing rule's** — the highest priority among the episodes that
 //!   are firing or holding. A page raised by a lower rule never replaces it.
-//! - **On that page every channel whose rule is showing is inverted**, each as its own episode
-//!   says (blinking while out, steady through the hold) — four cylinders out at once are four
-//!   inverted cells, not one. A channel that is out but raises another page waits.
+//! - **On that page every channel it shows whose rule is showing is inverted**, each as its own
+//!   episode says (blinking while out, steady through the hold) — four cylinders out at once are
+//!   four inverted cells, not one. That includes a channel whose own alarm raises another page:
+//!   it is on the glass, so it is marked there and silenced there. A channel out that the page
+//!   does not show waits.
 //! - **A press silences every episode on the glass**, the page the driver is looking at: what
 //!   they see is what they dismiss. A rule out on another page then takes the glass on the next
 //!   poll and wants its own press, because it is a different thing to be told.
@@ -55,7 +57,7 @@
 //! ([`BLINK_MS`]) while the value is out, steady through the hold. Inverting *the offending
 //! cell* rather than the panel is the point of the view — see [`Cell::alarm`](crate::Cell::alarm).
 
-use crate::plan::MAX_VALUE_CELLS;
+use crate::plan::{MAX_VALUE_CELLS, Page};
 
 /// How long the alarm view stays up after the value comes back inside.
 ///
@@ -429,6 +431,8 @@ pub enum Press {
 /// the loop happened to see first.
 pub struct Alarms<'a, S> {
 	rules: &'a [Alarm],
+	/// The plan's pages: which channels the page on the glass shows ([`Page::shows`]).
+	pages: &'a [Page],
 	episodes: S,
 	/// Which rule leads on the glass, from the last poll: the first showing one.
 	showing: Option<usize>,
@@ -439,16 +443,17 @@ pub struct Alarms<'a, S> {
 }
 
 impl<'a, S: AsRef<[Slot]> + AsMut<[Slot]>> Alarms<'a, S> {
-	/// The plan's rules, and one slot for each.
+	/// The plan's rules and pages, and one slot for each rule.
 	///
 	/// # Panics
 	///
 	/// When `slots` is not as long as `rules`: both are sized from the same plan, so a
 	/// mismatch is an image built wrong, not a car behaving oddly.
-	pub fn new(rules: &'a [Alarm], slots: S) -> Self {
+	pub fn new(rules: &'a [Alarm], pages: &'a [Page], slots: S) -> Self {
 		assert_eq!(slots.as_ref().len(), rules.len(), "one slot per alarm rule");
 		Alarms {
 			rules,
+			pages,
 			episodes: slots,
 			showing: None,
 			page: None,
@@ -506,9 +511,10 @@ impl<'a, S: AsRef<[Slot]> + AsMut<[Slot]>> Alarms<'a, S> {
 		let Some(page) = self.page.take() else {
 			return Press::NextPage;
 		};
+		let (rules, pages) = (self.rules, self.pages);
 		let episodes = self.episodes.as_mut();
-		for (rule, episode) in self.rules.iter().zip(episodes.iter_mut()) {
-			if rule.page == page && episode.0.showing().is_some() {
+		for (rule, episode) in rules.iter().zip(episodes.iter_mut()) {
+			if on(rule, page, pages) && episode.0.showing().is_some() {
 				episode.0 = Episode::Silenced;
 			}
 		}
@@ -530,7 +536,7 @@ impl<'a, S: AsRef<[Slot]> + AsMut<[Slot]>> Alarms<'a, S> {
 	/// into a slice first would need a buffer this crate has no allocator for.
 	/// `None` is the same no-evidence it is in a [`Reading`].
 	pub fn poll_with(&mut self, page: PageId, value_of: impl Fn(ChannelId) -> Option<f32>, now_ms: u64) -> Update {
-		let rules = self.rules;
+		let (rules, pages) = (self.rules, self.pages);
 		let episodes = self.episodes.as_mut();
 		for (rule, episode) in rules.iter().zip(episodes.iter_mut()) {
 			episode.0 = step(rule, episode.0, &value_of, now_ms);
@@ -541,9 +547,9 @@ impl<'a, S: AsRef<[Slot]> + AsMut<[Slot]>> Alarms<'a, S> {
 		// A page taking the glass — from the driver's, or from another alarm's — has had its
 		// rules firing behind it for however long: their blink starts now, inverted first, like
 		// any takeover's.
-		if held.is_some() && held != self.page {
+		if let Some(at) = held.filter(|_| held != self.page) {
 			for (rule, episode) in rules.iter().zip(episodes.iter_mut()) {
-				if Some(rule.page) == held
+				if on(rule, at, pages)
 					&& let Episode::Firing { blink_from_ms } = &mut episode.0
 				{
 					*blink_from_ms = now_ms;
@@ -557,7 +563,7 @@ impl<'a, S: AsRef<[Slot]> + AsMut<[Slot]>> Alarms<'a, S> {
 			None => Shown::page(page),
 			Some(at) => {
 				let mut shown = Shown::page(at);
-				let showing = rules.iter().zip(episodes.iter()).filter(|(rule, _)| rule.page == at);
+				let showing = rules.iter().zip(episodes.iter()).filter(|(rule, _)| on(rule, at, pages));
 				for (rule, highlight) in showing.filter_map(|(rule, e)| Some((rule, e.0.showing()?))) {
 					mark(&mut shown.marks, rule.channel, highlight);
 				}
@@ -570,6 +576,12 @@ impl<'a, S: AsRef<[Slot]> + AsMut<[Slot]>> Alarms<'a, S> {
 		self.last = Some(shown);
 		Update { shown, changed }
 	}
+}
+
+/// Whether `rule` is on page `at` of `pages`: the page it raises, or one that shows its channel
+/// as well. A page the plan does not have shows only what raises it.
+fn on(rule: &Alarm, at: PageId, pages: &[Page]) -> bool {
+	rule.page == at || pages.get(usize::from(at.0)).is_some_and(|page| page.shows(rule.channel.0))
 }
 
 /// Mark `channel` on the glass, once: a channel with two rules showing — its bounds and its
@@ -669,9 +681,38 @@ mod tests {
 		std::vec::Vec::leak(rules)
 	}
 
+	/// The pages the fixtures' rules raise: each shows its rules' channels and nothing else.
+	static PAGES: [Page; 5] = [
+		Page::Values {
+			title: "",
+			cells: &[],
+			volts: false,
+		},
+		Page::Values {
+			title: "",
+			cells: &[],
+			volts: false,
+		},
+		Page::Values {
+			title: "",
+			cells: &[0, 1, 2, 3],
+			volts: false,
+		},
+		Page::Values {
+			title: "",
+			cells: &[4],
+			volts: false,
+		},
+		Page::Values {
+			title: "",
+			cells: &[10, 11],
+			volts: false,
+		},
+	];
+
 	/// A machine over `rules`.
 	fn alarms(rules: &'static [Alarm]) -> Alarms<'static, Vec<Slot>> {
-		Alarms::new(rules, std::vec![Slot::CLEAR; rules.len()])
+		Alarms::new(rules, &PAGES, std::vec![Slot::CLEAR; rules.len()])
 	}
 
 	/// The group's rules alone.
@@ -1306,6 +1347,59 @@ mod tests {
 	#[test]
 	#[should_panic(expected = "one slot per alarm rule")]
 	fn the_slots_are_sized_for_the_rules() {
-		let _ = Alarms::new(leak(rules()), std::vec![Slot::CLEAR; 2]);
+		let _ = Alarms::new(leak(rules()), &PAGES, std::vec![Slot::CLEAR; 2]);
+	}
+
+	/// A channel out on the page another alarm raised is on the glass: it is marked there, and
+	/// the press that silences the page silences it too (review, 2026-10-19). Here coolant is on
+	/// the driver's page 0 and on page 2; oil only on page 2, and oil comes first.
+	#[test]
+	fn a_channel_out_on_the_page_up_is_marked_there_even_when_its_own_alarm_raises_another() {
+		static BOTH: [Page; 3] = [
+			Page::Values {
+				title: "",
+				cells: &[0],
+				volts: false,
+			},
+			Page::Values {
+				title: "",
+				cells: &[],
+				volts: false,
+			},
+			Page::Values {
+				title: "",
+				cells: &[1, 0],
+				volts: false,
+			},
+		];
+		const HOT: Rule = Rule::Bounds {
+			max: Some(Bound { at: 10.0, off: 8.0 }),
+			min: None,
+		};
+		static RULES: [Alarm; 2] = [
+			Alarm {
+				channel: ChannelId(1),
+				page: PageId(2),
+				rule: HOT,
+			},
+			Alarm {
+				channel: ChannelId(0),
+				page: PageId(0),
+				rule: HOT,
+			},
+		];
+		let mut alarms = Alarms::new(&RULES, &BOTH, std::vec![Slot::CLEAR; 2]);
+		let out = [Reading::new(ChannelId(0), Some(12.0)), Reading::new(ChannelId(1), Some(12.0))];
+		let up = alarms.poll(PageId(1), &out, 0).shown;
+		assert_eq!(up.page, PageId(2));
+		assert_eq!(marked(&up), [ChannelId(1), ChannelId(0)], "coolant is on the glass too");
+		assert!(up.inverted(0).contains(ChannelId(0)));
+		// One press for both: coolant does not come back on its own page for a second one.
+		assert_eq!(alarms.press(), Press::Silenced);
+		assert_eq!(alarms.poll(PageId(1), &out, 100).shown, Shown::page(PageId(1)));
+		// Without the other alarm up, coolant raises its own page, as ever.
+		let mut alarms = Alarms::new(&RULES, &BOTH, std::vec![Slot::CLEAR; 2]);
+		let coolant = [Reading::new(ChannelId(0), Some(12.0)), Reading::new(ChannelId(1), Some(0.0))];
+		assert_eq!(alarms.poll(PageId(1), &coolant, 0).shown.page, PageId(0));
 	}
 }

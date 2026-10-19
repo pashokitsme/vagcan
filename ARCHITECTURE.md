@@ -536,11 +536,11 @@ RESET buttons are not inputs; `GPIO9` is left to the ROM.
 
 **An alarm is part of a channel** (owner, 2026-10-19): a channel's `alarm_max`, `alarm_min` and
 drift keys, not a rule of its own. Each is one rule in the plan, raising the first values page
-that shows its channel; the channels' order is the priority. The board's alarm state is sized
-by the plan, so nothing counts the rules; what bounds them is the bus: the plan build adds up
-what the board reads whatever page is up — alarm channels at their `hz`, the lever, the pages
-not shown — and refuses a plan over `STANDING_READS_PER_S` (`vag-cli-core/src/dash.rs`, where
-the number's evidence is).
+that shows its channel; `alarm_priority`, then the order in the file, is the priority. The
+board's alarm state is sized by the plan, so nothing counts the rules. The build says what the
+board reads on every page ahead of the page on the glass — alarm channels at their `hz`, the
+strip's voltage, the lever — and refuses nothing: that count is identifiers, the planner batches
+up to eight a request, and bus time would need the planner run at a measured cost per exchange.
 
 **Rendering is shared with the laptop.** `vag-dash-render` turns a `Frame` (a values page
 of up to four cells, or a chart page) into pixels on any `embedded-graphics` target. On

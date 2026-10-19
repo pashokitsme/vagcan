@@ -30,6 +30,7 @@
 use crate::alarm::{Alarm, Alarms, ChannelId, Highlight, Inverted, PageId, Press, Shown, Slot};
 use crate::control::Command;
 use crate::pages;
+use crate::plan::Page;
 
 /// What one frame did to the glass that is worth one line in the log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,16 +119,16 @@ pub struct Screen<'a, S> {
 }
 
 impl<'a, S: AsRef<[Slot]> + AsMut<[Slot]>> Screen<'a, S> {
-	/// The plan's rules in priority order, one [`Slot`] for each, and whether the plan has a
-	/// `[stopwatch]`.
+	/// The plan's rules in priority order, its pages, one [`Slot`] for each rule, and whether the
+	/// plan has a `[stopwatch]`.
 	///
 	/// # Panics
 	///
 	/// When `slots` is not as long as `rules`: both are sized from the same plan, so a
 	/// mismatch is an image built wrong, not a car behaving oddly.
-	pub fn new(rules: &'a [Alarm], slots: S, stopwatch: bool) -> Self {
+	pub fn new(rules: &'a [Alarm], pages: &'a [Page], slots: S, stopwatch: bool) -> Self {
 		Screen {
-			alarms: Alarms::new(rules, slots),
+			alarms: Alarms::new(rules, pages, slots),
 			adapter: false,
 			drawn: None,
 			alarm_page: None,
@@ -244,6 +245,11 @@ impl<'a, S: AsRef<[Slot]> + AsMut<[Slot]>> Screen<'a, S> {
 		self.alarms.showing().is_some()
 	}
 
+	/// The rule that leads on the glass, by its place in the plan, as of the last frame.
+	pub fn alarm_leader(&self) -> Option<usize> {
+		self.alarms.showing()
+	}
+
 	/// Whether the stopwatch mode is on.
 	pub fn stopwatch(&self) -> bool {
 		self.stopwatch
@@ -325,6 +331,31 @@ mod tests {
 		},
 	];
 
+	/// The plan's pages: 0 and 1 the driver's; 2 shows channel 3, which no rule watches, beside
+	/// channels 4 and 5; 3 shows channel 6.
+	static PLAN_PAGES: [Page; 4] = [
+		Page::Values {
+			title: "a",
+			cells: &[0, 1],
+			volts: true,
+		},
+		Page::Values {
+			title: "b",
+			cells: &[2],
+			volts: true,
+		},
+		Page::Values {
+			title: "high",
+			cells: &[3, 4, 5],
+			volts: true,
+		},
+		Page::Values {
+			title: "low",
+			cells: &[6],
+			volts: true,
+		},
+	];
+
 	/// The latest value of each of seven channels, as the board's store holds it.
 	#[derive(Clone, Copy)]
 	struct Car([Option<f32>; 7]);
@@ -345,7 +376,7 @@ mod tests {
 	type Fixture = Screen<'static, [Slot; 3]>;
 
 	fn screen() -> Fixture {
-		Screen::new(&RULES, [Slot::CLEAR; 3], true)
+		Screen::new(&RULES, &PLAN_PAGES, [Slot::CLEAR; 3], true)
 	}
 
 	#[test]
@@ -390,29 +421,6 @@ mod tests {
 			zero_at_rest: false,
 		};
 		static CHANNELS: [Channel; 7] = [CH; 7];
-		// The alarm page shows channel 3, which no rule watches, beside its two.
-		static PLAN_PAGES: [Page; 4] = [
-			Page::Values {
-				title: "a",
-				cells: &[0, 1],
-				volts: true,
-			},
-			Page::Values {
-				title: "b",
-				cells: &[2],
-				volts: true,
-			},
-			Page::Values {
-				title: "high",
-				cells: &[3, 4, 5],
-				volts: true,
-			},
-			Page::Values {
-				title: "low",
-				cells: &[6],
-				volts: true,
-			},
-		];
 		let plan = Plan {
 			vin: "",
 			language: "en",
@@ -931,7 +939,7 @@ mod tests {
 			(Where::Page, Stopwatch, StopwatchOn, 1, true),
 		];
 		for (at, command, outcome, cursor_after, stopwatch_after) in cases {
-			let mut screen = Screen::new(&RULES, [Slot::CLEAR; 3], !matches!(at, Where::NoStopwatchInPlan));
+			let mut screen = Screen::new(&RULES, &PLAN_PAGES, [Slot::CLEAR; 3], !matches!(at, Where::NoStopwatchInPlan));
 			let mut cursor = 1;
 			let car = match at {
 				Where::Alarm => Car::calm().with(4, Some(11.0)),
@@ -1015,7 +1023,7 @@ mod tests {
 			/// A board whose plan has a `[stopwatch]`, and a `[stalk]` when `stalk`.
 			fn new(stalk: bool) -> Self {
 				Board {
-					screen: Screen::new(&[], [], true),
+					screen: Screen::new(&[], &[], [], true),
 					stalk: Stalk::new(STATES),
 					closer: Closer::new(stalk.then_some(STATES)),
 					watch: Stopwatch::new(&MARKS, 1.0),
@@ -1257,7 +1265,7 @@ mod tests {
 
 	#[test]
 	fn a_plan_without_alarms_only_turns_pages() {
-		let mut screen: Screen<'static, [Slot; 0]> = Screen::new(&[], [], false);
+		let mut screen: Screen<'static, [Slot; 0]> = Screen::new(&[], &[], [], false);
 		let mut cursor = 0;
 		let glass = screen.frame(cursor, 2, 0, |_| Some(1e9));
 		assert_eq!((glass.page, glass.offending, glass.missed, glass.change), (0, None, None, None));

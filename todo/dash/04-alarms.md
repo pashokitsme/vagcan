@@ -6,11 +6,12 @@
 **State (2026-10-19):** alarms are **keys of the channel they watch** (owner, 2026-10-19:
 «нужно просто иметь возможность задать пороговое значение … Типа минимальное и
 максимальное»), on `feat/dash-thresholds`: `alarm_max` / `alarm_min` with their off values
-(`alarm_max_off` / `alarm_min_off`, 5 % inside by default, at least one display step) and the
-drift keys (`drift_percent`, `drift_off_percent`, `drift_hold_ms`, `drift_min_setpoint`). An
-alarm raises the first values page that shows its channel; the channels' order is the
-priority. `[[alarm]]` is refused with its rewrite; `MAX_ALARMS` is gone, replaced by a bus
-budget the plan build checks (`STANDING_READS_PER_S`, 75 reads a second on every page). The
+(`alarm_max_off` / `alarm_min_off`, 5 % inside by default, at least one step of the channel's
+resolution) and the drift keys (`drift_percent`, `drift_off_percent`, `drift_hold_ms`,
+`drift_min_setpoint`). An alarm raises the first values page that shows its channel;
+`alarm_priority`, then the file's order, is the priority. `[[alarm]]` is refused with its
+rewrite; `MAX_ALARMS` is gone, and nothing replaces it but the build's informational `bus:` line
+(owner, 2026-10-19: a bus-time check is its own task, after the architectural review). The
 board's alarm state is sized by the plan (`ALARM_COUNT` slots), the replay's by a `Vec`. The
 owner's `dash.toml` still has the four `[[alarm]]` rules: its rewrite is in the hand-off of the
 change, and the file is the owner's to replace. Before that (2026-09-26): threshold rules since
@@ -43,21 +44,24 @@ alarm_min_off = 45     # off at or above; default alarm_min + 5 % of |alarm_min|
 - **One rule per channel and kind**: a channel's bounds are one rule, its drift another. The
   page is the first values page with the channel as a cell; a channel with an alarm and no
   such page is refused.
-- **Priority** is the `[[channel]]` order, bounds before drift.
-- **Several out on one page**: every channel out on the page on the glass is marked, each
-  with its own episode's highlight; the page is the highest showing rule's. One press
+- **Priority**: `alarm_priority` (integer ≥ 1, 1 first; only on a channel with an alarm), then
+  the `[[channel]]` order for ties and channels without it; bounds before drift.
+- **Several out on one page**: every channel out that the page on the glass shows is marked —
+  its own alarm's page or not (review, 2026-10-19) — each with its own episode's highlight; the page is the highest showing rule's. One press
   silences every episode on that page; one out on another page then takes the glass. The old
   multi-channel rule was one episode with the worst cell marked; per channel, a cylinder newly
   out on a page nobody silenced is news of its own.
 - **Off values**: `alarm_max_off < alarm_max`, `alarm_min_off > alarm_min`, and with both,
   `alarm_min_off < alarm_max_off` — all compared in `f32`. An `_off` key without its bound is
   refused. "Off" is the owner's word; no "hysteresis" or "release" in what a person reads.
-- **The bus budget** replaces the cap of four rules: what the board reads on every page —
-  each alarm's channel and a drift's specified value at their `hz`, the lever at its fastest,
-  the cruise status, every page's channels at most once a second — may come to 75 reads a
-  second, each counted as an exchange of its own. The number and its evidence live on
-  `vag_cli_core::dash::STANDING_READS_PER_S`; a test holds it to the scheduler's ceiling less
-  its foreground floor. The reference car's plan reads 52.
+- **No count, no refusal**: the cap of four rules went, and a budget of 75 identifiers a
+  second that replaced it in review was dropped by the owner the same day — the unit was wrong
+  (100 and 25 are policy numbers, the car serves 45–48 exchanges a second, the planner batches up
+  to 8 identifiers a request). The build prints `bus:` — what the board reads in the foreground
+  on every page (alarm channels and setpoints at their `hz`, the strip's voltage, the lever at
+  its fastest, the cruise status), in reads a second, by unit and by share — and refuses
+  nothing. A bus-time check, the planner run over the plan at a measured cost per exchange, is a
+  separate task. The reference car's plan reads 47 a second this way.
 - A `plan.json` written while rules were `[[alarm]]` tables is refused with what to do.
 
 **The owner's values** (2026-09-22, researched that day; the research note is not in the
@@ -178,7 +182,8 @@ accepts per request is still a bench measurement — see `06`.
   index and `PageId` its page index, because an image is built for one plan. `Plan::rates`
   keeps watched channels foreground.
 - **`vag-cli-core/src/dash.rs`** — a channel's alarm keys parsed, checked, resolved to one
-  rule per channel and kind with its page, held to the bus budget (`check_budget`), written to
+  rule per channel and kind with its page, ordered by `alarm_priority`, the `bus:` line
+  (`bus_note`), written to
   `plan.json` and `plan.rs`; an `[[alarm]]` table refused with its rewrite (`migrate_alarms`).
 - **`vag-dash-fw/src/bin/dash.rs`** — every panel frame calls `Screen::frame` with the
   cursor and the value store (`None` when stale, the existing `STALE` rule), draws

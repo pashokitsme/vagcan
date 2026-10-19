@@ -20,7 +20,7 @@ use vag_dash_render::button::{Button, Press as ButtonPress};
 use vag_dash_render::control::{self, Command};
 use vag_dash_render::history::History;
 use vag_dash_render::pages::{self, Layout, MAX_PAGES};
-use vag_dash_render::plan::{Page, Plan};
+use vag_dash_render::plan::{MAX_VALUE_CELLS, Page, Plan};
 use vag_dash_render::screen::{Change, Glass, Outcome, Screen};
 use vag_dash_render::{Board, Cell, Deviation, Frame, Links, Theme, draw_page};
 
@@ -35,8 +35,6 @@ const _: () = assert!(FRAME_MS * 2 <= BLINK_MS, "the panel must frame at least t
 /// How old a value may be and still be shown — `STALE` in `vag-dash-fw`'s `bin/dash.rs`.
 /// Counted from when the recording heard it.
 pub const STALE_MS: u64 = 5_000;
-/// Cells a stored page may hold — `MAX_CELLS` in `vag-dash-fw`'s `config.rs`.
-const MAX_CELLS: usize = 8;
 /// The board's framebuffer — `WIDTH` and `HEIGHT` in `vag-dash-fw`'s `panel.rs`.
 pub const WIDTH: usize = 256;
 pub const HEIGHT: usize = 64;
@@ -127,7 +125,9 @@ pub struct Replay {
 	histories: Vec<History<WIDTH>>,
 	/// The page the last frame drew — what the bus reads in the foreground.
 	drawn: Option<u8>,
-	/// The rule on the glass after the last frame.
+	/// The rule that leads on the glass after the last frame — what a press silences and what
+	/// the log names, read off the screen each frame: a higher rule joining the page already up
+	/// leads from then on without a takeover of its own.
 	rule: Option<usize>,
 	missed_said: Option<u16>,
 	start: u64,
@@ -140,7 +140,12 @@ impl Replay {
 	/// `series` is one entry per plan channel; the frames run from `start_ms` to `end_ms` of
 	/// the recording. `Err` when `series` is not one per channel.
 	pub fn new(plan: &'static Plan, series: Vec<Option<Series>>, mut presses: Vec<u64>, start_ms: u64, end_ms: u64) -> Result<Replay, String> {
-		let screen = Screen::new(plan.alarms, vec![AlarmSlot::CLEAR; plan.alarms.len()], plan.stopwatch.is_some());
+		let screen = Screen::new(
+			plan.alarms,
+			plan.pages,
+			vec![AlarmSlot::CLEAR; plan.alarms.len()],
+			plan.stopwatch.is_some(),
+		);
 		if series.len() != plan.channels.len() {
 			return Err(format!("{} series for {} plan channels", series.len(), plan.channels.len()));
 		}
@@ -163,7 +168,7 @@ impl Replay {
 		});
 		Ok(Replay {
 			plan,
-			layouts: pages::from_plan(plan.pages, MAX_PAGES, MAX_CELLS).collect(),
+			layouts: pages::from_plan(plan.pages, MAX_PAGES, MAX_VALUE_CELLS).collect(),
 			series,
 			presses,
 			refused,
@@ -238,7 +243,6 @@ impl Replay {
 		let before = self.rule;
 		match glass.change {
 			Some(Change::Took { rule }) => {
-				self.rule = Some(rule);
 				// Said as a miss instead, once, the way the board says it.
 				if glass.missed.is_none() {
 					let channel = glass.offending.map(|c| c.0);
@@ -252,14 +256,12 @@ impl Replay {
 				}
 			}
 			Some(Change::Over) => {
-				self.rule = None;
 				events.push(Event::Over {
 					rule: before,
 					page: glass.page,
 				});
 			}
 			Some(Change::Silenced) => {
-				self.rule = None;
 				events.push(Event::Silenced {
 					rule: before,
 					page: glass.page,
@@ -267,6 +269,7 @@ impl Replay {
 			}
 			None => {}
 		}
+		self.rule = self.screen.alarm_leader();
 		let missed = glass.missed.map(|page| page.0);
 		if missed != self.missed_said {
 			self.missed_said = missed;
@@ -384,7 +387,7 @@ impl Replay {
 		// The page's title and voltage over it, as the board draws them (`Plan::strip`).
 		let strip = self.plan.strip(usize::from(glass.page), value_of);
 		if !layout.chart {
-			let cells: Vec<Cell<'_>> = layout.cells.iter().take(4).map(|&index| cell_of(index)).collect();
+			let cells: Vec<Cell<'_>> = layout.cells.iter().take(MAX_VALUE_CELLS).map(|&index| cell_of(index)).collect();
 			draw_page(&Frame::Values { cells: &cells }, &strip, &board, &theme, target);
 			return;
 		}
@@ -952,6 +955,32 @@ mod tests {
 			"steady through the hold: {inverted:?}"
 		);
 		assert!(inverted.iter().filter(|(t, _)| *t >= back).all(|&(_, i)| !i), "{inverted:?}");
+	}
+
+	/// A higher rule joining the page already up leads from then: the press that silences both
+	/// is said as silencing it, not the one that took the screen (review, 2026-10-19).
+	#[test]
+	fn the_log_names_the_rule_leading_on_the_glass_not_the_one_that_took_it() {
+		let calm = every_100ms(6_000, |_| 0.0);
+		let second = every_100ms(6_000, |t| if t >= 2_000 { -3.0 } else { 0.0 });
+		let first = every_100ms(6_000, |t| if t >= 1_000 { -3.0 } else { 0.0 });
+		let replay = Replay::new(&PLAN, vec![calm.clone(), calm, second, first], vec![3_000], 0, 6_000).unwrap();
+		let events = run(replay);
+		assert!(
+			events.contains(&(
+				1_000,
+				Event::Took {
+					rule: 1,
+					page: 1,
+					channel: Some(3),
+					value: Some(-3.0),
+					specified: None
+				}
+			)),
+			"{events:?}"
+		);
+		assert!(events.contains(&(3_000, Event::Hushed { rule: Some(0) })), "{events:?}");
+		assert!(events.contains(&(3_000, Event::Silenced { rule: Some(0), page: 0 })), "{events:?}");
 	}
 
 	/// The plan says how many rules there are; nothing caps them. Both cells of the alarm page

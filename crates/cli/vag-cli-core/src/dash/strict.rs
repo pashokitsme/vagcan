@@ -51,6 +51,7 @@ pub(super) const CHANNEL: Keys = Keys {
 		"drift_hold_ms",
 		"drift_off_percent",
 		"drift_min_setpoint",
+		"alarm_priority",
 	],
 };
 
@@ -413,7 +414,7 @@ marks = [60, 100]
 
 	/// What a refusal in a `[[channel]]` lists as its keys.
 	const CHANNEL_KEYS: &str = "ref, label, decimals, hz, setpoint, zero_at_rest, alarm_max, alarm_max_off, alarm_min, alarm_min_off, \
-		drift_percent, drift_hold_ms, drift_off_percent, drift_min_setpoint";
+		drift_percent, drift_hold_ms, drift_off_percent, drift_min_setpoint, alarm_priority";
 
 	#[test]
 	fn an_unknown_key_is_refused_in_every_table() {
