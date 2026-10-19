@@ -3,9 +3,7 @@
 //!
 //! TOML rather than JSON because this file is written by hand as often as by
 //! the tool: it takes comments, and a person who opens it can see what the
-//! options are. The old `config.json` is migrated on first read and removed, so
-//! there is one file claiming these facts rather than two that disagree by next
-//! month.
+//! options are.
 //!
 //! **Read and written with `toml_edit`, which preserves formatting.** The first
 //! version used `toml`, which parses to a value tree with nowhere to keep a
@@ -162,7 +160,6 @@ pub fn load() -> Document {
 }
 
 fn load_at(path: &Path) -> Document {
-	migrate_json(path);
 	// No file yet: the commented template, in memory. Reading settings writes
 	// nothing — a bare `vagcan` used to leave a config.toml behind — and the
 	// first [`save`] writes the template with its change, so the first person
@@ -174,32 +171,6 @@ fn load_at(path: &Path) -> Document {
 		.ok()
 		.and_then(|text| text.parse::<Document>().ok())
 		.unwrap_or_default()
-}
-
-/// Carry `config.json` over to `config.toml`, once.
-///
-/// Best-effort throughout. The only key the JSON file ever held is `project`,
-/// and a machine that cannot be migrated is a machine that names its project
-/// again — annoying, not damaging. The JSON is removed only after the TOML is
-/// written, so an interrupted migration leaves the old file in place.
-fn migrate_json(toml_path: &Path) {
-	if toml_path.exists() {
-		return;
-	}
-	let Some(dir) = toml_path.parent() else { return };
-	let json = dir.join("config.json");
-	// No old file either: nothing to carry over, and nothing is written —
-	// [`load_at`] hands out the template until something is saved.
-	let Ok(text) = std::fs::read_to_string(&json) else { return };
-	let mut document: Document = FRESH.parse().unwrap_or_default();
-	if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
-		&& let Some(project) = value.get("project").and_then(|v| v.as_str())
-	{
-		document["project"] = toml_edit::value(project);
-	}
-	if write_at(toml_path, &document).is_ok() {
-		let _ = std::fs::remove_file(&json);
-	}
 }
 
 /// Write the document back.
@@ -363,20 +334,6 @@ mod tests {
 		let _ = std::fs::remove_dir_all(&path);
 		std::fs::create_dir_all(&path).unwrap();
 		path
-	}
-
-	#[test]
-	fn a_json_config_becomes_a_toml_one_and_the_json_goes() {
-		// Two files claiming which project a bare command means would disagree
-		// within a month, so the migration finishes rather than leaving both.
-		let dir = temp("migrate");
-		std::fs::write(dir.join("config.json"), r#"{"project": "SK37X"}"#).unwrap();
-		let document = load_at(&dir.join("config.toml"));
-
-		assert_eq!(project(&document).as_deref(), Some("SK37X"));
-		assert!(dir.join("config.toml").is_file());
-		assert!(!dir.join("config.json").exists(), "the old file is gone, not shadowed");
-		let _ = std::fs::remove_dir_all(&dir);
 	}
 
 	#[test]
