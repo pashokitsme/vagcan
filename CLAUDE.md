@@ -233,7 +233,10 @@ research/        RE writeups + tooling (NOT shipped) for work still in progress:
                        ble-scan); `host/` is the bench rig — `dashsim` (be the panel
                        and the buttons), `bleecho`, `bleuds` (one framed UDS request or
                        subscription over BLE) and `benchecu` (the CANable answering as
-                       a control unit; bench pair only, refuses on car traffic)
+                       a control unit; bench pair only, refuses on car traffic);
+                       `layout-editor/` lays out pages in a browser on the real renderer
+                       (WebAssembly) and a car's resolved channels; `alarm-thresholds.md` is
+                       where the oil and gearbox alarm numbers came from (2026-10-19)
   odis-dtc/            fault codes and their text in an ODIS project: the object
                        layouts the DTC loader reads, and the offline proof against
                        the reference car's stored faults (ODIS 15/15, VCDS 11/15) —

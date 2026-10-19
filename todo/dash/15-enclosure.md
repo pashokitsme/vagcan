@@ -247,3 +247,7 @@ repository's side of it:
   halves close. Buck beams 13, CAN clips 0.5 apart. The display's wires are soldered to its
   header's pins (owner). Print order and what each piece tells: `print/README.md` — the
   catch coupon first (~29 min), then the fit plate (~47 min).
+- **After round 3's print, 2026-10-03 (CAD `9554fc9`, `44c19c7`), not printed yet:** a 0.4 mm
+  rim in the wall in front of the socket holds the plug (a lip over it in its channel, `94358fd`,
+  was the first try and is gone), the channel one rim longer; the ESP's clip 0.5 mm further off
+  the board; the face's teeth 0.7 mm. The record: `housing.py`'s header and `print/README.md`.
