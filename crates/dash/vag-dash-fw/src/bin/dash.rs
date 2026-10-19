@@ -33,7 +33,7 @@
 //! * **Input** (`todo/dash/19`, "Input backends"): the plan's `[[button]]`s on GPIO 3, 4 and
 //!   5, the cruise lever and `dashsim`'s presses each turn a press into a [`Command`]; every
 //!   command goes through one queue
-//!   ([`vag_dash_fw::input`]) to one task, `control_task`, which applies it to the screen
+//!   ([`vag_dash_core::input`]) to one task, `control_task`, which applies it to the screen
 //!   ([`Screen::command`]) and the settings. No input knows what a press does. The board's
 //!   own BOOT and RESET buttons are not inputs (owner, 2026-09-27): `GPIO9` is left alone.
 //!   The lever also closes the stopwatch — cruise taken, or its data missing over 3 s
@@ -43,7 +43,7 @@
 //!   has answered, the bus task reads the gateway's list of units and each unit's stored codes
 //!   through the planner, in the background, never while the board's stopwatch is up or a host
 //!   holds its timing channel, each exchange ending 2 s from its start, the send included
-//!   ([`vag_dash_fw::faults`]). The panel draws the count beside a triangle at the status
+//!   ([`vag_dash_core::faults`]). The panel draws the count beside a triangle at the status
 //!   strip's right end, `?` when there is no count; `state` says `faults=`.
 //!
 //! There is no Battery Service (0x180F). Phones show its level as the device's
@@ -104,17 +104,17 @@ use log::{info, warn};
 use static_cell::StaticCell;
 #[cfg(feature = "ble")]
 use trouble_host::prelude::*;
-use vag_dash_fw::bus_rate::{self, BusRate, ConsoleLine};
+use vag_dash_core::bus_rate::{self, BusRate, ConsoleLine};
+use vag_dash_core::exchange::{Ended, Heard, Timeouts, Waits};
+use vag_dash_core::faults::{self, Count, Found, Hold, Line as FaultLine, Now};
+use vag_dash_core::input::{CommandQueue, Source};
+use vag_dash_core::panel::Framebuffer;
+use vag_dash_core::saving::{Flash, RunWrite, Saving};
+use vag_dash_core::ssd1322::{self, Shown, Ssd1322};
 use vag_dash_fw::can::TwaiBackend;
-use vag_dash_fw::config::{Config, Fitted, SavedAgainst};
-use vag_dash_fw::exchange::{Ended, Heard, Timeouts, Waits};
-use vag_dash_fw::faults::{self, Count, Found, Hold, Line as FaultLine, Now};
-use vag_dash_fw::input::{CommandQueue, Source};
-use vag_dash_fw::panel::Framebuffer;
+use vag_dash_fw::config::{self, Config, Fitted, SavedAgainst};
 use vag_dash_fw::plan::{ALARM_COUNT, BUTTON_COUNT, CHANNEL_COUNT, CHART_COUNT, PAGE_COUNT, PLAN, PLAN_ID, UNIT_COUNT};
-use vag_dash_fw::saving::{Flash, RunWrite, Saving};
 use vag_dash_fw::slcan::{self, Adapter, CommandLine, Commands, Line, Packet, Port};
-use vag_dash_fw::ssd1322::{self, Shown, Ssd1322};
 use vag_dash_fw::store::{Error as StoreError, Store};
 use vag_dash_fw::ui::{Button, DEBOUNCE_MS, Press, Visibility};
 use vag_dash_fw::usb;
@@ -567,7 +567,7 @@ static VISIBILITY: AtomicU8 = AtomicU8::new(Visibility::Dark as u8);
 /// exercises the board's own path; a short press is `Command::Next`.
 static REMOTE_PRESS: Signal<CriticalSectionRawMutex, Press> = Signal::new();
 
-/// Every input's commands, to `control_task` ([`vag_dash_fw::input`]): four wait at most,
+/// Every input's commands, to `control_task` ([`vag_dash_core::input`]): four wait at most,
 /// and one that finds the queue full is dropped and said.
 static COMMANDS: CommandQueue = CommandQueue::new();
 
@@ -577,7 +577,7 @@ fn send(source: Source, command: Command) {
 		note!(
 			"{source}: {} dropped — {} commands are already waiting",
 			command.name(),
-			vag_dash_fw::input::CAPACITY
+			vag_dash_core::input::CAPACITY
 		);
 	}
 }
@@ -802,7 +802,7 @@ fn open_settings() -> Settings {
 				// this plan. Until 2026-10-19 a record carried a copy of the plan's pages, and
 				// any `dash.toml` change put brightness and the page back to the defaults.
 				Ok(stored) => {
-					let fitted = stored.fit();
+					let fitted = config::fit(stored);
 					say_fitted(&fitted);
 					info!("config loaded, newest generation {}: {:?}", store.generation(), fitted.config);
 					Settings {
@@ -815,7 +815,7 @@ fn open_settings() -> Settings {
 					info!("nothing this image reads is stored, running on defaults");
 					Settings {
 						store: Some(store),
-						config: Config::default(),
+						config: config::defaults(),
 						saving,
 					}
 				}
@@ -826,7 +826,7 @@ fn open_settings() -> Settings {
 					// over it (PR #12 review); unsaved, the run is added to what flash holds.
 					Settings {
 						store: Some(store),
-						config: Config::default(),
+						config: config::defaults(),
 						saving: Saving {
 							unsaved: true,
 							..Saving::default()
@@ -839,7 +839,7 @@ fn open_settings() -> Settings {
 			warn!("no settings storage ({e:?}) — changes will not survive a reboot");
 			Settings {
 				store: None,
-				config: Config::default(),
+				config: config::defaults(),
 				saving: Saving::default(),
 			}
 		}
@@ -1561,7 +1561,7 @@ static VALUES: Mutex<CriticalSectionRawMutex, [Slot; CHANNEL_COUNT]> = Mutex::ne
 /// unit costs the bus per attempt, so it stays short. 500 ms rather than the
 /// 300 the round-robin used: a host's request may be a fault list of many
 /// frames from a unit behind the gateway.
-const RESPONSE_TIMEOUT: core::time::Duration = core::time::Duration::from_millis(vag_dash_fw::exchange::RESPONSE_TIMEOUT_MS);
+const RESPONSE_TIMEOUT: core::time::Duration = core::time::Duration::from_millis(vag_dash_core::exchange::RESPONSE_TIMEOUT_MS);
 // The stopwatch aborts a run whose speed has not answered for `SILENCE_MS`. Between two
 // speed answers two other reads may each hold the bus for a whole `RESPONSE_TIMEOUT` (the
 // exchange on the bus when the speed came due, and a silent unit's read of the panel's floor,
@@ -1574,7 +1574,7 @@ const RESPONSE_TIMEOUT: core::time::Duration = core::time::Duration::from_millis
 // bus as a silent read does, in the place of the exchange that was on the bus when the speed
 // came due. It adds no backoff — the planner waits for a unit a run is timing only from its
 // second `Busy` in a row (review round 4: the 250 ms it waited after the first pushed the gap
-// to 1.6–1.8 s beside a silent page unit; `research/dash/host/tests/stopwatch_silence.rs` holds
+// to 1.6–1.8 s beside a silent page unit; `crates/dash/vag-dash-core/tests/stopwatch_silence.rs` holds
 // it under the silence). A busy speed read, an exchange already out and a silent unit of the
 // floor in one gap are three, a bus in trouble, as three silent units are: the run aborts. One
 // unit that has just gone silent can be two of the three: its first backoff (250 ms) is shorter
@@ -1732,7 +1732,7 @@ async fn exchange<'a>(backend: &mut TwaiBackend<'static>, unit: Unit, pdu: &'a [
 /// One unit's ISO-TP over the lent controller.
 type Link<'a> = IsoTpCan<&'a mut TwaiBackend<'static>>;
 
-/// Send, and wait as `waits` says ([`vag_dash_fw::exchange`]): for the first answer, out a run
+/// Send, and wait as `waits` says ([`vag_dash_core::exchange`]): for the first answer, out a run
 /// of `7F xx 78`, and on past a late answer to another request, which is dropped.
 ///
 /// An exchange with a deadline of its own (`limited`) — the fault count's,
@@ -2779,7 +2779,7 @@ const _: () = assert!(FRAME_MS * 2 <= alarm::BLINK_MS, "the panel must frame at 
 const RATE_WINDOW_MS: u64 = 1000;
 
 /// The longest `FRAME` line: two hex digits per run of pixels at worst, and its header.
-const FRAME_LINE: usize = vag_dash_fw::panel::WIDTH * vag_dash_fw::panel::HEIGHT / 8 * 2 + 32;
+const FRAME_LINE: usize = vag_dash_core::panel::WIDTH * vag_dash_core::panel::HEIGHT / 8 * 2 + 32;
 
 /// The last frame drawn, as its `FRAME` line, for `usb_writer_task`. A static and not
 /// a task local: four kilobytes in the embassy arena, which every task shares, is a
@@ -2918,7 +2918,7 @@ async fn panel_task(
 	// (20 KiB for every task together), and these are
 	// `CHART_COUNT × (WIDTH × 4 + 8)` bytes — 1032 per chart — which belong in
 	// `.bss` next to the framebuffer.
-	static HISTORIES: StaticCell<[History<{ vag_dash_fw::panel::WIDTH }>; CHART_COUNT]> = StaticCell::new();
+	static HISTORIES: StaticCell<[History<{ vag_dash_core::panel::WIDTH }>; CHART_COUNT]> = StaticCell::new();
 	let histories = HISTORIES.init(core::array::from_fn(|_| History::new()));
 	let mut last_compromised = false;
 	// An alarm page this board does not hold is said once per miss.
@@ -3237,7 +3237,7 @@ fn write_run(s: &mut Settings) {
 		// What a boot would make of the stored record — this plan's id, its page in range — with
 		// the run added, so a record this image writes never names another plan (PR review).
 		(RunWrite::AddToStored, Some(stored)) => {
-			let mut stored = stored.fit().config;
+			let mut stored = config::fit(stored).config;
 			stored.last_run = s.config.last_run.clone();
 			stored
 		}
@@ -3245,7 +3245,7 @@ fn write_run(s: &mut Settings) {
 		// goes into them (PR #12 review).
 		(RunWrite::AddToDefaults, _) => Config {
 			last_run: s.config.last_run.clone(),
-			..Config::default()
+			..config::defaults()
 		},
 		(RunWrite::Nothing | RunWrite::AddToStored, _) => {
 			match unreadable {
@@ -3840,7 +3840,7 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 						// The record before flash's newest, where this image cannot read that
 						// one: what runs is then not what flash holds.
 						let unreadable = store.unreadable();
-						let fitted = stored.fit();
+						let fitted = config::fit(stored);
 						say_fitted(&fitted);
 						s.config = fitted.config;
 						s.saving.agreed();
@@ -3874,7 +3874,7 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 		}
 		Some("defaults") => {
 			let mut s = settings.lock().await;
-			s.config = Config::default();
+			s.config = config::defaults();
 			s.saving.defaults();
 			PAGES_CHANGED.signal(());
 			let _ = write!(out, "ok: defaults in memory — 'save' to keep them");

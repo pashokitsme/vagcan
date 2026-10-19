@@ -1,20 +1,12 @@
 //! The board's fault count on the host (`todo/dash/20`, phase 2): when it starts, when it waits
 //! for the stopwatch, what it asks the planner, what it says on USB and what the panel shows.
 //!
-//! `crates/dash/vag-dash-fw/src/faults.rs` compiled as it is — the firmware cannot be built for
-//! the host — and driven through the planner the board runs, `Budget::board()`, against a
-//! fake car.
-
-#[path = "../../../../crates/dash/vag-dash-fw/src/faults.rs"]
-mod faults;
-// `faults` reads the answer timeout from its sibling, as in the firmware's library.
-#[path = "../../../../crates/dash/vag-dash-fw/src/exchange.rs"]
-#[allow(dead_code)]
-mod exchange;
+//! [`vag_dash_core::faults`], the firmware's own, driven through the planner the board runs,
+//! `Budget::board()`, against a fake car.
 
 use std::collections::BTreeMap;
 
-use faults::{Count, DEADLINE_MS, Found, Hold, Line, Now, START_MS, State, bus_on};
+use vag_dash_core::faults::{self, Count, DEADLINE_MS, Found, Hold, Line, Now, START_MS, State, bus_on};
 use vag_dash_render::Faults;
 use vag_uds_client::faultcount::{Failed, MAX_UNITS, UnitTally, Why};
 use vag_uds_client::schedule::{Answer, Budget, Class, Delivery, Next, Outgoing, Planner, Unit};

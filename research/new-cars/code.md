@@ -354,7 +354,7 @@ newer car.
 | a suppressed-positive request (`3E 80`, `10 81`) | 150 ms (3 × P2) | `bus/mod.rs:66-72` |
 | identification probe per unit | 300 ms | `vag-cli-core/src/units.rs:121-130` |
 | the client's own default | 2 s | `vag-uds-client/src/pdu.rs:12-14` |
-| board: first answer | 500 ms | `vag-dash-fw/src/exchange.rs:39`, fw `dash.rs:1540-1545` |
+| board: first answer | 500 ms | `vag-dash-core/src/exchange.rs:39`, fw `dash.rs:1540-1545` |
 | board: after `78` | 5 s each, 10 s in all | fw `dash.rs:1579-1585` |
 | board: fault-count exchange | 2 s from its start | fw `faults.rs:59` |
 

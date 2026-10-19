@@ -37,7 +37,7 @@ impl Bitmap {
 }
 
 /// Pixels one bit each, the first of a byte in its top bit — the layout of the board's
-/// `Framebuffer` (`vag-dash-fw`'s `panel.rs`), so the two agree bit for bit. A 256×64
+/// `Framebuffer` (`vag_dash_core::panel`), so the two agree bit for bit. A 256×64
 /// panel is 2 KB this way, where a `bool` a pixel would be 16.
 ///
 /// The bits past `len` in the last byte stay clear, which is what lets `==` compare bytes.
@@ -230,7 +230,7 @@ mod tests {
 	#[test]
 	fn pixels_are_bits_laid_out_as_the_boards_framebuffer() {
 		// Row-major, the first pixel of a byte in its top bit: pixel 0 is 0x80 of byte 0,
-		// pixel 9 is 0x40 of byte 1, as `vag-dash-fw`'s `Framebuffer` has them.
+		// pixel 9 is 0x40 of byte 1, as the board's `Framebuffer` has them.
 		let mut pixels = Pixels::dark(256 * 64);
 		assert_eq!(pixels.bits.len(), 256 * 64 / 8);
 		pixels.set(0, true);
@@ -242,6 +242,36 @@ mod tests {
 		let collected: Pixels = pixels.iter().collect();
 		assert_eq!(collected, pixels);
 		assert!(!pixels.get(256 * 64), "one past the end is dark");
+	}
+
+	/// The board's own encoder, `Framebuffer::write_frame`, against this decoder: every pixel
+	/// back where it was drawn, a long lit run included.
+	#[test]
+	fn the_boards_frame_line_decodes_to_its_framebuffer() {
+		use embedded_graphics::pixelcolor::BinaryColor;
+		use embedded_graphics::prelude::*;
+		use embedded_graphics::primitives::{Line, PrimitiveStyle, Rectangle};
+		use vag_dash_core::panel::{Framebuffer, HEIGHT, WIDTH};
+
+		let mut frame = Framebuffer::new();
+		let on = PrimitiveStyle::with_fill(BinaryColor::On);
+		Rectangle::new(Point::new(0, 0), Size::new(WIDTH as u32, 2))
+			.into_styled(on)
+			.draw(&mut frame)
+			.unwrap();
+		Line::new(Point::new(0, 0), Point::new(WIDTH as i32 - 1, HEIGHT as i32 - 1))
+			.into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+			.draw(&mut frame)
+			.unwrap();
+		let mut line = String::new();
+		frame.write_frame(&mut line).unwrap();
+		let bitmap = decode(&line).unwrap();
+		assert_eq!((bitmap.width, bitmap.height), (WIDTH as u32, HEIGHT as u32));
+		for y in 0..HEIGHT {
+			for x in 0..WIDTH {
+				assert_eq!(bitmap.get(x as u32, y as u32), frame.get(x, y), "({x}, {y})");
+			}
+		}
 	}
 
 	#[test]

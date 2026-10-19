@@ -115,6 +115,10 @@ embedded-storage = "0.3.1"
 # mock: what the board draws is what `vagcan dash` draws, which is the entire
 # point of the seam `02` describes.
 vag-dash-render = { path = "../vag-dash-render" }
+# What the board decides by, built and tested in the workspace as well: the value store, the
+# frame loop's step, the framebuffer, the glass's driver, the settings record, the fault count,
+# an exchange's waits, the command queue.
+vag-dash-core = { path = "../vag-dash-core" }
 # The protocol stack, `no_std`. `default-features = false` is not an
 # optimisation: the `std` feature of each of these is what pulls in tokio,
 # tokio-serial, the filesystem and an 88 MB label catalog, none of which exist
@@ -125,13 +129,11 @@ vag-uds-transport = { path = "../../uds/vag-uds-transport", default-features = f
 # `EspTwaiFrame` exposes its id and its data only through `embedded_can::Frame`.
 embedded-can = "0.4.1"
 embedded-graphics = "0.8"
-# The glass's driver (`src/ssd1322.rs`) names its bus, pins and delay by these traits and
-# not by the chip's HAL, so the bench crate can compile it for the laptop. Both are in the
-# tree already, behind `esp-hal`.
+# `oledtest` names the glass's bus and pins by these traits, as `vag_dash_core::ssd1322` does.
+# Both are in the tree already, behind `esp-hal`.
 embedded-hal = "1"
 embedded-hal-async = "1"
 crc = "3"
-serde = { version = "1", default-features = false, features = ["derive"] }
 postcard = "1"
 # No `panic-handler`: `src/health.rs` defines that one, so a panic message can
 # reach flash before the board halts. Nothing is lost on the console — it prints

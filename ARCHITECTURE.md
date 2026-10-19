@@ -381,6 +381,8 @@ crates/
     vag-data-db              SQLite cache over the label files
   dash/                    the OLED device, laptop side and board side both
     vag-dash-render          a Frame in, pixels out, on any embedded-graphics DrawTarget
+    vag-dash-core            the board's own logic, tested here: framebuffer, glass driver,
+                             settings record, fault count, an exchange's waits, input queue
     vag-dash-wasm            that renderer as WebAssembly, for `dev dash edit`'s page
     vag-dash-ble             the laptop's BLE client — scan, pick a device, open a NUS pipe
     vag-dash-cfg             `dashcfg`, which configures the device over that pipe
@@ -467,7 +469,9 @@ identifier sweep is a fuzz test of a control unit's diagnostic server.
 ## The dash
 
 An ESP32-C3 with a CAN transceiver and an OLED, on the OBD port. Firmware in
-`crates/dash/vag-dash-fw`, outside the workspace (`no_std`, `riscv32imc`).
+`crates/dash/vag-dash-fw`, outside the workspace (`no_std`, `riscv32imc`). What it decides by
+and needs no chip for is `vag-dash-core`, in the workspace, `no_std`: the firmware links it,
+and its tests are the board's.
 
 **The board executes a plan; it resolves no label data.** `build.rs` runs the same generator as
 `vagcan dev dash build`: it reads `~/.vagcan/dash/<VIN>/dash.toml`, the car's record of its
@@ -506,7 +510,7 @@ their turns; each ends 2 s from its start, the send and any `78`s included, wher
 exchange keeps the board's 500 ms and 10 s. A unit still asking for time at 2 s is not
 counted. None starts while the board's stopwatch is up or a host holds its timing
 channel; the walk goes on where it stopped. The count is `vag_uds_client::faultcount`, the
-board's shell round it `vag_dash_fw::faults`, an exchange's waits `vag_dash_fw::exchange`; all
+board's shell round it `vag_dash_core::faults`, an exchange's waits `vag_dash_core::exchange`; all
 three are pure and tested on the host. The panel draws a warning triangle and the number at
 the status strip's right end, left of the link icons, inverted while a code is failing now.
 `?` means no count: the gateway gave no list, the walk would pass 64 units, or no unit could
@@ -546,7 +550,7 @@ the glass with cruise off and on and a stopwatch run, every exchange at one cost
 eight of one unit in a request, so a page costs its units, not its channels. The estimate refuses
 nothing (2026-10-20): its cost, 34 ms, is an upper bound from a BLE recording, and at it the
 owner's plan, which runs on the car, came out short on every page. The board counts its own
-exchanges (`vag_dash_fw::bus_rate`, pure, tested on the host): `state` says `exch=…/s
+exchanges (`vag_dash_core::bus_rate`, pure, tested on the host): `state` says `exch=…/s
 exch_ms=…` over the last 10 s, the USB console the same by unit. A strict check is for after a
 drive has given that number.
 

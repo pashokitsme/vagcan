@@ -33,7 +33,7 @@ pins on the edge row, odd on the inner). Its own boost converter for the panel s
 
 ## What is built
 
-- `crates/dash/vag-dash-fw/src/ssd1322.rs` — the driver over `embedded-hal` traits: reset and
+- `crates/dash/vag-dash-core/src/ssd1322.rs` — the driver over `embedded-hal` traits: reset and
   set-up (the scan clock `B3 F1`, why in `INIT`), rows widened from 1 to 4 bits a pixel as they
   are sent, `Shown` (a checksum a row, so a frame sends only the span of rows that changed),
   brightness.
@@ -43,7 +43,7 @@ pins on the edge row, odd on the inner). Its own boost converter for the panel s
   before.
 - `oledtest` — a bench image: border, `vagcan`, `TL`, a diagonal, then a dim picture and a
   checkerboard. Transmits nothing on CAN.
-- `research/dash/host/tests/glass_wire.rs` — the driver compiled for the laptop, the wire read
+- `crates/dash/vag-dash-core/tests/glass_wire.rs` — the driver compiled for the laptop, the wire read
   byte by byte.
 - **RAM:** static +1,496 B with BLE (139,500 → 140,996), +1,488 B without (130,048 → 131,536).
   416 B is the glass's own (`OLED`: 256 B of checksums, a 128 B row); the rest is esp-hal's

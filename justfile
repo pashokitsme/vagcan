@@ -119,11 +119,13 @@ clippy:
 test:
     VAGCAN_DASH_WASM_REQUIRED=1 cargo test --workspace
 
-# CI `no-std`: the three crates the board links, without `std`, for the board's target
+# CI `no-std`: the workspace crates the board links, without `std`, for the board's target
+# (`vag-dash-core` brings `vag-dash-render` with it)
 no-std:
     cargo check -p vag-uds-transport --no-default-features --target riscv32imc-unknown-none-elf
     cargo check -p vag-uds-client --no-default-features --target riscv32imc-unknown-none-elf
     cargo check -p vag-uds-can --no-default-features --target riscv32imc-unknown-none-elf
+    cargo check -p vag-dash-core --target riscv32imc-unknown-none-elf
 
 # CI `bench-host`: the bench crate outside the workspace (fmt, clippy, tests)
 host-check:

@@ -3,9 +3,8 @@
 //!
 //! [`vag_uds_client::faultcount`] is the count itself — the gateway's installation list, the
 //! walk, each unit's stored codes — with no clock and no bus. This is the board's shell round
-//! it, pure too, like [`crate::saving`]: the firmware cannot be built for the host, so the
-//! decisions live here, where `research/dash/host/tests/fault_count.rs` compiles this file as it
-//! is and drives it through the planner the board runs. The bus task holds one [`Count`], gives
+//! it, pure too, like [`crate::saving`]: the decisions live here, where this crate's
+//! `tests/fault_count.rs` drives them through the planner the board runs. The bus task holds one [`Count`], gives
 //! it a turn before every [`Planner::due`], offers it every delivery, and does what it says.
 //!
 //! * **Once, [`START_MS`] after boot, and once a plan unit has answered** its part check,

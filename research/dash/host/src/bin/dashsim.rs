@@ -651,7 +651,7 @@ mod preview {
 	use vag_dash_render::{Board, Cell, Deviation, Faults, Frame, Links, Rates, Theme, draw_with};
 
 	/// The panel the board has.
-	pub const PANEL: Size = Size::new(256, 64);
+	pub const PANEL: Size = vag_dash_render::PANEL;
 	/// Picture pixels per panel pixel, so a person can see the pixels.
 	pub const SCALE: u32 = 4;
 	pub const LIT: [u8; 3] = [0xF0, 0xF0, 0xF0];

@@ -16,10 +16,10 @@ use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::Rectangle;
 
-/// The panel we are pretending to have. 256×64 is what you can actually buy —
-/// see `README.md`; 256×32 was the original target and is not a real part.
-pub const WIDTH: usize = 256;
-pub const HEIGHT: usize = 64;
+/// The glass, in pixels: the renderer's [`PANEL`](vag_dash_render::PANEL), 256×64, which is
+/// what the board has and what every page is laid out on.
+pub const WIDTH: usize = vag_dash_render::PANEL.width as usize;
+pub const HEIGHT: usize = vag_dash_render::PANEL.height as usize;
 const BYTES: usize = WIDTH * HEIGHT / 8;
 
 /// One bit per pixel, row-major, most significant bit leftmost. 2 KB, static:
@@ -71,7 +71,7 @@ impl Framebuffer {
 	/// A run longer than 255 is split by emitting `ff` then an empty run `00`
 	/// of the other colour. That costs two characters and keeps the decoder on
 	/// the other side trivial — and `research/dash/host/src/frame.rs` holds
-	/// the matching decoder plus the round-trip tests that say the two agree.
+	/// the matching decoder; its tests decode this encoder's lines.
 	pub fn write_frame(&self, out: &mut impl core::fmt::Write) -> core::fmt::Result {
 		write!(out, "FRAME {WIDTH} {HEIGHT} ")?;
 		let mut lit = false;
@@ -103,7 +103,7 @@ impl Default for Framebuffer {
 impl Dimensions for Framebuffer {
 	fn bounding_box(&self) -> Rectangle {
 		// `vag_dash_render::render` reads the panel size from here rather than from a
-		// constant, which is what lets the same code draw 256×32 and 256×64.
+		// constant: the layout is decided by measuring the target.
 		Rectangle::new(Point::zero(), Size::new(WIDTH as u32, HEIGHT as u32))
 	}
 }
@@ -130,5 +130,51 @@ impl DrawTarget for Framebuffer {
 	fn clear(&mut self, colour: Self::Color) -> Result<(), Self::Error> {
 		self.bits = [if colour.is_on() { 0xff } else { 0x00 }; BYTES];
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	extern crate std;
+	use super::*;
+	use std::string::String;
+
+	#[test]
+	fn the_framebuffer_is_the_glass() {
+		assert_eq!((WIDTH, HEIGHT), (256, 64));
+		assert_eq!(Framebuffer::new().bounding_box().size, vag_dash_render::PANEL);
+	}
+
+	#[test]
+	fn a_pixel_is_a_bit_row_major_the_leftmost_in_the_top_bit() {
+		let mut frame = Framebuffer::new();
+		frame.draw_iter([Pixel(Point::new(9, 1), BinaryColor::On)]).unwrap();
+		assert!(frame.get(9, 1));
+		let row = frame.row(1);
+		assert_eq!((row[0], row[1]), (0, 0x40), "pixel 9 is 0x40 of the row's byte 1");
+		assert!(frame.rows().enumerate().all(|(y, r)| y == 1 || r.iter().all(|b| *b == 0)));
+		// Off the glass is dropped, not wrapped onto the next row.
+		frame.draw_iter([Pixel(Point::new(WIDTH as i32, 1), BinaryColor::On)]).unwrap();
+		assert!(!frame.get(0, 2));
+	}
+
+	#[test]
+	fn a_frame_line_is_runs_from_unlit_and_a_long_run_is_split() {
+		let mut line = String::new();
+		Framebuffer::new().write_frame(&mut line).unwrap();
+		// Every pixel unlit: runs of 255 with an empty lit run after each, then the rest.
+		let full = (WIDTH * HEIGHT) / 255;
+		let mut want = std::format!("FRAME {WIDTH} {HEIGHT} ");
+		for _ in 0..full {
+			want.push_str("ff00");
+		}
+		want.push_str(&std::format!("{:02x}", WIDTH * HEIGHT - full * 255));
+		assert_eq!(line, want);
+
+		let mut frame = Framebuffer::new();
+		frame.draw_iter([Pixel(Point::new(1, 0), BinaryColor::On)]).unwrap();
+		let mut line = String::new();
+		frame.write_frame(&mut line).unwrap();
+		assert!(line.starts_with("FRAME 256 64 0101ff00"), "{line}");
 	}
 }

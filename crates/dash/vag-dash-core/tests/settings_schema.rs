@@ -1,13 +1,10 @@
 //! The board's settings record, on the host: every version it has written loads, and a record
 //! saved against another plan keeps what does not depend on the plan.
 //!
-//! `crates/dash/vag-dash-fw/src/schema.rs` compiled as it is — the firmware cannot be built
-//! for the host, and a board in a car holds a record an older image wrote.
+//! [`vag_dash_core::schema`], the firmware's own: a board in a car holds a record an older image
+//! wrote.
 
-#[path = "../../../../crates/dash/vag-dash-fw/src/schema.rs"]
-mod schema;
-
-use schema::{Config, Fitted, SCHEMA_VERSION, SavedAgainst, decode, fit};
+use vag_dash_core::schema::{self, Config, Fitted, SCHEMA_VERSION, SavedAgainst, decode, fit};
 
 /// A version-1 record as the image before `last_run` wrote it, byte by byte in postcard's
 /// words: brightness `200` (a `u8`, one byte), active page `1`, two pages — a values page of
@@ -171,4 +168,21 @@ fn the_newest_record_is_the_one_with_the_higher_generation_in_either_slot() {
 	assert!(held.config.is_some(), "a version-1 record, carried forward");
 	let held = schema::held([slot(9, SCHEMA_VERSION), slot(8, SCHEMA_VERSION)]);
 	assert_eq!(held.newest, Some((0, 9)));
+}
+
+#[test]
+fn a_board_with_nothing_stored_runs_at_half_brightness_on_the_first_page_of_its_plan() {
+	let defaults = Config::defaults(PLAN);
+	assert_eq!(
+		defaults,
+		Config {
+			brightness: 128,
+			active_page: 0,
+			last_run: run(&[]),
+			plan: Some(PLAN),
+		}
+	);
+	// This plan's as they stand: nothing for `fit` to change.
+	let fitted = fit(defaults.clone(), PLAN, 3);
+	assert_eq!((fitted.config, fitted.saved_against), (defaults, SavedAgainst::This));
 }

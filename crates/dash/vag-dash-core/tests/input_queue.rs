@@ -1,14 +1,10 @@
 //! The board's command queue, on the host: every input's commands wait there for the one task
 //! that applies them, and a full queue drops the newest.
 //!
-//! `crates/dash/vag-dash-fw/src/input.rs` compiled as it is — the firmware cannot be built for
-//! the host.
-
-#[path = "../../../../crates/dash/vag-dash-fw/src/input.rs"]
-mod input;
+//! [`vag_dash_core::input`], the firmware's own.
 
 use futures::executor::block_on;
-use input::{CAPACITY, CommandQueue, Source};
+use vag_dash_core::input::{CAPACITY, CommandQueue, Source};
 use vag_dash_render::control::Command;
 
 #[test]

@@ -1,0 +1,35 @@
+[package]
+name = "vag-dash-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+# The board's own logic, built for the host as well as for the chip: the value store and its
+# staleness, the frame loop's step, the panel's framebuffer, the glass's driver, and the pure
+# modules the firmware decides by (settings record, saving, fault count, an exchange's waits,
+# the command queue). `vag-dash-fw` links it for the board; `vag-cli-diag`'s `dashreplay`
+# links it to run the same frame loop over a recording. `no_std`, and every dependency is
+# asked for without `std`, so what the workspace tests is what the board runs.
+
+[dependencies]
+vag-dash-render = { path = "../vag-dash-render" }
+# `faults` and `exchange`: the planner's deliveries and the fault count's walk.
+vag-uds-client = { path = "../../uds/vag-uds-client", default-features = false }
+embedded-graphics = "0.8"
+# `ssd1322`: the glass's bus, pins and delay by trait, not by the chip's HAL.
+embedded-hal = "1"
+embedded-hal-async = "1"
+crc = "3"
+# `schema`: the settings record as flash holds it.
+serde = { version = "1", default-features = false, features = ["derive"] }
+postcard = "1"
+heapless = { version = "0.8.0", features = ["serde"] }
+# `input`: the command queue.
+embassy-sync = "0.7.2"
+
+[dev-dependencies]
+postcard = { version = "1", features = ["alloc"] }
+# `input`'s queue takes a critical section, which on the host is std's.
+critical-section = { version = "1", features = ["std"] }
+futures = "0.3"
