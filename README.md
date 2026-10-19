@@ -317,7 +317,7 @@ kind = "values"
 cells = ["01:IDE00025"]
 ```
 
-To find your car's channel ids: run `vagcan watch`, press `,`, set "Key at the end of each row" to shown. The ECU column is the unit, the Key column is the channel id. Every key of the file: [`docs/dash/dash-toml.md`](docs/dash/dash-toml.md).
+To find your car's channel ids: run `vagcan watch`, press `,`, set "Key at the end of each row" to shown. The Unit column is the control unit, the Key column is the channel id. Every key of the file: [`docs/dash/dash-toml.md`](docs/dash/dash-toml.md).
 
 **3. Check it.**
 
