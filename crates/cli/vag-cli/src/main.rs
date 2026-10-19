@@ -382,7 +382,7 @@ enum Command {
 		///
 		/// An identifier selects every field it carries, and one nothing
 		/// describes is shown as bytes. A text id is what the Key column shows
-		/// (turned on in the settings), the unit what the ECU column shows.
+		/// (turned on in the settings), the unit what the Unit column shows.
 		#[arg(long, value_name = "SPEC")]
 		did: Option<String>,
 		/// Poll rate for this run. Without it, the rate last set on the settings
@@ -757,7 +757,8 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 		}
 		#[cfg(feature = "measure")]
 		Command::Measure(args) => {
-			measure::dispatch(args, &data_dir(None)?, async |device: Option<String>| {
+			// The project is resolved only by what reads its rows: `measure view` opens a file.
+			measure::dispatch(args, data_dir, async |device: Option<String>| {
 				device::connect(device.as_deref(), slcan).await
 			})
 			.await
@@ -1498,7 +1499,8 @@ mod tests {
 				panic!("{args:?} is not measure")
 			};
 			let mut seen = None;
-			let stopped = measure::dispatch(parsed, "/definitely/not/here", async |device| -> Result<vag_cli_core::bus::Bus> {
+			let here = |_: Option<&str>| Ok("/definitely/not/here".to_string());
+			let stopped = measure::dispatch(parsed, here, async |device| -> Result<vag_cli_core::bus::Bus> {
 				seen = Some(device);
 				bail!("no adapter here")
 			})
@@ -1506,6 +1508,58 @@ mod tests {
 			assert!(stopped.is_err(), "{args:?}");
 			assert_eq!(seen, Some(Some(adapter.to_owned())), "{args:?}");
 		}
+	}
+
+	/// `measure view` opens the file it is given and nothing else, so it asks for no
+	/// project: on a machine with none it used to fail before reading the file. `--data`
+	/// reaches the rows' resolver, on the run and on `setup`, where it was dropped.
+	#[cfg(feature = "measure")]
+	#[tokio::test]
+	async fn measure_asks_for_the_project_only_where_it_reads_the_rows() {
+		let parse = |args: &[&str]| match Cli::try_parse_from(args).unwrap().command {
+			Some(Command::Measure(parsed)) => parsed,
+			_ => panic!("{args:?} is not measure"),
+		};
+		let mut asked = Vec::new();
+		let viewed = measure::dispatch(
+			parse(&["vagcan", "measure", "view", "/nonexistent/session.json"]),
+			|given: Option<&str>| {
+				asked.push(given.map(str::to_owned));
+				bail!("no project")
+			},
+			async |_| -> Result<vag_cli_core::bus::Bus> { bail!("no adapter here") },
+		)
+		.await;
+		let said = format!("{:#}", viewed.expect_err("there is no such file"));
+		assert!(said.contains("reading the session"), "{said}");
+		assert!(asked.is_empty(), "view asked for the rows: {asked:?}");
+
+		for (args, data) in [
+			(&["vagcan", "measure", "--data", "/rows"][..], Some("/rows")),
+			(&["vagcan", "measure", "setup", "--data", "/rows"], Some("/rows")),
+			(&["vagcan", "measure", "--data", "/rows", "setup"], Some("/rows")),
+			(&["vagcan", "measure"], None),
+		] {
+			let mut asked = Vec::new();
+			let stopped = measure::dispatch(
+				parse(args),
+				|given: Option<&str>| {
+					asked.push(given.map(str::to_owned));
+					bail!("no project")
+				},
+				async |_| -> Result<vag_cli_core::bus::Bus> { bail!("no adapter here") },
+			)
+			.await;
+			assert_eq!(format!("{:#}", stopped.expect_err("stopped")), "no project", "{args:?}");
+			assert_eq!(asked, vec![data.map(str::to_owned)], "{args:?}");
+		}
+		let twice = measure::dispatch(
+			parse(&["vagcan", "measure", "--data", "/a", "setup", "--data", "/b"]),
+			|_: Option<&str>| Ok(String::new()),
+			async |_| -> Result<vag_cli_core::bus::Bus> { bail!("no adapter here") },
+		)
+		.await;
+		assert!(format!("{:#}", twice.expect_err("named twice")).contains("named twice"));
 	}
 
 	#[test]

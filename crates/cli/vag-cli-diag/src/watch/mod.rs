@@ -1187,7 +1187,10 @@ fn draw_live(frame: &mut Frame, app: &mut App) {
 		Constraint::Length(9),
 		Constraint::Length(6),
 	];
-	let mut headings = vec!["ECU", "DID", "Measurement", "Actual / specified", "Unit", "Age"];
+	// "Unit" is the control unit, as every flag calls it (`--unit`). The column of `bar` and
+	// `km/h` beside the value goes unheaded: under "Unit" too, it would read as the first
+	// column's twin.
+	let mut headings = vec!["Unit", "DID", "Measurement", "Actual / specified", "", "Age"];
 	if app.show_key {
 		widths.push(Constraint::Length(key_w));
 		headings.push("Key");
@@ -4154,6 +4157,22 @@ mod tests {
 		let text = live_text(&mut a, 100, 12);
 		assert!(text.contains("IDE00022"), "{text}");
 		assert!(text.contains("Key"), "and the column says what it is: {text}");
+	}
+
+	#[test]
+	fn the_first_column_is_the_control_unit_by_the_word_every_flag_uses() {
+		let mut a = App::new(vec![Channel {
+			selected: true,
+			..proven(0x7E0, 0x202A, "Boost pressure", "bar")
+		}]);
+		a.screen = Screen::Live;
+		let text = live_text(&mut a, 100, 12);
+		let header = text.lines().find(|l| l.contains("Measurement")).unwrap_or_default();
+		assert!(header.trim_start_matches(['│', ' ']).starts_with("Unit "), "{header}");
+		assert_eq!(header.matches("Unit").count(), 1, "{header}");
+		assert!(!text.contains("ECU"), "{text}");
+		// The value's own unit is still beside it.
+		assert!(text.contains("bar"), "{text}");
 	}
 
 	#[test]

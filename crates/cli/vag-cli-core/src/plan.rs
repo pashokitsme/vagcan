@@ -380,7 +380,7 @@ impl Wanted {
 /// (engine assumed).
 ///
 /// Every spelling a `dash.toml` `ref` takes, so that a row found on `watch`'s
-/// screen — its ECU column and its Key — can be typed back as it is shown. The
+/// screen — its Unit column and its Key — can be typed back as it is shown. The
 /// unit before the colon is whatever `vag_uds_client::address` accepts: a short
 /// number for the units this project has established, or a request id for the
 /// rest. Groups are separated by spaces, rows of one unit by commas.
@@ -789,7 +789,7 @@ mod tests {
 	}
 
 	/// What a `dash.toml` `ref` takes, `--did` takes: the row a person found on
-	/// `watch`'s screen can be typed back as the ECU and Key columns show it.
+	/// `watch`'s screen can be typed back as the Unit and Key columns show it.
 	#[test]
 	fn a_spec_takes_every_spelling_a_dash_ref_takes() {
 		use crate::dash::Reference;
