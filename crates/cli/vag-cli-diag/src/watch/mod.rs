@@ -2358,7 +2358,8 @@ pub enum View {
 }
 
 pub struct Options<'a> {
-	pub preselect: &'a [(u16, u16)],
+	/// `--did`, parsed.
+	pub preselect: &'a [crate::plan::Wanted],
 	/// `--hz`, when given.
 	pub hz: Option<f64>,
 	pub out: Option<&'a str>,
@@ -2425,7 +2426,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 	// units does nothing" looked like. The walk lives in `crate::units`,
 	// because `measure` makes the same one. Which scalings apply is decided by
 	// what each unit says it is, never by its address.
-	let mut wanted: Vec<u16> = preselect.iter().map(|(request, _)| *request).collect();
+	let mut wanted: Vec<u16> = preselect.iter().map(crate::plan::Wanted::request).collect();
 	wanted.push(crate::plan::ENGINE);
 	let (_, identities) = crate::units::identify(bus.clone(), &wanted, &mut progress).await;
 	progress.finish();
@@ -2473,28 +2474,9 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 	{
 		eprintln!("{}", crate::missing::state_ranges_note(&extracted.odis_sources()));
 	}
-	for (request, did) in preselect {
-		// **Every** field of that identifier, not the first one. `--did
-		// 01:2029` names an identifier, one request reads all of it, and
-		// selecting one field of the answer while dropping the others would
-		// cost nothing on the bus and lose channels on the screen.
-		let mut found = false;
-		for channel in channels.iter_mut().filter(|c| c.request == *request && c.did == *did) {
-			channel.selected = true;
-			found = true;
-		}
-		if !found {
-			channels.push(Channel {
-				request: *request,
-				did: *did,
-				def: None,
-				named: None,
-				proven: false,
-				text_id: None,
-				selected: true,
-			});
-		}
-	}
+	// What `--did` named, among them. Refused here, before the screen, when it names a
+	// row this car's unit does not have; see `plan::select_wanted`.
+	crate::plan::select_wanted(&mut channels, preselect).map_err(|e| anyhow::anyhow!("--did {e}"))?;
 	let mut header_written = false;
 
 	let mut app = App::new(channels);
