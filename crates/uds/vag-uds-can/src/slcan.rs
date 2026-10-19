@@ -510,8 +510,9 @@ fn timed_out(e: &std::io::Error) -> bool {
 pub enum BoardAnswer {
 	/// The `dash` image: it answered Hello, and reads the car through the link with the
 	/// panel still running. `version` is what it named, or `unknown` when framed bytes
-	/// came back but no reply.
-	Dash { version: String },
+	/// came back but no reply. `plan` is the id of the plan it was built with, where it
+	/// names one (`HelloReply::plan`).
+	Dash { version: String, plan: Option<u64> },
 	/// A well-formed `V` reply to slcan's version query: the `slcan` image, an adapter.
 	Slcan,
 	/// Neither: an older display image, or anything else.
@@ -542,8 +543,14 @@ pub enum BoardAnswer {
 /// start of a line, and would read `V` as the end of that line rather than a command.
 pub fn ask_board<P: std::io::Read + std::io::Write>(port: &mut P, hello_wait: Duration, version_wait: Duration) -> BoardAnswer {
 	let dash = |answer: HelloAnswer| match answer {
-		HelloAnswer::Reply(reply) => Some(BoardAnswer::Dash { version: reply.version }),
-		HelloAnswer::Framed => Some(BoardAnswer::Dash { version: "unknown".into() }),
+		HelloAnswer::Reply(reply) => Some(BoardAnswer::Dash {
+			version: reply.version,
+			plan: reply.plan,
+		}),
+		HelloAnswer::Framed => Some(BoardAnswer::Dash {
+			version: "unknown".into(),
+			plan: None,
+		}),
 		HelloAnswer::Silent => None,
 	};
 	let say = |port: &mut P, bytes: &[u8]| port.write_all(bytes).and_then(|()| port.flush()).is_ok();
@@ -560,7 +567,10 @@ pub fn ask_board<P: std::io::Read + std::io::Write>(port: &mut P, hello_wait: Du
 			// replies came back with the `V`'s answer, and the `V` switched it into adapter mode.
 			// `C` ends that; a board that stayed in panel mode answers it `\r` and changes nothing.
 			say(port, b"C\r");
-			BoardAnswer::Dash { version: "unknown".into() }
+			BoardAnswer::Dash {
+				version: "unknown".into(),
+				plan: None,
+			}
 		}
 		Heard::Version => {
 			if !say(port, b"C\r") {
@@ -831,8 +841,27 @@ mod tests {
 		link::encode(&Message::HelloReply(HelloReply {
 			image: "dash".into(),
 			version: version.into(),
+			plan: None,
 		}))
 		.unwrap()
+	}
+
+	#[test]
+	fn a_board_that_names_its_plan_is_answered_with_it() {
+		let reply = link::encode(&Message::HelloReply(HelloReply {
+			image: "dash".into(),
+			version: "0.1.0".into(),
+			plan: Some(0xfeed),
+		}))
+		.unwrap();
+		let mut port = ScriptedPort::new(b"").on(&hello(), &reply);
+		assert_eq!(
+			ask_board(&mut port, WAIT, WAIT),
+			BoardAnswer::Dash {
+				version: "0.1.0".into(),
+				plan: Some(0xfeed)
+			}
+		);
 	}
 
 	const DISPLAY_TEXT: &[u8] = b"plan: 2 units, 9 channels\r\nFRAME 256 64 AAAA\r\ncan: 7E0 timeout\r\n";
@@ -841,7 +870,13 @@ mod tests {
 	fn a_board_that_answers_hello_is_the_dash_image_and_is_never_sent_v() {
 		for before in [&b""[..], DISPLAY_TEXT] {
 			let mut port = ScriptedPort::new(before).on(&hello(), &hello_reply("0.1.0")).on(b"V\r", b"V0101\r");
-			assert_eq!(ask_board(&mut port, WAIT, WAIT), BoardAnswer::Dash { version: "0.1.0".into() });
+			assert_eq!(
+				ask_board(&mut port, WAIT, WAIT),
+				BoardAnswer::Dash {
+					version: "0.1.0".into(),
+					plan: None
+				}
+			);
 			assert_eq!(port.written, hello(), "Hello and nothing else");
 		}
 	}
@@ -978,7 +1013,13 @@ mod tests {
 	#[test]
 	fn a_dash_image_that_reads_the_hellos_and_v_in_one_late_chunk_is_taken_out_of_adapter_mode() {
 		let mut port = LateDash::default();
-		assert_eq!(ask_board(&mut port, WAIT, WAIT), BoardAnswer::Dash { version: "unknown".into() });
+		assert_eq!(
+			ask_board(&mut port, WAIT, WAIT),
+			BoardAnswer::Dash {
+				version: "unknown".into(),
+				plan: None
+			}
+		);
 		assert!(!port.adapter, "the probe left the adapter mode its V started: the panel shows SLCAN");
 		assert!(port.written.ends_with(b"V\rC\r"), "{:?}", port.written.escape_ascii().to_string());
 	}
@@ -986,7 +1027,13 @@ mod tests {
 	#[test]
 	fn a_dash_image_that_misses_the_first_hello_is_found_by_the_second_and_never_sent_v() {
 		let mut port = SlowDash::new(1);
-		assert_eq!(ask_board(&mut port, WAIT, WAIT), BoardAnswer::Dash { version: "0.1.0".into() });
+		assert_eq!(
+			ask_board(&mut port, WAIT, WAIT),
+			BoardAnswer::Dash {
+				version: "0.1.0".into(),
+				plan: None
+			}
+		);
 		assert_eq!(port.written, [hello(), hello()].concat());
 		assert!(!port.adapter);
 	}
@@ -994,7 +1041,13 @@ mod tests {
 	#[test]
 	fn a_dash_image_too_slow_for_both_hellos_is_taken_out_of_adapter_mode_and_found() {
 		let mut port = SlowDash::new(2);
-		assert_eq!(ask_board(&mut port, WAIT, WAIT), BoardAnswer::Dash { version: "0.1.0".into() });
+		assert_eq!(
+			ask_board(&mut port, WAIT, WAIT),
+			BoardAnswer::Dash {
+				version: "0.1.0".into(),
+				plan: None
+			}
+		);
 		assert!(!port.adapter, "the probe's C ended the adapter mode its V started");
 		assert_eq!(
 			port.written,
@@ -1011,7 +1064,13 @@ mod tests {
 		}))
 		.unwrap();
 		let mut port = ScriptedPort::new(b"").on(b"V\r", &[stale, b"V0101\r".to_vec()].concat());
-		assert_eq!(ask_board(&mut port, WAIT, WAIT), BoardAnswer::Dash { version: "unknown".into() });
+		assert_eq!(
+			ask_board(&mut port, WAIT, WAIT),
+			BoardAnswer::Dash {
+				version: "unknown".into(),
+				plan: None
+			}
+		);
 		assert_eq!(
 			port.written,
 			[hello(), hello(), b"\r".to_vec(), b"V\r".to_vec(), b"C\r".to_vec()].concat(),
@@ -1038,7 +1097,13 @@ mod tests {
 		.unwrap();
 		for (before, answer) in [(stale.clone(), Vec::new()), (Vec::new(), b"\x00\x7A\x02\x00".to_vec())] {
 			let mut port = ScriptedPort::new(&before).on(&hello(), &answer).on(b"V\r", b"V0101\r");
-			assert_eq!(ask_board(&mut port, WAIT, WAIT), BoardAnswer::Dash { version: "unknown".into() });
+			assert_eq!(
+				ask_board(&mut port, WAIT, WAIT),
+				BoardAnswer::Dash {
+					version: "unknown".into(),
+					plan: None
+				}
+			);
 			assert!(!port.sent_v(), "V would switch the dash image into its adapter mode");
 			assert_eq!(port.written, [hello(), hello()].concat(), "one Hello more, within the wait");
 		}

@@ -560,9 +560,12 @@ A recording holds no fault count, so the replay draws no badge.
 
 **BLE, always on.** The board advertises a Nordic UART service from boot and again after
 every disconnect; no button, no pairing. `dashcfg` sends text commands (`state`,
-`set brightness N`, `set page N`, `save`, `load`, `defaults`). Settings are stored in a
-flash partition; a stored page list that does not match the current plan is discarded at
-boot. Framed UDS messages (`vag_uds_transport::link`) share the service: each request
+`set brightness N`, `set page N`, `save`, `load`, `defaults`). Settings — brightness, the
+active page, the stopwatch's last run — are stored in a flash partition with the id of the
+plan they were saved against (`vag_cli_core::dash::plan_id`, a hash of the generated
+`plan.rs`); the pages are the plan's. Saved against another plan, they are kept, and a page
+the plan does not have becomes the first. The board names its plan's id in its Hello reply
+and its `state` line. Framed UDS messages (`vag_uds_transport::link`) share the service: each request
 passes the board's guard (`vag_uds_client::guard`) and then the planner; subscriptions are
 polled on the board's clock. `vag_uds_client::remote` is that session, host-tested.
 

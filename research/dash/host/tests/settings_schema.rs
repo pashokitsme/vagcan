@@ -1,4 +1,5 @@
-//! The board's settings record, on the host: every version it has written loads.
+//! The board's settings record, on the host: every version it has written loads, and a record
+//! saved against another plan keeps what does not depend on the plan.
 //!
 //! `crates/dash/vag-dash-fw/src/schema.rs` compiled as it is — the firmware cannot be built
 //! for the host, and a board in a car holds a record an older image wrote.
@@ -6,7 +7,7 @@
 #[path = "../../../../crates/dash/vag-dash-fw/src/schema.rs"]
 mod schema;
 
-use schema::{Page, PageKind, SCHEMA_VERSION, decode};
+use schema::{Config, Fitted, SCHEMA_VERSION, SavedAgainst, decode, fit};
 
 /// A version-1 record as the image before `last_run` wrote it, byte by byte in postcard's
 /// words: brightness `200` (a `u8`, one byte), active page `1`, two pages — a values page of
@@ -14,51 +15,117 @@ use schema::{Page, PageKind, SCHEMA_VERSION, decode};
 /// serialised here, so the test holds the old layout and not today's derive.
 const V1: [u8; 12] = [200, 1, 2, 1, 3, 0, 1, 0xAC, 0x02, 0, 1, 3];
 
-fn cells(list: &[u16]) -> heapless::Vec<u16, { schema::MAX_CELLS }> {
-	heapless::Vec::from_slice(list).unwrap()
+/// Version 2: version 1's record with a run appended — two marks, 60 km/h in 5430 ms
+/// (`0xB6 0x2A`) and 100 km/h in 9870 ms (`0x8E 0x4D`).
+const V2: [u8; 19] = [200, 1, 2, 1, 3, 0, 1, 0xAC, 0x02, 0, 1, 3, 2, 60, 0xB6, 0x2A, 100, 0x8E, 0x4D];
+
+/// The plan the board runs in these tests.
+const PLAN: u64 = 0x7fa5_728f_35ff_8bcd;
+
+fn run(marks: &[(u16, u32)]) -> heapless::Vec<(u16, u32), 3> {
+	heapless::Vec::from_slice(marks).unwrap()
+}
+
+fn record(active_page: u8, plan: Option<u64>) -> Config {
+	Config {
+		brightness: 77,
+		active_page,
+		last_run: run(&[(60, 5_430)]),
+		plan,
+	}
 }
 
 #[test]
-fn a_version_one_record_loads_with_every_field_it_had() {
+fn a_version_one_record_loads_its_brightness_and_page_and_no_plan() {
 	let config = decode(1, &V1).expect("decodes").expect("a version this image knows");
-	assert_eq!(config.brightness, 200);
-	assert_eq!(config.active_page, 1);
 	assert_eq!(
-		config.pages.as_slice(),
-		[
-			Page {
-				kind: PageKind::Values,
-				cells: cells(&[0, 1, 300])
-			},
-			Page {
-				kind: PageKind::Chart,
-				cells: cells(&[3])
-			},
-		]
+		config,
+		Config {
+			brightness: 200,
+			active_page: 1,
+			last_run: run(&[]),
+			plan: None,
+		},
+		"its pages are dropped, and which plan they were it never said"
 	);
-	assert!(config.last_run.is_empty(), "no run was ever kept by an image without the stopwatch");
 }
 
 #[test]
-fn the_current_record_round_trips_and_is_the_old_one_with_the_run_appended() {
-	let mut config = decode(1, &V1).unwrap().unwrap();
-	config.last_run.push((60, 5_430)).unwrap();
-	config.last_run.push((100, 9_870)).unwrap();
+fn a_version_two_record_loads_its_run_too() {
+	let config = decode(2, &V2).expect("decodes").expect("a version this image knows");
+	assert_eq!((config.brightness, config.active_page), (200, 1));
+	assert_eq!(config.last_run, run(&[(60, 5_430), (100, 9_870)]));
+	assert_eq!(config.plan, None);
+}
+
+#[test]
+fn the_current_record_round_trips_and_holds_no_pages() {
+	let config = record(1, Some(PLAN));
 	let bytes = postcard::to_allocvec(&config).unwrap();
-	assert_eq!(decode(SCHEMA_VERSION, &bytes).unwrap(), Some(config.clone()));
-	assert_eq!(&bytes[..V1.len()], V1, "a field is appended, never inserted");
-	// A migrated record saved again is a current one.
-	let mut empty = config;
-	empty.last_run.clear();
-	assert_eq!(postcard::to_allocvec(&empty).unwrap(), [&V1[..], &[0]].concat());
+	assert_eq!(decode(SCHEMA_VERSION, &bytes).unwrap(), Some(config));
+	// Brightness, page, one mark, then `Some` and the id's varint: nothing of the plan's pages.
+	assert_eq!(bytes, [77, 1, 1, 60, 0xB6, 0x2A, 1, 0xCD, 0x97, 0xFE, 0xAF, 0xF3, 0xD1, 0xDC, 0xD2, 0x7F]);
 }
 
 #[test]
 fn a_version_this_image_does_not_know_is_nothing_and_garbage_is_an_error() {
 	assert_eq!(decode(SCHEMA_VERSION + 1, &V1).unwrap(), None, "a newer image's record is not guessed at");
 	assert_eq!(decode(0, &V1).unwrap(), None);
-	assert!(decode(1, &[200, 1, 9]).is_err(), "nine pages where the board holds eight");
-	assert!(decode(SCHEMA_VERSION, &V1).is_err(), "a version-1 record read as version 2 is short");
+	assert!(decode(1, &[200, 1, 9]).is_err(), "nine pages where version 1 held eight");
+	assert!(decode(2, &V1).is_err(), "a version-1 record read as version 2 is short");
+	assert!(decode(SCHEMA_VERSION, &[77, 1]).is_err(), "a version-3 record ends in its run and plan");
+}
+
+#[test]
+fn saved_against_this_plan_everything_is_as_stored() {
+	let stored = record(2, Some(PLAN));
+	assert_eq!(
+		fit(stored.clone(), PLAN, 3),
+		Fitted {
+			config: stored,
+			saved_against: SavedAgainst::This,
+			page_reset: None,
+		}
+	);
+}
+
+/// The fix of 2026-10-19: a `dash.toml` change made every stored record "not fit this plan",
+/// and brightness and the page went back to the defaults with the copy of the pages.
+#[test]
+fn saved_against_another_plan_brightness_the_run_and_a_page_this_plan_has_are_kept() {
+	let other = PLAN ^ 1;
+	let fitted = fit(record(2, Some(other)), PLAN, 3);
+	assert_eq!(fitted.saved_against, SavedAgainst::Other(other));
+	assert_eq!(fitted.page_reset, None);
+	assert_eq!(fitted.config, record(2, Some(PLAN)), "and the next save names this plan");
+}
+
+#[test]
+fn a_page_this_plan_does_not_have_is_the_first() {
+	let fitted = fit(record(5, Some(PLAN ^ 1)), PLAN, 3);
+	assert_eq!(fitted.page_reset, Some(5));
+	assert_eq!(fitted.config.active_page, 0);
+	assert_eq!(fitted.config.brightness, 77, "the rest stays");
+	assert_eq!(fitted.config.last_run, run(&[(60, 5_430)]));
+	// The last page is a page.
+	assert_eq!(fit(record(2, Some(PLAN ^ 1)), PLAN, 3).page_reset, None);
+	assert_eq!(fit(record(3, Some(PLAN ^ 1)), PLAN, 3).page_reset, Some(3));
+	// Page 0 of the empty plan stands; nothing else does.
+	assert_eq!(fit(record(0, Some(PLAN)), PLAN, 0).page_reset, None);
+	assert_eq!(fit(record(1, Some(PLAN)), PLAN, 0).page_reset, Some(1));
+}
+
+#[test]
+fn an_old_record_says_no_plan_and_keeps_what_it_held() {
+	let old = decode(2, &V2).unwrap().unwrap();
+	let fitted = fit(old, PLAN, 2);
+	assert_eq!(fitted.saved_against, SavedAgainst::Unknown);
+	assert_eq!((fitted.config.brightness, fitted.config.active_page), (200, 1));
+	assert_eq!(fitted.config.last_run.len(), 2);
+	assert_eq!(fitted.config.plan, Some(PLAN));
+	// Its page past a plan of one page: the first.
+	let fitted = fit(decode(1, &V1).unwrap().unwrap(), PLAN, 1);
+	assert_eq!((fitted.config.active_page, fitted.page_reset), (0, Some(1)));
 }
 
 fn slot(generation: u32, version: u16) -> Option<schema::Slot> {

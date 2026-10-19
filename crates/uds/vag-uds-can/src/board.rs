@@ -207,6 +207,7 @@ mod tests {
 		HelloReply {
 			image: "dash".into(),
 			version: "0.1.0".into(),
+			plan: None,
 		}
 	}
 

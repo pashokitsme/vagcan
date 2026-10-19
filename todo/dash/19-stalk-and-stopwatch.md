@@ -226,10 +226,10 @@ two samples still start over.
   ([`dash/21`](21-runs-in-flash.md)).
 - An aborted run (`ABORT`: back at 0 before the highest mark, or the speed silent) is shown until
   the next run starts or the page is left, never stored; a finished run with no times
-  (no launch fit) replaces no stored run. A stored run outlives a stored configuration whose
-  pages no longer fit the plan.
+  (no launch fit) replaces no stored run. A stored run outlives a change of plan.
 - Settings schema 2 adds the run. The board carries old v1 settings forward and writes v2 only
-  on its next save.
+  on its next save. Schema 3 (2026-10-19) drops the pages and names the plan instead
+  ([`dash/21`](21-runs-in-flash.md) "The settings record").
 
 **The factor.** None on the reference car since 2026-09-27 (owner): the speed is the gearbox's
 vehicle speed, already km/h (`02:IDE00075`, `F40D` ×0.01), so `km_h_per_unit = 1`. Before that

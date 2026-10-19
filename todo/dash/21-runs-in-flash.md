@@ -45,6 +45,32 @@ The owner was asked these on 2026-09-27 and set them aside for later.
    - Over USB for the no-BLE build? Its console has no settings commands today.
    - Clearing the history: a board-local command. It is not UDS and touches no car.
 
+## The settings record (schema 3, 2026-10-19)
+
+Architectural review, owner approved the fix 2026-10-19. The record was brightness, active
+page, a copy of the plan's pages and the run. Nothing on the board edits pages, and a stored
+list that was not the plan's was refused, so every `dash.toml` change reset brightness and the
+page to the defaults and left `unsaved=1`.
+
+- **Schema 3** (`vag-dash-fw/src/schema.rs`): brightness, active page, the run, and the id of
+  the plan it was saved against. No pages: the board shows the plan's.
+- **The plan id** is FNV-1a 64 over the generated `plan.rs` short of its last lines
+  (`vag_cli_core::dash::plan_id`). `plan.rs` ends with `PLAN_ID`, `plan.json` carries `id`,
+  `vagcan dev dash build` prints it. A generator that spells the source another way changes
+  every id; the cost is one note at boot.
+- **On boot** (`schema::fit`): same id, all as stored. Another id, or a v1/v2 record (no id):
+  brightness and the run kept, the page kept where the plan has it and the first where it does
+  not. Not `unsaved`: the next boot makes the same of the same record. The next write names this
+  plan. A note on the USB log says which.
+- **Where a host sees it**: the HelloReply (`version`, a NUL, 16 hex digits; an older host reads
+  the tail as part of the version and still parses), so `vagcan devices` shows `plan …`; and
+  `state`'s `plan=`, which `dashcfg` shows. `dashsim` shows neither image nor version, so no plan.
+- **Not done**: no host compares the board's id with the plan on disk for that VIN. `vagcan
+  devices` has no VIN, and the bus that opens the board learns the VIN only later; a check would
+  need its own plumbing. A candidate when someone asks for it.
+- RAM (`ram-budget.sh`, empty plan): statics 140996 → 140872 B with BLE, 131536 → 131412 B
+  without — the record lost its eight pages of eight cells.
+
 ## Constraints to keep
 
 - **RAM** (`CLAUDE.md` "Firmware RAM"): the history lives in flash and is read on demand;

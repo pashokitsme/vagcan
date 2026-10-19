@@ -64,6 +64,8 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 - **No invented numbers.** A channel that does not answer shows dashes.
 - **Part-number check**: the board polls a unit only if the part number the unit reports is the one the dash was built for.
 - **BLE**: `dashcfg` sets brightness and the active page. Settings are stored on the board. BLE is always on: no button, no pairing.
+- **Settings survive a new plan**: reflashed with a changed `dash.toml`, the board keeps brightness, the page and the last run. A page the new plan does not have becomes the first.
+- **Plan id**: `vagcan dev dash build` prints the plan's id. `vagcan devices` and `dashcfg` show the id of the plan the board runs.
 - **UDS over the USB cable**: on the `dash` image, `vagcan` reads the car through the board like through a CANable, and the panel keeps working. `vagcan devices` lists it as `dash image`.
 - **UDS over BLE**: the same with no cable, slower.
 - **Sweeps need a plain adapter**: through the board `units --identify <unit>` is refused, and `dev sniff` needs `--slcan`.

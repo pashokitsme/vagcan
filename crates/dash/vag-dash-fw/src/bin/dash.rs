@@ -105,12 +105,12 @@ use static_cell::StaticCell;
 #[cfg(feature = "ble")]
 use trouble_host::prelude::*;
 use vag_dash_fw::can::TwaiBackend;
-use vag_dash_fw::config::{Config, PageKind};
+use vag_dash_fw::config::{Config, Fitted, SavedAgainst};
 use vag_dash_fw::exchange::{Ended, Heard, Timeouts, Waits};
 use vag_dash_fw::faults::{self, Count, Found, Hold, Line as FaultLine, Now};
 use vag_dash_fw::input::{CommandQueue, Source};
 use vag_dash_fw::panel::Framebuffer;
-use vag_dash_fw::plan::{ALARM_COUNT, BUTTON_COUNT, CHANNEL_COUNT, CHART_COUNT, PLAN, UNIT_COUNT};
+use vag_dash_fw::plan::{ALARM_COUNT, BUTTON_COUNT, CHANNEL_COUNT, CHART_COUNT, PAGE_COUNT, PLAN, PLAN_ID, UNIT_COUNT};
 use vag_dash_fw::saving::{Flash, RunWrite, Saving};
 use vag_dash_fw::slcan::{self, Adapter, CommandLine, Commands, Line, Packet, Port};
 use vag_dash_fw::ssd1322::{self, Shown, Ssd1322};
@@ -119,8 +119,8 @@ use vag_dash_fw::ui::{Button, DEBOUNCE_MS, Press, Visibility};
 use vag_dash_fw::usb;
 use vag_dash_render::alarm::{self, ChannelId, Slot as AlarmSlot};
 use vag_dash_render::control::{self, Command, PinButton};
-use vag_dash_render::pages::Mismatch;
-use vag_dash_render::plan::{Mode as ReadMode, PartAnswer, PartCheck, Timing};
+use vag_dash_render::pages;
+use vag_dash_render::plan::{Mode as ReadMode, Page, PartAnswer, PartCheck, Timing};
 use vag_dash_render::screen::{Change, Outcome, Screen};
 use vag_dash_render::stalk::{Close, Closer, STALE_CLOSE_MS, Stalk, States};
 use vag_dash_render::stopwatch::{self, Event as Lap, Phase, Stopwatch};
@@ -679,7 +679,7 @@ async fn main(spawner: Spawner) {
 		info!("plan: button on GPIO{} → {}", button.pin, button.action.name());
 	}
 	note!(
-		"plan: VIN {} — {} unit(s), {} channel(s)",
+		"plan: VIN {} — {} unit(s), {} channel(s), plan {PLAN_ID:016x}",
 		PLAN.vin,
 		PLAN.units.len(),
 		PLAN.channels.len()
@@ -775,70 +775,22 @@ fn open_settings() -> Settings {
 			};
 			say_unreadable(&store);
 			match store.load() {
-				// A stored configuration is checked against *this* plan before
-				// it is trusted: it may have been saved by an image with more
-				// channels, and a cell past the end of the plan is nothing.
-				Ok(config) => match config.validate() {
-					Ok(()) => {
-						info!("config loaded, newest generation {}: {config:?}", store.generation());
-						Settings {
-							store: Some(store),
-							config,
-							saving,
-						}
+				// A stored record saved against another plan is kept: brightness and the run
+				// do not depend on the plan, and a page this plan does not have is the first
+				// (`schema::fit`). Not `unsaved`: the next boot makes the same of the same
+				// record, so what runs is what a reboot comes back to; the next write names
+				// this plan. Until 2026-10-19 a record carried a copy of the plan's pages, and
+				// any `dash.toml` change put brightness and the page back to the defaults.
+				Ok(stored) => {
+					let fitted = stored.fit();
+					say_fitted(&fitted);
+					info!("config loaded, newest generation {}: {:?}", store.generation(), fitted.config);
+					Settings {
+						store: Some(store),
+						config: fitted.config,
+						saving,
 					}
-					Err(reason) => {
-						warn!(
-							"config generation {} does not fit this plan ({reason}), running on defaults",
-							store.generation()
-						);
-						// Said again as a note, because the `warn!` above is text
-						// among the boot log's and a note is one whole line of its
-						// own between frames. Both leave by the same USB serial at
-						// the same moment, so a laptop attached later sees
-						// neither; what outlasts boot is `state`'s `unsaved=1`. A
-						// stored configuration from an older `dash.toml` hid the
-						// plan's chart page, and the only trace was an early
-						// `info!` (2026-09-13).
-						let plural = |n: usize| if n == 1 { "page" } else { "pages" };
-						match config.plan_mismatch() {
-							Some(Mismatch::Count { stored, plan }) => note!(
-								"settings: stored config has {stored} {}, this plan has {plan} {} — discarded, showing the plan's",
-								plural(stored),
-								plural(plan)
-							),
-							Some(Mismatch::Page { index }) => note!(
-								"settings: stored page {} is not the plan's — config discarded, showing the plan's pages",
-								index + 1
-							),
-							None => note!("settings: stored config does not fit this plan ({reason}) — discarded"),
-						}
-						#[cfg(feature = "ble")]
-						note!("settings: brightness and active page are back to defaults; `save` stores them and this note goes away");
-						// No BLE, no `save` (PR #12 review): what makes the note go away is an image
-						// with BLE saving, or erasing flash.
-						#[cfg(not(feature = "ble"))]
-						note!(
-							"settings: brightness and active page are back to defaults; this image has no `save` (no BLE) — an image with BLE saves them, or erases flash, and this note goes away"
-						);
-						// The stopwatch's last run is not the plan's to judge: a run kept on a
-						// board whose pages were never set would otherwise go with the pages.
-						let defaults = Config {
-							last_run: config.last_run.clone(),
-							..Config::default()
-						};
-						// `unsaved`: what runs and what flash holds now disagree,
-						// and `state` should say so rather than claim they match.
-						Settings {
-							store: Some(store),
-							config: defaults,
-							saving: Saving {
-								unsaved: true,
-								..Saving::default()
-							},
-						}
-					}
-				},
+				}
 				Err(StoreError::Empty) => {
 					info!("nothing this image reads is stored, running on defaults");
 					Settings {
@@ -871,6 +823,24 @@ fn open_settings() -> Settings {
 				saving: Saving::default(),
 			}
 		}
+	}
+}
+
+/// Says what of a stored record this plan changed ([`Config::fit`]): saved against another
+/// plan, or its page past this plan's pages. Notes, not `warn!`s: a note is a whole line of
+/// its own between frames, where `dashsim` and a laptop's log show it.
+fn say_fitted(fitted: &Fitted) {
+	let kept = match fitted.page_reset {
+		None => "brightness, page and last run kept",
+		Some(_) => "brightness and last run kept",
+	};
+	match fitted.saved_against {
+		SavedAgainst::This => {}
+		SavedAgainst::Other(id) => note!("settings: saved against plan {id:016x}, this image runs plan {PLAN_ID:016x} — {kept}"),
+		SavedAgainst::Unknown => note!("settings: saved by an image from before plans had an id — {kept}"),
+	}
+	if let Some(page) = fitted.page_reset {
+		note!("settings: page {} is past this plan's {PAGE_COUNT} — showing page 1", u16::from(page) + 1);
 	}
 }
 
@@ -967,15 +937,13 @@ async fn control_task(settings: &'static Shared, screen: &'static ScreenCell) ->
 		let (source, command) = COMMANDS.next().await;
 		let mut s = settings.lock().await;
 		let before = s.config.active_page;
-		// `pages` is bounded by `MAX_PAGES`, so the count fits.
-		let pages = s.config.pages.len() as u8;
-		let outcome = screen.lock(|cell| cell.borrow_mut().command(command, &mut s.config.active_page, pages));
+		let outcome = screen.lock(|cell| cell.borrow_mut().command(command, &mut s.config.active_page, PAGE_COUNT));
 		if s.config.active_page != before {
 			s.saving.changed();
 		}
 		// One-based: this line is read by a person, and "page 0 of 2" reads as no page at
 		// all. The `state` line stays zero-based — it is a protocol.
-		let (page, count) = (usize::from(s.config.active_page) + 1, s.config.pages.len());
+		let (page, count) = (usize::from(s.config.active_page) + 1, PAGE_COUNT);
 		drop(s);
 		match outcome {
 			Outcome::Paged => {
@@ -1438,19 +1406,30 @@ fn hello_reply() -> Message {
 	Message::HelloReply(HelloReply {
 		image: "dash".into(),
 		version: env!("CARGO_PKG_VERSION").into(),
+		plan: Some(PLAN_ID),
 	})
 }
 
+/// `chart` or `values`, as `state` and `get` name a page's kind.
+#[cfg(feature = "ble")]
+fn kind_of(page: &Page) -> &'static str {
+	match page {
+		Page::Chart { .. } => "chart",
+		Page::Values { .. } => "values",
+	}
+}
+
 /// The longest line [`state_line`] writes: every key at its widest — a `u8` page and count,
-/// a `u32` generation, the adapter's mode, the fault count's two `u32`s and its units, a values page of
-/// [`MAX_CELLS`](vag_dash_fw::config::MAX_CELLS) five-digit cells: 211 bytes.
+/// a `u32` generation, the plan's id, the adapter's mode, the fault count's two `u32`s and its
+/// units, a values page of [`MAX_VALUE_CELLS`](vag_dash_render::plan::MAX_VALUE_CELLS) five-digit cells: 205 bytes.
 #[cfg(feature = "ble")]
 const STATE_LINE_LONGEST: usize = "state page=255/255 brightness=255 unsaved=1 run_pending=1 gen=4294967295".len()
+	+ " plan=0123456789abcdef".len()
 	+ " mode=adapter".len()
 	+ faults::STATE_LONGEST
 	+ " kind=values cells=[".len()
-	+ vag_dash_fw::config::MAX_CELLS * "65535".len()
-	+ (vag_dash_fw::config::MAX_CELLS - 1) * ", ".len()
+	+ vag_dash_render::plan::MAX_VALUE_CELLS * "65535".len()
+	+ (vag_dash_render::plan::MAX_VALUE_CELLS - 1) * ", ".len()
 	+ "]".len();
 // `state_line` writes into a `heapless::String<UART_MTU>`, and what does not fit is dropped by
 // its `let _ = write!`: a longer line would lose its end. (The notifier cuts a line into
@@ -1468,7 +1447,7 @@ async fn state_line(settings: &Shared) -> heapless::String<UART_MTU> {
 		out,
 		"state page={}/{} brightness={} unsaved={} run_pending={} gen={}",
 		s.config.active_page,
-		s.config.pages.len(),
+		PAGE_COUNT,
 		s.config.brightness,
 		u8::from(s.saving.unsaved),
 		// A finished run only RAM holds, lost at power-off: `unsaved=0` alone said "saved"
@@ -1476,18 +1455,16 @@ async fn state_line(settings: &Shared) -> heapless::String<UART_MTU> {
 		u8::from(s.saving.run_pending),
 		s.store.as_ref().map_or(0, Store::generation)
 	);
+	// Which plan the image was built with: what `vagcan dev dash build` printed for it.
+	let _ = write!(out, " plan={PLAN_ID:016x}");
 	// Which job the board is doing: `dashcfg` ignores keys it does not know, and over
 	// BLE this is how a person sees that the cable made the board an adapter.
 	let _ = write!(out, " mode={}", if adapter_mode() { "adapter" } else { "panel" });
 	// The fault count: `faults=9 failing=1 units=17/18`, `faults=?`, or `faults=-` until it ends
 	// (`todo/dash/20`).
 	let _ = write!(out, "{}", faults::State(FAULTS.lock(|faults| faults.get())));
-	if let Some(page) = s.config.pages.get(usize::from(s.config.active_page)) {
-		let kind = match page.kind {
-			PageKind::Chart => "chart",
-			PageKind::Values => "values",
-		};
-		let _ = write!(out, " kind={kind} cells={:?}", page.cells);
+	if let Some(page) = PLAN.pages.get(usize::from(s.config.active_page)) {
+		let _ = write!(out, " kind={} cells={:?}", kind_of(page), pages::cells(page));
 	}
 	out
 }
@@ -2279,17 +2256,13 @@ impl PanelReads {
 				page => page,
 			};
 			// `STOPWATCH_PAGE` is past every page: no cells, and the mode brings the speed.
-			let mut shown: Vec<u16> = match s.config.pages.get(usize::from(glass)) {
-				Some(page) if page.kind == PageKind::Chart => page.cells.first().copied().into_iter().collect(),
-				Some(page) => page.cells.iter().copied().collect(),
-				None => Vec::new(),
-			};
+			let mut shown: Vec<u16> = PLAN.pages.get(usize::from(glass)).map_or(&[][..], pages::cells).to_vec();
 			// The voltage the page's strip shows is read as one of its cells; the stopwatch's page
 			// is no plan page and has no strip.
 			shown.extend(PLAN.strip_volts(usize::from(glass)));
 			// Every page's cells, charts included: a chart samples its channel
 			// every frame whether or not it is shown — and the strip's voltage, where a page shows it.
-			let mut listed: Vec<u16> = s.config.pages.iter().flat_map(|page| page.cells.iter().copied()).collect();
+			let mut listed: Vec<u16> = PLAN.pages.iter().flat_map(|page| pages::cells(page).iter().copied()).collect();
 			listed.extend(PLAN.strip_listed());
 			(shown, listed)
 		};
@@ -2986,17 +2959,15 @@ async fn panel_task(
 		let value_of = |index: u16| values.get(usize::from(index)).and_then(|slot| slot.current(now));
 		// The cursor is read here and passed in, never copied into the screen: it is what
 		// `set page` and `save` act on, and what an alarm hands back to.
-		let (kind, indices, glass, saved) = {
+		let (page, glass, saved) = {
 			let s = settings.lock().await;
-			// `pages` is bounded by `MAX_PAGES`, so the count fits.
-			let pages = s.config.pages.len() as u8;
-			let glass = screen.lock(|cell| cell.borrow_mut().frame(s.config.active_page, pages, now.as_millis(), value_of));
+			let glass = screen.lock(|cell| cell.borrow_mut().frame(s.config.active_page, PAGE_COUNT, now.as_millis(), value_of));
 			let mut saved: heapless::Vec<(u16, f32), { stopwatch::MAX_MARKS }> = heapless::Vec::new();
 			for (mark, ms) in &s.config.last_run {
 				let _ = saved.push((*mark, *ms as f32 / 1000.0));
 			}
-			match s.config.pages.get(usize::from(glass.page)) {
-				Some(page) => (page.kind, page.cells.clone(), glass, saved),
+			match PLAN.pages.get(usize::from(glass.page)) {
+				Some(page) => (page, glass, saved),
 				None => continue,
 			}
 		};
@@ -3075,7 +3046,7 @@ async fn panel_task(
 		let strip = PLAN.strip(usize::from(glass.page), value_of);
 
 		framebuffer.clear_all();
-		let report = match kind {
+		let report = match page {
 			_ if on_stopwatch => {
 				let watch = stopwatch.lock(|w| *w.borrow());
 				let speed = PLAN
@@ -3084,15 +3055,14 @@ async fn panel_task(
 				let (cells, count) = stopwatch::cells(&watch, speed, &saved, &words, &labels);
 				draw_with(&Frame::Values { cells: &cells[..count] }, &board, &theme, framebuffer)
 			}
-			PageKind::Values => {
-				let mut cells: heapless::Vec<Cell<'_>, 4> = heapless::Vec::new();
-				for index in indices.iter().take(4) {
+			Page::Values { cells: indices, .. } => {
+				let mut cells: heapless::Vec<Cell<'_>, { vag_dash_render::plan::MAX_VALUE_CELLS }> = heapless::Vec::new();
+				for index in indices.iter().take(vag_dash_render::plan::MAX_VALUE_CELLS) {
 					let _ = cells.push(cell_of(*index));
 				}
 				draw_page(&Frame::Values { cells: &cells }, &strip, &board, &theme, framebuffer)
 			}
-			PageKind::Chart => {
-				let index = indices.first().copied().unwrap_or(0);
+			&Page::Chart { channel: index, .. } => {
 				match PLAN.chart(index) {
 					Some(chart) => {
 						let samples = histories[chart.slot].samples();
@@ -3220,7 +3190,10 @@ fn write_run(s: &mut Settings) {
 	};
 	let config = match (s.saving.at_standstill(flash), stored) {
 		(RunWrite::Whole, _) => s.config.clone(),
-		(RunWrite::AddToStored, Some(mut stored)) => {
+		// What a boot would make of the stored record — this plan's id, its page in range — with
+		// the run added, so a record this image writes never names another plan (PR review).
+		(RunWrite::AddToStored, Some(stored)) => {
+			let mut stored = stored.fit().config;
 			stored.last_run = s.config.last_run.clone();
 			stored
 		}
@@ -3740,23 +3713,18 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 		Some("state") => return state_line(settings).await,
 		Some("get") => {
 			let s = settings.lock().await;
-			// What is saved comes before the pages: eight pages of eight cells run past the
+			// What is saved comes before the pages: eight pages of four cells run past the
 			// line, and what flash holds is the part a person must not lose off its end.
 			let _ = write!(
 				out,
-				"brightness {} page {} of {} | {} gen {}",
+				"brightness {} page {} of {PAGE_COUNT} | {} gen {} | plan {PLAN_ID:016x}",
 				s.config.brightness,
 				s.config.active_page,
-				s.config.pages.len(),
 				s.saving.said(),
 				s.store.as_ref().map_or(0, Store::generation)
 			);
-			for (i, page) in s.config.pages.iter().enumerate() {
-				let kind = match page.kind {
-					PageKind::Chart => "chart",
-					PageKind::Values => "values",
-				};
-				let _ = write!(out, " | {i}:{kind}{:?}", page.cells);
+			for (i, page) in PLAN.pages.iter().enumerate() {
+				let _ = write!(out, " | {i}:{}{:?}", kind_of(page), pages::cells(page));
 			}
 		}
 		Some("set") => match (words.next(), words.next()) {
@@ -3774,8 +3742,10 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 			(Some("page"), Some(value)) => match value.parse::<u8>() {
 				Ok(v) => {
 					let mut s = settings.lock().await;
-					if usize::from(v) >= s.config.pages.len() {
-						let _ = write!(out, "err: only {} pages", s.config.pages.len());
+					// Against the plan's pages, not `PAGE_COUNT`: on the empty plan CI builds that
+					// constant is 0, and clippy calls the comparison always true.
+					if usize::from(v) >= PLAN.pages.len() {
+						let _ = write!(out, "err: only {PAGE_COUNT} pages");
 					} else {
 						s.config.active_page = v;
 						s.saving.changed();
@@ -3793,10 +3763,8 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 		},
 		Some("save") => {
 			let mut s = settings.lock().await;
-			if let Err(reason) = s.config.validate() {
-				let _ = write!(out, "err: refusing to save — {reason}");
-				return out;
-			}
+			// Always this plan's: the defaults, or a record `fit` made this plan's, and `set page`
+			// refuses a page the plan does not have.
 			let config = s.config.clone();
 			match s.store.as_mut() {
 				None => {
@@ -3820,27 +3788,36 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 					let _ = write!(out, "err: no config partition on this board");
 				}
 				Some(store) => match store.load() {
-					Ok(config) => match config.validate() {
-						Ok(()) => {
-							// The record before flash's newest, where this image cannot read that
-							// one: what runs is then not what flash holds.
-							let unreadable = store.unreadable();
-							s.config = config;
-							s.saving.agreed();
-							PAGES_CHANGED.signal(());
-							let _ = write!(out, "ok: reloaded from flash");
-							if let Some(version) = unreadable {
-								s.saving.changed();
-								let _ = write!(
-									out,
-									" — the one before its newest record, version {version}, which this image cannot read"
-								);
+					Ok(stored) => {
+						// The record before flash's newest, where this image cannot read that
+						// one: what runs is then not what flash holds.
+						let unreadable = store.unreadable();
+						let fitted = stored.fit();
+						say_fitted(&fitted);
+						s.config = fitted.config;
+						s.saving.agreed();
+						PAGES_CHANGED.signal(());
+						let _ = write!(out, "ok: reloaded from flash");
+						match fitted.saved_against {
+							SavedAgainst::This => {}
+							SavedAgainst::Other(id) => {
+								let _ = write!(out, " — saved against plan {id:016x}");
+							}
+							SavedAgainst::Unknown => {
+								let _ = write!(out, " — saved before plans had an id");
 							}
 						}
-						Err(reason) => {
-							let _ = write!(out, "err: stored config does not fit this plan — {reason}");
+						if let Some(page) = fitted.page_reset {
+							let _ = write!(out, " — its page {page} is past this plan's, showing page 0");
 						}
-					},
+						if let Some(version) = unreadable {
+							s.saving.changed();
+							let _ = write!(
+								out,
+								" — the one before its newest record, version {version}, which this image cannot read"
+							);
+						}
+					}
 					Err(e) => {
 						let _ = write!(out, "err: {e:?}");
 					}

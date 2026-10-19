@@ -517,7 +517,9 @@ pub fn probed(mut found: Vec<AdapterInfo>, mut probe: impl FnMut(&str) -> BoardA
 		adapter.known = matches!(answer, BoardAnswer::Slcan | BoardAnswer::Dash { .. });
 		adapter.description = match answer {
 			BoardAnswer::Slcan => BOARD_SLCAN.to_string(),
-			BoardAnswer::Dash { version } => format!("{BOARD_DASH}, {version}"),
+			// The plan's id is what `vagcan dev dash build` printed for the plan it was built with.
+			BoardAnswer::Dash { version, plan: Some(plan) } => format!("{BOARD_DASH}, {version}, plan {plan:016x}"),
+			BoardAnswer::Dash { version, plan: None } => format!("{BOARD_DASH}, {version}"),
 			BoardAnswer::Silent => BOARD_SILENT.to_string(),
 			BoardAnswer::Unopened(why) => format!("vag-dash board — could not be opened to ask its firmware ({why})"),
 		};
@@ -682,7 +684,10 @@ mod tests {
 		panic!("probed {path}, which is not an Espressif board")
 	}
 	fn dash() -> BoardAnswer {
-		BoardAnswer::Dash { version: "0.1.0".into() }
+		BoardAnswer::Dash {
+			version: "0.1.0".into(),
+			plan: None,
+		}
 	}
 
 	/// Refusals with no command's words in them: `core` knows no command.
@@ -801,9 +806,15 @@ mod tests {
 		let through = render_list(&probed(vec![board()], answering(dash())));
 		assert!(through.contains(&format!("* {BOARD}")), "{through}");
 		assert!(
-			through.contains("vag-dash board — dash image (reads through the board, panel keeps running), 0.1.0"),
+			through.contains("vag-dash board — dash image (reads through the board, panel keeps running), 0.1.0\n"),
 			"{through}"
 		);
+		let named = BoardAnswer::Dash {
+			version: "0.1.0".into(),
+			plan: Some(0x7fa5_728f_35ff_8bcd),
+		};
+		let named = render_list(&probed(vec![board()], answering(named)));
+		assert!(named.contains(", 0.1.0, plan 7fa5728f35ff8bcd\n"), "{named}");
 
 		let slcan = render_list(&probed(vec![board()], answering(BoardAnswer::Slcan)));
 		assert!(slcan.contains(&format!("* {BOARD}")), "{slcan}");

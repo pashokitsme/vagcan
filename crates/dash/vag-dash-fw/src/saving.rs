@@ -10,9 +10,9 @@
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Saving {
 	/// The configuration in RAM is not what flash holds: a change not saved, the defaults, a
-	/// flash erased, a stored configuration that did not fit this plan, a run that could not be
-	/// written, or a record flash holds that this image cannot read. Cleared by a `save` or a
-	/// `load`.
+	/// flash erased, a run that could not be written, or a record flash holds that this image
+	/// cannot read. Cleared by a `save` or a `load`. A record saved against another plan is not
+	/// one: the board runs on what a reboot would make of it again (`schema::fit`).
 	pub unsaved: bool,
 	/// A finished run is in RAM and not in flash — until it is: written at a standstill
 	/// ([`Saving::at_standstill`]), or by a `save`. Until then a power-off loses it. Set while a
@@ -77,7 +77,7 @@ impl Saving {
 	}
 
 	/// Flash was erased. What RAM holds stays on the glass and is no longer in flash — so it is
-	/// unsaved, and a run is added to the defaults, never written back with the erased pages and
+	/// unsaved, and a run is added to the defaults, never written back with the erased page and
 	/// brightness (PR #12 review: left saved, the next boot loaded them rather than the
 	/// defaults). A run already waiting stays pending: it is in RAM, and flash holds nothing. It
 	/// goes into the defaults at the next standstill if it has not had its try; after its try it

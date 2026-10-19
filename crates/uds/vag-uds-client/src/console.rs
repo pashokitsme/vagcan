@@ -738,6 +738,7 @@ mod tests {
 		let reply = link::encode(&Message::HelloReply(HelloReply {
 			image: "dash".into(),
 			version: "0.1.0".into(),
+			plan: None,
 		}))
 		.unwrap();
 		console.push(&reply[..3], false);

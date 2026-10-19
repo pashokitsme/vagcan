@@ -23,7 +23,14 @@
 //! | `0x04` | Unsubscribe | host → board | `sub u16`                                                                       |
 //! | `0x05` | Reading     | board → host | `sub u16, at_ms u32, status u8, payload…`                                       |
 //! | `0x07` | Hello       | host → board | empty                                                                           |
-//! | `0x08` | HelloReply  | board → host | `image_len u8, image…, version…` (both UTF-8)                                   |
+//! | `0x08` | HelloReply  | board → host | `image_len u8, image…, version…[, 0x00, plan…]` (all UTF-8)                     |
+//!
+//! `plan` is the id of the plan the image was built with, sixteen lowercase hex digits
+//! (`vag_cli_core::dash::plan_id`). It came after the version and its NUL on 2026-10-19,
+//! in text: a host from before reads the NUL and the digits as the end of the version,
+//! still UTF-8, so it still takes the reply. A host reading a reply from an older image
+//! finds no NUL and no plan. A further NUL and anything after it are a newer image's,
+//! and skipped.
 //!
 //! `0x06` is not assigned. A Hello asks the board which image it runs, without a byte
 //! of slcan: a host that has to tell the `dash` image from the `slcan` one on the cable
@@ -308,8 +315,19 @@ pub enum Outcome {
 pub struct HelloReply {
 	/// The firmware image: `dash` for the display image. At most 255 bytes.
 	pub image: String,
-	/// The image's version, as it names it.
+	/// The image's version, as it names it. Never holds a NUL.
 	pub version: String,
+	/// Which plan the image was built with (`vag_cli_core::dash::plan_id`); `None` from an
+	/// image from before plans had an id, and from one that runs no plan.
+	pub plan: Option<u64>,
+}
+
+/// Sixteen hex digits as a plan id, as a HelloReply carries one.
+fn plan_id(digits: &[u8]) -> Option<u64> {
+	if digits.len() != 16 || !digits.iter().all(u8::is_ascii_hexdigit) {
+		return None;
+	}
+	u64::from_str_radix(core::str::from_utf8(digits).ok()?, 16).ok()
 }
 
 /// One framed message.
@@ -399,6 +417,10 @@ pub fn encode(message: &Message) -> Result<Vec<u8>, LinkError> {
 			out.push(h.image.len() as u8);
 			out.extend_from_slice(h.image.as_bytes());
 			out.extend_from_slice(h.version.as_bytes());
+			if let Some(plan) = h.plan {
+				out.push(0);
+				out.extend_from_slice(alloc::format!("{plan:016x}").as_bytes());
+			}
 		}
 	}
 	let body_len = out.len() - HEADER_LEN;
@@ -449,6 +471,8 @@ fn check(message: &Message) -> Result<(), LinkError> {
 			outcome: Outcome::Pdu(pdu), ..
 		}) => pdu,
 		Message::HelloReply(h) if h.image.len() > usize::from(u8::MAX) => return Err(LinkError::Malformed("image name over 255 bytes")),
+		// The NUL is where the version ends and the plan begins.
+		Message::HelloReply(h) if h.version.contains('\0') => return Err(LinkError::Malformed("hello reply version holds a NUL")),
 		Message::Answer(_) | Message::Reading(_) | Message::Unsubscribe { .. } | Message::Hello | Message::HelloReply(_) => return Ok(()),
 	};
 	match pdu.len() {
@@ -543,9 +567,18 @@ fn decode(kind: u8, body: &[u8]) -> Result<Message, LinkError> {
 					.map(String::from)
 					.map_err(|_| LinkError::Malformed("hello reply is not UTF-8"))
 			};
+			// What follows the version, each field after a NUL: the plan, then anything a newer
+			// board adds, which this end skips.
+			let mut fields = version.split(|&b| b == 0);
+			let version = fields.next().unwrap_or_default();
+			let plan = match fields.next() {
+				None => None,
+				Some(digits) => Some(plan_id(digits).ok_or(LinkError::Malformed("hello reply plan is not 16 hex digits"))?),
+			};
 			Message::HelloReply(HelloReply {
 				image: text(image)?,
 				version: text(version)?,
+				plan,
 			})
 		}
 		other => return Err(LinkError::UnknownType(other)),
@@ -847,6 +880,7 @@ mod tests {
 			reading(Outcome::BusError("bus off".into())),
 			Message::Hello,
 			hello_reply(),
+			hello_reply_with_plan(),
 		]
 	}
 
@@ -854,7 +888,64 @@ mod tests {
 		Message::HelloReply(HelloReply {
 			image: "dash".into(),
 			version: "0.1.0".into(),
+			plan: None,
 		})
+	}
+
+	fn hello_reply_with_plan() -> Message {
+		Message::HelloReply(HelloReply {
+			image: "dash".into(),
+			version: "0.1.0".into(),
+			plan: Some(0x0123_4567_89ab_cdef),
+		})
+	}
+
+	#[test]
+	fn a_reply_names_its_plan_after_the_version_in_text_an_older_host_still_reads() {
+		let bytes = encode(&hello_reply_with_plan()).unwrap();
+		let mut body = vec![4, b'd', b'a', b's', b'h', b'0', b'.', b'1', b'.', b'0', 0];
+		body.extend_from_slice(b"0123456789abcdef");
+		assert_eq!(bytes[..4], [0x00, 0x08, body.len() as u8, 0x00]);
+		assert_eq!(bytes[4..], body[..]);
+		// A host from before the plan takes everything past the image as the version: UTF-8.
+		assert!(core::str::from_utf8(&body[5..]).is_ok());
+		let mut r = Reassembler::new();
+		assert_eq!(one_message(r.push(&bytes)), hello_reply_with_plan());
+		// A reply from an image from before the plan has none.
+		assert_eq!(one_message(r.push(&encode(&hello_reply()).unwrap())), hello_reply());
+	}
+
+	#[test]
+	fn what_a_newer_image_adds_after_the_plan_is_skipped_and_a_plan_must_be_sixteen_digits() {
+		let reply = |tail: &[u8]| {
+			let mut body = vec![4, b'd', b'a', b's', b'h', b'1', 0];
+			body.extend_from_slice(tail);
+			let mut bytes = vec![0x00, 0x08, body.len() as u8, 0x00];
+			bytes.extend(body);
+			Reassembler::new().push(&bytes)
+		};
+		let pieces = reply(b"00000000000000ff\0more");
+		assert!(
+			matches!(&pieces[..], [Piece::Message(Message::HelloReply(HelloReply { version, plan: Some(0xff), .. }))] if version == "1"),
+			"{pieces:?}"
+		);
+		for bad in [&b"ff"[..], b"00000000000000fg", b"", b"00000000000000ff0", b"+0000000000000ff"] {
+			assert!(
+				matches!(&reply(bad)[..], [Piece::Error(LinkError::Malformed(_))]),
+				"{:?}",
+				core::str::from_utf8(bad)
+			);
+		}
+	}
+
+	#[test]
+	fn a_version_holding_a_nul_is_refused_by_the_encoder() {
+		let nul = Message::HelloReply(HelloReply {
+			image: "dash".into(),
+			version: "0.1\u{0}0".into(),
+			plan: None,
+		});
+		assert!(matches!(encode(&nul), Err(LinkError::Malformed(_))));
 	}
 
 	#[test]
@@ -867,6 +958,7 @@ mod tests {
 		let empty = Message::HelloReply(HelloReply {
 			image: String::new(),
 			version: String::new(),
+			plan: None,
 		});
 		assert_eq!(encode(&empty).unwrap(), vec![0x00, 0x08, 0x01, 0x00, 0]);
 		let mut r = Reassembler::new();
@@ -900,6 +992,7 @@ mod tests {
 		let long = Message::HelloReply(HelloReply {
 			image: "x".repeat(256),
 			version: String::new(),
+			plan: None,
 		});
 		assert!(matches!(encode(&long), Err(LinkError::Malformed(_))));
 	}

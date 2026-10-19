@@ -41,6 +41,18 @@ pub const ALARM_COUNT: usize = PLAN.alarms.len();
 /// How many `[[button]]`s the plan carries — the size of the input task's button table.
 pub const BUTTON_COUNT: usize = PLAN.buttons.len();
 
+/// How many pages the plan has: the pages the panel turns through. The generator caps them
+/// at `vag_dash_render::pages::MAX_PAGES`, so the count is a `u8`, as the active page is.
+pub const PAGE_COUNT: u8 = PLAN.pages.len() as u8;
+
+const _: () = assert!(
+	PLAN.pages.len() <= vag_dash_render::pages::MAX_PAGES,
+	"the plan has more [[page]]s than the board holds"
+);
+
+// `PLAN_ID`, the plan's id (`vag_cli_core::dash::plan_id`), comes with the generated source:
+// what the settings are saved against, and what the Hello reply and `state` name.
+
 // What the generator refuses, refused again where it would bite: a pin the board has no
 // input for, one given twice, or more buttons than free pins is an image that does not
 // build rather than a button that silently does nothing.
