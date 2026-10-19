@@ -319,7 +319,7 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 			let files = match catalog.as_deref() {
 				Some(given) => vec![names::NamesFile {
 					source: "",
-					path: datadir::resolve(given),
+					path: std::path::PathBuf::from(given),
 				}],
 				None => names::project_files(&crate::project::current()?),
 			};

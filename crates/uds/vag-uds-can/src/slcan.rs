@@ -515,7 +515,8 @@ pub enum BoardAnswer {
 	Dash { version: String, plan: Option<u64> },
 	/// A well-formed `V` reply to slcan's version query: the `slcan` image, an adapter.
 	Slcan,
-	/// Neither: an older display image, or anything else.
+	/// Neither: an image that is not `dash` or `slcan` (a bench or test image), or an ESP32
+	/// whose firmware does not answer the hello.
 	Silent,
 	/// The port would not open to ask, with the reason — usually another
 	/// program holding it.
@@ -1081,7 +1082,7 @@ mod tests {
 	#[test]
 	fn a_board_that_answers_neither_is_silent() {
 		for before in [&b""[..], DISPLAY_TEXT] {
-			// An older display image: text before, and text after the questions.
+			// Another image: text before, and text after the questions.
 			let mut port = ScriptedPort::new(before).on(b"V\r", b"FRAME 256 64 AAAA\r\n");
 			assert_eq!(ask_board(&mut port, WAIT, WAIT), BoardAnswer::Silent);
 			assert!(port.sent_v());

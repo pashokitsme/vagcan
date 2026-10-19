@@ -264,7 +264,7 @@ impl CarFile {
 	/// as a path: a unit answering with a separator or a `..` would otherwise
 	/// choose where this tool writes.
 	pub fn path_for(vin: &str) -> anyhow::Result<PathBuf> {
-		Ok(crate::datadir::car_dir(checked_vin(vin)?.as_str())?.join("car.json"))
+		Ok(crate::datadir::car_dir(checked_vin(vin)?.as_str())?.join(crate::datadir::CAR_FILE))
 	}
 
 	/// Read a car file. Anything it cannot vouch for is an error naming the
@@ -890,45 +890,16 @@ mod tests {
 	}
 
 	#[test]
-	fn a_car_is_filed_under_its_vin_and_keeps_the_directory_it_has() {
-		// The readable prefix is gone: it was assembled from whatever each
-		// caller happened to know, and `measure setup` knew the engine's
-		// component string where `measure` did not — which gave one car two
-		// directories, the car file in one and the drives in the other.
-		//
-		// Asked of a temporary `cars/` on purpose. `CarFile::path` answers the
-		// *other* question — where does this car's file live *now* — and on a
-		// machine that already has a directory the answer is that directory,
-		// whatever it is called. Testing the naming rule through `path` would
-		// pass on a fresh machine and fail on the owner's, which is what it did.
-		let vin = "XW8AD4NE9JH008917";
-		let cars = std::env::temp_dir().join(format!("vagcan-naming-{}", std::process::id()));
-		std::fs::create_dir_all(&cars).unwrap();
-		assert_eq!(crate::datadir::car_folder_in(&cars, vin).unwrap(), vin);
-
-		// And a directory from before the rename is used rather than orphaned.
-		// Nothing is moved: a rename under a running tool is the one operation
-		// here that can lose a drive somebody is in the middle of recording.
-		std::fs::create_dir_all(cars.join(format!("1.8l-R4-TFSI-{vin}"))).unwrap();
-		assert_eq!(crate::datadir::car_folder_in(&cars, vin).unwrap(), format!("1.8l-R4-TFSI-{vin}"));
-		std::fs::remove_dir_all(&cars).ok();
-	}
-
-	#[test]
 	fn a_vin_off_the_bus_never_chooses_where_this_tool_writes() {
 		assert!(CarFile::path_for("../../catalogs/vehicles/8V0906264H").is_err());
 		assert!(CarFile::path_for("").is_err());
 		assert!(CarFile::path_for("XW8/AD4").is_err());
 
-		// What a real VIN produces is asserted only as far as this machine can
-		// promise: the directory this car already has may be named the old way,
-		// so the *shape* is what holds everywhere — one directory under `cars/`,
-		// ending in the VIN, with the car file inside it. The naming rule itself
-		// is pinned against a temporary `cars/` in the test above.
+		// A real VIN: one directory under `cars/`, named for the VIN, with the car
+		// file inside it.
 		let path = CarFile::path_for("XW8AD4NE9JH008917").unwrap();
 		assert!(path.ends_with("car.json"), "{path:?}");
-		let folder = path.parent().unwrap().file_name().unwrap().to_string_lossy();
-		assert!(folder.ends_with("XW8AD4NE9JH008917"), "{path:?}");
+		assert_eq!(path.parent().unwrap().file_name().unwrap(), "XW8AD4NE9JH008917", "{path:?}");
 		assert_eq!(path.parent().unwrap().parent().unwrap().file_name().unwrap(), "cars");
 	}
 

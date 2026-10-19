@@ -107,7 +107,7 @@
 //!
 //! # Outputs
 //!
-//! `plan.json` for a person and the simulator, `plan.rs` for the firmware, both
+//! `plan.json` for a person to read, `plan.rs` for the firmware, both
 //! under `~/.vagcan/dash/<VIN>/` and neither committed anywhere: they are
 //! derived from VW's data and describe one owner's car. Both name the plan by its id
 //! ([`plan_id`]): `plan.rs` as `PLAN_ID`, `plan.json` as `id`.
@@ -465,21 +465,6 @@ pub struct Input {
 pub fn parse_input(text: &str) -> Result<Input, Error> {
 	let doc = Document::parse(text).map_err(|e| Error::Parse(format!("dash.toml: {e}")))?;
 	let top = Reader::new(text, doc.as_table(), String::new());
-	// The key that named the survey the units were read from. The units come from
-	// the car's record now, so an input that still has it is told what to do —
-	// not read as if the key were absent, which would build from a different list
-	// than the owner believes, and not refused as a typo, which is what the strict
-	// check below would make of a key it no longer knows.
-	if doc.get("survey").is_some() {
-		return Err(
-			top.refuse(
-				"survey",
-				"`survey` is no longer read — delete the line. The car's units come from ~/.vagcan/cars/<VIN>/units.json, \
-			 which `vagcan units --identify` or `vagcan watch` writes when connected to the car."
-					.to_string(),
-			),
-		);
-	}
 	// `[[alarm]]` is gone (owner, 2026-10-19): an alarm is keys of the channel it watches. Two
 	// ways to write one job is a defect, so the old one is refused, with its rewrite.
 	if let Some(item) = doc.get("alarm") {
@@ -1245,51 +1230,33 @@ pub struct Channel {
 	pub unit_text: String,
 	pub label: String,
 	pub proven: bool,
-	/// Readings a second while the channel's page is shown. A `plan.json` written
-	/// before rates existed reads as [`DEFAULT_HZ`].
-	#[serde(default = "default_hz")]
+	/// Readings a second while the channel's page is shown.
 	pub hz: f64,
 	/// Where the row came from: its text id, or the catalog's own name.
 	pub source: String,
-	/// The channel holding what the unit asked for, by index into the plan's channels. A
-	/// `plan.json` written before setpoints existed has none.
-	#[serde(default)]
+	/// The channel holding what the unit asked for, by index into the plan's channels.
 	pub setpoint: Option<u16>,
-	/// Shown as 0 while the car stands (`dash.toml`'s `zero_at_rest`). A `plan.json` written
-	/// before it existed has none.
-	#[serde(default)]
+	/// Shown as 0 while the car stands (`dash.toml`'s `zero_at_rest`).
 	pub zero_at_rest: bool,
 }
 
-fn default_hz() -> f64 {
-	DEFAULT_HZ
-}
-
 /// One page. `title` is drawn in the strip over it; `volts` is whether the strip shows the
-/// voltage there. A `plan.json` written before the strip has no chart titles and no `volts`:
-/// none, and on.
+/// voltage there.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Page {
 	Chart {
-		#[serde(default)]
 		title: String,
 		channel: u16,
 		min: f64,
 		max: f64,
-		#[serde(default = "volts_on")]
 		volts: bool,
 	},
 	Values {
 		title: String,
 		cells: Vec<u16>,
-		#[serde(default = "volts_on")]
 		volts: bool,
 	},
-}
-
-fn volts_on() -> bool {
-	true
 }
 
 /// `[strip]`, resolved.
@@ -1396,24 +1363,18 @@ pub struct Plan {
 	pub units: Vec<Unit>,
 	pub channels: Vec<Channel>,
 	pub pages: Vec<Page>,
-	/// In priority order: the channels' order, a channel's bounds before its drift. A
-	/// `plan.json` written before alarms existed has none; one written while they were
-	/// `[[alarm]]` tables is refused ([`Plan::from_json`]).
-	#[serde(default)]
+	/// In priority order: the channels' order, a channel's bounds before its drift.
 	pub alarms: Vec<Alarm>,
-	/// A `plan.json` written before the lever existed has none.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub stalk: Option<Stalk>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub stopwatch: Option<Stopwatch>,
-	/// In the file's order. A `plan.json` written before buttons existed has none.
+	/// In the file's order.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub buttons: Vec<Button>,
-	/// A `plan.json` written before the strip existed has none.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub strip: Option<Strip>,
-	/// Where the plan learns that the car stands. A `plan.json` written before it existed takes
-	/// its stopwatch's speed, which is what its `zero_at_rest` asked ([`Plan::from_json`]).
+	/// Where the plan learns that the car stands.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub standstill: Option<Standstill>,
 }
@@ -1453,7 +1414,7 @@ struct Joins {
 
 impl Plan {
 	/// The plan, with its [`plan_id`] first as `"id"`: sixteen hex digits, as the board says it.
-	/// [`Plan::from_json`] skips it — it is derived, never read back as a fact.
+	/// Written for a person; nothing reads `plan.json` back.
 	pub fn to_json(&self) -> String {
 		#[derive(Serialize)]
 		struct Identified<'a> {
@@ -1468,42 +1429,9 @@ impl Plan {
 		serde_json::to_string_pretty(&identified).expect("a plan serialises")
 	}
 
-	/// A `plan.json` written while alarms were `[[alarm]]` tables (before 2026-10-19) is refused
-	/// with what to do: the file is generated, and a rule read into the new shape by guesswork
-	/// would watch something the owner did not write.
-	pub fn from_json(text: &str) -> Result<Plan, serde_json::Error> {
-		use serde::de::Error as _;
-		let value: serde_json::Value = serde_json::from_str(text)?;
-		let old = value
-			.get("alarms")
-			.and_then(serde_json::Value::as_array)
-			.is_some_and(|alarms| alarms.iter().any(|a| a.get("channels").is_some()));
-		if old {
-			return Err(serde_json::Error::custom(
-				"this plan.json was written when alarms were [[alarm]] tables — move them onto the channels in dash.toml \
-				 (docs/dash/dash-toml.md, \"Alarms\") and build the plan again with `vagcan dev dash build <VIN>`",
-			));
-		}
-		let mut plan: Plan = serde_json::from_value(value)?;
-		// Written before the standstill was the plan's: its `zero_at_rest` asked the stopwatch's
-		// speed, and that is the source it had.
-		if plan.standstill.is_none()
-			&& let Some(stopwatch) = &plan.stopwatch
-		{
-			plan.standstill = Some(Standstill::Speed { channel: stopwatch.speed });
-		}
-		// A generated file: one whose indices do not join is refused, never guessed at.
-		if let Err(why) = plan.joins() {
-			return Err(serde_json::Error::custom(format!(
-				"this plan.json does not hold together — {why}; build it again with `vagcan dev dash build <VIN>`"
-			)));
-		}
-		Ok(plan)
-	}
-
 	/// The joins the board indexes by ([`Joins`]). `Err` where a channel's unit is not among the
-	/// plan's units, or there are more units than an index of the board holds — a `plan.json`
-	/// edited by hand, since [`build`] lists every channel's unit.
+	/// plan's units, or there are more units than an index of the board holds — a plan [`build`]
+	/// does not make, since it lists every channel's unit.
 	fn joins(&self) -> Result<Joins, String> {
 		let units = self
 			.channels
@@ -1559,12 +1487,11 @@ impl Plan {
 	///
 	/// # Panics
 	///
-	/// On a plan whose joins do not hold ([`Plan::joins`]): [`build`] makes none, and
-	/// [`Plan::from_json`] refuses one.
+	/// On a plan whose joins do not hold ([`Plan::joins`]): [`build`] makes none.
 	pub fn to_device(&self) -> vag_dash_render::plan::Plan {
 		use vag_dash_render::alarm::{self as device_alarm, ChannelId, PageId};
 		use vag_dash_render::plan as device;
-		let joins = self.joins().expect("a plan from `build` or `from_json` joins");
+		let joins = self.joins().expect("a plan from `build` joins");
 		fn text(s: &str) -> &'static str {
 			String::leak(s.to_string())
 		}
@@ -2966,7 +2893,7 @@ fn source(plan: &Plan) -> String {
 	let mut out = String::new();
 	let _ = writeln!(out, "// Generated by `vagcan dev dash build` for VIN {}.", plan.vin);
 	let _ = writeln!(out, "// Derived from VW's data and one owner's car: do not edit, do not commit.");
-	let joins = plan.joins().expect("a plan from `build` or `from_json` joins");
+	let joins = plan.joins().expect("a plan from `build` joins");
 	let mut plan_types = vec!["Channel", "Page", "Plan", "Unit"];
 	if plan.stalk.is_some() {
 		plan_types.extend(["Band", "StalkPlan"]);
@@ -3425,6 +3352,11 @@ pub fn build_inputs(inputs: Inputs) -> anyhow::Result<Written> {
 
 #[cfg(test)]
 mod tests {
+	/// `plan.json` read back, to check what it holds: nothing outside the tests reads it.
+	fn from_json(text: &str) -> Result<Plan, serde_json::Error> {
+		serde_json::from_str(text)
+	}
+
 	use super::*;
 	use std::path::Path;
 	use vag_data_labels::catalog::{MeasurementCatalog, MeasurementDef};
@@ -3578,21 +3510,15 @@ mod tests {
 	}
 
 	#[test]
-	fn a_survey_key_is_refused_with_what_to_do_and_where_the_units_come_from_now() {
-		// `survey =` named the file the units were read from. The units come from
-		// the car's record now, written by the live commands, so an input that
-		// still has the key is refused — by line, with what to do — rather than
-		// read as if the key were absent or refused as a typo.
+	fn a_survey_key_is_not_read() {
+		// `survey =` named the file the units were read from, before they came from the car's
+		// record. It is no key of this file, so the strict check refuses it by line.
 		let text = "vin = \"TESTVIN0000000001\"\nlanguage = \"en\"\nsurvey = \"/somewhere/survey.jsonl\"\n[[channel]]\nref = \"01:IDE00025\"\n[[page]]\nkind = \"values\"\ntitle = \"T\"\ncells = [\"01:IDE00025\"]\n";
 		let Error::Parse(why) = parse_input(text).unwrap_err() else {
 			panic!("not a parse refusal");
 		};
 		assert!(why.contains("line 3"), "{why}");
-		assert!(why.contains("survey"), "{why}");
-		assert!(why.contains("delete the line"), "{why}");
-		assert!(why.contains("units.json"), "{why}");
-		assert!(why.contains("vagcan units --identify") && why.contains("vagcan watch"), "{why}");
-		assert!(!why.contains("did you mean"), "not a typo: {why}");
+		assert!(why.contains("\"survey\""), "{why}");
 		// Without it the same input parses.
 		assert!(parse_input(&text.replace("survey = \"/somewhere/survey.jsonl\"\n", "")).is_ok());
 	}
@@ -3762,7 +3688,7 @@ mod tests {
 			built.notes
 		);
 		let json = built.plan.to_json();
-		assert_eq!(Plan::from_json(&json).unwrap(), built.plan);
+		assert_eq!(from_json(&json).unwrap(), built.plan);
 		assert!(json.contains("\"kind\": \"drift\""), "{json}");
 		let rust = to_rust(&built.plan);
 		assert!(
@@ -4096,7 +4022,7 @@ mod tests {
 		)
 		.unwrap();
 		let json = built.plan.to_json();
-		let back = Plan::from_json(&json).unwrap();
+		let back = from_json(&json).unwrap();
 		assert_eq!(back, built.plan);
 		assert_eq!(back.to_json(), json);
 		assert_eq!(back.channels[0].label, "Boost pressure", "named through the text id");
@@ -4738,12 +4664,6 @@ mod tests {
 		assert!(rust.contains("proven: false, hz: 10.0, setpoint: None, zero_at_rest: false }"), "{rust}");
 		assert!(rust.contains("proven: false, hz: 2.0, setpoint: None, zero_at_rest: false }"), "{rust}");
 		assert!(built.notes[0].contains("at 10 Hz"), "{}", built.notes[0]);
-
-		// A plan.json from before rates reads as the default.
-		let mut json: serde_json::Value = serde_json::from_str(&built.plan.to_json()).unwrap();
-		json["channels"][0].as_object_mut().unwrap().remove("hz");
-		let old = Plan::from_json(&json.to_string()).unwrap();
-		assert_eq!(old.channels[0].hz, DEFAULT_HZ);
 	}
 
 	#[test]
@@ -4813,7 +4733,7 @@ mod tests {
 		}
 
 		let json = built.plan.to_json();
-		assert_eq!(Plan::from_json(&json).unwrap(), built.plan);
+		assert_eq!(from_json(&json).unwrap(), built.plan);
 		assert!(json.contains("\"kind\": \"bounds\""), "{json}");
 
 		let rust = to_rust(&built.plan);
@@ -4831,29 +4751,13 @@ mod tests {
 			"{rust}"
 		);
 
-		// A plan.json from before alarms loads with none, and its Rust imports nothing unused.
-		let mut old: serde_json::Value = serde_json::from_str(&json).unwrap();
-		old.as_object_mut().unwrap().remove("alarms");
-		let old = Plan::from_json(&old.to_string()).unwrap();
-		assert!(old.alarms.is_empty());
-		let rust = to_rust(&old);
+		// A plan with no alarms imports nothing unused.
+		let mut none = built.plan.clone();
+		none.alarms.clear();
+		let rust = to_rust(&none);
 		assert!(rust.contains("use vag_dash_render::alarm::Alarm;\n"), "{rust}");
 		assert!(rust.contains("static ALARMS: [Alarm; 0] = ["), "{rust}");
 		assert!(!rust.contains("ChannelId"), "{rust}");
-	}
-
-	/// A `plan.json` written while alarms were `[[alarm]]` tables is generated, and is refused
-	/// with what to do rather than read by guesswork.
-	#[test]
-	fn a_plan_json_with_alarm_tables_is_refused_with_what_to_do() {
-		let built = build_with_alarms(NO_ALARMS, "").unwrap();
-		let mut json: serde_json::Value = serde_json::from_str(&built.plan.to_json()).unwrap();
-		json["alarms"] = serde_json::json!([
-			{ "channels": [1], "page": 0, "kind": "threshold", "direction": "above", "trip": 10.0, "release": 8.0 }
-		]);
-		let why = Plan::from_json(&json.to_string()).unwrap_err().to_string();
-		assert!(why.starts_with("this plan.json was written when alarms were [[alarm]] tables"), "{why}");
-		assert!(why.contains("vagcan dev dash build <VIN>"), "{why}");
 	}
 
 	#[test]
@@ -5505,7 +5409,7 @@ mod tests {
 			json.contains("\"standstill\": {\n    \"kind\": \"speed\",\n    \"channel\": 1\n  }"),
 			"{json}"
 		);
-		assert_eq!(Plan::from_json(&json).unwrap(), built.plan);
+		assert_eq!(from_json(&json).unwrap(), built.plan);
 
 		// No table of its own yet: a later source is a `[standstill]`, refused until it exists.
 		let text = format!(
@@ -5518,32 +5422,6 @@ mod tests {
 		assert_eq!(none.plan.standstill, None, "no stopwatch, no source");
 		assert!(to_rust(&none.plan).contains("standstill: None };"));
 		assert!(!none.plan.to_json().contains("standstill"));
-	}
-
-	/// A `plan.json` written before the standstill was the plan's: its `zero_at_rest` asked the
-	/// stopwatch's speed, so that is its source.
-	#[test]
-	fn a_plan_json_from_before_the_standstill_takes_the_stopwatchs_speed() {
-		let built = build_with_lever(WATCH).unwrap();
-		let mut json: serde_json::Value = serde_json::from_str(&built.plan.to_json()).unwrap();
-		json.as_object_mut().unwrap().remove("standstill");
-		assert_eq!(Plan::from_json(&json.to_string()).unwrap(), built.plan);
-	}
-
-	/// `todo/dash/27`: `plan.json` names a channel's unit by its request id, for a person; the
-	/// board takes an index. A file whose ids do not join is a generated file gone wrong, and is
-	/// refused rather than guessed at.
-	#[test]
-	fn a_plan_json_whose_channel_names_no_unit_of_it_is_refused() {
-		let built = build_with_lever("").unwrap();
-		let mut json: serde_json::Value = serde_json::from_str(&built.plan.to_json()).unwrap();
-		json["channels"][0]["unit"] = serde_json::json!(0x7E5);
-		let why = Plan::from_json(&json.to_string()).unwrap_err().to_string();
-		assert!(
-			why.starts_with("this plan.json does not hold together — channel 7E5:1001 is read from unit 7E5, which its units do not list"),
-			"{why}"
-		);
-		assert!(why.contains("vagcan dev dash build <VIN>"), "{why}");
 	}
 
 	/// The fixture's voltage: a `[[channel]]` (`01:IDE00011`) on no page of its own, a titled
@@ -5602,7 +5480,7 @@ mod tests {
 			built.notes
 		);
 		let json = built.plan.to_json();
-		assert_eq!(Plan::from_json(&json).unwrap(), built.plan);
+		assert_eq!(from_json(&json).unwrap(), built.plan);
 	}
 
 	#[test]
@@ -5688,25 +5566,6 @@ mod tests {
 			why,
 			"01:IDE00010: alarm_max needs a page that shows the channel — the alarm raises the first values page with it as a cell, else its chart page, and no [[page]] has it"
 		);
-	}
-
-	/// A `plan.json` written before the strip: no `strip`, no chart titles, no `volts`.
-	#[test]
-	fn a_plan_json_from_before_the_strip_reads_as_no_strip_and_volts_on() {
-		let built = build_with_lever(&format!("{STRIP}{SPEED_CHART}")).unwrap();
-		let mut json: serde_json::Value = serde_json::from_str(&built.plan.to_json()).unwrap();
-		json.as_object_mut().unwrap().remove("strip");
-		for page in json["pages"].as_array_mut().unwrap() {
-			let page = page.as_object_mut().unwrap();
-			page.remove("volts");
-			if page["kind"] == "chart" {
-				page.remove("title");
-			}
-		}
-		let old = Plan::from_json(&json.to_string()).unwrap();
-		assert_eq!(old.strip, None);
-		assert!(old.pages.iter().all(Page::volts));
-		assert!(matches!(&old.pages[1], Page::Chart { title, .. } if title.is_empty()));
 	}
 
 	#[test]
@@ -6085,7 +5944,7 @@ mod tests {
 		assert_eq!(fnv1a64(above.as_bytes()), id);
 		let json: serde_json::Value = serde_json::from_str(&one.to_json()).unwrap();
 		assert_eq!(json["id"], format!("{id:016x}"));
-		assert_eq!(Plan::from_json(&one.to_json()).unwrap(), one, "the id is derived, not read back");
+		assert_eq!(from_json(&one.to_json()).unwrap(), one, "the id is derived, not read back");
 	}
 
 	#[test]
@@ -6192,7 +6051,7 @@ mod tests {
 	fn the_lever_and_the_stopwatch_reach_plan_json_and_the_rust_source() {
 		let built = build_with_lever(&format!("{LEVER}{WATCH}")).unwrap();
 		let json = built.plan.to_json();
-		assert_eq!(Plan::from_json(&json).unwrap(), built.plan);
+		assert_eq!(from_json(&json).unwrap(), built.plan);
 		assert!(json.contains("\"name\": \"limit\""), "a person reads the states by name: {json}");
 		let rust = to_rust(&built.plan);
 		for wanted in [
@@ -6232,7 +6091,7 @@ mod tests {
 	#[test]
 	fn a_plan_json_from_before_the_lever_reads_without_one() {
 		let built = build_with_lever("").unwrap();
-		let back = Plan::from_json(&built.plan.to_json()).unwrap();
+		let back = from_json(&built.plan.to_json()).unwrap();
 		assert_eq!((back.stalk, back.stopwatch), (None, None));
 	}
 
@@ -6362,7 +6221,7 @@ mod tests {
 			json.contains("\"action\": \"stopwatch\""),
 			"a person reads an action by its dash.toml word: {json}"
 		);
-		assert_eq!(Plan::from_json(&json).unwrap(), built.plan);
+		assert_eq!(from_json(&json).unwrap(), built.plan);
 		let rust = to_rust(&built.plan);
 		for wanted in [
 			"use vag_dash_render::control::Command;",
@@ -6387,7 +6246,7 @@ mod tests {
 		let bare = build_with_lever("").unwrap();
 		let json = bare.plan.to_json();
 		assert!(!json.contains("buttons"), "an old reader sees the plan it knew: {json}");
-		assert!(Plan::from_json(&json).unwrap().buttons.is_empty());
+		assert!(from_json(&json).unwrap().buttons.is_empty());
 		let rust = to_rust(&bare.plan);
 		assert!(rust.contains("buttons: &[], standstill: None };"), "{rust}");
 		assert!(
@@ -6401,7 +6260,7 @@ mod tests {
 	fn a_plan_json_with_an_action_the_board_has_not_is_refused() {
 		let mut json = build_with_lever(EVERY_ACTION).unwrap().plan.to_json();
 		json = json.replacen("\"previous\"", "\"measure\"", 1);
-		let why = Plan::from_json(&json).unwrap_err().to_string();
+		let why = from_json(&json).unwrap_err().to_string();
 		assert!(why.contains("action \"measure\" is not next, previous or stopwatch"), "{why}");
 	}
 
@@ -6708,8 +6567,8 @@ mod tests {
 		assert_eq!(built.plan.stalk.unwrap().rocker_states[0].upper, 60);
 	}
 
-	/// A cache written before the levels kept their upper ends has every state as its lower
-	/// end alone: the rocker would never read as pressed. Refused, with what to do.
+	/// A cache an older vagcan added the levels' upper ends to in place has every state as
+	/// its lower end alone: the rocker would never read as pressed. Refused, with what to do.
 	#[test]
 	fn a_cache_whose_states_predate_their_bands_is_refused_with_what_to_run() {
 		let here = tempfile::tempdir().unwrap();
@@ -6717,14 +6576,7 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let old_shape = |cache: &Path| {
 			let conn = rusqlite::Connection::open(cache).unwrap();
-			conn
-				.execute_batch(
-					"ALTER TABLE reading_level RENAME TO reading_level_new;\
-					 CREATE TABLE reading_level (reading_id INTEGER NOT NULL REFERENCES reading(id), raw INTEGER NOT NULL, meaning TEXT NOT NULL);\
-					 INSERT INTO reading_level (reading_id, raw, meaning) SELECT reading_id, raw, meaning FROM reading_level_new ORDER BY rowid;\
-					 DROP TABLE reading_level_new;",
-				)
-				.unwrap();
+			conn.execute("UPDATE reading_level SET upper = NULL", []).unwrap();
 		};
 		let why = build_with_lever_in(here.path(), LEVER, Extra::default(), old_shape)
 			.unwrap_err()

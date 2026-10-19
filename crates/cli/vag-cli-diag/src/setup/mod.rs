@@ -61,6 +61,12 @@
 //! them. It matters because recovering a `.rod` section's key is minutes of CPU.
 //! The names are the exception: they are read every run, in seconds, and
 //! written only when they come out different (see `names`).
+//!
+//! A project cache an older vagcan wrote, or a file there that is not a database, is
+//! refused by every reader and writer; a run without `--refresh` stops on it before
+//! reading anything. `--refresh` removes it first, the run builds today's from the
+//! sources it reads, and every other source the old cache held is named with the
+//! command that reads it again ([`prepare_cache`]).
 
 mod registry;
 pub mod source;
@@ -244,15 +250,10 @@ fn fetched(source: source::Source, opts: &Options<'_>) -> Result<source::Source>
 fn timed<T>(stage: &str, work: impl FnOnce() -> T) -> T {
 	let started = std::time::Instant::now();
 	let out = work();
-	timing(stage, started.elapsed());
-	out
-}
-
-/// The line [`timed`] prints, for a stage whose time was added up by hand.
-fn timing(stage: &str, took: std::time::Duration) {
 	if std::env::var_os("VAGCAN_TIMING").is_some() {
-		eprintln!("[timing] {stage}: {:.2}s", took.as_secs_f64());
+		eprintln!("[timing] {stage}: {:.2}s", started.elapsed().as_secs_f64());
 	}
+	out
 }
 
 /// Open an ODIS project and say which one it turned out to be.
@@ -498,6 +499,11 @@ async fn run_with(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source
 	let Some(mut chosen) = choose(io, dialog, &opts)? else { return Ok(()) };
 	let project = &chosen.project;
 	io.say(&format!("Writing into {}\n", project.dir.display()))?;
+	let reads = this_run_reads(&chosen);
+	let removed = prepare_cache(&project.cache(), opts.refresh, &reads)?;
+	if let Some(said) = &removed {
+		io.say(&format!("{said}\n"))?;
+	}
 
 	// **The pair's order: the VCDS installation's files, the ODIS project, then
 	// the VCDS registry.** Step 2 trusts its label cache while the cache file is
@@ -540,7 +546,97 @@ async fn run_with(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source
 	let scalings = !crate::extracted::open(project).is_empty();
 	let fault_labels = fault_text_available(&crate::project::rod_pool()?, project)?;
 	println!("\n{}", report(&steps, scalings, fault_labels));
+	// Said again last, where it is read: the run's own lines have scrolled it away.
+	if let Some(said) = removed.filter(|said| said.contains(READ_AGAIN)) {
+		println!("\n{said}");
+	}
 	Ok(())
+}
+
+/// The sources a run reads, as the cache records them: `(kind, dir)`, the ODIS project's
+/// folder and the VCDS installation's label directory ([`crate::labels::label_dir_under`]).
+fn this_run_reads(chosen: &Chosen) -> Vec<(&'static str, String)> {
+	let mut reads = Vec::new();
+	for source in std::iter::once(&chosen.source).chain(&chosen.names) {
+		match source {
+			source::Source::Odis { dir } => reads.push((vag_data_db::ODIS, dir.display().to_string())),
+			source::Source::Vcds { dir } => {
+				if let Ok(labels) = crate::labels::label_dir_under(dir) {
+					reads.push((vag_data_db::VCDS, labels.display().to_string()));
+				}
+			}
+			source::Source::DownloadVcds => {}
+		}
+	}
+	reads
+}
+
+/// The line that heads the sources a removed cache held and this run does not read.
+const READ_AGAIN: &str = "It also held what these were read from, which this run does not read — read each again:";
+
+/// The project's cache, made ready for this run to write into.
+///
+/// A cache every writer would refuse — an older vagcan's, or a file that is not a database
+/// — stops a run without `--refresh` here, naming `--refresh`, before minutes of reading
+/// meet the same refusal at the first write; the file is not touched. With `--refresh` it
+/// is removed, and what is said comes back: the run rebuilds only what it reads (`reads`,
+/// as [`this_run_reads`] spells it), so every other source the old cache held is named
+/// with the `vagcan setup --refresh <dir>` that reads it again, or as gone from this
+/// machine. `None` when the cache is current or not there.
+fn prepare_cache(cache: &Path, refresh: bool, reads: &[(&str, String)]) -> Result<Option<String>> {
+	let refused = match vag_data_db::check(cache) {
+		Ok(()) => return Ok(None),
+		Err(refused) => refused,
+	};
+	let what = match &refused {
+		_ if !refresh => anyhow::bail!("{refused}"),
+		vag_data_db::Error::OlderCache { .. } => "was written by an older vagcan",
+		vag_data_db::Error::NotACache { .. } => "is not a database",
+		_ => anyhow::bail!("checking {}: {refused}", cache.display()),
+	};
+	let held = vag_data_db::remove_if_older(cache)
+		.map_err(|e| anyhow::anyhow!("clearing {}: {e}", cache.display()))?
+		.unwrap_or_default();
+	let read = |kind: &str, dir: &str| {
+		reads
+			.iter()
+			.any(|(k, d)| *k == kind && vag_data_db::normalise_dir(d) == vag_data_db::normalise_dir(dir))
+	};
+	let mut again: Vec<String> = Vec::new();
+	for (kind, dir) in &held {
+		if read(kind, dir) {
+			continue;
+		}
+		let line = match kind.as_str() {
+			vag_data_db::ODIS if Path::new(dir).is_dir() => {
+				format!("  vagcan setup --refresh {}", crate::missing::shell_word(dir))
+			}
+			vag_data_db::ODIS => format!("  {dir} — an ODIS project, not on this machine any more"),
+			vag_data_db::VCDS => match installation_holding(Path::new(dir)) {
+				Some(root) => format!("  vagcan setup --refresh {}", crate::missing::shell_word(&root.display().to_string())),
+				None => format!(
+					"  {dir} — a VCDS installation's labels, not on this machine any more \
+					 (`vagcan setup --refresh` with no folder offers to download one)"
+				),
+			},
+			other => format!("  {dir} — a {other} source"),
+		};
+		if !again.contains(&line) {
+			again.push(line);
+		}
+	}
+	let mut said = format!("{} {what}: removed, and rebuilt from what this run reads.", cache.display());
+	if !again.is_empty() {
+		said.push_str(&format!("\n{READ_AGAIN}\n{}", again.join("\n")));
+	}
+	Ok(Some(said))
+}
+
+/// The VCDS installation root a recorded label directory sits in: the directory itself or
+/// one of its two parents, whichever holds `UDS_EV/` — the root `setup` takes, two levels
+/// at most, as [`crate::labels::label_dir_under`] looks down. `None` when none is on disk.
+fn installation_holding(labels: &Path) -> Option<PathBuf> {
+	labels.ancestors().take(3).find(|dir| dir.join("UDS_EV").is_dir()).map(Path::to_path_buf)
 }
 
 /// Whether `vagcan faults` will be able to name a code once this run is done:
@@ -1805,6 +1901,93 @@ mod tests {
 		// And the other way in, since it is the whole point of the argument
 		// being optional.
 		assert!(text.contains("offers to download"), "{text}");
+	}
+
+	/// A cache an older vagcan wrote, in a temporary directory: `run_with` itself cannot be
+	/// driven here, since a run writes its project under the real `~/.vagcan`, so the step it
+	/// takes before reading anything is driven on its own.
+	#[test]
+	fn an_older_cache_stops_a_run_without_refresh_and_refresh_names_what_the_run_does_not_rebuild() {
+		let here = tempfile::tempdir().unwrap();
+		// Canonical, as the cache spells a directory (`/private/var`, not `/var`, on macOS).
+		let base = here.path().canonicalize().unwrap();
+		let cache = base.join("cache.sqlite");
+		let other = base.join("other-odis");
+		let vcds = base.join("vcds");
+		let labels = vcds.join("Labels");
+		std::fs::create_dir_all(&other).unwrap();
+		std::fs::create_dir_all(vcds.join("UDS_EV")).unwrap();
+		std::fs::create_dir_all(&labels).unwrap();
+		for project in ["/x/read", &other.display().to_string(), "/gone/SK37X"] {
+			vag_data_db::put_readings(&cache, project, "EV_A", &[]).unwrap();
+		}
+		vag_data_db::put_all_vcds_readings(&cache, &labels.display().to_string(), std::iter::empty()).unwrap();
+		rusqlite::Connection::open(&cache).unwrap().execute_batch("DROP TABLE fault").unwrap();
+		let reads = vec![(vag_data_db::ODIS, "/x/read".to_string())];
+
+		// Without `--refresh`: stopped before anything is read, naming `--refresh`, and the
+		// file is not touched.
+		let before = std::fs::read(&cache).unwrap();
+		let why = prepare_cache(&cache, false, &reads).unwrap_err().to_string();
+		assert!(why.contains("older vagcan") && why.contains("vagcan setup --refresh"), "{why}");
+		assert_eq!(std::fs::read(&cache).unwrap(), before, "a refused run changed the cache");
+
+		// With it: removed, and every source the run does not read named with what reads it
+		// again — the ODIS project on disk, the VCDS installation by its root, the project
+		// that is gone as gone. What this run reads is not asked for again.
+		let said = prepare_cache(&cache, true, &reads).unwrap().expect("an older cache is removed");
+		assert!(!cache.exists());
+		assert!(said.contains("was written by an older vagcan: removed"), "{said}");
+		assert!(said.contains(READ_AGAIN), "{said}");
+		assert!(said.contains(&format!("  vagcan setup --refresh {}\n", other.display())), "{said}");
+		assert!(said.contains(&format!("  vagcan setup --refresh {}", vcds.display())), "{said}");
+		assert!(said.contains("  /gone/SK37X — an ODIS project, not on this machine any more"), "{said}");
+		assert!(!said.contains("/x/read"), "{said}");
+
+		// The run's first write builds today's, and from then on nothing is removed.
+		vag_data_db::put_readings(&cache, "/x/read", "EV_A", &[]).unwrap();
+		assert!(prepare_cache(&cache, false, &reads).unwrap().is_none());
+		assert!(prepare_cache(&cache, true, &reads).unwrap().is_none());
+		assert!(cache.exists(), "a current cache was removed");
+	}
+
+	#[test]
+	fn a_cache_file_that_is_not_a_database_is_named_and_refresh_replaces_it() {
+		let here = tempfile::tempdir().unwrap();
+		let cache = here.path().join("cache.sqlite");
+		std::fs::write(&cache, b"not an SQLite file at all, but long enough to have a header").unwrap();
+		let why = prepare_cache(&cache, false, &[]).unwrap_err().to_string();
+		assert!(why.contains("is not a database") && why.contains("vagcan setup --refresh"), "{why}");
+		let said = prepare_cache(&cache, true, &[]).unwrap().expect("removed");
+		assert!(!cache.exists());
+		assert!(said.contains("is not a database: removed"), "{said}");
+		assert!(!said.contains(READ_AGAIN), "a file that held no sources names none: {said}");
+	}
+
+	#[test]
+	fn a_run_reads_its_odis_project_and_the_vcds_labels_beside_it() {
+		let here = tempfile::tempdir().unwrap();
+		let vcds = here.path().join("vcds");
+		std::fs::create_dir_all(vcds.join("Labels")).unwrap();
+		std::fs::write(vcds.join("Labels/part.lbl"), b"001,1,Engine Speed,,").unwrap();
+		let chosen = Chosen {
+			source: source::Source::Odis {
+				dir: PathBuf::from("/x/SK37X"),
+			},
+			names: Some(source::Source::Vcds { dir: vcds.clone() }),
+			project: crate::project::Project {
+				id: "SK37X".to_string(),
+				dir: here.path().join("project"),
+			},
+			odis: None,
+		};
+		assert_eq!(
+			this_run_reads(&chosen),
+			[
+				(vag_data_db::ODIS, "/x/SK37X".to_string()),
+				(vag_data_db::VCDS, vcds.join("Labels").display().to_string())
+			]
+		);
 	}
 
 	/// A throwaway directory tree, removed on drop. Tests must not write into a

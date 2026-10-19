@@ -228,7 +228,7 @@ pub struct App {
 	/// chart of three lines are different questions.
 	charted: std::collections::BTreeSet<crate::plan::Key>,
 	/// The channels this car's owner marked with `f`, read from and written
-	/// back to [`favourites::path_for`].
+	/// back to `~/.vagcan/config.toml` through [`favourites`].
 	///
 	/// They are offered first on the selection screen, they survive the
 	/// nameless-identifier filter, and they are what a run starts with — see

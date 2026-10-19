@@ -229,7 +229,7 @@ pub fn state_ranges_note(sources: &[String]) -> String {
 
 /// A path as one word a POSIX shell reads back unchanged: bare when every
 /// character is one no shell treats specially, in single quotes otherwise.
-fn shell_word(path: &str) -> String {
+pub fn shell_word(path: &str) -> String {
 	let plain = !path.is_empty() && path.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+,:@%=~".contains(c));
 	match plain {
 		true => path.to_string(),

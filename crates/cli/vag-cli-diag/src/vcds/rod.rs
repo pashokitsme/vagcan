@@ -4,8 +4,8 @@
 //! `product` field is nonzero cannot be decrypted from the file alone: five
 //! bytes of its first-block IV are missing and have to be searched for. The
 //! search costs about a minute of every core per section, which is why nothing
-//! in the live path runs it — the live path reads the *answer* out of
-//! `catalogs/rod-iv-cache.json`. This command is where that answer comes from.
+//! in the live path runs it — the live path reads the *answer* out of the
+//! project's `rod-keys.json`. This command is where that answer comes from.
 //!
 //! Was the `vag-rod` binary. With `run_crack` off it reads the cache and reports
 //! what it could not open rather than pretending the section is empty.

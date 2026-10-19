@@ -834,9 +834,9 @@ async fn dispatch_dev(tool: Dev, slcan: bool) -> Result<()> {
 
 /// Where the proven measurement rows are for this run.
 ///
-/// `--data` if it was given, this run's project otherwise. Never a path relative
-/// to the working directory: that is what made these commands work in a checkout
-/// and nowhere else.
+/// `--data` as typed if it was given, this run's project otherwise. Never a default
+/// relative to the working directory: that is what made these commands work in a
+/// checkout and nowhere else.
 fn data_dir(given: Option<&str>) -> Result<String> {
 	Ok(
 		datadir::or_default(given, || Ok(project::current()?.measurements_dir()))?
@@ -1142,9 +1142,9 @@ async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify: boo
 				u.name.clone()
 			})
 			.unwrap_or_default();
-		// The number in force — the override file's, then the label files',
-		// then the built-in fallback's — or the request id when nothing
-		// has paired one with it.
+		// The number in force — the label files' and the car's, then the
+		// built-in fallback's — or the request id when nothing has paired one
+		// with it.
 		let number = UnitAddress::from_request(id).map(|a| a.label()).unwrap_or_else(|| format!("{id:03X}"));
 		println!("  {id:03X}  {number:<4} {part:<14} {component:<16} {name}");
 	}

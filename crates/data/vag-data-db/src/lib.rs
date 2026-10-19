@@ -23,6 +23,18 @@ use vag_data_labels::{LabelDb, Scaling, load_label_files};
 pub enum Error {
 	Sqlite(rusqlite::Error),
 	Io(std::io::Error),
+	/// A cache an older vagcan wrote: it lacks a table or a column this build reads.
+	/// Nothing upgrades it in place; `vagcan setup --refresh` rebuilds it.
+	OlderCache {
+		cache: String,
+		/// What it lacks, as a phrase: "the `fault` table", "the column `reading_level.upper`".
+		missing: String,
+	},
+	/// A file where the cache should be that SQLite says is not a database at all.
+	/// `vagcan setup --refresh` replaces it.
+	NotACache {
+		cache: String,
+	},
 }
 
 impl std::fmt::Display for Error {
@@ -30,6 +42,15 @@ impl std::fmt::Display for Error {
 		match self {
 			Error::Sqlite(e) => write!(f, "sqlite error: {e}"),
 			Error::Io(e) => write!(f, "io error: {e}"),
+			Error::OlderCache { cache, missing } => write!(
+				f,
+				"{cache}: this cache was written by an older vagcan (it has no {missing}) — run `vagcan setup --refresh` \
+				 on the folders it was read from; `vagcan setup --refresh` with no folder offers to download a VCDS installation"
+			),
+			Error::NotACache { cache } => write!(
+				f,
+				"{cache} is not a database — `vagcan setup --refresh` replaces it with a cache built from the folders it reads"
+			),
 		}
 	}
 }
@@ -216,98 +237,153 @@ CREATE TABLE IF NOT EXISTS reading_level (
     raw        INTEGER NOT NULL,
     meaning    TEXT NOT NULL,
     -- Its upper end: `raw` again for a level one value wide. NULL only in a row
-    -- written before the column existed, which kept the lower end alone — see
-    -- `levels_predate_bounds`. Last, because that is where `ALTER TABLE` puts it
-    -- in a cache that predates it.
+    -- an older vagcan added the column to in place, which kept the lower end
+    -- alone — see `levels_predate_bounds`.
     upper      INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_reading_lookup ON reading(variant, did);
 CREATE INDEX IF NOT EXISTS idx_reading_level  ON reading_level(reading_id);
 "#;
 
-fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
-	// Migrating *before* the batch, not after, and the order is load-bearing:
-	// the batch creates `reading`, which carries a foreign key to `source`, and
-	// SQLite rewrites such a reference when the table it points at is renamed —
-	// so a `reading` created first would come out pointing at
-	// `source_before_kind`, which the migration then drops. The first insert
-	// after that fails with "no such table: main.source_before_kind", a very
-	// long way from what actually happened. Migrating first leaves nothing
-	// pointing at `source` when it is rebuilt.
-	migrate(conn)?;
-	conn.execute_batch(SCHEMA)
-}
-
-/// Bring a cache written by an older build up to the current schema.
-///
-/// Two changes, both un-doable by `CREATE TABLE IF NOT EXISTS` because the
-/// table is already there under the old shape:
-///
-/// - `source` was one row with a `CHECK (id = 0)` and no `kind`. SQLite cannot
-///   drop a check constraint, so the table is rebuilt and its one row carried
-///   over as `kind = 'vcds'` — which is what it was, since a VCDS installation
-///   was the only source that existed when it was written.
-/// - `measurement` gained `source_id`. Existing rows keep `NULL`: they came from
-///   whatever the single `source` row named, and back-filling a foreign key to
-///   make that explicit would be rewriting history that the rebuilt `source`
-///   row already records.
-///
-/// Idempotent, because it runs on every open and most opens have nothing to do.
-fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-	if columns(conn, "source")?.is_empty() {
-		// A cache that does not exist yet. The batch is about to create it in
-		// the current shape, and there is nothing to carry over.
-		return Ok(());
-	}
-	if !has_column(conn, "source", "kind")? {
-		conn.execute_batch(
-			"ALTER TABLE source RENAME TO source_before_kind;\
-             CREATE TABLE source (\
-                 id   INTEGER PRIMARY KEY,\
-                 kind TEXT NOT NULL,\
-                 dir  TEXT NOT NULL,\
-                 UNIQUE (kind, dir)\
-             );\
-             INSERT INTO source (id, kind, dir) SELECT id, 'vcds', dir FROM source_before_kind;\
-             DROP TABLE source_before_kind;",
-		)?;
-	}
-	let measurement = columns(conn, "measurement")?;
-	if !measurement.is_empty() && !measurement.iter().any(|name| name == "source_id") {
-		conn.execute("ALTER TABLE measurement ADD COLUMN source_id INTEGER REFERENCES source(id)", [])?;
-	}
-	// `reading` gained `big_endian` after the first ODIS parses were written.
-	// The default is `1` because that is UDS's convention and so the only
-	// defensible guess for a row nobody recorded it for — but a guess is what it
-	// is, and `setup` re-run against the project replaces the row with the
-	// answer the file actually gives.
-	let reading = columns(conn, "reading")?;
-	if !reading.is_empty() && !reading.iter().any(|name| name == "big_endian") {
-		conn.execute("ALTER TABLE reading ADD COLUMN big_endian INTEGER NOT NULL DEFAULT 1", [])?;
-	}
-	// `source` gained `language` with the fault table. Existing rows keep
-	// `NULL`: what a source declared is read off the source, and `setup` re-run
-	// against it fills the column in. The `fault` table itself needs no
-	// migration — `CREATE TABLE IF NOT EXISTS` in the batch makes it.
-	if !has_column(conn, "source", "language")? {
-		conn.execute("ALTER TABLE source ADD COLUMN language TEXT", [])?;
-	}
-	// `reading_level` gained `upper` when a text table's levels became intervals.
-	// Existing rows keep `NULL`, which reads as the lower end alone — exactly what
-	// they meant when written — and only `setup` re-run against the project can
-	// fill it in, because the upper end was never stored. `levels_predate_bounds`
-	// is how a reader finds that out.
-	let levels = columns(conn, "reading_level")?;
-	if !levels.is_empty() && !levels.iter().any(|name| name == "upper") {
-		conn.execute("ALTER TABLE reading_level ADD COLUMN upper INTEGER", [])?;
-	}
+/// Create what [`SCHEMA`] makes, in one transaction: a batch that fails part way leaves no
+/// table behind, so no half-made cache can be mistaken for an older one.
+fn create_schema(conn: &Connection, db_path: &Path) -> Result<(), Error> {
+	refuse_older(conn, db_path)?;
+	let tx = conn.unchecked_transaction()?;
+	tx.execute_batch(SCHEMA)?;
+	tx.commit()?;
 	Ok(())
 }
 
-/// Whether a table already has a column, asked of the database rather than of a
-/// version number nobody remembers to bump.
-fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
-	Ok(columns(conn, table)?.iter().any(|name| name == column))
+/// Refuse a cache an older vagcan wrote: one holding some of this schema's tables but
+/// not every table, or not every column of one.
+///
+/// Nothing is upgraded in place. `vagcan setup --refresh` removes such a cache
+/// ([`remove_if_older`]) and rebuilds it from the sources it reads. A file with none of the
+/// tables is a cache not written yet and passes: a write creates the tables, and a read
+/// fails at its first query. A file that is not a database is refused as one
+/// ([`Error::NotACache`]).
+fn refuse_older(conn: &Connection, db_path: &Path) -> Result<(), Error> {
+	let cache = || db_path.display().to_string();
+	match lacks(conn) {
+		Ok(None) => Ok(()),
+		Ok(Some(missing)) => Err(Error::OlderCache { cache: cache(), missing }),
+		Err(e) if not_a_database(&e) => Err(Error::NotACache { cache: cache() }),
+		Err(e) => Err(e.into()),
+	}
+}
+
+fn not_a_database(e: &rusqlite::Error) -> bool {
+	matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::NotADatabase)
+}
+
+/// Whether the cache at `db_path` is one every reader and writer here refuses — an older
+/// vagcan's, or no database at all. `false` for a file that is not there.
+#[cfg(test)]
+fn is_older(db_path: &Path) -> Result<bool, Error> {
+	match check(db_path) {
+		Ok(()) => Ok(false),
+		Err(Error::OlderCache { .. } | Error::NotACache { .. }) => Ok(true),
+		Err(e) => Err(e),
+	}
+}
+
+/// The refusal every reader and writer here would give the cache at `db_path`, asked
+/// without reading or writing anything else. `Ok` for a current cache and for a file
+/// that is not there.
+pub fn check(db_path: &Path) -> Result<(), Error> {
+	if !db_path.is_file() {
+		return Ok(());
+	}
+	let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+	refuse_older(&conn, db_path)
+}
+
+/// Remove the cache at `db_path` when every reader and writer here refuses it — an older
+/// vagcan wrote it, or it is not a database — with any journal it left. What `vagcan setup
+/// --refresh` does first, so the run rebuilds the cache rather than meeting the refusal.
+///
+/// `Some` when it removed one, holding the `(kind, dir)` of every source the cache said it
+/// was read from (none for a file that is not a database): a run rebuilds only what it
+/// reads, so the caller says which of these it will not. `None` for a current cache, or
+/// none, which is left alone.
+pub fn remove_if_older(db_path: &Path) -> Result<Option<Vec<(String, String)>>, Error> {
+	let sources = match check(db_path) {
+		Ok(()) => return Ok(None),
+		Err(Error::OlderCache { .. }) => {
+			let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+			held_sources(&conn)?
+		}
+		Err(Error::NotACache { .. }) => Vec::new(),
+		Err(e) => return Err(e),
+	};
+	std::fs::remove_file(db_path)?;
+	let mut journal = db_path.as_os_str().to_owned();
+	journal.push("-journal");
+	match std::fs::remove_file(std::path::PathBuf::from(journal)) {
+		Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+		_ => {}
+	}
+	Ok(Some(sources))
+}
+
+/// The `(kind, dir)` rows of an older cache's `source` table. Every shape of it holds `dir`;
+/// the first one had no `kind`, and was a VCDS parse, the only source there was.
+fn held_sources(conn: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
+	let held = columns(conn, "source")?;
+	let sql = match (held.iter().any(|c| c == "kind"), held.iter().any(|c| c == "dir")) {
+		(true, true) => "SELECT kind, dir FROM source ORDER BY id",
+		(false, true) => "SELECT 'vcds', dir FROM source ORDER BY id",
+		_ => return Ok(Vec::new()),
+	};
+	let mut stmt = conn.prepare(sql)?;
+	let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+	rows.collect()
+}
+
+/// The first table or column of [`SCHEMA`] the cache lacks, or `None` when it has them
+/// all or has none of the tables.
+fn lacks(conn: &Connection) -> rusqlite::Result<Option<String>> {
+	let mut held = Vec::new();
+	for (table, _) in schema_shape() {
+		held.push(columns(conn, table)?);
+	}
+	if held.iter().all(Vec::is_empty) {
+		return Ok(None);
+	}
+	for ((table, wanted), held) in schema_shape().iter().zip(&held) {
+		if held.is_empty() {
+			return Ok(Some(format!("the `{table}` table")));
+		}
+		if let Some(column) = wanted.iter().find(|column| !held.contains(column)) {
+			return Ok(Some(format!("the column `{table}.{column}`")));
+		}
+	}
+	Ok(None)
+}
+
+/// Every table [`SCHEMA`] creates, with its columns — asked of SQLite once, from the
+/// schema itself, so the check cannot drift from what the batch makes.
+fn schema_shape() -> &'static [(String, Vec<String>)] {
+	static SHAPE: std::sync::OnceLock<Vec<(String, Vec<String>)>> = std::sync::OnceLock::new();
+	SHAPE.get_or_init(|| {
+		let conn = Connection::open_in_memory().expect("an in-memory database opens");
+		conn.execute_batch(SCHEMA).expect("the schema is valid SQL");
+		let mut stmt = conn
+			.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+			.expect("sqlite_master is queryable");
+		let tables: Vec<String> = stmt
+			.query_map([], |row| row.get(0))
+			.and_then(|rows| rows.collect())
+			.expect("the table names read");
+		tables
+			.into_iter()
+			.map(|table| {
+				let held = columns(&conn, &table).expect("a table's columns read");
+				(table, held)
+			})
+			.collect()
+	})
 }
 
 /// A table's column names, or nothing at all if there is no such table.
@@ -591,7 +667,7 @@ fn read_files(conn: &Connection) -> Result<Vec<LabelFile>, Error> {
 pub fn build_db(labels_dir: &Path, db_path: &Path) -> Result<BuildStats, Error> {
 	let load = load_label_files(labels_dir)?;
 	let mut conn = Connection::open(db_path)?;
-	create_schema(&conn)?;
+	create_schema(&conn, db_path)?;
 	insert_files(&mut conn, &load.files, &labels_dir.to_string_lossy())
 }
 
@@ -618,13 +694,17 @@ pub fn build_db(labels_dir: &Path, db_path: &Path) -> Result<BuildStats, Error> 
 ///
 /// Still no `SQLITE_OPEN_CREATE`, so the property above holds — and a file the
 /// process may not write is opened read-only by SQLite itself.
-fn open_existing(db_path: &Path) -> rusqlite::Result<Connection> {
-	Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+///
+/// A cache an older vagcan wrote is refused here, as on every write ([`refuse_older`]).
+fn open_existing(db_path: &Path) -> Result<Connection, Error> {
+	let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+	refuse_older(&conn, db_path)?;
+	Ok(conn)
 }
 
 /// The label-file directory `db_path` was built from, if it says.
 ///
-/// `None` for a cache written before this was recorded, one that cannot be
+/// `None` for a cache an older vagcan wrote, one that cannot be
 /// opened, or one holding no VCDS source at all — a pure-ODIS project's cache is
 /// the third case, and it is not stale, it is simply about nothing this question
 /// concerns. The caller decides what to do with that (see the freshness rule in
@@ -738,7 +818,7 @@ fn write_readings<'a>(
 	replace: Replace,
 ) -> Result<usize, Error> {
 	let mut conn = Connection::open(db_path)?;
-	create_schema(&conn)?;
+	create_schema(&conn, db_path)?;
 	conn.pragma_update(None, "synchronous", "FULL")?;
 	// Pages, negative meaning kibibytes: 64 MiB, so a whole project's rows
 	// stay in memory instead of being flushed page by page mid-transaction.
@@ -826,7 +906,7 @@ fn write_readings<'a>(
 /// which fault-text file a VCDS build ships — and is stored as given.
 pub fn record_language(db_path: &Path, kind: &str, dir: &str, language: &str) -> Result<(), Error> {
 	let mut conn = Connection::open(db_path)?;
-	create_schema(&conn)?;
+	create_schema(&conn, db_path)?;
 	let tx = conn.transaction()?;
 	let source = source_id(&tx, kind, dir)?;
 	tx.execute("UPDATE source SET language = ?1 WHERE id = ?2", params![language, source])?;
@@ -863,7 +943,7 @@ fn write_faults<'a>(
 	replace: Replace,
 ) -> Result<usize, Error> {
 	let mut conn = Connection::open(db_path)?;
-	create_schema(&conn)?;
+	create_schema(&conn, db_path)?;
 	conn.pragma_update(None, "synchronous", "FULL")?;
 	conn.pragma_update(None, "cache_size", -65536)?;
 	let tx = conn.transaction()?;
@@ -960,15 +1040,8 @@ pub fn fault_variants(db_path: &Path) -> Result<Vec<String>, Error> {
 }
 
 /// How much fault text an ODIS source described: `(variants, codes)`.
-///
-/// A cache written before faults were cached has no `fault` table, and holds no
-/// fault text: `(0, 0)`, not an error. Opening it for this does not add the
-/// table — that is a write's job, and a count is not a write.
 pub fn fault_counts(db_path: &Path) -> Result<(u64, u64), Error> {
 	let conn = open_existing(db_path)?;
-	if columns(&conn, "fault")?.is_empty() {
-		return Ok((0, 0));
-	}
 	let (variants, codes): (i64, i64) = conn.query_row("SELECT COUNT(DISTINCT variant), COUNT(*) FROM fault", [], |row| {
 		Ok((row.get(0)?, row.get(1)?))
 	})?;
@@ -1048,18 +1121,7 @@ fn read_variant(db_path: &Path, variant: &str, kind: Option<&str>) -> Result<Vec
 		})?
 		.collect::<rusqlite::Result<_>>()?;
 
-	// A cache written before `upper` existed is read as it was written — lower
-	// ends alone — rather than migrated: this is a read, and a read writes
-	// nothing. Selecting a column it does not have would fail the variant, and
-	// every caller skips a variant that fails, so a stale cache would lose every
-	// channel instead of the few bands it cannot name.
-	let upper = match has_column(&conn, "reading_level", "upper")? {
-		true => "upper",
-		false => "NULL",
-	};
-	let mut levels = conn.prepare(&format!(
-		"SELECT raw, {upper}, meaning FROM reading_level WHERE reading_id = ?1 ORDER BY rowid"
-	))?;
+	let mut levels = conn.prepare("SELECT raw, upper, meaning FROM reading_level WHERE reading_id = ?1 ORDER BY rowid")?;
 	let mut out = Vec::with_capacity(rows.len());
 	for (id, did, name, unit, bit_offset, bit_length, signed, big_endian, text_id, kind, factor, offset, anchor_raw, anchor_value) in rows {
 		// A row whose scaling columns disagree with its kind is skipped rather
@@ -1140,7 +1202,8 @@ pub fn channel_counts(db_path: &Path) -> Result<(u64, u64), Error> {
 }
 
 /// Whether any state level of one ECU variant was written before this cache kept
-/// the upper end of each level's interval.
+/// the upper end of each level's interval: a cache an older vagcan added the column
+/// to in place, and nothing has read the project into since.
 ///
 /// Such a level reads as its lower end alone, which is what it meant when it was
 /// written — so nothing reads wrongly, but a switch that answers inside a band
@@ -1153,15 +1216,8 @@ pub fn channel_counts(db_path: &Path) -> Result<(u64, u64), Error> {
 /// written by `setup` today has `upper` on every row, so there it is `false`.
 pub fn levels_predate_bounds(db_path: &Path, variant: &str) -> Result<bool, Error> {
 	let conn = open_existing(db_path)?;
-	if columns(&conn, "reading_level")?.is_empty() {
-		return Ok(false);
-	}
-	let missing = match has_column(&conn, "reading_level", "upper")? {
-		true => "l.upper IS NULL",
-		false => "1",
-	};
-	let sql = format!("SELECT EXISTS (SELECT 1 FROM reading r JOIN reading_level l ON l.reading_id = r.id WHERE r.variant = ?1 AND {missing})");
-	Ok(conn.query_row(&sql, params![variant], |row| row.get(0))?)
+	let sql = "SELECT EXISTS (SELECT 1 FROM reading r JOIN reading_level l ON l.reading_id = r.id WHERE r.variant = ?1 AND l.upper IS NULL)";
+	Ok(conn.query_row(sql, params![variant], |row| row.get(0))?)
 }
 
 /// Every ECU variant this cache holds readings for, in name order, every
@@ -1590,32 +1646,6 @@ mod tests {
 	}
 
 	#[test]
-	fn a_reading_written_before_the_column_existed_migrates_to_the_uds_convention() {
-		// Not a fact, a guess — the only defensible one, since big-endian is
-		// what UDS says. `setup` re-run against the project replaces the row
-		// with the answer the file actually gives.
-		let ws = TempWorkspace::new("endian-old");
-		{
-			let conn = Connection::open(&ws.db_path).unwrap();
-			create_schema(&conn).unwrap();
-			conn.execute("ALTER TABLE reading DROP COLUMN big_endian", []).unwrap();
-			conn
-				.execute_batch(
-					"INSERT INTO source (id, kind, dir) VALUES (1, 'odis', '/x/SK37X');\
-                 INSERT INTO reading (source_id, variant, did, name, bit_offset, bit_length, signed, scaling, factor, offset) \
-                 VALUES (1, 'EV_ECM', 14346, 'a', 0, 16, 0, 'linear', 1.0, 0.0);",
-				)
-				.unwrap();
-		}
-		let conn = Connection::open(&ws.db_path).unwrap();
-		create_schema(&conn).unwrap();
-		drop(conn);
-		let back = readings_of(&ws.db_path, "EV_ECM").unwrap();
-		assert_eq!(back.len(), 1);
-		assert!(back[0].big_endian, "a row with no recorded byte order must take UDS's convention");
-	}
-
-	#[test]
 	fn the_size_of_a_project_is_answered_without_reading_it_all_back() {
 		// What the overview screen prints before any other work happens. A
 		// cache with no ODIS source answers (0, 0) rather than failing: that is
@@ -1965,26 +1995,15 @@ mod tests {
 		);
 	}
 
-	/// Take the `upper` column back off, which is the shape of every cache written
-	/// before level intervals were kept.
-	fn drop_upper(db_path: &Path) {
+	/// The shape a cache an older vagcan added `upper` to in place: the column is there,
+	/// and the rows written before it hold `NULL` — their lower ends alone.
+	fn null_upper(db_path: &Path) {
 		let conn = Connection::open(db_path).unwrap();
-		// Rebuilt rather than `DROP COLUMN`, and in the old table's own words: the
-		// rows it holds come across with their lower ends only.
-		conn
-			.execute_batch(
-				"ALTER TABLE reading_level RENAME TO reading_level_new;\
-                 CREATE TABLE reading_level (reading_id INTEGER NOT NULL REFERENCES reading(id), raw INTEGER NOT NULL, meaning TEXT NOT NULL);\
-                 INSERT INTO reading_level (reading_id, raw, meaning) SELECT reading_id, raw, meaning FROM reading_level_new ORDER BY rowid;\
-                 DROP TABLE reading_level_new;\
-                 CREATE INDEX idx_reading_level ON reading_level(reading_id);",
-			)
-			.unwrap();
-		assert!(!has_column(&conn, "reading_level", "upper").unwrap());
+		conn.execute("UPDATE reading_level SET upper = NULL", []).unwrap();
 	}
 
 	#[test]
-	fn a_cache_written_before_level_intervals_reads_its_levels_as_points_and_says_so() {
+	fn levels_without_their_upper_ends_read_as_points_and_say_so() {
 		let ws = TempWorkspace::new("level-old");
 		put_readings(&ws.db_path, "/x/SK37X", "EV_Switch", &[banded(0x1000)]).unwrap();
 		put_readings(
@@ -1998,11 +2017,9 @@ mod tests {
 			)],
 		)
 		.unwrap();
-		drop_upper(&ws.db_path);
+		null_upper(&ws.db_path);
 
-		// Not an error: every reader of this cache skips a variant it cannot read,
-		// and a missing column would have taken every channel with it.
-		let back = readings_of(&ws.db_path, "EV_Switch").expect("an old cache still reads");
+		let back = readings_of(&ws.db_path, "EV_Switch").expect("the cache has every column, so it reads");
 		assert_eq!(
 			back[0].scaling,
 			Scaling::Enum {
@@ -2017,128 +2034,152 @@ mod tests {
 			!levels_predate_bounds(&ws.db_path, "EV_Other").unwrap(),
 			"a variant with no levels is not short of any"
 		);
-		// Reading did not migrate it: a read is not a write.
-		let conn = Connection::open(&ws.db_path).unwrap();
-		assert!(!has_column(&conn, "reading_level", "upper").unwrap());
-	}
-
-	#[test]
-	fn a_write_migrates_the_column_and_only_a_reread_of_the_project_fills_it() {
-		let ws = TempWorkspace::new("level-migrate");
-		put_readings(&ws.db_path, "/x/SK37X", "EV_Switch", &[banded(0x1000)]).unwrap();
-		drop_upper(&ws.db_path);
-		// A write about something else — a VCDS source's language — brings the
-		// schema up to date and leaves the old rows as they were: lower bounds.
-		record_language(&ws.db_path, VCDS, "/x/VCDS", "eng").unwrap();
-		let conn = Connection::open(&ws.db_path).unwrap();
-		assert!(has_column(&conn, "reading_level", "upper").unwrap());
-		assert!(levels_predate_bounds(&ws.db_path, "EV_Switch").unwrap());
-		assert_eq!(readings_of(&ws.db_path, "EV_Switch").unwrap()[0].scaling, {
-			Scaling::Enum {
-				levels: vec![Level::point(10, "gedrückt"), Level::point(50, "losgelassen")],
-			}
-		});
 		// Reading the project again is what brings the intervals back.
 		put_all_readings(&ws.db_path, "/x/SK37X", [("EV_Switch", &[banded(0x1000)][..])]).unwrap();
 		assert!(!levels_predate_bounds(&ws.db_path, "EV_Switch").unwrap());
 		assert_eq!(readings_of(&ws.db_path, "EV_Switch").unwrap()[0].scaling, banded(0x1000).scaling);
 	}
 
-	#[test]
-	fn a_cache_written_before_the_language_column_gains_it() {
-		// The shape every existing cache has: a `source` with `kind` and `dir`
-		// and no `language`, and no `fault` table at all. It has to open.
-		let ws = TempWorkspace::new("prelanguage");
-		{
-			let conn = Connection::open(&ws.db_path).unwrap();
-			conn
-				.execute_batch(
-					"CREATE TABLE source (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, dir TEXT NOT NULL, UNIQUE (kind, dir));\
-                     INSERT INTO source (id, kind, dir) VALUES (1, 'odis', '/x/SK37X');",
-				)
-				.unwrap();
-		}
-		record_language(&ws.db_path, ODIS, "/x/SK37X", "deu").unwrap();
-		put_faults(&ws.db_path, "/x/SK37X", "EV_Brake", &[fault(297, "a")]).unwrap();
-		let cached = faults_of(&ws.db_path, "EV_Brake").unwrap();
-		assert_eq!(cached[0].language.as_deref(), Some("deu"));
-		// The row that was there is the row the language landed on.
-		assert_eq!(sources_of(&ws.db_path).unwrap(), [("odis".to_string(), "/x/SK37X".to_string())]);
+	/// Every shape an older vagcan left a cache in, each one table or column short of
+	/// this schema, built from today's cache by taking that part away.
+	fn older_shapes() -> Vec<(&'static str, &'static str)> {
+		vec![
+			// Level intervals (2026-09-26).
+			// Rebuilt: SQLite's `DROP COLUMN` trips over the comment after the last one.
+			(
+				"reading_level.upper",
+				"ALTER TABLE reading_level RENAME TO reading_level_today;\
+				 CREATE TABLE reading_level (reading_id INTEGER NOT NULL REFERENCES reading(id), raw INTEGER NOT NULL, meaning TEXT NOT NULL);\
+				 DROP TABLE reading_level_today;",
+			),
+			// Byte order (2026-08-08).
+			("reading.big_endian", "ALTER TABLE reading DROP COLUMN big_endian"),
+			// The language a source declares, with the fault table (2026-09-10).
+			("source.language", "ALTER TABLE source DROP COLUMN language"),
+			("`fault` table", "DROP TABLE fault"),
+			// The source a measurement came from (2026-08-07).
+			// Rebuilt, as SQLite will not drop a column a foreign key names.
+			(
+				"measurement.source_id",
+				"ALTER TABLE measurement RENAME TO measurement_today;				 CREATE TABLE measurement (file_id INTEGER NOT NULL, block INTEGER NOT NULL, field INTEGER NOT NULL, 				    name TEXT NOT NULL, location TEXT NOT NULL, description TEXT NOT NULL, unit TEXT, range_min REAL, range_max REAL);				 DROP TABLE measurement_today;",
+			),
+		]
 	}
 
 	#[test]
-	fn a_cache_from_before_the_fault_table_counts_no_fault_text() {
-		// Master's schema, as `vagcan setup <VCDS>` wrote it before faults were
-		// cached: no `fault` table, no `source.language`. Setup finds such a
-		// cache current and does not re-create it, and its closing report asks
-		// how much fault text there is. "None", not "no such table: fault" — the
-		// error ended a run that had written everything with no report at all.
-		let ws = TempWorkspace::new("prefault");
-		{
-			let conn = Connection::open(&ws.db_path).unwrap();
-			conn
-				.execute_batch(
-					"CREATE TABLE label_file (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, unit_address INTEGER, unit_name TEXT);\
-                     CREATE TABLE measurement (file_id INTEGER NOT NULL, block INTEGER NOT NULL, field INTEGER NOT NULL, \
-                        name TEXT NOT NULL, location TEXT NOT NULL, description TEXT NOT NULL, unit TEXT, range_min REAL, range_max REAL, \
-                        source_id INTEGER REFERENCES source(id));\
-                     CREATE TABLE source (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, dir TEXT NOT NULL, UNIQUE (kind, dir));\
-                     INSERT INTO label_file (name) VALUES ('index.lbl');\
-                     INSERT INTO source (id, kind, dir) VALUES (1, 'vcds', '/old/Labels');",
-				)
-				.unwrap();
-		}
-		assert_eq!(fault_counts(&ws.db_path).unwrap(), (0, 0));
-		// Asking did not create the table behind the cache's back.
-		let conn = Connection::open(&ws.db_path).unwrap();
-		assert!(columns(&conn, "fault").unwrap().is_empty());
-	}
-
-	#[test]
-	fn a_cache_from_before_the_schema_split_opens_and_migrates() {
-		// The shape every existing `~/.vagcan` holds: one `source` row under a
-		// `CHECK (id = 0)` SQLite cannot drop, and a `measurement` with no
-		// `source_id`. It has to open, not be rebuilt from an installation that
-		// may well have been deleted (D5).
-		let ws = TempWorkspace::new("oldcache");
-		{
-			let conn = Connection::open(&ws.db_path).unwrap();
-			conn
-				.execute_batch(
-					"CREATE TABLE label_file (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, unit_address INTEGER, unit_name TEXT);\
-                     CREATE TABLE measurement (file_id INTEGER NOT NULL, block INTEGER NOT NULL, field INTEGER NOT NULL, \
-                        name TEXT NOT NULL, location TEXT NOT NULL, description TEXT NOT NULL, unit TEXT, range_min REAL, range_max REAL);\
-                     CREATE TABLE source (id INTEGER PRIMARY KEY CHECK (id = 0), dir TEXT NOT NULL);\
-                     INSERT INTO label_file (name) VALUES ('index.lbl');\
-                     INSERT INTO measurement VALUES (1, 1, 1, 'Engine Speed', '(G28)', '', 'RPM', NULL, NULL);\
-                     INSERT INTO source (id, dir) VALUES (0, '/old/Labels');",
-				)
-				.unwrap();
-		}
-		{
-			let conn = Connection::open(&ws.db_path).unwrap();
-			create_schema(&conn).unwrap();
-		}
-		// The one row it had is carried over as what it was: a VCDS parse was
-		// the only source that existed when it was written.
-		assert_eq!(sources_of(&ws.db_path).unwrap(), [("vcds".to_string(), "/old/Labels".to_string())]);
-		assert_eq!(source_of(&ws.db_path).as_deref(), Some("/old/Labels"));
-		// Nothing it already held was lost to the migration.
-		let files = load_files(&ws.db_path).unwrap();
-		assert_eq!(files.len(), 1);
-		assert_eq!(measurements_of(&files[0])[0].name, "Engine Speed");
-		// And ODIS channels can now go in beside them.
+	fn a_cache_an_older_vagcan_wrote_is_refused_with_what_to_run() {
 		let rows = [reading(
 			0x380A,
 			"a",
 			Scaling::Linear(vag_data_labels::LinearScale { factor: 1.0, offset: 0.0 }),
 		)];
-		put_readings(&ws.db_path, "/x/SK37X", "EV_ECM", &rows).unwrap();
-		assert_eq!(sources_of(&ws.db_path).unwrap().len(), 2);
-		// Running it again is a no-op, because it runs on every open.
+		for (missing, take_away) in older_shapes() {
+			let ws = TempWorkspace::new("older");
+			put_readings(&ws.db_path, "/x/SK37X", "EV_ECM", &rows).unwrap();
+			assert!(!is_older(&ws.db_path).unwrap(), "{missing}: today's cache is not older");
+			Connection::open(&ws.db_path).unwrap().execute_batch(take_away).unwrap();
+			assert!(is_older(&ws.db_path).unwrap(), "{missing}");
+
+			// Every reader and every writer says the same, and none of them guesses.
+			let before = std::fs::read(&ws.db_path).unwrap();
+			let read = readings_of(&ws.db_path, "EV_ECM").unwrap_err().to_string();
+			let write = put_readings(&ws.db_path, "/x/SK37X", "EV_ECM", &rows).unwrap_err().to_string();
+			let faults = fault_counts(&ws.db_path).unwrap_err().to_string();
+			for why in [&read, &write, &faults] {
+				assert!(why.contains("older vagcan"), "{missing}: {why}");
+				assert!(why.contains("vagcan setup --refresh"), "{missing}: {why}");
+				assert!(why.contains(missing), "{missing}: {why}");
+			}
+			assert_eq!(source_of(&ws.db_path), None, "{missing}");
+			// And the refused reads and write changed nothing, to the byte.
+			assert_eq!(std::fs::read(&ws.db_path).unwrap(), before, "{missing}: the refusal touched the file");
+			assert_eq!(check(&ws.db_path).unwrap_err().to_string(), write, "{missing}");
+
+			// `setup --refresh` removes it, says what it was read from, and the next write
+			// builds today's.
+			assert_eq!(
+				remove_if_older(&ws.db_path).unwrap(),
+				Some(vec![("odis".to_string(), "/x/SK37X".to_string())]),
+				"{missing}"
+			);
+			assert!(!ws.db_path.exists(), "{missing}");
+			put_readings(&ws.db_path, "/x/SK37X", "EV_ECM", &rows).unwrap();
+			assert_eq!(readings_of(&ws.db_path, "EV_ECM").unwrap().len(), 1, "{missing}");
+			assert_eq!(remove_if_older(&ws.db_path).unwrap(), None, "{missing}: today's cache stays");
+			assert!(ws.db_path.exists(), "{missing}");
+		}
+	}
+
+	#[test]
+	fn the_first_shape_of_the_cache_names_its_one_source_as_vcds() {
+		// `source` was one row under `CHECK (id = 0)` with no `kind`: a VCDS parse.
+		let ws = TempWorkspace::new("first-shape");
+		Connection::open(&ws.db_path)
+			.unwrap()
+			.execute_batch(
+				"CREATE TABLE label_file (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, unit_address INTEGER, unit_name TEXT);\
+				 CREATE TABLE source (id INTEGER PRIMARY KEY CHECK (id = 0), dir TEXT NOT NULL);\
+				 INSERT INTO source (id, dir) VALUES (0, '/old/Labels');",
+			)
+			.unwrap();
+		assert!(check(&ws.db_path).unwrap_err().to_string().contains("older vagcan"));
+		assert_eq!(
+			remove_if_older(&ws.db_path).unwrap(),
+			Some(vec![("vcds".to_string(), "/old/Labels".to_string())])
+		);
+		assert!(!ws.db_path.exists());
+	}
+
+	#[test]
+	fn a_file_that_is_not_a_database_is_refused_and_refresh_replaces_it() {
+		let ws = TempWorkspace::new("not-a-db");
+		std::fs::write(&ws.db_path, b"this is not an SQLite file, and it is longer than a header").unwrap();
+		for why in [
+			readings_of(&ws.db_path, "EV_ECM").unwrap_err().to_string(),
+			put_readings(&ws.db_path, "/x/SK37X", "EV_ECM", &[]).unwrap_err().to_string(),
+		] {
+			assert!(why.contains("is not a database"), "{why}");
+			assert!(why.contains("vagcan setup --refresh"), "{why}");
+		}
+		assert_eq!(remove_if_older(&ws.db_path).unwrap(), Some(Vec::new()));
+		assert!(!ws.db_path.exists());
+	}
+
+	#[test]
+	fn a_schema_that_fails_part_way_leaves_no_table_behind() {
+		// The batch's last statement made to fail: an index named like a table that is
+		// already there. Without the one transaction, every table before it would stay,
+		// and the next open would find a cache short of an index.
+		let ws = TempWorkspace::new("half-schema");
+		Connection::open(&ws.db_path)
+			.unwrap()
+			.execute_batch("CREATE TABLE idx_reading_level (x INTEGER);")
+			.unwrap();
+		assert!(put_readings(&ws.db_path, "/x/SK37X", "EV_ECM", &[]).is_err());
 		let conn = Connection::open(&ws.db_path).unwrap();
-		create_schema(&conn).unwrap();
-		assert_eq!(sources_of(&ws.db_path).unwrap().len(), 2);
+		assert!(columns(&conn, "source").unwrap().is_empty(), "the batch left `source` behind");
+		assert!(columns(&conn, "reading").unwrap().is_empty(), "the batch left `reading` behind");
+	}
+
+	#[test]
+	fn a_cache_not_written_yet_is_not_an_older_one() {
+		let ws = TempWorkspace::new("not-yet");
+		assert!(!is_older(&ws.db_path).unwrap(), "no file");
+		assert!(!ws.db_path.exists(), "asking made no file");
+		std::fs::write(&ws.db_path, b"").unwrap();
+		assert!(!is_older(&ws.db_path).unwrap(), "an empty file has none of the tables");
+		put_readings(
+			&ws.db_path,
+			"/x/SK37X",
+			"EV_ECM",
+			&[reading(
+				0x380A,
+				"a",
+				Scaling::Linear(vag_data_labels::LinearScale { factor: 1.0, offset: 0.0 }),
+			)],
+		)
+		.expect("a write creates the tables in an empty file");
+		assert_eq!(readings_of(&ws.db_path, "EV_ECM").unwrap().len(), 1);
 	}
 
 	#[test]

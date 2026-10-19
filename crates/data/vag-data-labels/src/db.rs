@@ -2,8 +2,8 @@
 //! [`LabelDb`] that resolves `REDIRECT` chains from ECU part numbers to
 //! the terminal [`LabelFile`] and its [`Measurement`]s.
 //!
-//! See `.superpowers/sdd/lookup-spec.md` for the full algorithm and
-//! matching rules this module implements.
+//! The matching rules are written on [`LabelDb`] and pinned by this module's
+//! tests.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};

@@ -45,7 +45,7 @@ use crate::ui::menu::{Asker, Item};
 /// How a vag-dash board reads in the listing, by what it answered.
 const BOARD_DASH: &str = "vag-dash board — dash image (reads through the board, panel keeps running)";
 const BOARD_SLCAN: &str = "vag-dash board — slcan image";
-const BOARD_SILENT: &str = "vag-dash board — answers neither Hello nor slcan (an older dash image? reflash `dash` or `slcan`)";
+const BOARD_SILENT: &str = "vag-dash board — answers neither Hello nor slcan (another image? reflash `dash` or `slcan`)";
 
 /// Why `--slcan` is refused with `--device ble…`.
 pub const SLCAN_OVER_BLE: &str =
@@ -455,7 +455,7 @@ fn choose_usb(listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) -> 
 			}
 			if !silent.is_empty() {
 				why.push_str(&format!(
-					"\n{}\nIt answers neither Hello nor slcan — likely an older `dash` image. Reflash its `dash` or \
+					"\n{}\nIt answers neither Hello nor slcan — it runs another image, a bench or test one, or none. Reflash its `dash` or \
                      `slcan` image (research/dash/can-bring-up.md §9.2).",
 					lines(&silent)
 				));
@@ -494,7 +494,7 @@ fn not_an_adapter(path: &str, answer: &BoardAnswer) -> String {
              Another program (a monitor, `dashsim`, another vagcan) may be holding the port."
 		),
 		_ => format!(
-			"{path} is a vag-dash board that answers neither Hello nor slcan — likely an older `dash` image, \
+			"{path} is a vag-dash board that answers neither Hello nor slcan — it runs another image, a bench or test one, or none, \
              and a car command on it would only time out.\n\
              Reflash its `dash` or `slcan` image (research/dash/can-bring-up.md §9.2), name a CAN adapter, \
              or use the board over BLE: `--device ble`."

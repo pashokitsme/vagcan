@@ -53,4 +53,7 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 # feature that carries them is asked for only when tests are being built.
 vag-uds-transport = { path = "../../uds/vag-uds-transport", features = ["test-util"] }
 vag-cli-core = { path = "../vag-cli-core", features = ["test-util"] }
+# `setup`: a cache an older vagcan wrote, made in its shape. The version `vag-data-db`
+# locks, so nothing new is fetched.
+rusqlite = { version = "0.31", features = ["bundled"] }
 tempfile = "3"

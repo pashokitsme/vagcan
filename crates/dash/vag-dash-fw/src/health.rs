@@ -97,7 +97,7 @@ use embassy_time::{Duration as TaskDuration, Timer};
 // stack is the one resource a panicking machine may have run out of.
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use esp_hal::rtc_cntl::{Rwdt, RwdtStage, SocResetReason};
-use esp_hal::system::{SleepSource, reset_reason, wakeup_cause};
+use esp_hal::system::reset_reason;
 use esp_hal::time::Duration as HalDuration;
 use esp_storage::FlashStorage;
 use log::warn;
@@ -194,9 +194,8 @@ async fn feed_task() -> ! {
 /// is the entire point of the exercise. It is one line per boot.
 fn report_reset() {
 	let reason = reset_reason();
-	let wakeup = wakeup_cause();
 
-	esp_println::println!("[health] reset: {reason:?}, wakeup: {wakeup:?}");
+	esp_println::println!("[health] reset: {reason:?}");
 
 	// The interesting ones, said in words, because `Some(CoreRtcWdt)` is not
 	// what somebody reading a console at the roadside needs to see.
@@ -219,10 +218,6 @@ fn report_reset() {
 			esp_println::println!("[health] power-on (the ROM reports a chip-level brown-out as this too)");
 		}
 		_ => {}
-	}
-
-	if !matches!(wakeup, SleepSource::Undefined) {
-		esp_println::println!("[health] woke from deep sleep via {wakeup:?}");
 	}
 }
 

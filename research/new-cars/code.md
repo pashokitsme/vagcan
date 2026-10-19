@@ -391,7 +391,7 @@ the probe at P2* before a listed unit is dropped. S.
   (`vag-cli/src/main.rs:897-911`).
 - The label project is **not** chosen by the car: `project::covering()` always answers `None`
   (`vag-cli-core/src/project.rs:200-234,257-274`), so the project is the flag, the environment,
-  `config.json`, or the only one on disk.
+  `config.toml`, or the only one on disk.
 
 **How it breaks on a newer car.**
 

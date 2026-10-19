@@ -48,7 +48,7 @@ pub enum Tool {
 	/// now, once — minutes when a key has to be searched for — and the build
 	/// follows. The installation has to be where `setup` read it.
 	///
-	/// OUT: `plan.json` for a person and the simulator, `plan.rs` for the
+	/// OUT: `plan.json` for a person to read, `plan.rs` for the
 	/// firmware, both under the car in `~/.vagcan/dash/<VIN>/` — wherever the
 	/// input was read from — and the plan's id, which a board flashed with it
 	/// names in `vagcan devices` and `dashcfg`.

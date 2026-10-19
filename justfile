@@ -6,6 +6,9 @@
 #   ESP_PORT         the board's serial port; unset = the one serial port with Espressif's USB
 #                    vendor id (303a), as `dashsim --boards` lists them; none or several: set it
 #
+# One steers `vagcan` itself: VAGCAN_TIMING=1 makes `setup` print, on stderr, how long each
+# stage of reading an ODIS project took.
+#
 # The recipes that write or read the board need espflash: `cargo install espflash --locked`.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]

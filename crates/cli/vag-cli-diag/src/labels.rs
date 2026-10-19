@@ -93,6 +93,8 @@ pub fn load_cached(dir: &Path, cache: &Path, refresh: bool) -> anyhow::Result<La
 	if fresh {
 		match vag_data_db::load_db(cache) {
 			Ok(db) => return Ok(db),
+			// Rebuilding would meet the same refusal: say what to run instead.
+			Err(e @ (vag_data_db::Error::OlderCache { .. } | vag_data_db::Error::NotACache { .. })) => anyhow::bail!("{e}"),
 			// A corrupt or half-written cache is a reason to rebuild, not to
 			// fail the command.
 			Err(e) => eprintln!("cache {} unusable ({e}) — rebuilding", cache.display()),
@@ -126,8 +128,7 @@ pub fn load_cached(dir: &Path, cache: &Path, refresh: bool) -> anyhow::Result<La
 ///
 /// Names only: no label file states which CAN id a number is answered on (see
 /// `vag_uds_client::address`), so this tier fills in *what* `44` is and leaves
-/// *where to reach it* to the car, to the user's override file, or to the
-/// built-in fallback.
+/// *where to reach it* to the car or to the built-in fallback.
 pub fn install_unit_numbers(db: &LabelDb) {
 	vag_uds_client::address::install(db.unit_numbers().iter().map(|(number, name)| vag_uds_client::address::UnitNumber {
 		number: *number,
