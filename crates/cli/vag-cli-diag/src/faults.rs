@@ -620,7 +620,10 @@ mod tests {
 		// `--iv-cache` naming a file that is not there is a typo, said as one — whatever
 		// the project was set up from, and whether or not the pool has anything in it.
 		for (pool, odis_alone) in [(base.clone(), true), (base.clone(), false), (base.join("empty"), true)] {
-			let said = open_vcds(&pool, &keys, true, odis_alone).err().expect("an --iv-cache that is not there").to_string();
+			let said = open_vcds(&pool, &keys, true, odis_alone)
+				.err()
+				.expect("an --iv-cache that is not there")
+				.to_string();
 			assert!(said.starts_with("--iv-cache"), "{said}");
 			assert!(said.contains(&keys.display().to_string()), "{said}");
 		}
