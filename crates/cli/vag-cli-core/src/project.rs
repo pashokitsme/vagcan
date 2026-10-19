@@ -204,7 +204,7 @@ fn list_in(projects: &Path) -> Vec<String> {
 /// The project this run is about.
 ///
 /// In order: `--project`, then `VAGCAN_PROJECT`, then **the project that covers
-/// the car in front of the tool**, then `config.json`, then the only project on
+/// the car in front of the tool**, then `config.toml`, then the only project on
 /// disk if there is exactly one. Everything that names a project must name one
 /// that already exists — a typo in a flag must not quietly create an empty store
 /// and then report that the car has no data.
@@ -220,8 +220,8 @@ fn list_in(projects: &Path) -> Vec<String> {
 /// then it answers `None` and the order below is what it always was.
 ///
 /// It sits **below** the flag and the environment variable and **above**
-/// `config.json` on purpose. The two overrides are a person saying "this one,
-/// I mean it", and nothing read off a bus outranks that. `config.json` is only a
+/// `config.toml` on purpose. The two overrides are a person saying "this one,
+/// I mean it", and nothing read off a bus outranks that. `config.toml` is only a
 /// note about the last `setup`, and a car actually present says more than a note
 /// does.
 pub fn current() -> Result<Project> {
@@ -262,7 +262,7 @@ fn current_in(projects: &Path, flag: Option<&str>, env: Option<&str>, covering: 
 		(flag, "--project"),
 		(env, PROJECT_ENV),
 		(covering, "the project covering the car that is connected"),
-		(configured, "the project in ~/.vagcan/config.json"),
+		(configured, "the project in ~/.vagcan/config.toml"),
 	] {
 		let Some(id) = given.map(str::trim).filter(|id| !id.is_empty()) else {
 			continue;
