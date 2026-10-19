@@ -24,9 +24,8 @@ vag-data-labels = { path = "../../data/vag-data-labels" }
 vag-data-db = { path = "../../data/vag-data-db" }
 # `device.rs` finds the dash board over BLE and opens its UART as the bus's pipe.
 vag-dash-ble = { path = "../../dash/vag-dash-ble" }
-# The plan generator (`dash.rs`) writes the firmware's `vag_dash_render::plan` and refuses
-# more alarms than `vag_dash_render::alarm::MAX_ALARMS`; its tests assert on the board's own
-# decoder. One definition of the cap, not a copy here.
+# The plan generator (`dash.rs`) writes the firmware's `vag_dash_render::plan`; its tests
+# assert on the board's own decoder, so the plan has one definition, not a copy here.
 vag-dash-render = { path = "../../dash/vag-dash-render" }
 # `device::DeviceArg`: `--device` and `--ble`, declared once for every command that
 # takes them, in `vagcan` and in `vagcan-measure` alike.

@@ -2020,10 +2020,11 @@ fn resolve_alarms(input: &Input, channels: &[Channel], pages: &[Page], notes: &m
 			_ => 10f64.powi(-i32::from(channel.decimals)),
 		};
 		let away = |at: f64| (DEFAULT_OFF_SHARE * at.abs()).max(step);
-		// A default is rounded to the places the step has (at most six): the rounding moves it
-		// at most half a step, so it stays at least half a step inside its bound, and the build's
-		// line and `plan.json` read `1.4`, not `1.4000000000000001`.
-		let places = (-step.log10()).ceil().clamp(0.0, 6.0) as i32;
+		// A default is rounded to the places the step has: the rounding moves it at most half a
+		// step, so it stays at least half a step inside its bound, and the build's line and
+		// `plan.json` read `1.4`, not `1.4000000000000001`. Twelve places is past any resolution
+		// a unit reports and still exact in an f64.
+		let places = (-step.log10()).ceil().clamp(0.0, 12.0) as i32;
 		let scale = 10f64.powi(places);
 		let shown = |v: f64| (v * scale).round() / scale;
 		let max = wanted
