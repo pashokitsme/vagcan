@@ -383,7 +383,8 @@ crates/
     vag-dash-render          a Frame in, pixels out, on any embedded-graphics DrawTarget
     vag-dash-core            the board's own logic, tested here: value store, frame loop,
                              framebuffer, glass driver, settings record, fault count, an
-                             exchange's waits, input queue — the replay runs it too
+                             exchange's waits, the exchange count, input queue — the
+                             replay runs it too
     vag-dash-wasm            that renderer as WebAssembly, for `dev dash edit`'s page
     vag-dash-ble             the laptop's BLE client — scan, pick a device, open a NUS pipe
     vag-dash-cfg             `dashcfg`, which configures the device over that pipe

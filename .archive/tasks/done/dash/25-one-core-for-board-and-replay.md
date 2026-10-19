@@ -44,10 +44,12 @@ renderer is what `vag-dash-wasm` compiles for the browser — it keeps depending
   only the bus (reads at `Plan::rates`, stamped with when the recording heard them).
 - **`panel`** — the framebuffer and its `FRAME` line, sized by the renderer's `PANEL`.
 - **Moved from `vag-dash-fw/src` unchanged but for docs:** `schema`, `saving`, `faults`,
-  `exchange`, `input`, and `ssd1322` (its `#[path]` test was the sixth; its own 256×64 went).
+  `exchange`, `input`, and `ssd1322` (its `#[path]` test was the sixth; its own 256×64 went);
+  on the rebase over #33, `bus_rate`, the board's count of its exchanges (#33's counter in
+  `bin/dash.rs` unchanged; the `state` line's longest still 234 B of 244).
 - **The `#[path]` tests** — `exchange_waits`, `fault_count`, `glass_wire`, `input_queue`,
   `settings_saving`, `settings_schema`, and `stopwatch_silence` (which copied the answer timeout)
-  — are `vag-dash-core/tests/`, every test kept (63). `research/dash/host` keeps its own tests and
+  — are `vag-dash-core/tests/`, every test kept (63), and #33's `bus_rate` (7). `research/dash/host` keeps its own tests and
   one decoding the core's `FRAME` line.
 - **`PANEL` is the glass**, 256×64: render's tests lay pages out on it, the two tests of the
   32-row fallback name a `SHORT` size. On the glass a unit the face cannot draw was dropped with
