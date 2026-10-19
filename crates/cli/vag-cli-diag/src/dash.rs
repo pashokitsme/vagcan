@@ -22,6 +22,9 @@ use clap::Subcommand;
 
 use vag_cli_core::dash;
 
+pub mod catalog;
+pub mod edit;
+
 // Clone for the reason `recording::Tool` is: the dispatcher keeps a copy of the
 // command so it can be run again after the label data has been made.
 #[derive(Clone, Subcommand)]
@@ -83,10 +86,37 @@ pub enum Tool {
 		#[arg(long, value_name = "FILE")]
 		input: Option<PathBuf>,
 	},
+
+	/// Lay out the dash's pages in a browser, for one car. Offline.
+	///
+	/// FOR: choosing what each page shows — cells, charts, titles, labels — on
+	/// the board's own renderer, from the channels this car's build accepts,
+	/// before writing them into `dash.toml`.
+	///
+	/// IN: the car's record of its control units and this project's catalogs,
+	/// as `dev dash build` reads them, and `~/.vagcan/dash/<VIN>/dash.toml` when
+	/// there is one: the page opens on its pages. No adapter, no car.
+	///
+	/// OUT: a page on `http://127.0.0.1:<port>/`, opened in the browser. Its
+	/// files are under `~/.vagcan/dash/<VIN>/editor/`; the channel list is kept
+	/// there and made again when the project, the record, names.csv or the language
+	/// change. It changes no file of yours: it shows the `[[page]]` and
+	/// `[[channel]]` blocks to copy into `dash.toml`, then `dev dash build`
+	/// checks them. Nothing leaves 127.0.0.1. Ctrl-C ends it.
+	///
+	/// Needs a `vagcan` built with the `wasm32-unknown-unknown` target
+	/// installed (`rustup target add wasm32-unknown-unknown`, then build again):
+	/// that is when the renderer is compiled into it.
+	Edit {
+		/// The car, as `vagcan info` reports it.
+		#[arg(value_name = "VIN")]
+		vin: String,
+	},
 }
 
 pub async fn run(tool: Tool) -> Result<()> {
 	match tool {
+		Tool::Edit { vin } => edit::run(&vin).await,
 		Tool::Build { vin, input } => {
 			// The input and the record first: a typo in `dash.toml`, a VIN that
 			// does not match, a car with no record — each is a refusal that must

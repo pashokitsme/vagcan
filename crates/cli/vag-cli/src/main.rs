@@ -136,6 +136,7 @@ const GLOBALS_APPLY: &[(&str, &[&str])] = &[
 			"dev glossary",
 			"dev recording dash",
 			"dev dash build",
+			"dev dash edit",
 			"dev vcds labels",
 			"dev vcds names",
 			"dev vcds stats",
@@ -513,12 +514,12 @@ enum Dev {
 		tool: recording::Tool,
 	},
 
-	/// Build the dash device's plan for one car. Offline.
+	/// Build the dash device's plan for one car, or lay out its pages. Offline.
 	///
 	/// The OLED panel resolves nothing for itself: what it reads, how it
 	/// decodes it and what it calls it are all decided here, from the car's
 	/// recorded units and this project's catalogs, and written into a plan the
-	/// firmware links.
+	/// firmware links. `edit` lays out the pages in a browser first.
 	Dash {
 		#[command(subcommand)]
 		tool: dash::Tool,

@@ -453,6 +453,7 @@ Two spellings, both `<unit>:<row>`:
 |---|---|
 | the units the car has, and their numbers | `vagcan units` |
 | a channel's unit, identifier and channel id | `vagcan watch`, press `,` for settings, set "Key at the end of each row" to shown. The Unit, DID and Key columns are the control unit, the identifier and the channel id. |
+| channels for pages, by name, unit or unit of measure | `vagcan dev dash edit <VIN>`: a page in the browser lists every channel the build accepts, draws your pages on the board's renderer, and shows the `[[page]]` and `[[channel]]` blocks to copy. |
 | a channel id by the channel's name | `vagcan dev glossary` writes `~/.vagcan/names.csv`: every channel id the project knows, with its name in the `current` column. Search it. It does not say which unit. |
 | a bit offset | Write the channel id. When several rows answer to it, the build refuses and lists each as `DID@bit name`. Copy one as `<unit>:<DID>@<bit>`. An identifier with no `@` is bit 0: a row that starts at another bit is refused as one the unit does not have, with no list. |
 | the lever's identifier | Record `vagcan watch --out lever.csv` with the identifiers of the lever's unit selected, working the lever. Then `vagcan dev recording discover --log lever.csv` sorts the identifiers into never moved, stepped and continuous. |

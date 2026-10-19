@@ -28,6 +28,7 @@ pub mod bus;
 pub mod config;
 pub mod dash;
 pub mod datadir;
+pub mod desktop;
 pub mod device;
 pub mod extracted;
 pub mod glossary;

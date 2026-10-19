@@ -33,6 +33,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 | `dev recording` | Works on recorded drives: `discover` finds gear and mode channels, `dash` plays one on the dash panel |
 | `dev vcds` | Works on VCDS files: label lookup, name search, `.rod` decryption, log analysis |
 | `dev dash build` | Builds the dash configuration for one car, offline |
+| `dev dash edit` | Lays out the dash's pages in a browser, drawn by the board's renderer, from your car's channels. Shows the `dash.toml` blocks to copy |
 
 ### Where names and numbers come from
 
@@ -322,6 +323,8 @@ cells = ["01:IDE00025"]
 ```
 
 To find your car's channel ids: run `vagcan watch`, press `,`, set "Key at the end of each row" to shown. The Unit column is the control unit, the Key column is the channel id. Every key of the file: [`docs/dash/dash-toml.md`](docs/dash/dash-toml.md).
+
+To lay out the pages in a browser instead: `vagcan dev dash edit <VIN>`. It opens on your `dash.toml`, offers only channels the build accepts, and shows the blocks to copy into the file. It needs a `vagcan` built after `rustup target add wasm32-unknown-unknown`.
 
 **3. Check it.**
 

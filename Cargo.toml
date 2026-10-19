@@ -11,6 +11,7 @@ members = [
   "crates/data/vag-data-db",
   # dash/ — the OLED device. Its firmware is excluded (see below), not absent.
   "crates/dash/vag-dash-render",
+  "crates/dash/vag-dash-wasm",
   "crates/dash/vag-dash-ble",
   "crates/dash/vag-dash-cfg",
   # cli/ — what a person runs, in four layers. `core` is what both command
@@ -93,3 +94,11 @@ criterion = "0.5"
 # Data-parallel work-stealing: the .rod key search, and the walks over an ODIS
 # project's pools and variants at setup time.
 rayon = "1.12"
+
+# The dash renderer as WebAssembly for `vagcan dev dash edit` (`crates/dash/vag-dash-wasm`), built
+# by `vag-cli-diag`'s build script: small, because the page fetches it from a local server.
+[profile.dash-wasm]
+inherits = "release"
+opt-level = "s"
+lto = true
+strip = true

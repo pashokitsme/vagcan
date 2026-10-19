@@ -381,6 +381,7 @@ crates/
     vag-data-db              SQLite cache over the label files
   dash/                    the OLED device, laptop side and board side both
     vag-dash-render          a Frame in, pixels out, on any embedded-graphics DrawTarget
+    vag-dash-wasm            that renderer as WebAssembly, for `dev dash edit`'s page
     vag-dash-ble             the laptop's BLE client — scan, pick a device, open a NUS pipe
     vag-dash-cfg             `dashcfg`, which configures the device over that pipe
     vag-dash-fw              the firmware. Outside the workspace: no_std for riscv32imc
@@ -558,6 +559,15 @@ the value store's staleness rule and the cell composition are the firmware's
 `vag-cli-diag/src/dashreplay/engine.rs`; a change to one is a change to both. The lever, the
 `[[button]]`s and the stopwatch are the exception: the replay does not replay them, and says so.
 A recording holds no fault count, so the replay draws no badge.
+
+**Pages laid out in a browser.** `vagcan dev dash edit` serves a page on `127.0.0.1` that draws
+the panel with `vag-dash-render` compiled to WebAssembly (`vag-dash-wasm`). `vagcan` cannot
+compile WebAssembly when it runs, so `vag-cli-diag`'s build script compiles it while `vagcan` is
+built, with a second cargo, and embeds it — only when the `wasm32-unknown-unknown` target is
+installed; otherwise the command says to install it and build again. The channels it offers are
+`watch`'s rows, each put through `dash::build` (`vag-cli-diag/src/dash/catalog.rs`): a row is a
+number only when a `[[channel]]` naming it builds, to that row. The page writes nothing; it
+shows the blocks to copy into `dash.toml`.
 
 **BLE, always on.** The board advertises a Nordic UART service from boot and again after
 every disconnect; no button, no pairing. `dashcfg` sends text commands (`state`,

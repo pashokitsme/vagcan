@@ -69,18 +69,7 @@ pub fn write_and_open(input: &Path, session: &serde_json::Value) -> Result<PathB
 /// Ask the desktop to open a file. Every failure is ignored, including the
 /// absence of anything to ask.
 pub fn open_in_browser(path: &Path) {
-	let opener = if cfg!(target_os = "macos") {
-		"open"
-	} else if cfg!(target_os = "windows") {
-		"explorer"
-	} else {
-		"xdg-open"
-	};
-	let _ = std::process::Command::new(opener)
-		.arg(path)
-		.stdout(std::process::Stdio::null())
-		.stderr(std::process::Stdio::null())
-		.spawn();
+	vag_cli_core::desktop::open(path);
 }
 
 #[cfg(test)]
