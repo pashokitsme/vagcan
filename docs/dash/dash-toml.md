@@ -42,7 +42,7 @@ Outputs, both under `~/.vagcan/dash/<VIN>/`:
 
 | file | for |
 |---|---|
-| `plan.json` | reading, and the simulator |
+| `plan.json` | reading |
 | `plan.rs` | the firmware, which `include!`s it |
 
 Both carry the plan's id, and `vagcan dev dash build` prints it last. A board flashed with the
@@ -501,7 +501,6 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `vin is missing or not a string` | Add `vin = "<VIN>"`. |
 | `<path> is for VIN X but the build asked for Y` | Build for X, or correct `vin`. |
 | `language "xx" is not one this build has words for` | `"en"` or `"ru"`. |
-| ``line N: `survey` is no longer read — delete the line`` | Delete it. The units come from the car's record, not from a file named here. |
 | `no record of <VIN>'s control units — connect to the car and run …` | Connect to the car once: `vagcan units --identify` or `vagcan watch` writes it. |
 | `the channels of N control units … have not been read from the VCDS installation (…)` | Only the units the configuration uses count. Run `vagcan dev dash build <VIN>` once: it reads them from the installation, offline, then builds. If the refusal goes on to say the installation `is not on this machine any more`, or names the project's own note of it, re-run `vagcan setup <VCDS installation>` first. If `dev dash build` is what just ran, the lines above it say what stopped the read. |
 | `the channels of N control units … (…), which the plan does not use` | Not a refusal: a note among the build's lines, and the build goes on. Those units' channels are read by the next `watch`, `measure` or `units --identify` with the car, or by `vagcan dev dash build <VIN>`; when the note says the installation is gone, re-run `vagcan setup <VCDS installation>` if you want them. |
