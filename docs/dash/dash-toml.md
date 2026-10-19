@@ -45,6 +45,10 @@ Outputs, both under `~/.vagcan/dash/<VIN>/`:
 | `plan.json` | reading, and the simulator |
 | `plan.rs` | the firmware, which `include!`s it |
 
+Both carry the plan's id, and `vagcan dev dash build` prints it last. A board flashed with the
+plan shows the same id in `vagcan devices` and `dashcfg`. Flashing a changed plan keeps the
+board's settings.
+
 ### Reading the build's output
 
 One line per channel:
