@@ -6,6 +6,9 @@
 //! tests are then tests of what the board runs, and the laptop's replay of the board
 //! (`vag-cli-diag`'s `dashreplay`) runs the same code rather than a copy of it.
 //!
+//! * [`values`]: the value store, and how long a reading may stay on the glass.
+//! * [`frames`]: one frame of the panel — the screen's answer, the charts' samples, the page
+//!   composed — as the board's panel task runs it and the replay runs it over a recording.
 //! * [`panel`]: the glass's framebuffer, one bit a pixel, and the `FRAME` line that carries it
 //!   over USB. Its size is the renderer's [`PANEL`](vag_dash_render::PANEL).
 //! * [`ssd1322`]: the glass's driver, over `embedded-hal` traits.
@@ -22,8 +25,10 @@
 pub mod bus_rate;
 pub mod exchange;
 pub mod faults;
+pub mod frames;
 pub mod input;
 pub mod panel;
 pub mod saving;
 pub mod schema;
 pub mod ssd1322;
+pub mod values;

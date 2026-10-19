@@ -381,8 +381,9 @@ crates/
     vag-data-db              SQLite cache over the label files
   dash/                    the OLED device, laptop side and board side both
     vag-dash-render          a Frame in, pixels out, on any embedded-graphics DrawTarget
-    vag-dash-core            the board's own logic, tested here: framebuffer, glass driver,
-                             settings record, fault count, an exchange's waits, input queue
+    vag-dash-core            the board's own logic, tested here: value store, frame loop,
+                             framebuffer, glass driver, settings record, fault count, an
+                             exchange's waits, input queue — the replay runs it too
     vag-dash-wasm            that renderer as WebAssembly, for `dev dash edit`'s page
     vag-dash-ble             the laptop's BLE client — scan, pick a device, open a NUS pipe
     vag-dash-cfg             `dashcfg`, which configures the device over that pipe
@@ -563,10 +564,11 @@ decided only on the board.
 
 **A recorded drive on the panel, without the board.** `vagcan dev recording dash` runs a
 `watch --out` recording through the board's own `Screen`, alarms, `Plan::rates` and
-renderer, in the recording's time, and draws the panel in the terminal. The frame loop,
-the value store's staleness rule and the cell composition are the firmware's
-(`vag-dash-fw/src/bin/dash.rs`, not buildable on the host), mirrored in
-`vag-cli-diag/src/dashreplay/engine.rs`; a change to one is a change to both. The lever, the
+renderer, in the recording's time, and draws the panel in the terminal. The value store and
+its staleness rule (`vag_dash_core::values`) and the frame — the screen's answer, the charts'
+samples, the page composed (`vag_dash_core::frames`) — are one code, which the board's panel
+task and `vag-cli-diag/src/dashreplay/engine.rs` both call; the replay adds only the bus,
+reading at the board's rates what the recording holds. The lever, the
 `[[button]]`s and the stopwatch are the exception: the replay does not replay them, and says so.
 A recording holds no fault count, so the replay draws no badge.
 

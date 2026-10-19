@@ -107,10 +107,12 @@ use trouble_host::prelude::*;
 use vag_dash_core::bus_rate::{self, BusRate, ConsoleLine};
 use vag_dash_core::exchange::{Ended, Heard, Timeouts, Waits};
 use vag_dash_core::faults::{self, Count, Found, Hold, Line as FaultLine, Now};
+use vag_dash_core::frames::FRAME_MS;
 use vag_dash_core::input::{CommandQueue, Source};
 use vag_dash_core::panel::Framebuffer;
 use vag_dash_core::saving::{Flash, RunWrite, Saving};
 use vag_dash_core::ssd1322::{self, Shown, Ssd1322};
+use vag_dash_core::values::{STALE_MS, Slot, fresh_for_ms};
 use vag_dash_fw::can::TwaiBackend;
 use vag_dash_fw::config::{self, Config, Fitted, SavedAgainst};
 use vag_dash_fw::plan::{ALARM_COUNT, BUTTON_COUNT, CHANNEL_COUNT, CHART_COUNT, PAGE_COUNT, PLAN, PLAN_ID, UNIT_COUNT};
@@ -118,7 +120,7 @@ use vag_dash_fw::slcan::{self, Adapter, CommandLine, Commands, Line, Packet, Por
 use vag_dash_fw::store::{Error as StoreError, Store};
 use vag_dash_fw::ui::{Button, DEBOUNCE_MS, Press, Visibility};
 use vag_dash_fw::usb;
-use vag_dash_render::alarm::{self, ChannelId, Slot as AlarmSlot};
+use vag_dash_render::alarm::Slot as AlarmSlot;
 use vag_dash_render::control::{self, Command, PinButton};
 #[cfg(feature = "ble")]
 use vag_dash_render::pages;
@@ -1514,45 +1516,13 @@ async fn state_line(settings: &Shared) -> heapless::String<UART_MTU> {
 	out
 }
 
-/// The last thing the car said about one channel, and when.
-///
-/// `value` is what the panel draws; `None` is a dash, never a zero. `at` is
-/// there so a value the bus stopped refreshing does not stay on the glass
-/// looking current — see [`STALE`].
-#[derive(Clone, Copy)]
-struct Slot {
-	value: Option<f32>,
-	at: Option<Instant>,
-	/// How long this value may be shown: [`STALE`], or three periods of a
-	/// channel read slower than that.
-	fresh_for: Duration,
-}
+/// How old a value may be and still be shown: the store's [`STALE_MS`]
+/// (`vag_dash_core::values`), and a slow channel's three periods past it
+/// ([`fresh_for_ms`]).
+const STALE: Duration = Duration::from_millis(STALE_MS);
 
-impl Slot {
-	const EMPTY: Slot = Slot {
-		value: None,
-		at: None,
-		fresh_for: STALE,
-	};
-
-	/// The value, unless it is older than it may be.
-	fn current(&self, now: Instant) -> Option<f32> {
-		let at = self.at?;
-		if now.saturating_duration_since(at) > self.fresh_for {
-			return None;
-		}
-		self.value
-	}
-}
-
-/// How old a value may be and still be shown. A shown channel is read several
-/// times a second and a hidden one once; a value nobody has refreshed for five
-/// is a bus that went quiet, and the panel should say so rather than hold the
-/// last number.
-const STALE: Duration = Duration::from_secs(5);
-
-/// One slot per plan channel — the whole of what the bus task tells the panel
-/// task. Sized by the plan, so a channel the plan does not have has nowhere to
+/// One slot per plan channel ([`Slot`]: the last thing the car said about it, and when) — the
+/// whole of what the bus task tells the panel task. Sized by the plan, so a channel the plan does not have has nowhere to
 /// be stored, which is the same property `config.rs` has for cells.
 static VALUES: Mutex<CriticalSectionRawMutex, [Slot; CHANNEL_COUNT]> = Mutex::new([Slot::EMPTY; CHANNEL_COUNT]);
 
@@ -2627,11 +2597,11 @@ impl PanelReads {
 		self.subs.iter().position(|s| s.is_some_and(|s| s.id == sub))
 	}
 
-	/// Three periods of a channel read slower than [`STALE`] allows, else [`STALE`].
+	/// How long a reading of channel `index` may be shown, by the rate it is read at
+	/// ([`fresh_for_ms`]).
 	fn fresh_for(&self, index: usize) -> Duration {
 		let period = self.subs[index].map_or(0, |s| s.period_ms);
-		let three = Duration::from_millis(u64::from(period) * 3);
-		if three > STALE { three } else { STALE }
+		Duration::from_millis(fresh_for_ms(period))
 	}
 
 	/// Said on the change: no unit answers, or one does again.
@@ -2748,31 +2718,17 @@ fn judge(u: usize, answer: Result<&[u8], &Miss>, previous: Check) -> PartCheck {
 /// A channel's value from the store, if it is younger than `within`.
 async fn fresh(index: usize, within: Duration) -> Option<f32> {
 	let values = VALUES.lock().await;
-	let slot = values.get(index)?;
-	let at = slot.at?;
-	(Instant::now().saturating_duration_since(at) <= within).then_some(slot.value).flatten()
+	values.get(index)?.within(Instant::now().as_micros(), within.as_micros())
 }
 
-/// Puts one reading in the store. `None` clears the slot, timestamp and all.
+/// Puts one reading in the store, heard now, to be shown for `fresh_for`. `None` is no value
+/// at once.
 async fn store(index: usize, value: Option<f32>, fresh_for: Duration) {
 	let mut values = VALUES.lock().await;
 	if let Some(slot) = values.get_mut(index) {
-		*slot = Slot {
-			value,
-			at: value.map(|_| Instant::now()),
-			fresh_for,
-		};
+		*slot = Slot::heard(value, Instant::now().as_micros(), fresh_for.as_millis());
 	}
 }
-
-/// How often the panel draws — and, because a chart's column is one frame,
-/// how much time one column holds. Five a second: fast enough to look live
-/// over a terminal, slow enough that the encoding never becomes the
-/// bottleneck.
-const FRAME_MS: u64 = 200;
-// An alarm's cell blinks in halves of `alarm::BLINK_MS` from its takeover: two frames a half, so
-// a frame that takes as long to draw as the wait before it still lands in every half.
-const _: () = assert!(FRAME_MS * 2 <= alarm::BLINK_MS, "the panel must frame at least twice per half blink");
 
 /// The window the adapter screen's kb/s is measured over: a figure a person can read
 /// before it changes, five frames long.
@@ -2862,7 +2818,8 @@ impl Oled {
 /// Labels, units and decimals come from the plan; values come from
 /// [`VALUES`], where the bus task left them. A cell whose channel has not
 /// answered is drawn with `None`, and the renderer draws a dash. Nothing here
-/// invents a number.
+/// invents a number. The frame itself — the screen's answer, the charts' samples, the page
+/// composed — is [`vag_dash_core::frames`], which `dev recording dash` runs too.
 ///
 /// In adapter mode the page is the adapter's: `SLCAN`, the bit rate and the counters.
 /// It is drawn into the framebuffer — the glass, when the panel is fitted — and not
@@ -2890,8 +2847,9 @@ async fn panel_task(
 	stopwatch: &'static StopwatchCell,
 	mut oled: Option<&'static mut Oled>,
 ) -> ! {
+	use vag_dash_core::frames::{Frames, StopwatchView};
 	use vag_dash_render::history::History;
-	use vag_dash_render::{Board, Cell, Deviation, Frame, Rates, Theme, draw_page, draw_with};
+	use vag_dash_render::{Board, Frame, Rates, Theme, draw_with};
 	use vag_uds_can::wire::BitRate;
 
 	static FRAMEBUFFER: StaticCell<Framebuffer> = StaticCell::new();
@@ -2919,15 +2877,11 @@ async fn panel_task(
 	// `CHART_COUNT × (WIDTH × 4 + 8)` bytes — 1032 per chart — which belong in
 	// `.bss` next to the framebuffer.
 	static HISTORIES: StaticCell<[History<{ vag_dash_core::panel::WIDTH }>; CHART_COUNT]> = StaticCell::new();
-	let histories = HISTORIES.init(core::array::from_fn(|_| History::new()));
+	let mut frames = Frames::new(&PLAN, HISTORIES.init(core::array::from_fn(|_| History::new())));
 	let mut last_compromised = false;
-	// An alarm page this board does not hold is said once per miss.
-	let mut missed_said: Option<u16> = None;
 	// The adapter screen's kb/s, `(tx, rx)`: fresh on every entry into adapter mode, so its
 	// first window starts there and nothing from an earlier session is in it.
 	let mut meters: Option<(BitRate, BitRate)> = None;
-	let words = stopwatch::Words::of(PLAN.language);
-	let labels = stopwatch::Labels::new(PLAN.stopwatch.map_or(&[][..], |plan| plan.marks));
 	// How often the stopwatch's speed is read, for how old its last zero may be at a write.
 	let speed_period_ms = PLAN
 		.stopwatch
@@ -3015,21 +2969,22 @@ async fn panel_task(
 
 		// A copy, so the lock is held for a memcpy and not for a frame.
 		let values = *VALUES.lock().await;
-		let now = Instant::now();
-		let value_of = |index: u16| values.get(usize::from(index)).and_then(|slot| slot.current(now));
+		let now_us = Instant::now().as_micros();
 		// The cursor is read here and passed in, never copied into the screen: it is what
 		// `set page` and `save` act on, and what an alarm hands back to.
-		let (page, glass, saved) = {
+		let (glass, saved) = {
 			let s = settings.lock().await;
-			let glass = screen.lock(|cell| cell.borrow_mut().frame(s.config.active_page, PAGE_COUNT, now.as_millis(), value_of));
+			let glass = screen.lock(|cell| frames.glass(&mut cell.borrow_mut(), s.config.active_page, &values, now_us));
 			let mut saved: heapless::Vec<(u16, f32), { stopwatch::MAX_MARKS }> = heapless::Vec::new();
 			for (mark, ms) in &s.config.last_run {
 				let _ = saved.push((*mark, *ms as f32 / 1000.0));
 			}
-			match PLAN.pages.get(usize::from(glass.page)) {
-				Some(page) => (page, glass, saved),
-				None => continue,
-			}
+			(glass, saved)
+		};
+		// Every chart's sample and a page miss to say; a page the plan does not have draws
+		// nothing this frame.
+		let Some(step) = frames.step(&glass, &values, now_us) else {
+			continue;
 		};
 		// Asked after the frame: the frame is what decides whether an alarm holds the glass.
 		let on_stopwatch = screen.lock(|cell| cell.borrow().stopwatch_on_glass());
@@ -3054,89 +3009,24 @@ async fn panel_task(
 			Some(Change::Silenced) => note!("alarm: silenced — back to page {page_no}"),
 			_ => {}
 		}
-		let missed = glass.missed.map(|page| page.0);
-		if missed != missed_said {
-			missed_said = missed;
-			if let Some(page) = missed {
-				note!(
-					"alarm: its page {} is not on this board — showing page {page_no}; rebuild the plan",
-					usize::from(page) + 1
-				);
-			}
+		if let Some(page) = step.missed {
+			note!(
+				"alarm: its page {} is not on this board — showing page {page_no}; rebuild the plan",
+				usize::from(page) + 1
+			);
 		}
-		for chart in PLAN.charts() {
-			histories[chart.slot].push(chart.channel, value_of(chart.channel));
-		}
-		// Whether the car stands, once for the frame (`Plan::stands`, as the replay decides it).
-		let stands = PLAN.stands(value_of);
-		// A cell the plan cannot name draws as a question mark rather than
-		// vanishing: a missing column hides the fault, a wrong one shows it. Every channel
-		// an alarm on the glass points at is drawn inverted — blinking while it is out,
-		// steady in the hold — so the page says which ones.
-		let cell_of = |index: u16| {
-			let cell = match PLAN.channel(index) {
-				Some(channel) => {
-					// A channel the plan paired with a specified value carries the difference;
-					// one of the two missing is `Unknown`, which keeps the line and draws a
-					// dash (`todo/dash/18`). The two come from one `22`, so they are of a
-					// moment.
-					let deviation = match channel.setpoint {
-						None => Deviation::None,
-						Some(specified) => match (value_of(index), value_of(specified)) {
-							(Some(actual), Some(wanted)) => Deviation::Value(actual - wanted),
-							_ => Deviation::Unknown,
-						},
-					};
-					// What the glass shows: the stopwatch's speed rounded down, a `zero_at_rest`
-					// channel 0 at a standstill (`Plan::shown`, as the replay does).
-					let shown = PLAN.shown(index, value_of(index), stands);
-					Cell::new(channel.label, shown, channel.unit_text, channel.decimals).with_deviation(deviation)
-				}
-				None => Cell::new("?", None, "", 0),
+
+		// The page composed, or the stopwatch's row under a strip of links and the badge alone.
+		// In a block, so the composed cells are gone before the awaits below and take no room
+		// in the task's future.
+		let report = {
+			let watch = on_stopwatch.then(|| stopwatch.lock(|w| *w.borrow()));
+			let view = watch.map(|watch| StopwatchView { watch, saved: &saved });
+			let Some(picture) = frames.picture(&glass, &values, now_us, view) else {
+				continue;
 			};
-			if glass.inverted.contains(ChannelId(index)) {
-				cell.alarmed()
-			} else {
-				cell
-			}
-		};
-
-		// The page's title and voltage across the top (`Plan::strip`, as the replay draws it).
-		let strip = PLAN.strip(usize::from(glass.page), value_of);
-
-		framebuffer.clear_all();
-		let report = match page {
-			_ if on_stopwatch => {
-				let watch = stopwatch.lock(|w| *w.borrow());
-				let speed = PLAN
-					.stopwatch
-					.and_then(|plan| value_of(plan.speed).map(|value| value * plan.km_h_per_unit));
-				let (cells, count) = stopwatch::cells(&watch, speed, &saved, &words, &labels);
-				// Under a strip with no title or voltage, which holds the link icons and the badge.
-				draw_with(&Frame::Values { cells: &cells[..count] }, &board, &theme, framebuffer)
-			}
-			Page::Values { cells: indices, .. } => {
-				let mut cells: heapless::Vec<Cell<'_>, { vag_dash_render::plan::MAX_VALUE_CELLS }> = heapless::Vec::new();
-				for index in indices.iter().take(vag_dash_render::plan::MAX_VALUE_CELLS) {
-					let _ = cells.push(cell_of(*index));
-				}
-				draw_page(&Frame::Values { cells: &cells }, &strip, &board, &theme, framebuffer)
-			}
-			// Its range and its history's slot are the page's, as the generator joined them
-			// (`Plan::joins_hold` checks the slot when the image is built).
-			&Page::Chart { channel, slot, min, max, .. } => draw_page(
-				&Frame::Chart {
-					cell: cell_of(channel),
-					min,
-					max,
-					samples: histories[usize::from(slot)].samples(),
-					seconds_per_sample: FRAME_MS as f32 / 1000.0,
-				},
-				&strip,
-				&board,
-				&theme,
-				framebuffer,
-			),
+			framebuffer.clear_all();
+			picture.draw(&board, &theme, framebuffer)
 		};
 		// The renderer reports what it had to compromise — a label too long, a unit or a
 		// difference it had to drop. Compared against the whole default rather than field by

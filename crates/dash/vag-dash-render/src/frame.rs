@@ -11,6 +11,7 @@
 /// A cell whose channel has not answered draws a dash, never a zero. A number
 /// the car never gave is the failure this whole project is built against, and on
 /// a panel with no room for a footnote it matters more, not less.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Cell<'a> {
 	/// Already in the reader's language. Ten characters at most in a four-column
 	/// layout — see [`crate::render`], which reports an overrun rather than

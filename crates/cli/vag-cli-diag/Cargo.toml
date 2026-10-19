@@ -27,6 +27,8 @@ crossterm = "0.28"
 # `dev recording dash`: the board's own screen, alarm and drawing code, run over a
 # recording, and the `DrawTarget` its panel is drawn into on the laptop.
 vag-dash-render = { path = "../../dash/vag-dash-render" }
+# `dev recording dash`: the board's value store and frame loop, run over a recording.
+vag-dash-core = { path = "../../dash/vag-dash-core" }
 embedded-graphics = "0.8"
 dirs = "6"
 # The system folder chooser behind `setup`'s "Choose the folder in a dialog"
