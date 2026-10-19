@@ -250,15 +250,10 @@ fn fetched(source: source::Source, opts: &Options<'_>) -> Result<source::Source>
 fn timed<T>(stage: &str, work: impl FnOnce() -> T) -> T {
 	let started = std::time::Instant::now();
 	let out = work();
-	timing(stage, started.elapsed());
-	out
-}
-
-/// The line [`timed`] prints, for a stage whose time was added up by hand.
-fn timing(stage: &str, took: std::time::Duration) {
 	if std::env::var_os("VAGCAN_TIMING").is_some() {
-		eprintln!("[timing] {stage}: {:.2}s", took.as_secs_f64());
+		eprintln!("[timing] {stage}: {:.2}s", started.elapsed().as_secs_f64());
 	}
+	out
 }
 
 /// Open an ODIS project and say which one it turned out to be.
