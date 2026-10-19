@@ -33,43 +33,84 @@ pub fn search<'a>(catalog: &'a serde_json::Value, needle: &str) -> Vec<(&'a str,
 	out
 }
 
-/// Run the command (see the module docs).
-pub fn run(needle: &str, limit: usize, path: &std::path::Path) -> Result<()> {
-	// The ordinary reason this file is absent is that nobody has run `vagcan
+/// One names file to search, and which source wrote it.
+pub struct NamesFile {
+	/// `VCDS` or `ODIS`, shown beside a hit when more than one file is searched.
+	pub source: &'static str,
+	pub path: std::path::PathBuf,
+}
+
+/// The files `names` searches when none is named: the project's `names.json`
+/// (a VCDS installation's) and `names-odis.json` (an ODIS project's), whichever
+/// `setup` wrote. A project set up from ODIS alone has only the second.
+pub fn project_files(project: &crate::project::Project) -> Vec<NamesFile> {
+	vec![
+		NamesFile {
+			source: "VCDS",
+			path: project.names(),
+		},
+		NamesFile {
+			source: "ODIS",
+			path: project.odis_names(),
+		},
+	]
+}
+
+/// Run the command (see the module docs) over every file of `files` that is
+/// there.
+pub fn run(needle: &str, limit: usize, files: &[NamesFile]) -> Result<()> {
+	// The ordinary reason no file is there is that nobody has run `vagcan
 	// setup` yet, and "No such file or directory" leaves a reader with nothing
-	// to do about it. The catalog cannot ship with the tool — it is derived
-	// from Ross-Tech's product — so a fresh checkout not having it is expected,
-	// and saying which command makes it is the whole job here.
-	if !path.is_file() {
-		anyhow::bail!(crate::missing::no_label_data("The measurement names", "`vagcan dev vcds names`", path));
+	// to do about it. The names cannot ship with the tool — they are derived
+	// from Ross-Tech's and VW's data — so a fresh checkout not having them is
+	// expected, and saying which command makes them is the whole job here.
+	let present: Vec<&NamesFile> = files.iter().filter(|f| f.path.is_file()).collect();
+	if present.is_empty() {
+		let headline = "The measurement names are not on this machine, and `vagcan dev vcds names` needs them.";
+		let missing = crate::missing::NoLabelData::new(headline);
+		anyhow::bail!(match files {
+			[one] => missing.looked_for(&one.path),
+			_ => missing.looked_in(files.first().and_then(|f| f.path.parent()).unwrap_or(std::path::Path::new("."))),
+		});
 	}
-	let text = std::fs::read_to_string(path).with_context(|| format!("reading the names catalog {}", path.display()))?;
-	let catalog: serde_json::Value = serde_json::from_str(&text).context("parsing the names catalog")?;
-	let hits = search(&catalog, needle);
+	let mut catalogs = Vec::new();
+	for file in &present {
+		let text = std::fs::read_to_string(&file.path).with_context(|| format!("reading the names file {}", file.path.display()))?;
+		let catalog: serde_json::Value = serde_json::from_str(&text).with_context(|| format!("parsing the names file {}", file.path.display()))?;
+		catalogs.push((file.source, catalog));
+	}
+	let tagged = catalogs.len() > 1;
+	let hits: Vec<(&str, &str, &str)> = catalogs
+		.iter()
+		.flat_map(|(source, catalog)| search(catalog, needle).into_iter().map(move |(id, text)| (*source, id, text)))
+		.collect();
+	let total: usize = catalogs.iter().map(|(_, c)| c.as_object().map_or(0, |m| m.len())).sum();
 
 	if hits.is_empty() {
 		println!(
-			"No name in the label files contain {needle:?}.\n\n\
-             The catalog is every text of one VCDS installation, and it is a list of \n\
-             names only — a name it lacks may still exist in another build."
+			"No name contains {needle:?}.\n\n\
+             The names are those of the VCDS installation or ODIS project this project was\n\
+             set up from. Another build may have a name this one lacks."
 		);
 		return Ok(());
 	}
 
 	let shown = hits.len().min(limit);
-	for (id, text) in hits.iter().take(shown) {
-		println!("  {id}  {text}");
+	for (source, id, text) in hits.iter().take(shown) {
+		if tagged {
+			println!("  {source}  {id}  {text}");
+		} else {
+			println!("  {id}  {text}");
+		}
 	}
 	if hits.len() > shown {
 		println!("\n… {} more — showing {shown}, raise it with --limit", hits.len() - shown);
 	}
 	println!(
-		"\n{} of {} names matched.\n\n\
-         These are names, not addresses: this list does not say which data \n\
-         identifier carries which name, so a match here is a hypothesis to test \n\
-         against the car, not an identification.",
+		"\n{} of {total} names matched.\n\n\
+         These are names, not addresses: this list does not say which data\n\
+         identifier carries which name, so a match is a guess to test on the car.",
 		hits.len(),
-		catalog.as_object().map(|m| m.len()).unwrap_or(0)
 	);
 	Ok(())
 }
@@ -112,10 +153,34 @@ mod tests {
 		// longer ships, so the interesting behaviour is what happens on a
 		// machine where `vagcan setup` has not been run — which is every fresh
 		// checkout.
-		let err = run("boost", 40, std::path::Path::new("/definitely/not/here/names.json"))
-			.unwrap_err()
-			.to_string();
+		let one = [NamesFile {
+			source: "VCDS",
+			path: "/definitely/not/here/names.json".into(),
+		}];
+		let err = run("boost", 40, &one).unwrap_err().to_string();
 		assert!(err.contains("vagcan setup"), "{err}");
 		assert!(err.contains("/definitely/not/here/names.json"), "{err}");
+	}
+
+	#[test]
+	fn a_project_set_up_from_odis_alone_is_searched_through_its_odis_names() {
+		// `setup` from an ODIS project writes `names-odis.json` and no
+		// `names.json`; the search used to refuse such a project.
+		let dir = std::env::temp_dir().join(format!("vagcan-names-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		std::fs::create_dir_all(&dir).unwrap();
+		let project = crate::project::Project {
+			id: "X".into(),
+			dir: dir.clone(),
+		};
+		assert!(
+			run("boost", 40, &project_files(&project)).is_err(),
+			"neither file: still the setup message"
+		);
+		std::fs::write(project.odis_names(), catalog().to_string()).unwrap();
+		run("manifold", 40, &project_files(&project)).expect("the ODIS names alone are enough");
+		std::fs::write(project.names(), catalog().to_string()).unwrap();
+		run("manifold", 40, &project_files(&project)).expect("both files are searched");
+		let _ = std::fs::remove_dir_all(&dir);
 	}
 }

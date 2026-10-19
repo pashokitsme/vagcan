@@ -429,7 +429,7 @@ fn next(facts: &Facts) -> String {
 fn setup_advice(cars: &Cars) -> String {
 	match cars {
 		Cars::Ambiguous(ids) => format!(
-			"  More than one car is set up ({}), and nothing says which this run is about.\n  \
+			"  More than one project is set up ({}), and nothing says which this run is about.\n  \
              Pick one for a command:   vagcan --project <id> …\n  \
              or for this shell:        export VAGCAN_PROJECT=<id>\n",
 			ids.join(", ")
@@ -794,7 +794,7 @@ mod tests {
 		});
 		assert!(text.contains("SK73X"), "the name that was not found is on the screen: {text}");
 		assert!(text.contains("Set up here: SK37X"), "{text}");
-		assert!(!text.contains("More than one car is set up"), "{text}");
+		assert!(!text.contains("More than one project is set up"), "{text}");
 		// Nothing on the car is offered until it resolves.
 		assert!(!text.contains("vagcan info"), "{text}");
 	}

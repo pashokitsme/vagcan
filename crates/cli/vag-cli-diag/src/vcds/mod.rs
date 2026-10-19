@@ -100,15 +100,15 @@ pub enum Tool {
 		device: DeviceArg,
 	},
 
-	/// Search the names in the label files' global text table.
+	/// Search the measurement names `vagcan setup` recovered.
 	///
 	/// FOR: finding what VW calls something, when all you have is a word.
 	///
-	/// IN: a substring, and the name catalog (`--catalog`, by default the
-	/// `names.json` in this project that `vagcan setup` writes).
+	/// IN: a substring, and the names (`--catalog`, by default what `vagcan setup`
+	/// wrote into this project from a VCDS installation, an ODIS project, or both).
 	///
-	/// OUT: matching names on stdout. They are keyed by the label files' own text
-	/// id, not by data identifier — this list does not say which identifier
+	/// OUT: matching names on stdout. They are keyed by their text id, not by
+	/// data identifier — this list does not say which identifier
 	/// carries a name — so a match is a hypothesis to test on the car, not an
 	/// identification.
 	Names {
@@ -118,9 +118,9 @@ pub enum Tool {
 		/// Stop after this many matches.
 		#[arg(long, default_value_t = 40, value_name = "N")]
 		limit: usize,
-		/// Names file to search. Read from a VCDS installation, so a
-		/// different installation means a different file.
-		/// Default: this project's `names.json`, written by `vagcan setup`.
+		/// Names file to search.
+		/// Default: this project's `names.json` (from a VCDS installation) and
+		/// `names-odis.json` (from an ODIS project), whichever `vagcan setup` wrote.
 		#[arg(long, value_name = "FILE")]
 		catalog: Option<String>,
 	},
@@ -313,8 +313,14 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 			Ok(Outcome::Done)
 		}
 		Tool::Names { text, limit, catalog } => {
-			let path = datadir::or_default(catalog.as_deref(), || Ok(crate::project::current()?.names()))?;
-			names::run(&text, limit, &path)?;
+			let files = match catalog.as_deref() {
+				Some(given) => vec![names::NamesFile {
+					source: "",
+					path: datadir::resolve(given),
+				}],
+				None => names::project_files(&crate::project::current()?),
+			};
+			names::run(&text, limit, &files)?;
 			Ok(Outcome::Done)
 		}
 		Tool::Analyse {

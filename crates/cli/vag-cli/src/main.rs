@@ -84,9 +84,10 @@ fn long_about() -> String {
 	long_about = long_about()
 )]
 struct Cli {
-	/// Which car's data to read — a directory name under `~/.vagcan/data/`.
+	/// Which project to read — a directory name under `~/.vagcan/data/`.
 	///
-	/// Only needed with more than one car set up. `vagcan setup` writes down
+	/// A project is one car model's data, from `vagcan setup`. Only needed with
+	/// more than one project set up. `vagcan setup` writes down
 	/// the one it just built, `VAGCAN_PROJECT` overrides that for a shell, and
 	/// this overrides both for one command.
 	//
@@ -118,7 +119,7 @@ struct Cli {
 // than a handful of strings and flags.
 #[derive(Clone, Subcommand)]
 enum Command {
-	/// Learn a car from a VCDS installation or an ODIS project. Offline.
+	/// Read a car model's data from a VCDS installation or an ODIS project. Offline.
 	///
 	/// Everything the label files contribute — the parsed label files
 	/// themselves, the measurement names, the `.rod` section keys, the
@@ -136,8 +137,8 @@ enum Command {
 	/// `~/.vagcan/data/<id>/`, and a second source is added to a project rather
 	/// than replacing what is in it; where both describe a channel, ODIS wins.
 	///
-	/// An ODIS project reads in seconds; a VCDS installation takes minutes,
-	/// most of them searching for keys the first time. It touches no car.
+	/// An ODIS project reads in seconds; a VCDS installation can take tens of
+	/// minutes the first time, most of it searching for keys. It touches no car.
 	/// Running it again on a source already in the project replaces what that
 	/// source wrote before and leaves every other source's data where it is,
 	/// and a second VCDS installation replaces the first. A VCDS run skips the
@@ -1051,7 +1052,9 @@ fn glossary_command() -> Result<()> {
 		seeded.blank
 	);
 	println!(
-		"Write in the `{}` column and it wins over ODIS and VCDS wherever that \n         channel is shown. The `current` column is what it is called today and is \n         not read back. Change which column is used with `language` in {}.",
+		"Write in the `{}` column and it wins over ODIS and VCDS wherever that\n\
+         channel is shown. The `current` column is what it is called today and is\n\
+         not read back. Change which column is used with `language` in {}.",
 		language.code(),
 		config::path()?.display()
 	);
