@@ -8,13 +8,6 @@ It talks to the car through a plain CAN adapter: an `MKS CANable V2.0 Pro`, or a
 
 The tool is not designed for write operations: coding, adaptations, clearing faults and especially flashing are **not supported** (at the moment, at least).
 
-## Requirements
-
-- **Rust stable**, edition 2024.
-- **An slcan USB-CAN adapter.** Developed and tested mainly on `MKS CANable V2.0 Pro`. No driver is needed: the adapter shows up as a serial port.
-- **Diagnostic data**, for names and numbers instead of raw bytes: a VW **ODIS-Service project** or a **VCDS installation**. `vagcan setup` offers to download VCDS if you have neither.
-
-
 ## Features
 
 ### Reading the car
@@ -22,10 +15,10 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 | Command | What it does |
 |---|---|
 | `vagcan` | Shows where you stand: adapter, car data, what to type next |
-| `vagcan setup` | Reads an ODIS project or a VCDS installation, offline. Takes seconds for ODIS, minutes for VCDS |
+| `vagcan setup` | Reads an ODIS project or a VCDS installation, offline. Takes seconds for ODIS; the first VCDS read can take tens of minutes |
 | `vagcan devices` | Lists USB-CAN adapters and dash boards on USB |
-| `vagcan info` | VIN, engine and gearbox identity |
-| `vagcan units` | Control units the gateway lists. `--identify` makes each one name itself |
+| `vagcan info` | VIN, and the engine's and gearbox's part numbers and software versions |
+| `vagcan units` | The car's control units, named from your label files and earlier `--identify` runs. `--identify` makes each one name itself |
 | `vagcan faults` | Stored fault codes with VW's own text. `[faults] language` in the config picks the language |
 | `vagcan sensors` | Standard OBD-II readings |
 | `vagcan watch` | Live values from several units at once, with a chart of up to 6 channels. States show by name. `--out` records to CSV |
@@ -39,19 +32,19 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 | `dev glossary` | Your own names for channels, in `~/.vagcan/names.csv` |
 | `dev recording` | Works on recorded drives: `discover` finds gear and mode channels, `dash` plays one on the dash panel |
 | `dev vcds` | Works on VCDS files: label lookup, name search, `.rod` decryption, log analysis |
-| `dev dash build` | Builds the dash plan for one car |
+| `dev dash build` | Builds the dash configuration for one car, offline |
 
 ### Where names and numbers come from
 
 - **ODIS-Service project** (preferred): channels, byte layout, scaling and fault text for every control-unit variant.
 - **VCDS installation** (fallback): channel names, fault text, and the channels of the units of every car `watch`, `measure` or `units --identify` has run with.
-- **Your own drives**: scalings proven on the car always override both.
+- **Your own drives**: a scaling measured on a car overrides both.
 
 Everything lives under `~/.vagcan/`. Nothing about any car is built into the tool.
 
 ### Dash Display (implemented, assembled irl & tested)
 
-An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OLED.
+An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OLED. To make one for your car, see [Building the dash](#building-the-dash).
 
 - **Values page**: up to 4 cells, each with a label, a value and a unit.
 - **Chart page**: one channel shown large, with its recent history on a fixed scale.
@@ -69,7 +62,7 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 - **`dashcfg`** shows the count as stored, failing now and how many units it is of: `9 stored, 1 failing now — 17 of 18 units counted`.
 - **The fault count waits** while the stopwatch is up, and while a laptop runs `vagcan measure` through the board. It goes on where it stopped.
 - **No invented numbers.** A channel that does not answer shows dashes.
-- **Plan checks**: the board polls a unit only if the part number the unit reports matches the plan.
+- **Part-number check**: the board polls a unit only if the part number the unit reports is the one the dash was built for.
 - **BLE**: `dashcfg` sets brightness and the active page. Settings are stored on the board. BLE is always on: no button, no pairing.
 - **UDS over the USB cable**: on the `dash` image, `vagcan` reads the car through the board like through a CANable, and the panel keeps working. `vagcan devices` lists it as `dash image`.
 - **UDS over BLE**: the same with no cable, slower.
@@ -78,7 +71,7 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 - **Laptop sleep ends it too**: a `--slcan` command running across a sleep gets no frames after it. Run it again.
 - **`slcan` image**: flashed instead of `dash`, the board is only an adapter.
 - **Power**: OBD pin 1, so the board is on only with the ignition.
-- **OLED**: an SSD1322 module (3.12″, 256×64) on the board's SPI pins. `set brightness N` in `dashcfg` sets how bright it is, 0–255.
+- **OLED**: an SSD1322 module (3.12″, 256×64) on the board's SPI pins. Brightness 0–255, set with `dashcfg`.
 - **`dashsim`**: shows the board's screen in a terminal over USB, with or without the OLED.
 - **Replay without the board**: `vagcan dev recording dash <VIN> --log drive.csv` plays a `watch --out` recording on the panel in the terminal, alarms included, and prints each alarm event. `--press 12.5` turns the page at 12.5 s, as `dashsim`'s press does. Piped, it prints the events only.
 
@@ -108,6 +101,13 @@ Updated 2026-10-19.
 - [ ] Electrical consumption in watts in the dash's strip, beside the voltage (not started: needs derived channels, and the currents checked on the car)
 
 Details: [`todo/README.md`](todo/README.md).
+
+## Requirements
+
+- **Rust stable**, edition 2024.
+- **An slcan USB-CAN adapter.** Developed and tested mainly on `MKS CANable V2.0 Pro`. No driver is needed: the adapter shows up as a serial port.
+- **espflash**, to flash the dash board: `cargo install espflash --locked` (tested with 4.1.0).
+- **Diagnostic data**, for names and numbers instead of raw bytes: the **ODIS-Service project** for your car's platform, or a **VCDS installation**. See [Setting up](#setting-up). `vagcan setup` offers to download VCDS if you have neither.
 
 ## Tested on
 
@@ -169,15 +169,28 @@ In a clone, [`just`](https://github.com/casey/just) runs the common tasks. `just
 
 | command | does |
 |---|---|
-| `just install` | installs `vagcan` and `vagcan-measure` |
-| `just plan <VIN>` | builds the dash's plan for a car |
+| `just install` | installs `vagcan` |
+| `just vagcan …` | runs `vagcan` from the checkout |
+| `just plan <VIN>` | builds the dash configuration for a car, as `vagcan dev dash build <VIN>` |
 | `just fw-flash` | builds the dash firmware and flashes the board on USB |
 | `just fw-flash dash --no-default-features` | the same without BLE, for a board whose BLE does not start |
 | `just fw-flash oledtest` | the test picture on the OLED |
+| `just fw-run` | flashes and stays on the board's console |
 | `just fw-monitor` | the board's console |
+| `just fw-info` | the board's chip revision and MAC |
+| `just dashcfg` | the board's settings over BLE, from Terminal.app |
+| `just dashsim` | the board's screen in this terminal, over USB |
 | `just check` | everything CI checks |
 
-Run it with no arguments to see what is connected and what to do next:
+An older `just install` also put `vagcan-measure` there; `cargo uninstall vag-cli-measure` removes it.
+
+`just fw-flash` finds the board by its USB id. With no board found, or several, set the port:
+
+```sh
+ESP_PORT=/dev/cu.usbmodem1101 just fw-flash
+```
+
+Run `vagcan` with no arguments to see what is connected and what to do next:
 
 ```sh
 vagcan
@@ -199,10 +212,33 @@ vagcan setup                    # pick a source from a menu
 vagcan setup ~/Downloads/SK37X  # or give the path directly
 ```
 
-`setup` reads one of two sources:
+`setup` reads one of two sources, once, offline. The car is not needed.
 
-- **ODIS-Service project**, the better one. It describes every channel of every control-unit variant: where the value is in the reply and how to scale it.
-- **VCDS installation**, the fallback, for cars no ODIS project covers. It has names and fault text, and the channels of the units of the cars `watch`, `measure` or `units --identify` records. About 40 % of its unit files are locked to VCDS itself; ODIS covers those.
+### An ODIS-Service project (preferred)
+
+ODIS-Service is VW's own diagnostic software for dealers. vagcan does not include its data and does not download it: you need your own copy.
+
+- Its data comes as one **project per platform**, named like `SK37X`. `SK37X` covers every Octavia III, Karoq and Kodiaq.
+- A project describes every channel of every control-unit variant: where the value is in the reply and how to scale it. It has the fault text too.
+- A project alone is enough: `info`, `units`, `faults`, `watch`, `measure` and the dash all work from it.
+- It reads in seconds.
+
+1. Find your car's project in [the table of VW's projects](docs/odis-project-mapping.md).
+2. Extract that project's folder. It is the folder that holds `AStringData.data.gz` and the `.key` files.
+3. Read it:
+
+   ```sh
+   vagcan setup ~/Downloads/SK37X
+   ```
+
+### A VCDS installation (fallback)
+
+For cars no ODIS project covers.
+
+- It has names and fault text, and the channels of the units of the cars `watch`, `measure` or `units --identify` records.
+- About 40 % of its unit files are locked to VCDS itself; ODIS covers those.
+- **The first read can take tens of minutes.** It searches for the keys of VCDS's encrypted files, unit by unit. The keys are kept, so each one is searched for once.
+- **A Russian-only VCDS gives fault text, but no measurement names.** `watch` then shows its channels by reading id. Read an English VCDS instead: `vagcan setup` with no path, then pick "Download VCDS". A second VCDS installation replaces the first.
 
 With VCDS alone, the channels come the first time `vagcan watch`, `vagcan measure` or
 `vagcan units --identify` runs with the car: it records which control units the car has and
@@ -215,22 +251,29 @@ vagcan setup ~/vcds    # names and fault text
 vagcan watch           # with the car: records its units, reads their channels once
 ```
 
-The first menu entry reads both. Where both describe a channel, ODIS wins; VCDS fills in what ODIS lacks.
-
-The result is saved as a **project** in `~/.vagcan/data/<project id>/`. A project is a **platform, not a single car**: VW files every Octavia III, Karoq and Kodiaq under `SK37X`. Data about one specific car is saved in `~/.vagcan/cars/<VIN>/`. See [which cars each ODIS project covers](docs/odis-project-mapping.md).
-
 **VCDS is Ross-Tech's software.** It is free from <https://www.ross-tech.com/vcds/download/>. `vagcan setup` can download and unpack an unmodified copy for you. The data is read from your copy, and nothing from it is built into the tool.
+
+### Both
+
+The first menu entry of `vagcan setup` reads both. Where both describe a channel, ODIS wins; VCDS fills in what ODIS lacks.
+
+The result is saved as a **project** in `~/.vagcan/data/<project id>/`, one per platform. Data about one specific car is saved in `~/.vagcan/cars/<VIN>/`.
 
 ## Reading the car
 
 ```sh
 vagcan info               # VIN, engine, gearbox
-vagcan units --identify   # every control unit the gateway knows about
+vagcan units --identify   # every control unit on the car's list, each naming itself
 vagcan faults             # stored fault codes with their text (after setup)
 vagcan watch              # live values from several units at once
 ```
 
-**Through the dash board over BLE:** no cable needed. Add `--ble`: `vagcan` finds the board and says which one it uses, or asks when there are several. The ignition must be on. On macOS, the app you run it from needs Bluetooth access (System Settings → Privacy & Security → Bluetooth); Terminal.app asks on first use.
+A unit is named as `vagcan units` lists it: its number or its request id (`vagcan faults --unit 01,713`, `vagcan watch --did 713:IDE00001`).
+
+**Through the dash board over BLE:** no cable needed. Add `--ble`: `vagcan` finds the board and says which one it uses, or asks when there are several. The ignition must be on. On macOS:
+
+- The terminal app needs Bluetooth permission: System Settings → Privacy & Security → Bluetooth.
+- A terminal inside another app (an IDE, an agent) may be stopped without a message. Run `vagcan --ble` and `dashcfg` from Terminal.app.
 
 | `--device` | What it uses |
 |---|---|
@@ -247,7 +290,78 @@ Add `--slcan` to use a dash board on USB as a plain adapter (`vagcan --slcan dev
 vagcan faults --ble
 ```
 
-**No car or adapter yet?** These work offline: `vagcan setup`, `vagcan dev vcds names <text>` to search VW's measurement names, and `vagcan dev recording …` to read a recorded drive.
+**No car or adapter yet?** These work offline: `vagcan setup`, `vagcan dev vcds names <text>` to search the measurement names `setup` read (from VCDS, ODIS or both), and `vagcan dev recording …` to read a recorded drive.
+
+## Building the dash
+
+The dash is built for one car: what it reads is fixed when the firmware is built. Do this in a clone of the repository, after [Setting up](#setting-up).
+
+**1. Read the car once.** With the car connected, run one of these. It records the car's control units in `~/.vagcan/cars/<VIN>/units.json`, which the dash build needs.
+
+```sh
+vagcan watch
+vagcan units --identify
+```
+
+Without this record, the build stops with `no record of <VIN>'s control units`.
+
+**2. Write `~/.vagcan/dash/<VIN>/dash.toml`.** The smallest one: one value on one page.
+
+```toml
+vin = "<VIN>"
+
+[[channel]]
+ref = "01:IDE00025"    # coolant temperature: unit 01, channel id IDE00025
+
+[[page]]
+kind = "values"
+cells = ["01:IDE00025"]
+```
+
+To find your car's channel ids: run `vagcan watch`, press `,`, set "Key at the end of each row" to shown. The Unit column is the control unit, the Key column is the channel id. Every key of the file: [`docs/dash/dash-toml.md`](docs/dash/dash-toml.md).
+
+**3. Check it.**
+
+```sh
+vagcan dev dash build <VIN>
+```
+
+It prints one line per channel, or what it refused and why. Fix the file until it builds. With VCDS alone, the first run also reads the channels of the car's units from the installation.
+
+**4. Flash the board.** Plug the board into USB, then:
+
+```sh
+cargo install espflash --locked   # once
+just fw-flash
+```
+
+| when | run |
+|---|---|
+| several cars under `~/.vagcan/dash/` | `VAGCAN_DASH_VIN=<VIN> just fw-flash` |
+| the board's BLE does not start | `just fw-flash dash --no-default-features` |
+| no board found, or several | `ESP_PORT=/dev/cu.usbmodem1101 just fw-flash` |
+
+**5. Set the brightness.** With the board powered, over BLE:
+
+```sh
+just dashcfg
+```
+
+At the `dash>` prompt:
+
+```
+set brightness 128
+save
+q
+```
+
+`save` keeps the setting after power-off. On macOS, run it from Terminal.app: it needs Bluetooth access.
+
+| `dashcfg`, in a clone | connects to |
+|---|---|
+| `just dashcfg` | the board named `vagcan-dash` |
+| `just dashcfg <name>` | the board with that Bluetooth name |
+| `just dashcfg --help` | nothing; lists the commands you can type once connected |
 
 ## Where files are stored
 
@@ -260,20 +374,20 @@ Everything is in `~/.vagcan/`. Nothing is written to the checkout.
   rod/                  VCDS .rod files and fault text, shared by all projects
   data/<project id>/    one directory per platform, e.g. SK37X
     cache.sqlite          channels, scalings, fault text, label rows
-    names.json            text id → name, from VCDS
-    odx-ids.json          text id → the IDE/MAS id it names, from VCDS
-    names-odis.json       text id → name, from ODIS
+    names.json            measurement names, from VCDS
+    odx-ids.json          which VW channel id each VCDS name is for
+    names-odis.json       measurement names, from ODIS
     rod-keys.json         recovered .rod section keys
     registry.json         which VCDS installation the channels were read from, and what came of each unit
     sources.json          which ODIS project or VCDS installation was read
-    measurements/         scalings proven on a car, one file per part number
+    measurements/         scalings measured on a car, one file per part number
   cars/<VIN>/           data about one car
     car.json              mass, tyre, measured road load
     units.json            the car's control units, as each said what it is
     measures/             saved acceleration runs
   dash/<VIN>/           the dash for one car
     dash.toml             pages and channels, written by hand
-    plan.json, plan.rs    the resolved plan, written by vagcan dev dash build
+    plan.json, plan.rs    the dash configuration the firmware is built from, written by vagcan dev dash build
 ```
 
 - **Safe to delete:** `rod/` and everything in `data/<project id>/` except `measurements/`. `vagcan setup` rebuilds them.

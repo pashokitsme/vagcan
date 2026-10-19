@@ -27,7 +27,7 @@ CI runs.
 - **Firmware:** `just fw-build|fw-flash|fw-run [bin] [cargo flags]` — the image name, then
   anything cargo takes: `just fw-flash dash --no-default-features` (a board whose BLE does not
   start), `just fw-flash oledtest`, `just fw-flash slcan`. `fw-run` stays on the console;
-  `just fw-monitor`, `just fw-info`. A new image or variant is a flag, not a new recipe. The board's port is `ESP_PORT` or the one usbmodem that is not the CANable;
+  `just fw-monitor`, `just fw-info`. A new image or variant is a flag, not a new recipe. The board's port is `ESP_PORT`, or the one port with Espressif's USB vendor id (`dashsim --boards`);
   the car is `VAGCAN_DASH_VIN`, or the one car under `~/.vagcan/dash`. Build into your own
   `CARGO_TARGET_DIR` when another agent builds at the same time — two reviewers sharing one
   flashed each other's binaries during PR #14 — the recipes honour it.

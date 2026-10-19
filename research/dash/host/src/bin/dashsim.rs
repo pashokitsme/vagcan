@@ -169,6 +169,8 @@ enum Invocation {
 		hello: bool,
 	},
 	List,
+	/// `--boards`: every ESP32 board's port, for the justfile's flash recipes.
+	Boards,
 	Help,
 	Unknown(String),
 	Port(String),
@@ -188,6 +190,7 @@ fn parse(first: Option<&str>, second: Option<&str>) -> Invocation {
 			hello: true,
 		},
 		Some("--list") => Invocation::List,
+		Some("--boards") => Invocation::Boards,
 		Some("--help" | "-h") => Invocation::Help,
 		// Nothing else starts with a dash; a port path never does.
 		Some(flag) if flag.starts_with('-') => Invocation::Unknown(flag.to_string()),
@@ -202,6 +205,7 @@ dashsim — be the panel and the buttons for a board running the `dash` image
 usage:
   dashsim [PORT]          open PORT, or the one ESP32 board (USB vendor 303a) if omitted
   dashsim --list          list the serial ports
+  dashsim --boards        list the ESP32 boards' ports (USB vendor 303a), opening none
   dashsim --demo          draw one synthetic frame and exit (no board needed)
   dashsim --preview DIR   render the layout preview scenarios (placeholder values) to
                           PNGs in DIR and print each one's report (no board needed)
@@ -229,6 +233,12 @@ fn main() -> Result<()> {
 		Invocation::Snap { file: Some(file), hello } => snap(&guess_port()?, std::path::Path::new(&file), hello),
 		Invocation::Snap { file: None, .. } => bail!("--snap and --hello-snap need the PNG file to write\n\n{USAGE}"),
 		Invocation::List => list_ports(),
+		Invocation::Boards => {
+			for port in boards(&serialport::available_ports()?) {
+				println!("{port}");
+			}
+			Ok(())
+		}
 		Invocation::Help => {
 			println!("{USAGE}");
 			Ok(())
@@ -256,18 +266,24 @@ fn guess_port() -> Result<String> {
 	pick_board(&serialport::available_ports()?)
 }
 
-/// The one port under [`ESPRESSIF_VID`]. Not "the first `usbmodem`": a CANable
-/// is a `usbmodem` too, and on a desk with both it lists first — which left this
-/// program waiting forever for a board on the wrong port.
-fn pick_board(ports: &[serialport::SerialPortInfo]) -> Result<String> {
-	let boards: Vec<&str> = ports
+/// Every port under [`ESPRESSIF_VID`], by the USB ids the system reports — no port is
+/// opened, so no board is reset. `just fw-flash` takes the one this lists (`--boards`),
+/// where it once took the `usbmodem` whose serial was not the owner's CANable's.
+fn boards(ports: &[serialport::SerialPortInfo]) -> Vec<&str> {
+	ports
 		.iter()
 		.filter(|p| matches!(&p.port_type, serialport::SerialPortType::UsbPort(usb) if usb.vid == ESPRESSIF_VID))
 		// macOS lists a `tty.*` and a `cu.*` node per device; `cu.*` is the one to open.
 		.filter(|p| !p.port_name.contains("/tty."))
 		.map(|p| p.port_name.as_str())
-		.collect();
-	match boards.as_slice() {
+		.collect()
+}
+
+/// The one port under [`ESPRESSIF_VID`]. Not "the first `usbmodem`": a CANable
+/// is a `usbmodem` too, and on a desk with both it lists first — which left this
+/// program waiting forever for a board on the wrong port.
+fn pick_board(ports: &[serialport::SerialPortInfo]) -> Result<String> {
+	match boards(ports).as_slice() {
 		[one] => Ok((*one).to_string()),
 		[] => bail!("no ESP32 board found (USB vendor {ESPRESSIF_VID:04x}) — plug it in, pass its port explicitly, or --list to see the ports"),
 		several => bail!("several ESP32 boards found — pass one explicitly:\n  {}", several.join("\n  ")),
@@ -977,6 +993,20 @@ mod tests {
 		assert_eq!(pick_board(&ports).unwrap(), "/dev/cu.usbmodem1101");
 	}
 
+	/// What `just fw-flash` flashes: every Espressif port and nothing else, whatever the
+	/// CANable's serial — a new owner's is not the one this desk has.
+	#[test]
+	fn the_boards_listed_are_every_espressif_port_and_no_canable() {
+		let ports = [
+			usb("/dev/cu.usbmodem14801", 0x16d0, 0x117e),
+			usb("/dev/tty.usbmodem1101", 0x303a, 0x1001),
+			usb("/dev/cu.usbmodem1101", 0x303a, 0x1001),
+			usb("/dev/cu.usbmodem2101", 0x303a, 0x1001),
+		];
+		assert_eq!(boards(&ports), ["/dev/cu.usbmodem1101", "/dev/cu.usbmodem2101"]);
+		assert!(boards(&ports[..1]).is_empty());
+	}
+
 	#[test]
 	fn no_board_is_said_rather_than_guessed() {
 		let ports = [usb("/dev/cu.usbmodem206E37A148451", 0x16d0, 0x117e)];
@@ -1058,6 +1088,7 @@ mod tests {
 		assert!(matches!(parse(Some("--bogus"), None), Invocation::Unknown(_)));
 		assert!(matches!(parse(Some("/dev/cu.usbmodem1101"), None), Invocation::Port(p) if p == "/dev/cu.usbmodem1101"));
 		assert!(matches!(parse(None, None), Invocation::Guess));
+		assert!(matches!(parse(Some("--boards"), None), Invocation::Boards));
 	}
 
 	#[test]

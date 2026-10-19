@@ -269,6 +269,12 @@ impl OdisFaults {
 		))
 	}
 
+	/// Whether the project was set up from a VCDS installation as well — its
+	/// sources say so, whatever language they recorded.
+	pub fn has_vcds_source(&self) -> bool {
+		self.sources.iter().any(|(kind, _, _)| kind == vag_data_db::VCDS)
+	}
+
 	/// Whether the setting names a language only the VCDS build declares, so
 	/// the VCDS chain should be asked first and this project second.
 	pub fn prefers_vcds(&self) -> bool {
@@ -594,6 +600,12 @@ mod tests {
 		let one = resolver(None, &[("odis", "/x", Some("deu"))]);
 		assert_eq!(one.choice_note(), None);
 		assert!(!one.prefers_vcds());
+	}
+
+	#[test]
+	fn whether_the_project_was_set_up_with_a_vcds_installation_is_in_its_sources() {
+		assert!(!resolver(Some("eng"), &[("odis", "/x", Some("deu"))]).has_vcds_source());
+		assert!(resolver(Some("eng"), &[("vcds", "/vcds/Labels", None), ("odis", "/x", Some("deu"))]).has_vcds_source());
 	}
 
 	#[test]

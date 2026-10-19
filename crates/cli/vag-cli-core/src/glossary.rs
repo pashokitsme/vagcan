@@ -233,7 +233,11 @@ fn seed_into(project: &crate::project::Project, path: PathBuf) -> anyhow::Result
 		}
 	}
 
-	let table: Vec<(String, BTreeMap<Language, String>)> = rows.into_iter().collect();
+	let mut table: Vec<(String, BTreeMap<Language, String>)> = rows.into_iter().collect();
+	// Rows keyed by an ODIS GUID last. They are read back — a channel whose text
+	// id is a GUID is named by them — but a person going through the file starts
+	// with VW's own ids (`IDE00594`), and a few hundred GUIDs at the top hid those.
+	table.sort_by(|(a, _), (b, _)| (is_guid(a), a).cmp(&(is_guid(b), b)));
 	let mut text = render_with_current(&table, &current);
 	if !text.ends_with('\n') {
 		text.push('\n');
@@ -251,6 +255,12 @@ fn seed_into(project: &crate::project::Project, path: PathBuf) -> anyhow::Result
 		blank: table.len().saturating_sub(translated),
 		translated,
 	})
+}
+
+/// Whether a text id is an ODIS GUID (`0049B3C127BB448c9DD405BD4E2BEF37`):
+/// thirty-two hex digits, in the mixed case ODIS writes them.
+fn is_guid(id: &str) -> bool {
+	id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// What a [`seed`] run did.
@@ -334,6 +344,21 @@ mod tests {
 		assert!(!text.contains("910231"), "a record id no channel carries became a row: {text}");
 		assert!(!text.contains("000081"), "a blank row nothing carries is not work to keep: {text}");
 		assert_eq!((seeded.total, seeded.translated, seeded.blank), (1, 1, 0));
+	}
+
+	#[test]
+	fn rows_keyed_by_an_odis_guid_come_after_the_ones_a_person_reads() {
+		let here = tempfile::tempdir().unwrap();
+		let glossary = here.path().join("names.csv");
+		std::fs::write(
+			&glossary,
+			"text_id,en,ru,current\n0049B3C127BB448c9DD405BD4E2BEF37,Light 5,,\nIDE00594,Boost,,\nMAS00001,Gear,,\n",
+		)
+		.unwrap();
+		seed_into(&empty_project(here.path()), glossary.clone()).unwrap();
+		let text = std::fs::read_to_string(&glossary).unwrap();
+		let ids: Vec<&str> = text.lines().skip(1).map(|l| l.split(',').next().unwrap()).collect();
+		assert_eq!(ids, ["IDE00594", "MAS00001", "0049B3C127BB448c9DD405BD4E2BEF37"], "{text}");
 	}
 
 	/// A project with nothing in it, for seeding a glossary that is not the owner's.

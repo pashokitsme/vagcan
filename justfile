@@ -3,8 +3,10 @@
 # Two environment variables steer the firmware recipes:
 #   VAGCAN_DASH_VIN  the car whose plan the image is built with; unset = the one car under
 #                    ~/.vagcan/dash (the firmware's build.rs decides, and says so)
-#   ESP_PORT         the board's serial port; unset = the one /dev/cu.usbmodem* that is not
-#                    the CANable (its serial starts 206E37A, as research/dash/bench.sh knows)
+#   ESP_PORT         the board's serial port; unset = the one serial port with Espressif's USB
+#                    vendor id (303a), as `dashsim --boards` lists them; none or several: set it
+#
+# The recipes that write or read the board need espflash: `cargo install espflash --locked`.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
@@ -27,21 +29,21 @@ fw-build bin="dash" *flags:
     cd {{fw}} && cargo build --release --bin {{bin}} {{flags}}
 
 # build and flash an image (oledtest: the test picture; slcan: a plain adapter), same flags
-fw-flash bin="dash" *flags: (fw-build bin flags)
+fw-flash bin="dash" *flags: _espflash (fw-build bin flags)
     port="$(just _esp-port)" && cd {{fw}} && espflash flash --chip esp32c3 --partition-table partitions.csv --non-interactive \
         --port "$port" "$(just _elf {{bin}})"
 
 # build, flash and stay on the board's console (Ctrl-C leaves), same flags
-fw-run bin="dash" *flags: (fw-build bin flags)
+fw-run bin="dash" *flags: _espflash (fw-build bin flags)
     port="$(just _esp-port)" && cd {{fw}} && espflash flash --chip esp32c3 --partition-table partitions.csv --monitor \
         --port "$port" "$(just _elf {{bin}})"
 
 # the board's console, without flashing (opening the port resets the board)
-fw-monitor:
+fw-monitor: _espflash
     port="$(just _esp-port)" && espflash monitor --chip esp32c3 --port "$port"
 
 # which board is on USB: chip revision (v0.4 has no working BLE), MAC
-fw-info:
+fw-info: _espflash
     port="$(just _esp-port)" && espflash board-info --chip esp32c3 --non-interactive --port "$port" | grep -E "Chip type|MAC|Flash size"
 
 # CI `firmware`: fmt, clippy with BLE, without it and with every feature; empty plan, no car needed
@@ -59,7 +61,7 @@ fw-ram:
 # Never leave it on a board that goes into a car: `just fw-flash` after it.
 
 # the CAN bench with the CANable: flashes a TRANSMITTING image (cantx), sniffs, says if frames arrive
-bench secs="15" bin="cantx":
+bench secs="15" bin="cantx": _espflash
     research/dash/bench.sh {{secs}} {{bin}}
 
 # ---- the laptop side ------------------------------------------------------------------------
@@ -68,11 +70,13 @@ bench secs="15" bin="cantx":
 build:
     cargo build --release -p vag-cli -p vag-cli-measure
 
-# install vagcan and vagcan-measure into ~/.cargo/bin, over whatever installed them before
-# (an old checkout's `crates/vagcan` package included); extra flags go to cargo: `just install --locked`
+# install vagcan into ~/.cargo/bin, over whatever installed it before (an old checkout's
+# `crates/vagcan` package included); extra flags go to cargo: `just install --locked`.
+# Not `vagcan-measure`: it is `vagcan measure` again, the same flags and the same code, there
+# because the stopwatch is a crate of its own on `core` alone. Nobody reading a car needs the
+# second copy (`cargo uninstall vag-cli-measure` removes one an earlier `just install` put there).
 install *args:
     cargo install --force --path crates/cli/vag-cli {{args}}
-    cargo install --force --path crates/cli/vag-cli-measure {{args}}
 
 # run vagcan from the checkout: `just vagcan info`, `just vagcan watch --device /dev/cu.usbmodem1101`
 vagcan *args:
@@ -142,14 +146,26 @@ check: fmt-check clippy test no-std host-check fw-check fw-ram dead-code
 
 # ---- helpers --------------------------------------------------------------------------------
 
-# the board's serial port: ESP_PORT, or the one usbmodem that is not the CANable
+# the board's serial port: ESP_PORT, or the one port with Espressif's USB vendor id
 _esp-port:
     #!/usr/bin/env bash
     set -euo pipefail
     if [ -n "${ESP_PORT:-}" ]; then echo "$ESP_PORT"; exit 0; fi
-    port="$(/bin/ls /dev/cu.usbmodem* 2>/dev/null | grep -v 206E37A | head -1 || true)"
-    if [ -z "$port" ]; then
-        echo "no board on USB: plug it in (USB before external power); a board that comes and goes: hold BOOT, tap RESET" >&2
-        exit 1
-    fi
-    echo "$port"
+    # By the USB vendor id the system reports, opening no port. Never by name: a CANable is a
+    # usbmodem too, and a guess that misses writes the dash image onto it.
+    boards="$(cd {{host}} && cargo run --release -q --bin dashsim -- --boards)"
+    case "$(grep -c . <<<"$boards" || true)" in
+        1) echo "$boards" ;;
+        0)
+            echo "no ESP32 board on USB: plug it in (USB before external power); a board that comes and goes: hold BOOT, tap RESET." >&2
+            echo "To name its port yourself: ESP_PORT=<port> just fw-flash" >&2
+            exit 1 ;;
+        *)
+            echo "several ESP32 boards on USB; name one: ESP_PORT=<port> just fw-flash" >&2
+            sed 's/^/  /' <<<"$boards" >&2
+            exit 1 ;;
+    esac
+
+# espflash writes and reads the board; without it, say how to install it
+_espflash:
+    @command -v espflash >/dev/null || { echo "espflash is not installed. Install it: cargo install espflash --locked" >&2; exit 1; }

@@ -330,7 +330,7 @@ fn state(facts: &Facts) -> String {
 	}
 	match &facts.cars {
 		Cars::One(car) => {
-			out.push_str(&format!("  Car data  {}{}\n", car.id, provenance(car)));
+			out.push_str(&format!("  Project   {}{}\n", car.id, provenance(car)));
 			match &car.described {
 				Described::Channels(variants, channels) => {
 					out.push_str(&format!("            {channels} channels across {variants} control-unit variants\n"));
@@ -351,13 +351,13 @@ fn state(facts: &Facts) -> String {
 		}
 		// How to pick belongs to the "Next" block below, and saying it twice
 		// trains a reader to skim the state lines.
-		Cars::Ambiguous(ids) => out.push_str(&format!("  Car data  set up: {} — none picked for this run\n", ids.join(", "))),
+		Cars::Ambiguous(ids) => out.push_str(&format!("  Project   set up: {} — none picked for this run\n", ids.join(", "))),
 		// Likewise the reason: the state line says what is on disk, and why
 		// this run does not land on it is the "Next" block's business.
-		Cars::Misnamed { ids, .. } => out.push_str(&format!("  Car data  set up: {} — not what this run names\n", ids.join(", "))),
-		Cars::None => out.push_str("  Car data  none — nothing has been set up yet\n"),
+		Cars::Misnamed { ids, .. } => out.push_str(&format!("  Project   set up: {} — not what this run names\n", ids.join(", "))),
+		Cars::None => out.push_str("  Project   none — nothing has been set up yet\n"),
 		Cars::Unknown(why) => {
-			out.push_str("  Car data  could not be read under ~/.vagcan/data/\n");
+			out.push_str("  Project   could not be read under ~/.vagcan/data/\n");
 			out.push_str(&caused_by(why));
 		}
 	}
@@ -429,7 +429,7 @@ fn next(facts: &Facts) -> String {
 fn setup_advice(cars: &Cars) -> String {
 	match cars {
 		Cars::Ambiguous(ids) => format!(
-			"  More than one car is set up ({}), and nothing says which this run is about.\n  \
+			"  More than one project is set up ({}), and nothing says which this run is about.\n  \
              Pick one for a command:   vagcan --project <id> …\n  \
              or for this shell:        export VAGCAN_PROJECT=<id>\n",
 			ids.join(", ")
@@ -441,7 +441,7 @@ fn setup_advice(cars: &Cars) -> String {
 		// Also the answer when `~/.vagcan/data/` could not be read: `setup` is
 		// what creates it, and it reports its own failure better than a screen
 		// that only knows the directory would not open.
-		_ => "  vagcan setup     learn a car, offline. Without it a reading is a bare\n                   \
+		_ => "  vagcan setup     read a car model's data, offline. Without it a reading is a bare\n                   \
               identifier and a number: the names and the scalings come from somebody\n                   \
               else's data, which may not be shipped with this tool.\n\n  \
               Point it at an extracted ODIS-Service project (names and scalings) or a\n  \
@@ -529,8 +529,9 @@ mod tests {
 			adapters: Adapters::None,
 			cars: Cars::None,
 		});
-		assert!(text.contains("nothing has been set up yet"), "{text}");
-		assert!(text.contains("vagcan setup"), "{text}");
+		assert!(text.contains("  Project   none — nothing has been set up yet"), "{text}");
+		assert!(text.contains("vagcan setup     read a car model's data, offline."), "{text}");
+		assert!(!text.contains("Car data") && !text.contains("learn a car"), "{text}");
 		assert!(text.contains("ODIS"), "{text}");
 		assert!(text.contains("VCDS"), "{text}");
 		assert!(text.contains("download"), "{text}");
@@ -636,7 +637,7 @@ mod tests {
 			adapters: Adapters::None,
 			cars: Cars::Unknown(unreadable()),
 		});
-		assert!(text.contains("  Car data  could not be read under ~/.vagcan/data/"), "{text}");
+		assert!(text.contains("  Project   could not be read under ~/.vagcan/data/"), "{text}");
 		assert!(
 			text.contains("            caused by: reading /Users/x/.vagcan/data: Permission denied (os error 13)"),
 			"{text}"
@@ -707,7 +708,7 @@ mod tests {
 				..car()
 			}),
 		});
-		assert!(text.contains("Car data  SK37X\n"), "{text}");
+		assert!(text.contains("  Project   SK37X\n"), "{text}");
 		assert!(!text.contains("from a"), "{text}");
 		// And a cache with no channels in it claims no channels.
 		assert!(!text.contains("channels"), "{text}");
@@ -794,7 +795,7 @@ mod tests {
 		});
 		assert!(text.contains("SK73X"), "the name that was not found is on the screen: {text}");
 		assert!(text.contains("Set up here: SK37X"), "{text}");
-		assert!(!text.contains("More than one car is set up"), "{text}");
+		assert!(!text.contains("More than one project is set up"), "{text}");
 		// Nothing on the car is offered until it resolves.
 		assert!(!text.contains("vagcan info"), "{text}");
 	}

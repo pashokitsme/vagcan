@@ -24,7 +24,8 @@ pub fn show(mut replay: Replay, notes: &[String], title: &str, speed: f64) -> Re
 	let screen = term::full_screen()
 		.hiding_cursor()
 		.enter()
-		.map_err(|e| anyhow!("the panel needs an interactive terminal ({e}); piped, only the log is printed"))?;
+		// crossterm's errno ("Device not configured") says nothing a reader can use.
+		.map_err(|_| anyhow!("the panel needs an interactive terminal; piped, only the log is printed"))?;
 	let mut out = std::io::stdout();
 	let mut log = notes.to_vec();
 	let mut canvas = Canvas::new(WIDTH, HEIGHT);
