@@ -1421,15 +1421,15 @@ fn kind_of(page: &Page) -> &'static str {
 
 /// The longest line [`state_line`] writes: every key at its widest — a `u8` page and count,
 /// a `u32` generation, the plan's id, the adapter's mode, the fault count's two `u32`s and its
-/// units, a values page of [`MAX_CELLS`](pages::MAX_CELLS) five-digit cells: 205 bytes.
+/// units, a values page of [`MAX_VALUE_CELLS`](vag_dash_render::plan::MAX_VALUE_CELLS) five-digit cells: 205 bytes.
 #[cfg(feature = "ble")]
 const STATE_LINE_LONGEST: usize = "state page=255/255 brightness=255 unsaved=1 run_pending=1 gen=4294967295".len()
 	+ " plan=0123456789abcdef".len()
 	+ " mode=adapter".len()
 	+ faults::STATE_LONGEST
 	+ " kind=values cells=[".len()
-	+ pages::MAX_CELLS * "65535".len()
-	+ (pages::MAX_CELLS - 1) * ", ".len()
+	+ vag_dash_render::plan::MAX_VALUE_CELLS * "65535".len()
+	+ (vag_dash_render::plan::MAX_VALUE_CELLS - 1) * ", ".len()
 	+ "]".len();
 // `state_line` writes into a `heapless::String<UART_MTU>`, and what does not fit is dropped by
 // its `let _ = write!`: a longer line would lose its end. (The notifier cuts a line into
@@ -3056,8 +3056,8 @@ async fn panel_task(
 				draw_with(&Frame::Values { cells: &cells[..count] }, &board, &theme, framebuffer)
 			}
 			Page::Values { cells: indices, .. } => {
-				let mut cells: heapless::Vec<Cell<'_>, { pages::MAX_CELLS }> = heapless::Vec::new();
-				for index in indices.iter().take(pages::MAX_CELLS) {
+				let mut cells: heapless::Vec<Cell<'_>, { vag_dash_render::plan::MAX_VALUE_CELLS }> = heapless::Vec::new();
+				for index in indices.iter().take(vag_dash_render::plan::MAX_VALUE_CELLS) {
 					let _ = cells.push(cell_of(*index));
 				}
 				draw_page(&Frame::Values { cells: &cells }, &strip, &board, &theme, framebuffer)

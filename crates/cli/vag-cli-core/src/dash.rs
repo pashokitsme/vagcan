@@ -1925,7 +1925,10 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 		match page {
 			PageInput::Values { title, cells, volts } => {
 				if cells.is_empty() || cells.len() > MAX_VALUE_CELLS {
-					return Err(Error::Page(n, format!("a values page holds 1 to {MAX_VALUE_CELLS} cells, not {}", cells.len())));
+					return Err(Error::Page(
+						n,
+						format!("a values page holds 1 to {MAX_VALUE_CELLS} cells, not {}", cells.len()),
+					));
 				}
 				let cells = cells.iter().map(index).collect::<Result<Vec<_>, _>>()?;
 				pages.push(Page::Values {
@@ -5481,20 +5484,19 @@ mod tests {
 		}
 		let mut alarmed = base.clone();
 		alarmed.alarms.push(Alarm {
-			channels: vec![0],
+			channel: 0,
 			page: 0,
-			rule: AlarmRule::Threshold {
-				direction: Direction::Above,
-				trip: 100.0,
-				release: 95.0,
+			rule: AlarmRule::Bounds {
+				max: Some(Bound { at: 100.0, off: 95.0 }),
+				min: None,
 			},
 		});
 		assert_ne!(plan_id(&alarmed), id, "an alarm added");
 		let mut tripped = alarmed.clone();
-		if let AlarmRule::Threshold { trip, .. } = &mut tripped.alarms[0].rule {
-			*trip = 101.0;
+		if let AlarmRule::Bounds { max: Some(bound), .. } = &mut tripped.alarms[0].rule {
+			bound.at = 101.0;
 		}
-		assert_ne!(plan_id(&tripped), plan_id(&alarmed), "an alarm's trip");
+		assert_ne!(plan_id(&tripped), plan_id(&alarmed), "an alarm's bound");
 	}
 
 	/// The firmware's CI build has no car and is built on this plan (`vag-dash-fw`'s `build.rs`).
@@ -5515,7 +5517,7 @@ mod tests {
 			buttons: Vec::new(),
 			strip: None,
 		};
-		assert_eq!(format!("{:016x}", plan_id(&empty)), "b56bfabe69e8ab5d");
+		assert_eq!(format!("{:016x}", plan_id(&empty)), "5928f96f2b2f2d7e");
 		assert_ne!(plan_id(&empty), plan_id(&every_part()));
 	}
 

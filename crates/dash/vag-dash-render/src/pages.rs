@@ -14,10 +14,6 @@ use crate::plan::Page;
 /// page in. One definition, for both ends.
 pub const MAX_PAGES: usize = 8;
 
-/// How many cells a values page shows, side by side. The plan generator refuses a page
-/// with more; the board's `state` line is sized by it.
-pub const MAX_CELLS: usize = 4;
-
 /// The page after `active`, of `count` pages, wrapping at the end.
 ///
 /// With one page the answer is that page. With none the answer is `0`, which
