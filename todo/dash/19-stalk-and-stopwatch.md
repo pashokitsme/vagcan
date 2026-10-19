@@ -158,9 +158,9 @@ owner's `hz`: they are what makes the lever a button and the gate safe, not a vi
 **Alarms first.** While an alarm holds the screen, any command — the lever, a `[[button]]`,
 `dashsim` — silences the episode and does nothing else: `Stopwatch` too, in a plan with no
 `[stopwatch]`. Alarms take the screen during the stopwatch too, and hand it
-back to the stopwatch, not to the page under it. `GLASS_PAGE` follows the glass: the alarm's
+back to the stopwatch, not to the page under it. `ON_GLASS` follows the glass: the alarm's
 page while it holds it — so that page's cells are read, in the background while a run is armed
-or running — and `STOPWATCH_PAGE` again at the hand-back.
+or running — and `OnGlass::Stopwatch` again at the hand-back.
 
 **The stopwatch page.** A `Stopwatch` command (LIMIT, or a stopwatch `[[button]]`) enters it
 from any page and leaves it back to the page it came from — no command moves the cursor while it
