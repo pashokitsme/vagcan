@@ -128,7 +128,7 @@ impl Anomaly {
 			 \n\
 			 1. Stop the car if it is moving.\n\
 			 2. Do NOT clear the faults. The freeze frame is the evidence.\n\
-			      vagcan faults --ecu {unit} --details\n\
+			      vagcan faults --unit {unit} --details\n\
 			 3. See whether it answers at all. This asks every unit of the car the four\n\
 			    identifiers that name it, {unit} among them — no sweep:\n\
 			      vagcan units --identify\n\

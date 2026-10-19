@@ -80,8 +80,11 @@ pub enum Tool {
 		/// The one thing here that touches a vehicle.
 		#[arg(long, conflicts_with = "odx")]
 		from_car: bool,
-		/// Control unit to ask when using --from-car.
-		#[arg(long, default_value = "01", value_name = "NN")]
+		/// Control unit to ask when using --from-car: a short number (01 engine)
+		/// or a request id (713).
+		//
+		// `--ecu` was its name until 2026-10-19 and still parses, unlisted.
+		#[arg(long = "unit", alias = "ecu", default_value = "01", value_name = "UNIT")]
 		ecu: String,
 		/// Rebuild the label cache even if it looks current.
 		#[arg(long)]
