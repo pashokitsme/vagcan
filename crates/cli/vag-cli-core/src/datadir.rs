@@ -64,8 +64,6 @@ pub fn resolve(relative: &str) -> PathBuf {
 ///                                     which project a bare command means, which
 ///                                     language names are shown in, favourites by VIN
 ///   names.csv                         the owner's own wording, by text id
-///   unit-numbers.json                 hand-written unit number -> request id
-///                                     pairings, read by `vag_uds_client::address`
 ///   cars/
 ///     XW8AD4NE9JH008917/              one directory per car, named for its VIN
 ///       units.json                    its control units, as each said what it is
@@ -573,17 +571,6 @@ mod tests {
 			assert!(!path.starts_with(&repo), "{path:?} is inside the checkout");
 			assert!(path.starts_with(&home), "{path:?} is outside ~/.vagcan");
 		}
-	}
-
-	#[test]
-	fn the_one_path_this_crate_does_not_own_is_still_under_the_dot_directory() {
-		// `vag_uds_client` reads the number-to-id override itself, by a path it
-		// owns. All that is asserted here is that it is inside `~/.vagcan`, not
-		// in a checkout, and not under `data/`, where every directory is a project.
-		let owned = Path::new(vag_uds_client::address::OVERRIDE_PATH);
-		assert!(owned.starts_with(".vagcan"), "{owned:?}");
-		assert!(!owned.starts_with(".vagcan/data"), "{owned:?}");
-		assert!(!owned.is_absolute(), "it is joined onto the home directory: {owned:?}");
 	}
 
 	#[test]

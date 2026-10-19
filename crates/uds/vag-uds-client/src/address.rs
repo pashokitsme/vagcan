@@ -23,9 +23,8 @@
 //!
 //! **Two halves, one of them on the board.** The rule ([`UnitAddress::from_request`])
 //! is pure and builds `no_std`: the board addresses the units the gateway lists by it
-//! (`todo/dash/20`). The short-number table — [`install`], the override file, the
-//! built-in fallback, [`parse`] — reads the filesystem and a process-wide lock, and
-//! is the host's alone (`std`).
+//! (`todo/dash/20`). The short-number table — [`install`], the built-in fallback,
+//! [`parse`] — holds a process-wide lock, and is the host's alone (`std`).
 
 #[cfg(feature = "std")]
 use std::sync::PoisonError;
@@ -109,8 +108,7 @@ impl UnitAddress {
 /// it.
 ///
 /// Both halves are optional-ish on purpose: label files can say that `44` is
-/// `J500 - Power Steering` without saying which CAN id answers it, and an
-/// override file can say which id answers `44` without naming it. The tiers are
+/// `J500 - Power Steering` without saying which CAN id answers it. The tiers are
 /// merged field by field, so a run gets the id from whoever knows the id and
 /// the name from whoever knows the name.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,10 +129,7 @@ pub struct UnitNumber {
 ///
 /// A process-wide table rather than an argument because the callers that need
 /// it have nowhere to put one: [`UnitAddress::label`] takes no context, and
-/// [`parse`] runs while the command line is still being read. This module
-/// already resolves a process-wide external source ([`OVERRIDE_PATH`]) from
-/// inside those same free functions, so the installed table follows the shape
-/// that is there.
+/// [`parse`] runs while the command line is still being read.
 ///
 /// Nothing about label files reache this module: the caller does the
 /// label files work and hands in plain numbers and strings.
@@ -168,8 +163,8 @@ pub fn install(pairings: impl IntoIterator<Item = UnitNumber>) {
 }
 
 /// **The fallback, not the table.** The pairings this project has verified on
-/// hardware, kept so a run with no label files and no override file still reaches
-/// the units it always could.
+/// hardware, kept so a run with no label files and no record of the car still
+/// reaches the units it always could.
 ///
 /// The numbers are hex, as the label files write them:
 ///
@@ -184,65 +179,12 @@ pub fn install(pairings: impl IntoIterator<Item = UnitNumber>) {
 /// carries the numbers and the names and no CAN id anywhere, and the two
 /// numberings are genuinely unrelated (VCDS's `17` answers on `0x714`, whose
 /// own UDS address is `0x14`; VCDS's `19` answers on `0x710`, address `0x10` —
-/// `.archive/research/car/other-ecus.md` §3). So the id half is established either by
+/// `.archive/research/car/other-ecus.md` §3). So the id half is established by
 /// reading the car through the label files (`vagcan units --identify`, which
 /// asks each id for its part number and asks the label files whose part number that
-/// is) or by a user writing it down in [`OVERRIDE_PATH`].
+/// is, and records the answer in the car's `units.json`).
 #[cfg(feature = "std")]
 const BUILT_IN_SHORT_NUMBERS: &[(u8, u16)] = &[(0x01, 0x7E0), (0x02, 0x7E1), (0x09, 0x70E), (0x16, 0x70C), (0x17, 0x714)];
-
-/// Where a car's own number-to-id pairings are read from, when it has them:
-/// a JSON object of `{"03": "713"}` — decimal-looking unit number to hex
-/// request id, both as the user writes them.
-///
-/// Under the tool's own directory, not the working one. It used to be looked
-/// for in the checkout and every parent of it, which meant the same command
-/// behaved differently depending on where the shell was standing, and put a
-/// file describing somebody's car inside a repository. At the top of it, beside
-/// `names.csv`, and not under `data/`: every directory there is a project.
-#[cfg(feature = "std")]
-pub const OVERRIDE_PATH: &str = ".vagcan/unit-numbers.json";
-
-/// Read the override file, when the user has written one.
-///
-/// The home directory is resolved from the environment rather than through a
-/// crate: this layer has no business growing a dependency to find one path, and
-/// a machine with no `HOME` simply has no override.
-#[cfg(feature = "std")]
-fn read_override() -> std::io::Result<String> {
-	let home = std::env::var_os("HOME").ok_or_else(|| std::io::Error::other("no HOME, so no override file"))?;
-	std::fs::read_to_string(std::path::Path::new(&home).join(OVERRIDE_PATH))
-}
-
-/// The pairings [`OVERRIDE_PATH`] states, or nothing when there is no such file.
-#[cfg(feature = "std")]
-fn override_pairings() -> Vec<UnitNumber> {
-	let Ok(text) = read_override() else {
-		return Vec::new();
-	};
-	match serde_json::from_str::<std::collections::BTreeMap<String, String>>(&text) {
-		Ok(map) => map
-			.into_iter()
-			.filter_map(|(number, request)| {
-				// Both halves as the user writes them: a hex unit number and a
-				// hex request id.
-				let number = u8::from_str_radix(number.trim(), 16).ok()?;
-				let request = u16::from_str_radix(request.trim(), 16).ok()?;
-				Some(UnitNumber {
-					number,
-					request: Some(request),
-					name: None,
-				})
-			})
-			.collect(),
-		// A malformed override is worth saying out loud: silently falling
-		// back would leave the user's own pairings quietly ignored.
-		Err(e) => {
-			eprintln!("~/{OVERRIDE_PATH} is not readable ({e}) — using built-ins");
-			Vec::new()
-		}
-	}
-}
 
 /// The built-in fallback as pairings.
 #[cfg(feature = "std")]
@@ -283,20 +225,17 @@ fn pairings_in_force(tiers: &[&[UnitNumber]]) -> Vec<UnitNumber> {
 
 /// The pairings in force, in precedence order:
 ///
-/// 1. **the override file** ([`OVERRIDE_PATH`]) — a pairing someone has
-///    evidence for and wrote down; it beats everything, including label files
-///    that disagrees;
-/// 2. **the label files and the car** — whatever [`install`] was handed at startup;
-/// 3. **the built-in fallback** — the five pairings proven on the reference
+/// 1. **the label files and the car** — whatever [`install`] was handed at startup;
+/// 2. **the built-in fallback** — the five pairings proven on the reference
 ///    car, so a run with neither of the above still works as it always did.
 #[cfg(feature = "std")]
 fn short_numbers() -> Vec<UnitNumber> {
 	// Borrow the installed list under the read guard rather than cloning it:
-	// `pairings_in_force` only reads its inputs, and neither `override_pairings`
-	// nor `built_in_pairings` touches `INSTALLED`, so holding the read lock here
-	// cannot deadlock against the one writer (`install`).
+	// `pairings_in_force` only reads its inputs, and `built_in_pairings` does not
+	// touch `INSTALLED`, so holding the read lock here cannot deadlock against the
+	// one writer (`install`).
 	let installed = INSTALLED.read().unwrap_or_else(PoisonError::into_inner);
-	pairings_in_force(&[&override_pairings(), &installed, &built_in_pairings()])
+	pairings_in_force(&[&installed, &built_in_pairings()])
 }
 
 /// The request id a short unit number denotes, when there is an established
@@ -342,8 +281,8 @@ pub fn parse(text: &str) -> Result<UnitAddress, String> {
 	let request = request_for_short(number).ok_or_else(|| {
 		format!(
 			"control unit {number:02X}{named} has no known request id — give the id instead, \
-             e.g. 713 (`vagcan units` lists what this car has), or add the pairing to \
-             ~/{OVERRIDE_PATH}"
+             e.g. 713 (`vagcan units` lists what this car has), or run `vagcan units --identify` \
+             with the car, which pairs each unit's number with its id"
 		)
 	})?;
 	// The id comes from data now, so it gets the same check a user-typed id
@@ -442,10 +381,10 @@ mod tests {
 	fn a_number_with_no_known_id_is_refused_rather_than_guessed() {
 		// VW numbering would give an answer for 03 (brakes) and 19 (gateway).
 		// Nothing in the label files state which CAN id those answer on, so the
-		// tool says so and points at the file where a user can record it.
+		// tool says so and points at the command that learns it from the car.
 		let err = parse("03").unwrap_err();
 		assert!(err.contains("no known request id"), "{err}");
-		assert!(err.contains(OVERRIDE_PATH), "{err}");
+		assert!(err.contains("vagcan units --identify"), "{err}");
 		assert!(parse("19").is_err());
 		assert!(parse("zz").is_err());
 	}
@@ -461,7 +400,7 @@ mod tests {
 
 	#[test]
 	fn the_built_in_list_is_the_fallback_when_nothing_is_installed() {
-		// No label files, no override: the five pairings proven on hardware still
+		// No label files, no record of the car: the five pairings proven on hardware still
 		// answer, so a run on a machine with no VCDS installation reaches the
 		// units it always could.
 		let built_in = built_in_pairings();
@@ -473,26 +412,24 @@ mod tests {
 	}
 
 	#[test]
-	fn the_tiers_are_override_then_label_files_then_built_in() {
-		// 01: all three tiers claim it, and the override's id is the one that
-		//     survives — someone wrote it down because they had evidence.
+	fn the_tiers_are_label_files_then_built_in() {
+		// 01: both tiers claim it, and the label files' id is the one that survives.
 		// 17: the label files name it but does not know its id; the built-in id
 		//     must still come through, so a name never costs an address.
 		// 44: only the label files have it — the built-in list is not the source of
 		//     truth any more.
 		// 86: only the label files, and only a name: a number with no id at all.
-		let over = vec![pairing(0x01, Some(0x7E2), None)];
 		let label_files = vec![
 			pairing(0x01, Some(0x70A), Some("label files engine")),
 			pairing(0x17, None, Some("J285 - Instrument Cluster")),
 			pairing(0x44, Some(0x712), Some("J500 - Power Steering")),
 			pairing(0x86, None, Some("R - Radio")),
 		];
-		let in_force = pairings_in_force(&[&over, &label_files, &built_in_pairings()]);
+		let in_force = pairings_in_force(&[&label_files, &built_in_pairings()]);
 		let at = |n: u8| in_force.iter().find(|e| e.number == n).cloned().expect("present");
 
-		assert_eq!(at(0x01).request, Some(0x7E2), "the override outranks the label files");
-		assert_eq!(at(0x01).name.as_deref(), Some("label files engine"), "and still takes its name");
+		assert_eq!(at(0x01).request, Some(0x70A), "the label files outrank the built-in id");
+		assert_eq!(at(0x01).name.as_deref(), Some("label files engine"));
 		assert_eq!(at(0x17).request, Some(0x714), "the built-in id survives label files name");
 		assert_eq!(at(0x17).name.as_deref(), Some("J285 - Instrument Cluster"));
 		assert_eq!(at(0x44).request, Some(0x712), "the label files outrank the absent built-in");
