@@ -9,38 +9,16 @@
 //! repository one `git add` away from being shared.
 //!
 //! So there is one directory, `~/.vagcan`, and [`vagcan_dir`] describes its
-//! shape. The rule for a path the user typed is unchanged: it is used exactly
-//! as typed, and [`resolve`] is what a *relative* one is looked up through.
+//! shape. A path the user typed is used exactly as typed: a relative one is
+//! relative to the working directory, as for any command.
 
 use std::path::{Path, PathBuf};
-
-/// How far up to look. A checkout is a handful of levels deep at most, and
-/// walking to the filesystem root risks matching some unrelated `catalogs/`.
-const MAX_PARENTS: usize = 6;
 
 /// What a described car has in its directory, and nothing else does.
 ///
 /// Named here because this module decides the layout — `measure::carfile` joins
 /// the same name onto [`car_dir`].
 pub const CAR_FILE: &str = "car.json";
-
-/// Resolve a default data path, or return it unchanged if it exists as given.
-///
-/// Returns the path as-is when nothing is found, so the caller's own error
-/// message still names something the user can act on.
-pub fn resolve(relative: &str) -> PathBuf {
-	let given = Path::new(relative);
-	if given.exists() {
-		return given.to_path_buf();
-	}
-	for base in search_roots() {
-		let candidate = base.join(relative);
-		if candidate.exists() {
-			return candidate;
-		}
-	}
-	given.to_path_buf()
-}
 
 /// This tool's own directory, `~/.vagcan`.
 ///
@@ -95,11 +73,6 @@ pub fn resolve(relative: &str) -> PathBuf {
 /// on a vehicle; the label files provably cannot supply those
 /// (`.archive/research/labels/rod-labels.md` §4.0c) and nothing but a car can recreate
 /// them. That is the one distinction a reader of the tree needs.
-///
-/// Deliberately not built on [`resolve`]. That walks parent directories looking
-/// for something that already exists, which is right for a path someone typed
-/// and wrong for the tool's own directory: it would put a car's files in
-/// whichever checkout the shell happened to be standing in.
 pub fn vagcan_dir() -> anyhow::Result<PathBuf> {
 	vagcan_dir_in(dirs::home_dir())
 }
@@ -130,14 +103,12 @@ pub fn rod_pool_dir() -> anyhow::Result<PathBuf> {
 
 /// A path the user gave, or this tool's own default for it.
 ///
-/// The two halves are treated differently on purpose. What somebody typed is
-/// used exactly as typed — [`resolve`] only fills in a relative path from the
-/// places data is actually kept. A default is `~/.vagcan`'s and nothing else,
-/// because a default that followed the working directory is what made these
-/// commands work in a checkout and nowhere else.
+/// What somebody typed is used exactly as typed. A default is `~/.vagcan`'s and
+/// nothing else, because a default that followed the working directory is what
+/// made these commands work in a checkout and nowhere else.
 pub fn or_default(given: Option<&str>, default: impl FnOnce() -> anyhow::Result<PathBuf>) -> anyhow::Result<PathBuf> {
 	match given {
-		Some(path) => Ok(resolve(path)),
+		Some(path) => Ok(PathBuf::from(path)),
 		None => default(),
 	}
 }
@@ -334,33 +305,6 @@ fn vagcan_dir_in(home: Option<PathBuf>) -> anyhow::Result<PathBuf> {
 	Ok(home.join(".vagcan"))
 }
 
-/// Where to look, in order: the working directory and its parents, then the
-/// directory holding the executable and its parents (a `target/debug` build
-/// sits three levels below the checkout root).
-fn search_roots() -> Vec<PathBuf> {
-	let mut roots = Vec::new();
-	if let Ok(cwd) = std::env::current_dir() {
-		push_with_parents(&mut roots, &cwd);
-	}
-	if let Ok(exe) = std::env::current_exe() {
-		if let Some(dir) = exe.parent() {
-			push_with_parents(&mut roots, dir);
-		}
-	}
-	roots
-}
-
-fn push_with_parents(roots: &mut Vec<PathBuf>, from: &Path) {
-	let mut at = Some(from);
-	for _ in 0..=MAX_PARENTS {
-		let Some(dir) = at else { break };
-		if !roots.iter().any(|r| r == dir) {
-			roots.push(dir.to_path_buf());
-		}
-		at = dir.parent();
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -383,40 +327,6 @@ mod tests {
 		fn drop(&mut self) {
 			let _ = std::fs::remove_dir_all(&self.0);
 		}
-	}
-
-	#[test]
-	fn a_path_that_exists_where_it_was_typed_is_used_as_typed() {
-		// The user's own argument is never second-guessed.
-		let here = std::env::current_dir().unwrap();
-		let name = here.join("Cargo.toml");
-		assert_eq!(resolve(name.to_str().unwrap()), name);
-	}
-
-	#[test]
-	fn a_relative_path_someone_typed_is_found_from_a_subdirectory() {
-		// What `resolve` is still for. It is no longer how any *default* is
-		// found — those are all under `~/.vagcan` now — but a path typed at a
-		// shell standing three directories deep still has to mean what it
-		// looks like it means.
-		let deep = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-		let found = deep
-			.canonicalize()
-			.map(|dir| {
-				let mut roots = Vec::new();
-				push_with_parents(&mut roots, &dir);
-				roots.iter().any(|r| r.join("crates").exists())
-			})
-			.unwrap_or(false);
-		assert!(found, "crates/ must be reachable by walking up from a source directory");
-	}
-
-	#[test]
-	fn a_missing_file_comes_back_unchanged_so_the_error_names_it() {
-		assert_eq!(
-			resolve("nowhere/definitely-not-here.json").to_str(),
-			Some("nowhere/definitely-not-here.json")
-		);
 	}
 
 	#[test]
@@ -451,7 +361,10 @@ mod tests {
 	#[test]
 	fn a_path_the_user_gave_beats_the_default_and_is_not_second_guessed() {
 		let typed = or_default(Some("Cargo.toml"), || unreachable!("the default was consulted")).unwrap();
-		assert!(typed.ends_with("Cargo.toml"), "{typed:?}");
+		assert_eq!(typed, Path::new("Cargo.toml"));
+		// A relative path is the working directory's, found or not: nothing walks up looking.
+		let typed = or_default(Some("crates/nowhere.json"), || unreachable!("the default was consulted")).unwrap();
+		assert_eq!(typed, Path::new("crates/nowhere.json"));
 		assert_eq!(or_default(None, crate::config::path).unwrap(), crate::config::path().unwrap());
 	}
 

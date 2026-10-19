@@ -834,9 +834,9 @@ async fn dispatch_dev(tool: Dev, slcan: bool) -> Result<()> {
 
 /// Where the proven measurement rows are for this run.
 ///
-/// `--data` if it was given, this run's project otherwise. Never a path relative
-/// to the working directory: that is what made these commands work in a checkout
-/// and nowhere else.
+/// `--data` as typed if it was given, this run's project otherwise. Never a default
+/// relative to the working directory: that is what made these commands work in a
+/// checkout and nowhere else.
 fn data_dir(given: Option<&str>) -> Result<String> {
 	Ok(
 		datadir::or_default(given, || Ok(project::current()?.measurements_dir()))?
