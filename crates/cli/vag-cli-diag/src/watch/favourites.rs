@@ -22,10 +22,7 @@
 //! them — stored per platform it would follow somebody onto a car that has never
 //! answered that identifier.
 //!
-//! What did change is the file. One `favourites.json` per car put a person's
-//! settings in as many places as they had cars, none of them the file they would
-//! think to open; the marks are settings, and the settings live in one place.
-//! Old per-car files are read once and folded in — see [`migrate`].
+//! The marks are settings, and the settings live in one place.
 //!
 //! The cost is stated rather than hidden: a car that will not report a VIN has
 //! no key to store under, and a replay has no car at all. Both keep their
@@ -37,9 +34,6 @@ use std::collections::BTreeSet;
 
 use crate::plan::Key;
 
-/// What the per-car file used to be called, for [`migrate`].
-pub const LEGACY_FILE: &str = "favourites.json";
-
 /// Read a car's favourites, or none at all.
 ///
 /// `None` for a car that reported no VIN and for a replay, which has no car:
@@ -48,7 +42,6 @@ pub const LEGACY_FILE: &str = "favourites.json";
 /// do not outlive it.
 pub fn load(vin: Option<&str>) -> BTreeSet<Key> {
 	let Some(vin) = vin else { return BTreeSet::new() };
-	migrate(vin);
 	from_list(&crate::config::favourites(&crate::config::load(), vin))
 }
 
@@ -71,41 +64,6 @@ pub fn save(vin: Option<&str>, favourites: &BTreeSet<Key>) -> Result<(), String>
 	crate::config::save(&document).map_err(|why| format!("could not save favourites: {why}"))
 }
 
-/// Fold a pre-`config.toml` `favourites.json` into the settings, once.
-///
-/// Best-effort, and additive: the old file's marks are **merged** with whatever
-/// the settings already hold rather than replacing them, because the two could
-/// both have been written and neither is more recent by construction. The old
-/// file is removed only after the settings are written.
-pub fn migrate(vin: &str) {
-	let Ok(dir) = crate::datadir::car_dir(vin) else { return };
-	let legacy = dir.join(LEGACY_FILE);
-	let Ok(text) = std::fs::read_to_string(&legacy) else { return };
-	let mut marks = parse_legacy(&text);
-	if marks.is_empty() {
-		let _ = std::fs::remove_file(&legacy);
-		return;
-	}
-	let mut document = crate::config::load();
-	marks.extend(from_list(&crate::config::favourites(&document, vin)));
-	let keys: Vec<String> = marks.iter().map(|key| render_key(*key)).collect();
-	crate::config::set_favourites(&mut document, vin, &keys);
-	if crate::config::save(&document).is_ok() {
-		let _ = std::fs::remove_file(&legacy);
-	}
-}
-
-/// The old per-car file's text as marks.
-pub fn parse_legacy(text: &str) -> BTreeSet<Key> {
-	let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
-		return BTreeSet::new();
-	};
-	let Some(list) = value.get("favourites").and_then(|v| v.as_array()) else {
-		return BTreeSet::new();
-	};
-	list.iter().filter_map(|entry| entry.as_str().and_then(parse_key)).collect()
-}
-
 /// A list of written keys as marks, dropping any this build cannot read.
 pub fn from_list(keys: &[String]) -> BTreeSet<Key> {
 	keys.iter().filter_map(|key| parse_key(key)).collect()
@@ -116,20 +74,13 @@ pub fn from_list(keys: &[String]) -> BTreeSet<Key> {
 /// Every part is hex, and the unit is required: a bare identifier is refused
 /// rather than assumed to be the engine's, because this is written by the tool
 /// and read back by it, and guessing a control unit would silently move
-/// somebody's mark elsewhere.
-///
-/// **The third part is the bit the field starts at, and a key written before it
-/// existed has two parts.** Those read as bit 0, which is what they meant: back
-/// then a channel was an identifier, and the only field anything could show was
-/// the one at the start of the response.
+/// somebody's mark elsewhere. The third part, the bit the field starts at, is
+/// required too.
 pub fn parse_key(key: &str) -> Option<Key> {
 	let mut parts = key.split(':');
 	let request = u16::from_str_radix(parts.next()?.trim(), 16).ok()?;
 	let did = u16::from_str_radix(parts.next()?.trim(), 16).ok()?;
-	let offset = match parts.next() {
-		Some(text) => u32::from_str_radix(text.trim(), 16).ok()?,
-		None => 0,
-	};
+	let offset = u32::from_str_radix(parts.next()?.trim(), 16).ok()?;
 	// A fourth part is not a key this tool ever wrote.
 	match parts.next() {
 		Some(_) => None,
@@ -178,23 +129,11 @@ mod tests {
 	}
 
 	#[test]
-	fn a_two_part_key_means_the_field_at_the_start_of_the_response() {
-		// What every key written before a channel could be narrower than an
-		// identifier meant, and the only reading that does not silently move
-		// somebody's mark.
-		assert_eq!(parse_key("7E0:202A"), Some((0x7E0, 0x202A, 0)));
-	}
-
-	#[test]
-	fn the_old_per_car_file_still_reads() {
-		// It has to, or a migration would quietly drop the marks it was written
-		// to carry over.
-		let marks = parse_legacy(r#"{"favourites": ["7E0:202A", "7E1:3816:0", "nonsense"]}"#);
-		assert_eq!(marks, set(&[(0x7E0, 0x202A, 0), (0x7E1, 0x3816, 0)]));
-
-		for broken in ["", "not json", "[]", "{}", r#"{"favourites": "7E0:202A"}"#] {
-			assert!(parse_legacy(broken).is_empty(), "{broken:?}");
-		}
+	fn a_key_without_its_bit_is_not_a_key() {
+		// Every key this tool writes has three parts; a two-part one names no
+		// field, and reading it as the first would be a guess.
+		assert_eq!(parse_key("7E0:202A"), None);
+		assert_eq!(parse_key("7E0:202A:"), None);
 	}
 
 	#[test]
