@@ -123,7 +123,7 @@ pub fn path() -> Result<PathBuf> {
 const FRESH: &str = "\
 # vagcan settings. Yours to edit — comments and layout are kept.\n\
 \n\
-# Which car's data a bare command means, as a directory name under ~/.vagcan/data/.\n\
+# Which project a bare command reads, as a directory name under ~/.vagcan/data/.\n\
 # `vagcan setup` writes this; VAGCAN_PROJECT and --project override it.\n\
 # project = \"SK37X\"\n\
 \n\

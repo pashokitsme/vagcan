@@ -149,7 +149,7 @@ mod tests {
 
 	/// An error out of one of the six sites, built the way they build it.
 	fn shortage() -> anyhow::Error {
-		anyhow::Error::from(NoLabelData::new("No car has been set up yet.").looked_in(std::path::Path::new("/x/data")))
+		anyhow::Error::from(NoLabelData::new("No project has been set up yet.").looked_in(std::path::Path::new("/x/data")))
 	}
 
 	#[test]
