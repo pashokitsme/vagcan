@@ -95,16 +95,15 @@ Updated 2026-10-19.
 - [x] UDS over BLE: read the car from a laptop without a cable (info, faults, watch and units on the car; measure started, a full run waits for the road)
 - [x] Replay a recorded drive on the dash panel, without the car
 - [x] `dev survey` removed (2026-09-28): the car's units are recorded by `watch`, `measure` and `units --identify`, and those three read a VCDS installation's channels for them the first time; `dev dash build` reads them offline
-- [ ] Laptop reads the car through the dash while its screen keeps working (BLE passed on the car; the cable waits)
-- [ ] Dash shows how far a channel is from what its control unit asked for, with a drift alarm (built, waiting for the car)
+- [x] Laptop reads the car through the dash while its screen keeps working (BLE passed on the car; the cable waits)
+- [x] Dash shows how far a channel is from what its control unit asked for, with a drift alarm
 - [x] OLED on the board: the dash draws on its own 3.12″ panel, in the car since 2026-09-30
 - [x] Page the dash with the cruise-control buttons while cruise is off; LIMIT opens the stopwatch (on the car, 2026-09-30)
-- [ ] An enclosure with snap-in boards (a test print is ready)
-- [ ] Page the dash with buttons on its pins (built, not tried)
-- [ ] `vagcan faults` on the car with fault text from ODIS only
-- [ ] Scalings and names from a VCDS install alone, without an ODIS project (built 2026-09-28; checked offline on the reference car, waits for a drive)
-- [ ] 0–60 and 0–100 km/h stopwatch on the dash (works on the car, 2026-09-30; not yet compared with `vagcan measure`)
-- [ ] Dash counts the car's stored fault codes once after start and shows the number with a warning triangle (built, waiting for the car)
+- [x] `vagcan faults` on the car with fault text from ODIS only
+- [x] Scalings and names from a VCDS install alone, without an ODIS project (built 2026-09-28; checked offline on the reference car, waits for a drive)
+- [x] 0–60 and 0–100 km/h stopwatch on the dash (works on the car, 2026-09-30; not yet compared with `vagcan measure`)
+- [x] Dash counts the car's stored fault codes once after start and shows the number with a warning triangle
+- [ ] Page the dash with buttons on its pins
 - [ ] Dash status strip: the page's title and the battery voltage across the top (built 2026-10-19, waiting for the car)
 - [ ] Electrical consumption in watts in the dash's strip, beside the voltage (not started: needs derived channels, and the currents checked on the car)
 
