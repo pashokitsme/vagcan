@@ -378,6 +378,7 @@ mod tests {
 			stalk: None,
 			stopwatch: None,
 			buttons: vec![],
+			strip: None,
 		}
 	}
 
@@ -504,6 +505,7 @@ mod tests {
 		owned.pages = vec![Page::Values {
 			title: "T".into(),
 			cells: vec![0, 5],
+			volts: true,
 		}];
 		owned.stalk = Some(Stalk {
 			rocker: 2,
@@ -537,6 +539,7 @@ mod tests {
 		owned.pages = vec![Page::Values {
 			title: "T".into(),
 			cells: vec![0, 1, 5],
+			volts: true,
 		}];
 		assert_eq!(
 			missing(&owned),

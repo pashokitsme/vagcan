@@ -66,16 +66,24 @@ hz = 10
 ref = "02:IDE00075"                # vehicle speed in km/h, the stopwatch's: on no page, read fast
 hz = 50
 
+[[channel]]
+ref = "01:IDE00018"                # terminal 15 voltage, the strip's: on no page
+
 [[page]]
 kind = "values"
-title = "MAIN"                     # alarms name the page by this
+title = "MAIN"                     # in the strip; alarms name the page by this
 cells = ["01:IDE00025", "01:IDE00191"]
 
 [[page]]
 kind = "chart"
+title = "ОЖ"                       # in the strip, instead of the chart header's label
 cell = "01:IDE00025"
 min = 70                           # fixed scale
 max = 110
+volts = false                      # no voltage in this page's strip
+
+[strip]
+volts = "01:IDE00018"              # the voltage in the strip over every page
 
 [[alarm]]                          # no `kind`: a threshold rule
 channels = ["01:IDE00025"]
@@ -159,8 +167,8 @@ One per value the board reads.
 
 - The row must scale linearly: a number. An enumeration, or a proven point with no slope, is
   refused.
-- A channel on no page is not read, unless it is the stopwatch's `speed` or another channel's
-  `setpoint`.
+- A channel on no page is not read, unless it is the stopwatch's `speed`, another channel's
+  `setpoint`, or `[strip]`'s `volts`.
 
 **`setpoint`**
 
@@ -181,24 +189,42 @@ Pages come in the file's order. 1 to 8 of them. `kind` picks the page.
 | key | type | required | default | what it does |
 |---|---|---|---|---|
 | `kind` | `"values"` | yes | — | |
-| `title` | string | no | `""` | The name an `[[alarm]]` raises the page by. Not drawn on the panel. |
+| `title` | string | no | `""` | Drawn in the strip over the page. The name an `[[alarm]]` raises the page by. |
 | `cells` | list of channels | yes | — | 1 to 4 channels, one column each. Each must be under `[[channel]]`, in either spelling. |
+| `volts` | `true` or `false` | no | `true` | Whether the strip shows the voltage on this page. Needs a `[strip]`. |
 
 **`kind = "chart"`** — one channel, large, with its recent history.
 
 | key | type | required | default | what it does |
 |---|---|---|---|---|
 | `kind` | `"chart"` | yes | — | |
+| `title` | string | no | `""` | Drawn in the strip over the page. The chart's header then leaves out the channel's label. |
 | `cell` | string: a channel | yes | — | The channel, under `[[channel]]`. |
 | `min` | number | yes | — | Bottom of the scale. |
 | `max` | number | yes | — | Top of the scale. Above `min`. |
+| `volts` | `true` or `false` | no | `true` | As on a values page. |
 
 - The scale is fixed, never autoscaled.
 - The board holds `min` and `max` as 32-bit floats: each must fit one, and `min` must stay below
   `max` in it.
 - One chart per channel.
-- A chart has no title, so no alarm can raise it.
-- A key of the other kind (`min` on a values page, `title` on a chart) is refused.
+- An alarm raises only a values page. A chart's `title` is for the strip.
+- A key of the other kind (`min` on a values page, `cells` on a chart) is refused.
+
+### `[strip]`
+
+A line across the top of each page: the battery voltage on the left, the page's `title` in the
+middle. The page is drawn in the rows under it.
+
+| key | type | required | default | what it does |
+|---|---|---|---|---|
+| `volts` | string: a channel | yes | — | The voltage, a `[[channel]]`. Shown as `14.2V`: one decimal, then `V`. `--V` while it has not answered. |
+
+- Without `[strip]`, no page shows a voltage, and a page's `volts` is refused.
+- A page whose cells, or chart, show the `volts` channel already has no voltage in its strip.
+- A page with no `title` and no voltage has no strip: it uses the whole panel.
+- The voltage is read at the channel's `hz` while its page is on screen, like a cell.
+- The build lists the pages that show it, and says so when the channel's unit is not `V`.
 
 ### `[[alarm]]`
 
@@ -483,6 +509,17 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `page #n: X already has a chart page; one range per channel` | Keep one chart of it. |
 | `page #n: X is not in the [[channel]] list` | Declare it under `[[channel]]`. |
 | `page #n: X is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it` | Declare it under `[[channel]]`. |
+| `line N: [[page]] n: volts must be true or false, not a string` | `volts = false`, unquoted. |
+| `page #n: volts needs a [strip]` | Add a `[strip]`, or remove `volts`. |
+
+**`[strip]`**
+
+| refusal | what to do |
+|---|---|
+| `strip must be one [strip] table` | One pair of brackets. |
+| `[strip] volts is missing or not a string` | Add `volts`, a quoted channel. |
+| `[strip] volts X is not in the [[channel]] list` | Declare it under `[[channel]]`. |
+| `[strip] volts X is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it` | Declare it under `[[channel]]`. |
 
 **Alarms**
 
@@ -495,7 +532,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `alarm #n: kind "x" is not "threshold" or "drift"` | Lowercase `threshold` or `drift`. |
 | `alarm #n: direction "x" is not "below" or "above"` | Lowercase `below` or `above`. |
 | `alarm #n needs <key>, a finite number` | Add it, a number that fits a 32-bit float. |
-| `alarm #n: no values page is titled "T"` | Give a values page that `title`. |
+| `alarm #n: no values page is titled "T" — an alarm raises a values page, never a chart` | Give a values page that `title`. |
 | `alarm #n: N values pages are titled "T"` | Give them different titles. |
 | `alarm #n: page "T" does not show X` | Put X on that page. |
 | `alarm #n: release A is not above trip B` / `not below trip B` | Move `release` to the far side of `trip`. |
@@ -564,6 +601,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 - A channel only on other pages, charts included: once a second, or at its `hz` if slower.
 - A channel an alarm watches: at its `hz`, whatever page is up.
 - A specified value: with its channel.
+- `[strip]`'s `volts`: as a cell of every page whose strip shows it.
 - Any other channel on no page: not read, except the stopwatch's `speed` while the stopwatch is
   on.
 - All channels together: at most 100 requests a second. Asked for more, the board reads them

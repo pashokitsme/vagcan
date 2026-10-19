@@ -151,7 +151,18 @@ mod tests {
 	}
 
 	static CHANNELS: [Channel; 2] = [channel(0x1001, "A"), channel(0x1002, "B")];
-	static PAGES: [Page; 2] = [Page::Values { title: "MAIN", cells: &[0] }, Page::Values { title: "HIGH", cells: &[1] }];
+	static PAGES: [Page; 2] = [
+		Page::Values {
+			title: "MAIN",
+			cells: &[0],
+			volts: true,
+		},
+		Page::Values {
+			title: "HIGH",
+			cells: &[1],
+			volts: true,
+		},
+	];
 	static WATCHED: [ChannelId; 1] = [ChannelId(1)];
 	static RULES: [Alarm<'static>; 1] = [Alarm {
 		channels: &WATCHED,
@@ -172,6 +183,7 @@ mod tests {
 		stalk: None,
 		stopwatch: None,
 		buttons: &[],
+		strip: None,
 	};
 
 	#[test]
@@ -208,6 +220,7 @@ mod tests {
 			stalk: None,
 			stopwatch: None,
 			buttons: vec![],
+			strip: None,
 		};
 		assert!(unreplayed(&plan).is_empty(), "a plan without them replays whole");
 		plan.stalk = Some(Stalk {

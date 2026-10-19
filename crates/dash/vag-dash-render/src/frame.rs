@@ -118,6 +118,46 @@ pub enum Frame<'a> {
 	Adapter(Adapter),
 }
 
+/// The status strip across the top of a page (owner, 2026-10-19): the page's title in the
+/// middle and the battery voltage at the left, in the rows [`STRIP_ROWS`](crate::render::STRIP_ROWS)
+/// above the page, which is drawn in the rows under them. A strip with nothing to show is no
+/// strip, and the page keeps the whole panel ([`Strip::is_empty`]).
+///
+/// Not part of [`Frame`], for the reason [`Board`] is not: every `Frame` literal stays valid,
+/// and the stopwatch page and the adapter screen, which no plan page is, draw none.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Strip<'a> {
+	/// The page's `title`, as the plan wrote it; empty for none. On a chart page it replaces
+	/// the label in the chart's own header, which would otherwise say the same word twice.
+	pub title: &'a str,
+	pub volts: Volts,
+}
+
+/// The voltage in the strip, or not.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Volts {
+	/// Not on this page: no `[strip] volts`, the page's `volts = false`, or the page shows the
+	/// same channel as a cell already.
+	#[default]
+	Hidden,
+	/// Shown: the reading in volts, `None` while the channel has not answered — drawn as the
+	/// dash a cell draws for one, never a zero.
+	Shown(Option<f32>),
+}
+
+impl Strip<'_> {
+	/// No strip at all: no title and no voltage.
+	pub const NONE: Strip<'static> = Strip {
+		title: "",
+		volts: Volts::Hidden,
+	};
+
+	/// Whether there is nothing to draw, so the page keeps every row of the panel.
+	pub fn is_empty(&self) -> bool {
+		self.title.is_empty() && self.volts == Volts::Hidden
+	}
+}
+
 /// What the board says about itself, drawn over whichever page is up.
 ///
 /// Not part of [`Frame`], and on purpose: a page is built from the plan and the car's

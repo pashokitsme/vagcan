@@ -5,7 +5,8 @@
 //! drawing code that will run on the OLED writes files anybody can look at —
 //! and, later, files CI can diff.
 //!
-//! Usage: `cargo run -p vag-dash-render --example panel -- <output directory>`
+//! Usage: `cargo run -p vag-dash-render --example panel -- <output directory>`, and `--tall`
+//! for the board's 256×64 (the status strip's pictures, 10 to 14, are laid out for it).
 //!
 //! The values are stand-ins with the right shape, not readings from the car.
 //! Every channel named here is one the catalog declares for the reference car
@@ -15,7 +16,7 @@
 use embedded_graphics::geometry::Size;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics_simulator::{BinaryColorTheme, OutputSettingsBuilder, SimulatorDisplay};
-use vag_dash_render::{Cell, Frame, PANEL, Theme, draw};
+use vag_dash_render::{Board, Cell, Deviation, Faults, Frame, Links, PANEL, Strip, Theme, Volts, draw, draw_page};
 
 fn main() {
 	let dir = std::env::args().nth(1).unwrap_or_else(|| ".".into());
@@ -118,4 +119,84 @@ fn main() {
 		seconds_per_sample: 0.2,
 	};
 	shot("9-chart-cold", &chart_short, &Theme::bold_mono());
+
+	// 8. The status strip over a page: the title in the middle, the voltage at the left, the
+	// page in the rows under it — with a BLE host and a fault count, so the icons and the
+	// badge show where they land.
+	let board = Board {
+		links: Links { usb: false, ble: true },
+		rates: None,
+		faults: Some(Faults::Counted {
+			stored: 2,
+			failing_now: false,
+		}),
+	};
+	let shot_with = |name: &str, frame: &Frame<'_>, strip: &Strip<'_>, board: &Board| {
+		let mut display = SimulatorDisplay::<BinaryColor>::new(size);
+		let report = draw_page(frame, strip, board, &Theme::bold_mono(), &mut display);
+		display.to_rgb_output_image(&settings).save_png(format!("{dir}/{name}.png")).unwrap();
+		println!("{name:<28} {report:?}");
+	};
+	let strip_shot = |name: &str, frame: &Frame<'_>, strip: &Strip<'_>| {
+		let mut display = SimulatorDisplay::<BinaryColor>::new(size);
+		let report = draw_page(frame, strip, &board, &Theme::bold_mono(), &mut display);
+		display.to_rgb_output_image(&settings).save_png(format!("{dir}/{name}.png")).unwrap();
+		println!("{name:<28} {report:?}");
+	};
+	let temps_strip = [
+		Cell::new("МАСЛО", Some(93.0), "°C", 0),
+		Cell::new("КОРОБКА", Some(72.0), "°C", 0),
+		Cell::new("ОЖ", Some(91.0), "°C", 0),
+		Cell::new("ВПУСК", Some(34.0), "°C", 0),
+	];
+	let titled = |title| Strip {
+		title,
+		volts: Volts::Shown(Some(14.2)),
+	};
+	strip_shot("10-strip-values", &Frame::Values { cells: &temps_strip }, &titled("ТЕМПЕРАТУРЫ"));
+	// The voltage is a cell of this page, so the plan shows none in its strip.
+	let battery = [
+		Cell::new("АКБ", Some(14.2), "V", 1),
+		Cell::new("ОЖ", Some(91.0), "°C", 0),
+		Cell::new("МАСЛО", Some(93.0), "°C", 0),
+	];
+	let no_volts = Strip {
+		title: "ПИТАНИЕ",
+		volts: Volts::Hidden,
+	};
+	strip_shot("11-strip-volts-is-a-cell", &Frame::Values { cells: &battery }, &no_volts);
+	// Under a title the chart's header drops its label and keeps its range and seconds.
+	strip_shot("12-strip-chart", &chart, &titled("НАДДУВ"));
+	// No title and no voltage: no strip, the page on the whole panel.
+	strip_shot("13-strip-none", &Frame::Values { cells: &temps_strip }, &Strip::NONE);
+	// The voltage has not answered: a dash, never a zero.
+	let unanswered = Strip {
+		title: "ТЕМПЕРАТУРЫ",
+		volts: Volts::Shown(None),
+	};
+	strip_shot("14-strip-no-answer", &Frame::Values { cells: &temps_strip }, &unanswered);
+
+	// 9. A drive page under the strip with a host on the cable and one over BLE: the second
+	// icon stands beside the rightmost number. `128` fits left of the icons and slides there;
+	// `-3.4` — four characters — fits at no step, stays, and the report says `icon_overlap`.
+	let both = Board {
+		links: Links { usb: true, ble: true },
+		..board
+	};
+	let drive = |last: Cell<'static>| {
+		[
+			Cell::new("СКОРОСТЬ", Some(87.0), "km/h", 0),
+			Cell::new("ОБОРОТЫ", Some(2840.0), "", 0),
+			Cell::new("НАДДУВ", Some(1.42), "bar", 2).with_deviation(Deviation::Value(-0.06)),
+			last,
+		]
+	};
+	let ride = Strip {
+		title: "ЕДЕМ",
+		volts: Volts::Shown(Some(13.9)),
+	};
+	let slid = drive(Cell::new("СКОРОСТЬ", Some(128.0), "km/h", 0).with_deviation(Deviation::Value(-2.0)));
+	shot_with("15-strip-two-icons-slid", &Frame::Values { cells: &slid }, &ride, &both);
+	let stays = drive(Cell::new("УСКОРЕНИЕ", Some(-3.4), "m/s2", 1).with_deviation(Deviation::Value(-0.2)));
+	shot_with("16-strip-two-icons-overlap", &Frame::Values { cells: &stays }, &ride, &both);
 }

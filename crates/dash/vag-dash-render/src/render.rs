@@ -30,7 +30,7 @@ use embedded_graphics::text::Text;
 use u8g2_fonts::FontRenderer;
 use u8g2_fonts::types::{FontColor, HorizontalAlignment, VerticalPosition};
 
-use crate::frame::{Board, Cell, Deviation, Faults, Frame, Links, Rates};
+use crate::frame::{Board, Cell, Deviation, Faults, Frame, Links, Rates, Strip, Volts};
 use crate::theme::{Numerals, Theme};
 
 /// Breathing room each side of a cell's contents.
@@ -78,6 +78,9 @@ pub struct Report {
 	/// panel simply had no degree sign on it. Text that vanishes is worse than
 	/// text that overruns, because nothing on the screen says it happened.
 	pub glyph_missing: bool,
+	/// Something in the rightmost cell stands beside the link icons and had no room left of
+	/// them, even slid to the cell's left edge: drawn anyway, and it runs into them.
+	pub icon_overlap: bool,
 }
 
 /// A stack buffer for one formatted string.
@@ -238,6 +241,103 @@ pub fn draw_with<D>(frame: &Frame<'_>, board: &Board, theme: &Theme, target: &mu
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
+	draw_frame(frame, board, theme, target, true)
+}
+
+/// Rows the status strip takes at the top of the panel: the label face's line and a dark row
+/// under it, with no rule (owner, 2026-10-19). The page is drawn in the rows under them.
+pub const STRIP_ROWS: u32 = 9;
+
+/// The strip's voltage stands this far in from the left edge.
+const STRIP_LEFT: i32 = 1;
+
+/// Draw one plan page: its [`Strip`] across the top and the frame in the rows under it, with
+/// what the board says about itself as [`draw_with`] draws it — the link icons and the fault
+/// badge land in the page's own corners, under the strip. A strip with nothing to show
+/// ([`Strip::is_empty`]) is no strip, and this is [`draw_with`] on the whole panel. So is the
+/// adapter screen, which is no plan page.
+///
+/// With a title in the strip, a chart's header drops its label — the title says it — and
+/// keeps its range and seconds.
+pub fn draw_page<D>(frame: &Frame<'_>, strip: &Strip<'_>, board: &Board, theme: &Theme, target: &mut D) -> Report
+where
+	D: DrawTarget<Color = BinaryColor>,
+{
+	if strip.is_empty() || matches!(frame, Frame::Adapter(_)) {
+		return draw_with(frame, board, theme, target);
+	}
+	let area = target.bounding_box();
+	// The renderer reads its height from the target, so the page under the strip is the page
+	// on a shorter panel.
+	let below = Rectangle::new(
+		area.top_left + Point::new(0, STRIP_ROWS as i32),
+		Size::new(area.size.width, area.size.height.saturating_sub(STRIP_ROWS)),
+	);
+	let mut report = draw_frame(frame, board, theme, &mut target.cropped(&below), strip.title.is_empty());
+	draw_strip(strip, theme, target, &mut report);
+	report
+}
+
+/// What the strip writes for the voltage: one decimal and `V` — `14.2V` — or `--V` while the
+/// channel has not answered, the dash a cell draws for a missing value.
+fn volts_text(volts: Option<f32>) -> Buf {
+	let mut buf = Buf::new();
+	let _ = match volts {
+		Some(v) => write!(buf, "{v:.1}V"),
+		None => buf.write_str("--V"),
+	};
+	buf
+}
+
+/// The strip: the voltage left-aligned at [`STRIP_LEFT`], the title centred on the panel, both
+/// in the label face from the top row. A title that runs into the voltage or off the panel is
+/// reported and drawn anyway, as a label that overruns its column is.
+fn draw_strip<D>(strip: &Strip<'_>, theme: &Theme, target: &mut D, report: &mut Report)
+where
+	D: DrawTarget<Color = BinaryColor>,
+{
+	let width = target.bounding_box().size.width as i32;
+	let ink = FontColor::Transparent(BinaryColor::On);
+	// One past the voltage's last lit column: the title has to start past it.
+	let mut taken = 0;
+	if let Volts::Shown(volts) = strip.volts {
+		let text = volts_text(volts);
+		match theme
+			.label
+			.render(text.as_str(), Point::new(STRIP_LEFT, 0), VerticalPosition::Top, ink, target)
+		{
+			Ok(dims) => taken = dims.bounding_box.map_or(0, |b| b.top_left.x + b.size.width as i32),
+			Err(_) => report.glyph_missing = true,
+		}
+	}
+	if strip.title.is_empty() {
+		return;
+	}
+	match theme.label.render_aligned(
+		strip.title,
+		Point::new(width / 2, 0),
+		VerticalPosition::Top,
+		HorizontalAlignment::Center,
+		ink,
+		target,
+	) {
+		Ok(ink_box) => {
+			if let Some(b) = ink_box
+				&& (b.top_left.x <= taken || b.top_left.x + b.size.width as i32 > width)
+			{
+				report.label_overrun = true;
+			}
+		}
+		Err(_) => report.glyph_missing = true,
+	}
+}
+
+/// [`draw_with`], and whether a chart's header carries the channel's label: not under a strip
+/// that carries the page's title.
+fn draw_frame<D>(frame: &Frame<'_>, board: &Board, theme: &Theme, target: &mut D, chart_label: bool) -> Report
+where
+	D: DrawTarget<Color = BinaryColor>,
+{
 	let mut report = match frame {
 		Frame::Values { cells } => values(cells, board.links, theme, target),
 		Frame::Chart {
@@ -246,7 +346,7 @@ where
 			max,
 			samples,
 			seconds_per_sample,
-		} => chart(cell, *min, *max, samples, *seconds_per_sample, board.links, theme, target),
+		} => chart(cell, *min, *max, samples, *seconds_per_sample, chart_label, board.links, theme, target),
 		// The host's screen: no link icons there, and no badge either.
 		Frame::Adapter(state) => return adapter(state, board.rates, target),
 	};
@@ -822,7 +922,29 @@ where
 	let inner = cell_w.saturating_sub(PAD * 2);
 	let icons = icon_box(links, width);
 
-	let layout = row_layout(cells, theme, inner, height, &mut report);
+	let mut layout = row_layout(cells, theme, inner, height, &mut report);
+	// The icons stand in the rightmost cell's top-right corner. One stands beside the label
+	// alone, which is narrowed for it; a second reaches the number's rows, and under the status
+	// strip the number stands higher still (review, 2026-10-19: `6500` ran 11 rows into the BLE
+	// rune). Where they stand beside the number, the row is laid out again with the rightmost
+	// number's room ending before them — the row takes one face, so the whole row comes down a
+	// step — and taken only if the number then fits there. Four characters do not, at any step
+	// of the ladder in a quarter of the panel: that number stays where it was, and
+	// `Report::icon_overlap` says it collides (`Room::centre`).
+	if let Some(icons) = icons
+		&& layout.tiered
+		&& beside(icons, layout.band.0, layout.band.1)
+	{
+		let left = ((cells.len() as u32 - 1) * cell_w + PAD) as i32;
+		let room = (icons.top_left.x - ICON_CLEARANCE - left).max(0) as u32;
+		let last = number(&cells[cells.len() - 1]);
+		let mut narrowed = Report::default();
+		let again = row_layout_in(cells, theme, inner, room, height, &mut narrowed);
+		if measure(&theme.numerals[layout.step], last.as_str()) > room && measure(&theme.numerals[again.step], last.as_str()) <= room {
+			report = narrowed;
+			layout = again;
+		}
+	}
 	if layout.step > 0 {
 		report.value_shrunk = true;
 	}
@@ -865,7 +987,10 @@ where
 			target,
 			&mut report,
 		);
-		draw_value(cell, centre, inner, height, theme, ink, &layout, target, &mut report);
+		// The rightmost cell's lines stay left of the icons where they stand beside them.
+		let beside = if i + 1 == cells.len() { icons } else { None };
+		let room = Room { left, icons: beside };
+		draw_value(cell, centre, inner, height, theme, ink, &layout, room, target, &mut report);
 	}
 	// Last, over the rightmost column's ground: dark on an alarmed one, or they vanish.
 	let ink = right_column_ground(&Frame::Values { cells }).invert();
@@ -915,12 +1040,19 @@ struct RowLayout {
 /// means anything, so the eye reads the odd cell as the important one — exactly
 /// backwards on a panel whose whole job is to make the important cell obvious.
 fn row_layout(cells: &[Cell<'_>], theme: &Theme, inner: u32, height: u32, report: &mut Report) -> RowLayout {
+	row_layout_in(cells, theme, inner, inner, height, report)
+}
+
+/// [`row_layout`], with the rightmost cell's number given `last_inner` columns rather than
+/// `inner`: what the link icons leave it where they stand beside it.
+fn row_layout_in(cells: &[Cell<'_>], theme: &Theme, inner: u32, last_inner: u32, height: u32, report: &mut Report) -> RowLayout {
 	// First ask what the numbers alone need. Stacking the unit takes it out of
 	// the width competition entirely, so this is also the best face available
 	// if the three tiers turn out to fit.
 	let mut stacked_step = 0usize;
-	for cell in cells {
-		let (s, _, _) = fit(&theme.numerals, number(cell).as_str(), 0, inner);
+	for (i, cell) in cells.iter().enumerate() {
+		let room = if i + 1 == cells.len() { last_inner } else { inner };
+		let (s, _, _) = fit(&theme.numerals, number(cell).as_str(), 0, room);
 		stacked_step = stacked_step.max(s);
 	}
 
@@ -1086,6 +1218,45 @@ where
 	}
 }
 
+/// Whether ink on rows `top..=bottom` stands beside the icons' box.
+fn beside(icons: Rectangle, top: i32, bottom: i32) -> bool {
+	top < icons.top_left.y + icons.size.height as i32 && bottom >= icons.top_left.y
+}
+
+/// What a cell's lines may not cross: its left edge, and — in the rightmost cell — the link
+/// icons, where they stand.
+#[derive(Debug, Clone, Copy)]
+struct Room {
+	/// The first column a line may use: the cell's, less its padding.
+	left: i32,
+	/// The icons' box, in the rightmost cell while a host is connected.
+	icons: Option<Rectangle>,
+}
+
+impl Room {
+	/// The centre for a line `w` wide wanted at `centre`, whose ink spans rows `top..=bottom`.
+	///
+	/// A line beside the icons ends [`ICON_CLEARANCE`] left of them, slid only as far as it
+	/// must — the rule a label in the narrowed column follows (`draw_label`). A line with no
+	/// room left of them even at the cell's left edge is not moved: it stays over its label and
+	/// under its neighbours' level, runs into the icons, and [`Report::icon_overlap`] says so.
+	/// Half a slide would still collide and no longer line up.
+	fn centre(&self, centre: i32, w: i32, top: i32, bottom: i32, report: &mut Report) -> i32 {
+		let Some(icons) = self.icons else {
+			return centre;
+		};
+		let right = icons.top_left.x - ICON_CLEARANCE;
+		if !beside(icons, top, bottom) || centre - w / 2 + w <= right {
+			return centre;
+		}
+		if right - w < self.left {
+			report.icon_overlap = true;
+			return centre;
+		}
+		right - w + w / 2
+	}
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_value<D>(
 	cell: &Cell<'_>,
@@ -1095,6 +1266,7 @@ fn draw_value<D>(
 	theme: &Theme,
 	ink: BinaryColor,
 	layout: &RowLayout,
+	room: Room,
 	target: &mut D,
 	report: &mut Report,
 ) where
@@ -1115,18 +1287,23 @@ fn draw_value<D>(
 		let value_h = numeral_height(numerals, text);
 		let (top, bottom) = layout.band;
 		let baseline = top + (bottom - top - value_h as i32) / 2 + value_h as i32;
-		draw_numerals(numerals, text, Point::new(centre - value_w as i32 / 2, baseline), ink, target);
+		let at = room.centre(centre, value_w as i32, baseline - value_h as i32, baseline, report);
+		draw_numerals(numerals, text, Point::new(at - value_w as i32 / 2, baseline), ink, target);
 		if let (Some(baseline), Some(text)) = (layout.dev_baseline, difference(cell)) {
-			draw_difference(&text, centre, baseline, theme, ink, target, report);
+			let (w, h) = (difference_width(theme, &text) as i32, text_height(&theme.label, "0") as i32);
+			let at = room.centre(centre, w, baseline - h, baseline, report);
+			draw_difference(&text, at, baseline, theme, ink, target, report);
 		}
 		if layout.with_unit && !cell.unit.is_empty() {
 			// Unit last, on the floor, centred under the number. It is the
 			// smallest thing on the panel and the one you look at least.
+			let (w, h) = (text_width(&theme.unit, cell.unit) as i32, text_height(&theme.unit, cell.unit) as i32);
+			let at = room.centre(centre, w, layout.unit_baseline - h, layout.unit_baseline, report);
 			if theme
 				.unit
 				.render_aligned(
 					cell.unit,
-					Point::new(centre, layout.unit_baseline),
+					Point::new(at, layout.unit_baseline),
 					VerticalPosition::Baseline,
 					HorizontalAlignment::Center,
 					FontColor::Transparent(ink),
@@ -1272,7 +1449,17 @@ fn chart_header(cell: &Cell<'_>, min: f32, max: f32, drawn: usize, seconds_per_s
 }
 
 #[allow(clippy::too_many_arguments)]
-fn chart<D>(cell: &Cell<'_>, min: f32, max: f32, samples: &[f32], seconds_per_sample: f32, links: Links, theme: &Theme, target: &mut D) -> Report
+fn chart<D>(
+	cell: &Cell<'_>,
+	min: f32,
+	max: f32,
+	samples: &[f32],
+	seconds_per_sample: f32,
+	label: bool,
+	links: Links,
+	theme: &Theme,
+	target: &mut D,
+) -> Report
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
@@ -1289,15 +1476,22 @@ where
 	// Drawn in two pieces because it is two alphabets: the label is a word in the
 	// reader's language, the rest is `0.00-2.50bar 19s`. One face has Cyrillic
 	// and the other has `°`, and no face here has both.
-	let head = theme
-		.label
-		.render(cell.label, Point::new(0, 0), VerticalPosition::Top, FontColor::Transparent(ink), target);
-	let after = match &head {
-		Ok(dim) => dim.advance.x + 6,
-		Err(_) => {
-			report.glyph_missing = true;
-			0
+	//
+	// Under a strip that carries the page's title the label goes: the title says what the
+	// chart is, and the same word twice reads as two things (owner, 2026-10-19).
+	let after = if label {
+		match theme
+			.label
+			.render(cell.label, Point::new(0, 0), VerticalPosition::Top, FontColor::Transparent(ink), target)
+		{
+			Ok(dim) => dim.advance.x + 6,
+			Err(_) => {
+				report.glyph_missing = true;
+				0
+			}
 		}
+	} else {
+		0
 	};
 	let buf = number(cell);
 	// A chart gives the number a third of the width; past that the trace has
@@ -2566,5 +2760,317 @@ mod tests {
 		assert!(layout.title.is_some() && layout.speed.is_some(), "the title and the speeds fit");
 		assert!(layout.counters.is_none(), "the counters do not, and are not drawn");
 		lit_only_inside(&display, &layout.boxes().collect::<std::vec::Vec<_>>());
+	}
+
+	// --- the status strip -------------------------------------------------------------
+
+	/// The page under the strip: the panel less the strip's rows.
+	const UNDER: Size = Size::new(256, 64 - STRIP_ROWS);
+
+	fn strip_board() -> Board {
+		Board {
+			links: BLE,
+			rates: None,
+			faults: NINE,
+		}
+	}
+
+	/// `page` drawn with `strip` on the board's panel, and the report.
+	fn paged(frame: &Frame<'_>, strip: &Strip<'_>, board: &Board) -> (SimulatorDisplay<BinaryColor>, Report) {
+		let mut display = tall();
+		let report = draw_page(frame, strip, board, &Theme::bold_mono(), &mut display);
+		(display, report)
+	}
+
+	/// Rows `STRIP_ROWS..` of `display` are, pixel for pixel, `under` — the page drawn alone on a
+	/// panel as tall as what the strip leaves.
+	fn page_under_strip_is(display: &SimulatorDisplay<BinaryColor>, under: &SimulatorDisplay<BinaryColor>) -> bool {
+		Rectangle::new(Point::zero(), UNDER)
+			.points()
+			.all(|p| under.get_pixel(p) == display.get_pixel(p + Point::new(0, STRIP_ROWS as i32)))
+	}
+
+	fn strip_rows() -> Rectangle {
+		Rectangle::new(Point::zero(), Size::new(TALL.width, STRIP_ROWS))
+	}
+
+	#[test]
+	fn the_strip_writes_volts_with_one_decimal_and_a_dash_for_no_answer() {
+		assert_eq!(volts_text(Some(14.24)).as_str(), "14.2V");
+		assert_eq!(volts_text(Some(12.0)).as_str(), "12.0V");
+		assert_eq!(volts_text(None).as_str(), "--V", "no answer is a dash, as in a cell, never 0.0V");
+	}
+
+	#[test]
+	fn a_strip_with_nothing_to_show_is_no_strip_and_the_page_keeps_the_whole_panel() {
+		let cells = temps("ВПУСК");
+		let page = Frame::Values { cells: &cells };
+		let (display, report) = paged(&page, &Strip::NONE, &strip_board());
+		let (plain, plain_report) = with_badge(&page, BLE, NINE);
+		assert_eq!(report, plain_report);
+		assert!(
+			TALL_BOX.points().all(|p| display.get_pixel(p) == plain.get_pixel(p)),
+			"the page as drawn without a strip"
+		);
+		assert!(Strip::NONE.is_empty() && Strip::default().is_empty());
+	}
+
+	const TALL_BOX: Rectangle = Rectangle::new(Point::zero(), TALL);
+
+	#[test]
+	fn a_values_page_under_the_strip_is_the_page_on_the_rows_under_it_icons_and_badge_included() {
+		let cells = temps("ВПУСК");
+		let page = Frame::Values { cells: &cells };
+		let strip = Strip {
+			title: "ТЕМПЕРАТУРЫ",
+			volts: Volts::Shown(Some(14.2)),
+		};
+		let (display, report) = paged(&page, &strip, &strip_board());
+		let mut under: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(UNDER);
+		let alone = draw_with(&page, &strip_board(), &Theme::bold_mono(), &mut under);
+		assert_eq!(report, alone, "the strip itself fits: nothing to report beyond the page's own");
+		let mut full = tall();
+		let whole = draw_with(&page, &strip_board(), &Theme::bold_mono(), &mut full);
+		assert_eq!(alone, whole, "and the page fits its 55 rows as it fits 64: {alone:?}");
+		assert!(
+			page_under_strip_is(&display, &under),
+			"the page, its icons and its badge, moved down by the strip"
+		);
+		// The badge still stands on the floor of the panel, the icons under the strip.
+		let badge = badge_box(NINE, &Theme::bold_mono(), UNDER).unwrap();
+		assert_eq!(badge.top_left.y + badge.size.height as i32 + STRIP_ROWS as i32, TALL.height as i32 - 1);
+		let icons = icon_box(BLE, TALL.width).unwrap();
+		assert!(lit_in(&display, icons.translate(Point::new(0, STRIP_ROWS as i32))));
+
+		// The strip: the voltage at the left, the title in the middle, nothing on its last row
+		// — no rule under it.
+		let ink: std::vec::Vec<Point> = strip_rows().points().filter(|p| display.get_pixel(*p) == BinaryColor::On).collect();
+		assert!(
+			ink.iter().all(|p| p.y < STRIP_ROWS as i32 - 1),
+			"a dark row between the strip and the page"
+		);
+		let volts: std::vec::Vec<i32> = ink.iter().filter(|p| p.x < 64).map(|p| p.x).collect();
+		// Anchored a column in; a `1` has a blank column of its own before its stroke.
+		let first = *volts.iter().min().expect("the voltage is drawn");
+		assert!((STRIP_LEFT..=STRIP_LEFT + 1).contains(&first), "the voltage starts at the left: {first}");
+		let title: std::vec::Vec<i32> = ink.iter().filter(|p| p.x >= 64).map(|p| p.x).collect();
+		let (left, right) = (*title.iter().min().unwrap(), *title.iter().max().unwrap());
+		assert!(
+			((left + right) / 2 - TALL.width as i32 / 2).abs() <= 2,
+			"the title is centred: {left}..{right}"
+		);
+	}
+
+	#[test]
+	fn the_strip_draws_only_what_it_has() {
+		let cells = temps("ВПУСК");
+		let page = Frame::Values { cells: &cells };
+		let title_only = Strip {
+			title: "ТЕМП",
+			volts: Volts::Hidden,
+		};
+		let (display, _) = paged(&page, &title_only, &Board::default());
+		let left = Rectangle::new(Point::zero(), Size::new(64, STRIP_ROWS));
+		assert!(!lit_in(&display, left), "no voltage on a page that hides it");
+		assert!(lit_in(&display, strip_rows()), "the title is there");
+
+		let volts_only = Strip {
+			title: "",
+			volts: Volts::Shown(None),
+		};
+		let (display, report) = paged(&page, &volts_only, &Board::default());
+		assert!(!report.glyph_missing, "{report:?}");
+		let right = Rectangle::new(Point::new(64, 0), Size::new(TALL.width - 64, STRIP_ROWS));
+		assert!(lit_in(&display, left), "`--V`");
+		assert!(!lit_in(&display, right), "and no title");
+	}
+
+	#[test]
+	fn under_a_title_a_charts_header_drops_its_label_and_keeps_its_range_and_seconds() {
+		let samples = [1.5f32; 120];
+		let chart = pinned_chart(&samples);
+		let titled = Strip {
+			title: "НАДДУВ",
+			volts: Volts::Shown(Some(14.2)),
+		};
+		let (display, report) = paged(&chart, &titled, &strip_board());
+		assert_eq!(report, Report::default(), "{report:?}");
+		// `Д` reaches under the line, and still stays off the strip's last row.
+		let last = Rectangle::new(Point::new(0, STRIP_ROWS as i32 - 1), Size::new(TALL.width, 1));
+		assert!(!lit_in(&display, last), "a dark row between the strip and the chart");
+		let theme = Theme::bold_mono();
+		let mut without: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(UNDER);
+		draw_frame(&chart, &strip_board(), &theme, &mut without, false);
+		assert!(page_under_strip_is(&display, &without), "the chart without its label");
+		let mut with: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(UNDER);
+		draw_with(&chart, &strip_board(), &theme, &mut with);
+		assert!(!page_under_strip_is(&display, &with), "which is not the chart with it");
+		// The range and the seconds moved to the left edge: the header's row has ink from there.
+		let header = Rectangle::new(Point::new(0, STRIP_ROWS as i32), Size::new(8, 8));
+		assert!(lit_in(&display, header), "the range starts the header");
+
+		// A strip with the voltage alone keeps the chart's label: nothing else says what it is.
+		let volts_only = Strip {
+			title: "",
+			volts: Volts::Shown(Some(14.2)),
+		};
+		let (display, _) = paged(&chart, &volts_only, &strip_board());
+		assert!(page_under_strip_is(&display, &with), "the chart as it is, under the strip");
+	}
+
+	/// A drive page: four cells, the last with a specified value, so its number stands high.
+	fn drive(last: Cell<'_>) -> [Cell<'_>; 4] {
+		[
+			Cell::new("СКОРОСТЬ", Some(87.0), "km/h", 0),
+			Cell::new("ОБОРОТЫ", Some(2840.0), "", 0),
+			Cell::new("НАДДУВ", Some(1.42), "bar", 2).with_deviation(Deviation::Value(-0.06)),
+			last,
+		]
+	}
+
+	/// The icons' column under the strip, with the clearance left of it, and the two icons drawn
+	/// alone where the page puts them.
+	fn icon_column_under_the_strip() -> (Rectangle, SimulatorDisplay<BinaryColor>) {
+		let down = Point::new(0, STRIP_ROWS as i32);
+		let icons = icon_box(BOTH, TALL.width).unwrap().translate(down);
+		let column = Rectangle::new(
+			icons.top_left - Point::new(ICON_CLEARANCE, 0),
+			icons.size + Size::new(ICON_CLEARANCE as u32, 0),
+		);
+		let mut alone = tall();
+		draw_icons(BOTH, TALL.width, BinaryColor::On, &mut alone.translated(down));
+		(column, alone)
+	}
+
+	/// Whether `display` holds nothing but the icons in their column and its clearance.
+	fn clear_of_icons(display: &SimulatorDisplay<BinaryColor>) -> bool {
+		let (column, alone) = icon_column_under_the_strip();
+		column.points().all(|p| display.get_pixel(p) == alone.get_pixel(p))
+	}
+
+	const DRIVE_STRIP: Strip<'static> = Strip {
+		title: "ЕДЕМ",
+		volts: Volts::Shown(Some(13.9)),
+	};
+
+	const BOTH_LINKS: Board = Board {
+		links: BOTH,
+		rates: None,
+		faults: None,
+	};
+
+	/// Review, 2026-10-19: under the strip, with a host on the cable and one over BLE, the
+	/// rightmost number ran into the second icon. A number that fits left of them goes there:
+	/// slid at the row's face, or with the row a step down when only that makes it fit.
+	#[test]
+	fn under_the_strip_two_icons_keep_a_number_that_fits_left_of_them_clear() {
+		// Slid: the row's face is the four-digit cells', and `128` fits beside the icons at it.
+		let slid = drive(Cell::new("СКОРОСТЬ", Some(128.0), "km/h", 0).with_deviation(Deviation::Value(-2.0)));
+		let (display, report) = paged(&Frame::Values { cells: &slid }, &DRIVE_STRIP, &BOTH_LINKS);
+		assert!(!report.icon_overlap, "{report:?}");
+		assert!(clear_of_icons(&display), "slid left of the icons");
+
+		// A step down: two-digit cells take the largest face, where `128` does not fit beside
+		// the icons; the row comes down one step and it does.
+		let short = [
+			Cell::new("ОЖ", Some(93.0), "°C", 0),
+			Cell::new("МАСЛО", Some(99.0), "°C", 0),
+			Cell::new("ВПУСК", Some(34.0), "°C", 0),
+			Cell::new("СКОРОСТЬ", Some(128.0), "km/h", 0).with_deviation(Deviation::Value(-2.0)),
+		];
+		let page = Frame::Values { cells: &short };
+		let (display, report) = paged(&page, &DRIVE_STRIP, &BOTH_LINKS);
+		assert!(!report.icon_overlap, "{report:?}");
+		assert!(clear_of_icons(&display), "a step down, left of the icons");
+		let (_, alone) = paged(&page, &DRIVE_STRIP, &Board::default());
+		assert!(!alone.value_shrunk && report.value_shrunk, "the row came down for the icons: {report:?}");
+	}
+
+	/// Four characters fit nowhere left of two icons — not at any step of the ladder in a
+	/// quarter of the panel. The number stays where the row puts it and the report says it
+	/// collides: the DRIVE page's `-3.4`, `6500` and `1.85`, each with its difference.
+	#[test]
+	fn under_the_strip_a_number_that_cannot_clear_two_icons_is_reported_and_not_moved() {
+		for last in [
+			Cell::new("УСКОРЕНИЕ", Some(-3.4), "m/s2", 1).with_deviation(Deviation::Value(-0.2)),
+			Cell::new("ОБОРОТЫ", Some(6500.0), "", 0).with_deviation(Deviation::Value(-120.0)),
+			Cell::new("НАДДУВ", Some(1.85), "bar", 2).with_deviation(Deviation::Value(-0.06)),
+		] {
+			let label = last.label;
+			let cells = drive(last);
+			let page = Frame::Values { cells: &cells };
+			let (with, report) = paged(&page, &DRIVE_STRIP, &BOTH_LINKS);
+			assert!(report.icon_overlap, "{label}: {report:?}");
+			// The number did not move: in its band, outside the icons, the page is the page with
+			// no host. (The label above it is narrowed for the icons, as it always was.)
+			let (without, _) = paged(&page, &DRIVE_STRIP, &Board::default());
+			let layout = row_layout(&cells, &Theme::bold_mono(), INNER, UNDER.height, &mut Report::default());
+			let down = STRIP_ROWS as i32;
+			let band = Rectangle::new(
+				Point::new(0, layout.band.0 + down),
+				Size::new(TALL.width, (layout.band.1 - layout.band.0) as u32),
+			);
+			let icons = icon_box(BOTH, TALL.width).unwrap().translate(Point::new(0, down));
+			assert!(
+				band
+					.points()
+					.filter(|p| !icons.contains(*p))
+					.all(|p| with.get_pixel(p) == without.get_pixel(p)),
+				"{label}: not slid half way"
+			);
+		}
+	}
+
+	/// One icon stands beside the label alone, which is narrowed already: nothing moves.
+	#[test]
+	fn under_the_strip_one_icon_moves_nothing() {
+		let cells = drive(Cell::new("ОБОРОТЫ", Some(6500.0), "", 0).with_deviation(Deviation::Value(-120.0)));
+		let strip = Strip {
+			title: "ЕДЕМ",
+			volts: Volts::Shown(Some(13.9)),
+		};
+		let page = Frame::Values { cells: &cells };
+		let ble = Board {
+			links: BLE,
+			..Board::default()
+		};
+		let (with, report) = paged(&page, &strip, &ble);
+		let (without, _) = paged(&page, &strip, &Board::default());
+		assert!(!report.icon_overlap, "{report:?}");
+		let icons = icon_box(BLE, TALL.width).unwrap().translate(Point::new(0, STRIP_ROWS as i32));
+		assert!(
+			TALL_BOX
+				.points()
+				.filter(|p| !icons.contains(*p))
+				.all(|p| with.get_pixel(p) == without.get_pixel(p)),
+			"outside the icon, the page is the page with no host"
+		);
+	}
+
+	#[test]
+	fn a_title_that_runs_into_the_voltage_is_reported() {
+		let cells = temps("ВПУСК");
+		let page = Frame::Values { cells: &cells };
+		let long = Strip {
+			title: "ОЧЕНЬ ДЛИННЫЙ ЗАГОЛОВОК СТРАНИЦЫ НА ВЕСЬ ЭКРАН",
+			volts: Volts::Shown(Some(14.2)),
+		};
+		let (_, report) = paged(&page, &long, &Board::default());
+		assert!(report.label_overrun, "{report:?}");
+		assert!(!report.glyph_missing, "Cyrillic is in the label face: {report:?}");
+	}
+
+	#[test]
+	fn the_adapter_screen_draws_no_strip() {
+		let state = adapter_state(Some(500), false);
+		let frame = Frame::Adapter(state);
+		let strip = Strip {
+			title: "Т",
+			volts: Volts::Shown(Some(14.2)),
+		};
+		let (display, _) = paged(&frame, &strip, &Board::default());
+		let mut plain = tall();
+		draw_with(&frame, &Board::default(), &Theme::bold_mono(), &mut plain);
+		assert!(TALL_BOX.points().all(|p| display.get_pixel(p) == plain.get_pixel(p)));
 	}
 }

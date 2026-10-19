@@ -1,12 +1,12 @@
-// `to_rust` on the test fixture of `src/dash.rs` (a lever, a stopwatch and buttons), not on
-// any car's data. Compiled by `tests/generated_plan.rs`. Do not edit by hand: rewrite it with
+// `to_rust` on the test fixture of `src/dash.rs` (a lever, a stopwatch, buttons and a strip),
+// not on any car's data. Compiled by `tests/generated_plan.rs`. Do not edit by hand: rewrite it with
 // `BLESS=1 cargo test -p vag-cli-core generated_source`, then run the tests again.
-use vag_dash_render::plan::{Band, ButtonPlan, Channel, Page, Plan, StalkPlan, StopwatchPlan, Unit};
+use vag_dash_render::plan::{Band, ButtonPlan, Channel, Page, Plan, StalkPlan, StopwatchPlan, StripPlan, Unit};
 use vag_dash_render::stalk::{StateIndex, States};
 use vag_dash_render::control::Command;
 use vag_dash_render::alarm::Alarm;
 
-pub static PLAN: Plan = Plan { vin: "TESTVIN0000000001", language: "en", units: &UNITS, channels: &CHANNELS, pages: &PAGES, alarms: &ALARMS, stalk: Some(StalkPlan { rocker: 3, switch: 4, cruise: 5, rocker_states: &STALK_ROCKER, switch_states: &STALK_SWITCH, cruise_states: &STALK_CRUISE, states: States { next: StateIndex(1), previous: StateIndex(2), measure: StateIndex(3), switch_off: StateIndex(1), cruise_off: StateIndex(0) } }), stopwatch: Some(StopwatchPlan { speed: 1, km_h_per_unit: 0.0271, marks: &MARKS }), buttons: &BUTTONS };
+pub static PLAN: Plan = Plan { vin: "TESTVIN0000000001", language: "en", units: &UNITS, channels: &CHANNELS, pages: &PAGES, alarms: &ALARMS, stalk: Some(StalkPlan { rocker: 3, switch: 4, cruise: 5, rocker_states: &STALK_ROCKER, switch_states: &STALK_SWITCH, cruise_states: &STALK_CRUISE, states: States { next: StateIndex(1), previous: StateIndex(2), measure: StateIndex(3), switch_off: StateIndex(1), cruise_off: StateIndex(0) } }), stopwatch: Some(StopwatchPlan { speed: 1, km_h_per_unit: 0.0271, marks: &MARKS }), buttons: &BUTTONS, strip: Some(StripPlan { volts: 2 }) };
 
 static UNITS: [Unit; 2] = [
 	Unit { request: 0x7E0, response: 0x7E8, part_number: "PART1" },
@@ -23,8 +23,9 @@ static CHANNELS: [Channel; 6] = [
 ];
 
 static CELLS_0: [u16; 1] = [0];
-static PAGES: [Page; 1] = [
-	Page::Values { title: "T", cells: &CELLS_0 },
+static PAGES: [Page; 2] = [
+	Page::Values { title: "T", cells: &CELLS_0, volts: true },
+	Page::Chart { title: "Speed", channel: 1, min: 0.0, max: 250.0, volts: false },
 ];
 
 static ALARMS: [Alarm<'static>; 0] = [
