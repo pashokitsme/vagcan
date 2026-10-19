@@ -66,7 +66,7 @@ impl Progress for Said {
 	fn unit(&mut self, at: usize, of: usize, name: &str) {
 		self.started.get_or_insert_with(std::time::Instant::now);
 		(self.at, self.of) = (at, of);
-		self.waiting(&format!("{name}: finding its measurement list"));
+		self.waiting(&format!("[{}/{of}] {name}: finding its measurement list", at + 1));
 	}
 
 	fn done(&mut self, line: &str) {
