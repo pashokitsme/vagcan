@@ -140,8 +140,8 @@ pub fn match_columns(columns: &[Column], offered: &[Offered], plan: &Plan) -> Ma
 
 /// The plan channels the replay has no use for, by index: the lever's three, which only the
 /// lever reads, and the stopwatch's speed when nothing the replay runs shows it — no page, no
-/// alarm, and no page channel it is the specified value of. Neither the lever nor the stopwatch
-/// is replayed (`super::unreplayed`, said first), so a recording without these channels misses
+/// alarm, and no page channel it is the specified value or the standstill of. Neither the lever
+/// nor the stopwatch is replayed (`super::unreplayed`, said first), so a recording without these channels misses
 /// nothing, and they are named in no note about columns (`todo/dash/19`).
 fn unused(plan: &Plan) -> BTreeSet<usize> {
 	let mut out = BTreeSet::new();
@@ -157,7 +157,8 @@ fn unused(plan: &Plan) -> BTreeSet<usize> {
 }
 
 /// Whether the replay shows or watches the channel at `index`: a page's cell or chart, an
-/// alarm's channel or specified value, or the specified value of a channel a page shows.
+/// alarm's channel or specified value, or the specified value or the standstill of a channel a
+/// page shows.
 fn replayed(plan: &Plan, index: u16) -> bool {
 	let on_a_page = |index: u16| {
 		plan.pages.iter().any(|page| match page {
@@ -172,11 +173,14 @@ fn replayed(plan: &Plan, index: u16) -> bool {
 				AlarmRule::Drift { specified, .. } => *specified == index,
 			}
 	});
+	// Read with a channel a page shows: its specified value, or the standstill a `zero_at_rest`
+	// one is shown by.
+	let stands_by = plan.standstill.is_some_and(|s| s.channel() == index);
 	let explains = plan
 		.channels
 		.iter()
 		.enumerate()
-		.any(|(i, c)| c.setpoint == Some(index) && on_a_page(i as u16));
+		.any(|(i, c)| (c.setpoint == Some(index) || (stands_by && c.zero_at_rest)) && on_a_page(i as u16));
 	on_a_page(index) || watched || explains
 }
 
@@ -367,11 +371,23 @@ mod tests {
 		}
 	}
 
+	/// The channels, and a unit for each request id they name: a plan lists every channel's unit.
 	fn plan(channels: Vec<PlanChannel>) -> Plan {
+		let mut requests: Vec<u16> = channels.iter().map(|c| c.unit).collect();
+		requests.dedup();
+		let units = requests
+			.into_iter()
+			.map(|request| vag_cli_core::dash::Unit {
+				request,
+				response: request + 8,
+				part_number: "PART".into(),
+				odx_name: None,
+			})
+			.collect();
 		Plan {
 			vin: "TESTVIN0000000001".into(),
 			language: "en".into(),
-			units: vec![],
+			units,
 			channels,
 			pages: vec![],
 			alarms: vec![],
@@ -379,6 +395,7 @@ mod tests {
 			stopwatch: None,
 			buttons: vec![],
 			strip: None,
+			standstill: None,
 		}
 	}
 
@@ -543,6 +560,20 @@ mod tests {
 		}];
 		assert_eq!(
 			missing(&owned),
+			"not in the recording, so no value and never an alarm: speed (01:1002), absent (01:1009)"
+		);
+		// Nor on no page when a `zero_at_rest` channel a page shows asks it whether the car
+		// stands (`todo/dash/26`): the replay reads it with that channel.
+		let mut resting = owned.clone();
+		resting.pages = vec![Page::Values {
+			title: "T".into(),
+			cells: vec![0, 5],
+			volts: true,
+		}];
+		resting.channels[0].zero_at_rest = true;
+		resting.standstill = Some(vag_cli_core::dash::Standstill::Speed { channel: 1 });
+		assert_eq!(
+			missing(&resting),
 			"not in the recording, so no value and never an alarm: speed (01:1002), absent (01:1009)"
 		);
 		// Nor is any other note about columns written for them: a heading the cruise status

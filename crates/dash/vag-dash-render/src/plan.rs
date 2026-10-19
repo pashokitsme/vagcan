@@ -7,13 +7,12 @@
 //! `include!`s it, and at run time does exactly one thing per channel: send
 //! `0x22`, take the bits, multiply, draw. Nothing here resolves anything.
 //!
-//! Two things differ from the task's sketch, both because of what already
-//! exists on the board: pages point at channels **by index** rather than
-//! carrying them, because `vag_dash_fw::config::Page` stores cells as indices
-//! into the flashed plan and has since before there was one; and every channel
-//! carries its unit's request id rather than the unit carrying its channels,
-//! because the poll loop walks *units* (one conversation at a time — see
-//! `vag-cli-core/src/plan.rs`) and asks each for its channels.
+//! **The board indexes; it never searches** (`todo/dash/27`, archived). Every join the board
+//! needs is resolved by the generator and written as an index: a page points at its channels by
+//! index into [`Plan::channels`], a channel at its unit by index into [`Plan::units`], a page
+//! names the channel its strip's voltage is read from ([`Page::volts`]), and a chart page the
+//! slot of its history ([`Page::Chart`]'s `slot`). [`Plan::joins_hold`] checks every one of
+//! them when the image is built.
 //!
 //! Why this lives in the renderer crate and not the firmware: the firmware is
 //! not a workspace member and cannot be built for the host, so anything only
@@ -48,9 +47,8 @@ pub struct Plan {
 	/// channel's bounds before its drift. A [`ChannelId`] is an index into [`Plan::channels`]
 	/// and a [`PageId`](crate::alarm::PageId) an index into [`Plan::pages`]: an image is built
 	/// for one plan, so an index is a name that cannot drift. The generator has checked each
-	/// rule — its page is the first values page that shows the channel, its off values are on
-	/// the inside of its bounds — and that what the board reads on every page fits the bus
-	/// budget; no count caps them.
+	/// rule — its page is the first values page that shows the channel, else its chart page, and
+	/// its off values are on the inside of its bounds; no count caps them.
 	pub alarms: &'static [Alarm],
 	/// The cruise lever as buttons (`todo/dash/19`), where the owner's `[stalk]` names one.
 	pub stalk: Option<StalkPlan>,
@@ -59,16 +57,48 @@ pub struct Plan {
 	/// The owner's `[[button]]`s, in the file's order: at most
 	/// [`MAX_BUTTONS`](crate::control::MAX_BUTTONS), each on a pin of its own.
 	pub buttons: &'static [ButtonPlan],
-	/// The status strip's sources, where the owner's `[strip]` names them (owner, 2026-10-19).
-	pub strip: Option<StripPlan>,
+	/// Where the plan learns that the car stands ([`Plan::stands`]), if anywhere: what a
+	/// `zero_at_rest` channel asks. `None` where the plan has no source, and then no channel is
+	/// `zero_at_rest` — the generator refuses one.
+	pub standstill: Option<Standstill>,
 }
 
-/// `[strip]`, resolved: where the strip's voltage comes from.
+/// Where "the car stands" comes from: one fact of the plan, decided once per frame
+/// ([`Plan::stands`]), not a feature of the stopwatch (`todo/dash/26`, archived).
+///
+/// One kind today. A later one — a unit's own standstill verdict, an enumerated state such as
+/// the parking aid's — is another variant, and needs the car first: whether it answers, and how
+/// long after the wheels stop it changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StripPlan {
-	/// The battery voltage, a plan channel index. Shown on every page whose
-	/// [`Page::volts`] is set and which does not show the channel as a cell already.
-	pub volts: u16,
+pub enum Standstill {
+	/// A speed channel, by plan channel index: the car stands while it reads exactly 0
+	/// ([`stands_at`]) — the stopwatch's own test, on the stopwatch's own speed today.
+	Speed(u16),
+}
+
+/// Whether a speed reading says the car stands: exactly 0. The stopwatch arms on it
+/// ([`Stopwatch::sample`](crate::stopwatch::Stopwatch::sample)) and [`Standstill::Speed`] decides
+/// by it, so the two never disagree about one reading. Exact, because a speed channel's zero is
+/// a raw zero — the generator refuses a stopwatch speed with an offset in its scaling.
+pub fn stands_at(speed: f32) -> bool {
+	speed == 0.0
+}
+
+impl Standstill {
+	/// Whether the car stands now, `value_of` giving a channel's current reading: `None` where
+	/// the source has no current answer — no answer is no claim either way.
+	pub fn stands(&self, value_of: impl Fn(u16) -> Option<f32>) -> Option<bool> {
+		match *self {
+			Standstill::Speed(channel) => value_of(channel).map(stands_at),
+		}
+	}
+
+	/// The channel the fact is read from.
+	pub const fn channel(&self) -> u16 {
+		match *self {
+			Standstill::Speed(channel) => channel,
+		}
+	}
 }
 
 /// A `[[button]]`: a button on one of the board's free pins, wired to GND, and the one
@@ -248,8 +278,8 @@ const BUSY_REPEAT_REQUEST: u8 = 0x21;
 /// what to call it. Already rendered — there is nothing left to look up.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Channel {
-	/// Request id of the unit that owns it — a key into [`Plan::units`].
-	pub unit: u16,
+	/// The unit that owns it, by index into [`Plan::units`] ([`Plan::unit`]).
+	pub unit: u8,
 	/// The identifier `0x22` asks for.
 	pub did: u16,
 	/// Bits into the positive response, counted after the three-byte
@@ -289,9 +319,9 @@ pub struct Channel {
 	pub setpoint: Option<u16>,
 	/// Shown as 0 while the car stands: `dash.toml`'s `zero_at_rest` (owner, 2026-10-05), for
 	/// an acceleration sensor that reads the road's slope as acceleration when the car is
-	/// still. "Stands" is the stopwatch's own test, its speed channel reading 0; the plan
-	/// generator refuses the flag without a `[stopwatch]`. It changes what the glass shows,
-	/// not what alarms or charts watch.
+	/// still. "Stands" is the plan's one fact ([`Plan::stands`]); the plan generator refuses the
+	/// flag in a plan with no [`Plan::standstill`]. It changes what the glass shows, not what
+	/// alarms or charts watch.
 	pub zero_at_rest: bool,
 }
 
@@ -344,25 +374,30 @@ pub const MAX_VALUE_CELLS: usize = 4;
 
 /// What one page shows. Indices are into [`Plan::channels`].
 ///
-/// Both kinds carry the strip's two settings: the `title` drawn in it (and, on a values page,
-/// the name an alarm raises the page by), and whether the strip shows the voltage there
-/// (`volts`, the owner's `volts = false` to hide it).
+/// Both kinds carry the strip's two settings: the `title` drawn in it (and the name an alarm
+/// raises the page by), and the channel the strip reads its voltage from on this page
+/// (`volts`) — `None` where the plan has no `[strip]`, the owner wrote `volts = false`, or the
+/// page shows that channel itself already, as a cell or as its chart: the same number twice on
+/// one page says nothing the once does not. The generator decided it; the board reads it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Page {
 	/// One channel, large, with its recent history. `min`/`max` are the chart's
-	/// fixed range — never autoscaled, see `02`.
+	/// fixed range — never autoscaled, see `02`. `slot` is the chart's place among the plan's
+	/// chart pages, `0..chart_count()`: the index of its [`History`](crate::history::History)
+	/// in an array sized by [`Plan::chart_count`].
 	Chart {
 		title: &'static str,
 		channel: u16,
+		slot: u8,
 		min: f32,
 		max: f32,
-		volts: bool,
+		volts: Option<u16>,
 	},
 	/// Up to four columns, small label over a large number.
 	Values {
 		title: &'static str,
 		cells: &'static [u16],
-		volts: bool,
+		volts: Option<u16>,
 	},
 }
 
@@ -374,8 +409,8 @@ impl Page {
 		}
 	}
 
-	/// Whether the owner lets the strip show the voltage on this page.
-	pub const fn volts(&self) -> bool {
+	/// The channel the strip over this page reads its voltage from, if it shows one here.
+	pub const fn volts(&self) -> Option<u16> {
 		match self {
 			Page::Chart { volts, .. } | Page::Values { volts, .. } => *volts,
 		}
@@ -387,6 +422,13 @@ impl Page {
 			Page::Chart { channel, .. } => *channel == index,
 			Page::Values { cells, .. } => cells.contains(&index),
 		}
+	}
+
+	/// Every channel the page reads for the glass: what it shows ([`pages::cells`](crate::pages::cells)
+	/// — a chart's channel too, which samples every frame) and the voltage its strip shows. What
+	/// the bus lists for the page, on the board and in the replay.
+	pub fn reads(&self) -> impl Iterator<Item = u16> + '_ {
+		crate::pages::cells(self).iter().copied().chain(self.volts())
 	}
 }
 
@@ -409,16 +451,30 @@ impl Plan {
 		self.channels.get(usize::from(index))
 	}
 
-	/// What a cell shows for channel `index` whose reading is `value`, given the stopwatch's
-	/// speed channel reading `speed` (in its own unit, as read). Two things change it, both
-	/// the owner's (2026-10-05):
+	/// The unit a channel is read from: its index, as the generator wrote it. In a plan whose
+	/// [`Plan::joins_hold`] every channel's unit is one of its units, and the firmware refuses
+	/// to build on one that does not.
+	pub fn unit(&self, channel: &Channel) -> &'static Unit {
+		&self.units[usize::from(channel.unit)]
+	}
+
+	/// Whether the car stands now, as the plan's [`Plan::standstill`] says, `value_of` giving a
+	/// channel's current reading: decided once per frame, and what every `zero_at_rest` cell
+	/// of that frame is shown by. `None` with no source, or no current answer from it.
+	pub fn stands(&self, value_of: impl Fn(u16) -> Option<f32>) -> Option<bool> {
+		self.standstill?.stands(value_of)
+	}
+
+	/// What a cell shows for channel `index` whose reading is `value`, given whether the car
+	/// stands ([`Plan::stands`], this frame's). Two things change it, both the owner's
+	/// (2026-10-05):
 	///
 	/// - **The stopwatch's speed is shown rounded down** to its decimals. A mark counts when
 	///   the speed reaches it, so a speed rounded up showed `100` at 99.5 while the run had
 	///   not reached 100 yet, and it looked as if the mark were missed.
-	/// - **A `zero_at_rest` channel shows 0 while the car stands** — the speed reads exactly
-	///   0, as the stopwatch decides it. An unanswered speed changes nothing.
-	pub fn shown(&self, index: u16, value: Option<f32>, speed: Option<f32>) -> Option<f32> {
+	/// - **A `zero_at_rest` channel shows 0 while the car stands.** Not knowing whether it
+	///   stands changes nothing.
+	pub fn shown(&self, index: u16, value: Option<f32>, stands: Option<bool>) -> Option<f32> {
 		let value = value?;
 		let Some(channel) = self.channel(index) else {
 			return Some(value);
@@ -426,30 +482,20 @@ impl Plan {
 		if self.stopwatch.is_some_and(|stopwatch| stopwatch.speed == index) {
 			return Some(round_down(value, channel.decimals));
 		}
-		if channel.zero_at_rest && speed == Some(0.0) {
+		if channel.zero_at_rest && stands == Some(true) {
 			return Some(0.0);
 		}
 		Some(value)
 	}
 
-	/// The channel the strip reads its voltage from on page `page` (a plan page index), if it
-	/// shows one there: the plan has a `[strip]`, the page has `volts` set, and the page does not
-	/// show that channel as a cell or a chart already — the same number twice on one page says
-	/// nothing the once does not.
-	pub fn strip_volts(&self, page: usize) -> Option<u16> {
-		let volts = self.strip?.volts;
-		let page = self.pages.get(page)?;
-		(page.volts() && !page.shows(volts)).then_some(volts)
-	}
-
-	/// The strip's channel, where any page's strip shows it — what the bus lists beside every
-	/// page's cells, so it is read on the pages not on the glass as theirs are.
+	/// The strip's channel, where any page's strip shows it — what the generator's `bus:` line
+	/// counts beside the alarms, as read on every page.
 	pub fn strip_listed(&self) -> Option<u16> {
-		(0..self.pages.len()).find_map(|page| self.strip_volts(page))
+		self.pages.iter().find_map(Page::volts)
 	}
 
 	/// What the strip over page `page` shows, `value_of` giving a channel's current reading:
-	/// the page's title and its voltage ([`Plan::strip_volts`]). A page the plan does not have
+	/// the page's title and its voltage ([`Page::volts`]). A page the plan does not have
 	/// — the stopwatch's — has no title or voltage ([`Strip::NONE`]). The board's panel and
 	/// `dev recording dash` both draw it from here.
 	pub fn strip(&self, page: usize, value_of: impl Fn(u16) -> Option<f32>) -> Strip<'static> {
@@ -458,7 +504,7 @@ impl Plan {
 		};
 		Strip {
 			title: at.title(),
-			volts: match self.strip_volts(page) {
+			volts: match at.volts() {
 				Some(index) => Volts::Shown(value_of(index)),
 				None => Volts::Hidden,
 			},
@@ -480,6 +526,57 @@ impl Plan {
 			i += 1;
 		}
 		count
+	}
+
+	/// Whether every join the generator resolved is one the board can index by: each channel's
+	/// unit is one of [`Plan::units`]; each index a page names — its cells, its chart's channel,
+	/// its strip's voltage — and the standstill's source are channels of the plan; and the
+	/// n-th chart page holds slot n, so the slots are `0..chart_count()`, each once. `const`, so
+	/// the firmware refuses to build on a plan that fails it: an index past its table would be
+	/// a panic on the car.
+	pub const fn joins_hold(&self) -> bool {
+		let channels = self.channels.len();
+		// `while` and indices, because iterators are not `const`.
+		let mut i = 0;
+		while i < channels {
+			if self.channels[i].unit as usize >= self.units.len() {
+				return false;
+			}
+			i += 1;
+		}
+		let mut slot = 0;
+		let mut p = 0;
+		while p < self.pages.len() {
+			let (volts, cells) = match &self.pages[p] {
+				Page::Chart {
+					channel, slot: at, volts, ..
+				} => {
+					if *at as usize != slot {
+						return false;
+					}
+					slot += 1;
+					(*volts, core::slice::from_ref(channel))
+				}
+				Page::Values { cells, volts, .. } => (*volts, *cells),
+			};
+			if let Some(volts) = volts
+				&& volts as usize >= channels
+			{
+				return false;
+			}
+			let mut c = 0;
+			while c < cells.len() {
+				if cells[c] as usize >= channels {
+					return false;
+				}
+				c += 1;
+			}
+			p += 1;
+		}
+		match self.standstill {
+			Some(standstill) => (standstill.channel() as usize) < channels,
+			None => true,
+		}
 	}
 
 	/// Whether the plan's `[[button]]`s are ones the board can wire: at most
@@ -508,30 +605,18 @@ impl Plan {
 		true
 	}
 
-	/// Every chart page, in plan order, numbered — what the panel feeds a
-	/// sample to each frame.
+	/// Every chart page, in plan order, with its slot — what the panel feeds a sample to each
+	/// frame.
 	pub fn charts(&self) -> impl Iterator<Item = Chart> + '_ {
-		self
-			.pages
-			.iter()
-			.filter_map(|page| match page {
-				Page::Chart { channel, min, max, .. } => Some((*channel, *min, *max)),
-				_ => None,
-			})
-			.enumerate()
-			.map(|(slot, (channel, min, max))| Chart { slot, channel, min, max })
-	}
-
-	/// The chart the plan gives a channel, if it gives one. A channel with
-	/// two chart pages is one chart — the first — because one channel has one
-	/// history.
-	pub fn chart(&self, index: u16) -> Option<Chart> {
-		self.charts().find(|chart| chart.channel == index)
-	}
-
-	/// The unit a channel is read from.
-	pub fn unit_of(&self, channel: &Channel) -> Option<&'static Unit> {
-		self.units.iter().find(|u| u.request == channel.unit)
+		self.pages.iter().filter_map(|page| match *page {
+			Page::Chart { channel, slot, min, max, .. } => Some(Chart {
+				slot: usize::from(slot),
+				channel,
+				min,
+				max,
+			}),
+			Page::Values { .. } => None,
+		})
 	}
 
 	/// How every channel worth reading is to be read, in plan order: the ones
@@ -539,8 +624,8 @@ impl Plan {
 	/// `listed` (on some page, not the one on the glass) no faster than
 	/// [`HIDDEN_PERIOD_MS`], and a channel on no page not at all. A chart samples
 	/// its channel every frame whether or not it is shown, so the caller lists
-	/// every page's cells, charts included. An alarm's channels are the plan's
-	/// business, not the caller's: they are foreground on every page, so no page
+	/// every page's reads, charts included ([`Page::reads`]). An alarm's channels are the
+	/// plan's business, not the caller's: they are foreground on every page, so no page
 	/// switch can drop the reading that would trip the rule.
 	pub fn rates<'a>(&'a self, shown: &'a [u16], listed: &'a [u16]) -> impl Iterator<Item = Rate> + 'a {
 		self.rates_in(shown, listed, Mode::default())
@@ -628,28 +713,29 @@ impl Plan {
 		})
 	}
 
-	/// Whether the channel at `index` is the specified value of a channel in `set` — a
-	/// specified value is read exactly when the channel it explains is (`todo/dash/18` §2).
+	/// Whether the channel at `index` is read exactly when a channel in `set` is, because that
+	/// channel cannot be shown without it: its specified value (`todo/dash/18` §2), or — for a
+	/// `zero_at_rest` channel — the standstill's source, without which its cell cannot know
+	/// whether the car stands.
 	fn explains(&self, index: u16, set: &[u16]) -> bool {
+		let stands_by = self.standstill.is_some_and(|s| s.channel() == index);
 		self
 			.channels
 			.iter()
 			.enumerate()
-			.any(|(i, c)| c.setpoint == Some(index) && set.contains(&(i as u16)))
+			.any(|(i, c)| (c.setpoint == Some(index) || (stands_by && c.zero_at_rest)) && set.contains(&(i as u16)))
 	}
 
-	/// The channels one unit owns, in plan order — what one addressed
-	/// conversation asks for before the backend is handed to the next unit.
-	pub fn channels_of(&self, unit: &Unit) -> impl Iterator<Item = (u16, &'static Channel)> {
-		let request = unit.request;
+	/// The channels of the unit at `unit` (an index into [`Plan::units`]), in plan order — what
+	/// one addressed conversation asks for before the backend is handed to the next unit.
+	pub fn channels_of(&self, unit: usize) -> impl Iterator<Item = (u16, &'static Channel)> {
 		self
 			.channels
 			.iter()
 			.enumerate()
-			.filter_map(move |(i, c)| (c.unit == request).then_some((i as u16, c)))
+			.filter_map(move |(i, c)| (usize::from(c.unit) == unit).then_some((i as u16, c)))
 	}
 }
-
 impl Unit {
 	/// The car check (`05`): what this unit's answer to `F187` means for polling it.
 	///
@@ -761,7 +847,7 @@ mod tests {
 
 	const fn channel(bit_offset: u32, bit_length: u32, signed: bool, big_endian: bool, factor: f32, offset: f32) -> Channel {
 		Channel {
-			unit: 0x7E0,
+			unit: 0,
 			did: 0x0000,
 			bit_offset,
 			bit_length,
@@ -822,39 +908,41 @@ mod tests {
 		Page::Values {
 			title: "a",
 			cells: &[0, 1],
-			volts: true,
+			volts: None,
 		},
 		Page::Chart {
 			title: "",
 			channel: 1,
+			slot: 0,
 			min: 0.9,
 			max: 2.1,
-			volts: true,
+			volts: None,
 		},
 		Page::Values {
 			title: "b",
 			cells: &[2],
-			volts: true,
+			volts: None,
 		},
 		Page::Chart {
 			title: "",
 			channel: 2,
+			slot: 1,
 			min: 0.0,
 			max: 100.0,
-			volts: true,
+			volts: None,
 		},
 	];
 	const PLAN: Plan = Plan {
 		vin: "",
 		language: "en",
-		units: &[],
+		units: &[PARTED],
 		channels: &CHANNELS,
 		pages: &PAGES,
 		alarms: &[],
 		stalk: None,
 		stopwatch: None,
 		buttons: &[],
-		strip: None,
+		standstill: None,
 	};
 
 	/// A speed (0 decimals, the stopwatch's), an acceleration that is zeroed at rest, and a
@@ -877,7 +965,7 @@ mod tests {
 	const SHOWN_PLAN: Plan = Plan {
 		vin: "",
 		language: "en",
-		units: &[],
+		units: &[PARTED],
 		channels: &SHOWN_CHANNELS,
 		pages: &[],
 		alarms: &[],
@@ -888,17 +976,17 @@ mod tests {
 			marks: &[60, 100],
 		}),
 		buttons: &[],
-		strip: None,
+		standstill: Some(Standstill::Speed(0)),
 	};
 
 	/// Owner, 2026-10-05: the glass said `100` and the run did not finish. The mark counts at
 	/// 100.00; rounded to nearest, 99.5 already showed `100`.
 	#[test]
 	fn the_stopwatch_speed_shows_100_only_once_it_is_100() {
-		assert_eq!(SHOWN_PLAN.shown(0, Some(99.97), Some(99.97)), Some(99.0));
-		assert_eq!(SHOWN_PLAN.shown(0, Some(99.5), Some(99.5)), Some(99.0));
-		assert_eq!(SHOWN_PLAN.shown(0, Some(100.0), Some(100.0)), Some(100.0));
-		assert_eq!(SHOWN_PLAN.shown(0, Some(100.4), Some(100.4)), Some(100.0));
+		assert_eq!(SHOWN_PLAN.shown(0, Some(99.97), Some(false)), Some(99.0));
+		assert_eq!(SHOWN_PLAN.shown(0, Some(99.5), Some(false)), Some(99.0));
+		assert_eq!(SHOWN_PLAN.shown(0, Some(100.0), Some(false)), Some(100.0));
+		assert_eq!(SHOWN_PLAN.shown(0, Some(100.4), Some(false)), Some(100.0));
 		assert_eq!(SHOWN_PLAN.shown(0, None, None), None, "no answer stays no answer");
 	}
 
@@ -913,18 +1001,60 @@ mod tests {
 
 	/// Owner, 2026-10-05: standing, the ESC's acceleration read −0.2 and 0.6 m/s² — the slope.
 	#[test]
-	fn a_zero_at_rest_channel_shows_0_only_while_the_speed_reads_0() {
-		assert_eq!(SHOWN_PLAN.shown(1, Some(0.6), Some(0.0)), Some(0.0));
-		assert_eq!(SHOWN_PLAN.shown(1, Some(-0.2), Some(0.0)), Some(0.0));
-		assert_eq!(SHOWN_PLAN.shown(1, Some(2.5), Some(0.4)), Some(2.5), "rolling, it is the sensor's");
-		assert_eq!(SHOWN_PLAN.shown(1, Some(0.6), None), Some(0.6), "no speed, no claim that the car stands");
-		assert_eq!(SHOWN_PLAN.shown(1, None, Some(0.0)), None, "no answer is not a zero");
+	fn a_zero_at_rest_channel_shows_0_only_while_the_car_stands() {
+		assert_eq!(SHOWN_PLAN.shown(1, Some(0.6), Some(true)), Some(0.0));
+		assert_eq!(SHOWN_PLAN.shown(1, Some(-0.2), Some(true)), Some(0.0));
+		assert_eq!(SHOWN_PLAN.shown(1, Some(2.5), Some(false)), Some(2.5), "rolling, it is the sensor's");
+		assert_eq!(
+			SHOWN_PLAN.shown(1, Some(0.6), None),
+			Some(0.6),
+			"not knowing is no claim that the car stands"
+		);
+		assert_eq!(SHOWN_PLAN.shown(1, None, Some(true)), None, "no answer is not a zero");
+	}
+
+	/// `todo/dash/26`: one fact of the plan, from its source, decided once per frame — today the
+	/// stopwatch's speed reading exactly 0, the test the stopwatch arms on.
+	#[test]
+	fn the_car_stands_while_the_standstill_source_reads_exactly_0() {
+		let speed = |v: Option<f32>| move |index: u16| if index == 0 { v } else { None };
+		assert_eq!(SHOWN_PLAN.stands(speed(Some(0.0))), Some(true));
+		assert_eq!(SHOWN_PLAN.stands(speed(Some(0.01))), Some(false), "a crawl is moving");
+		assert_eq!(SHOWN_PLAN.stands(speed(None)), None, "no answer, no fact");
+		assert_eq!(PLAN.stands(|_| Some(0.0)), None, "no source, no fact");
+		assert!(stands_at(0.0) && stands_at(-0.0) && !stands_at(1.0));
 	}
 
 	#[test]
 	fn other_channels_are_shown_as_read() {
-		assert_eq!(SHOWN_PLAN.shown(2, Some(87.6), Some(0.0)), Some(87.6));
-		assert_eq!(PLAN.shown(0, Some(99.97), Some(0.0)), Some(99.97), "no stopwatch, nothing rounded down");
+		assert_eq!(SHOWN_PLAN.shown(2, Some(87.6), Some(true)), Some(87.6));
+		assert_eq!(PLAN.shown(0, Some(99.97), Some(true)), Some(99.97), "no stopwatch, nothing rounded down");
+	}
+
+	/// A `zero_at_rest` channel cannot be shown without knowing whether the car stands: the
+	/// standstill's source is read with it, as a specified value is with its channel — at its
+	/// own rate with it on the glass, in the background with it on a page not shown, and not at
+	/// all with it on no page.
+	#[test]
+	fn the_standstill_source_is_read_whenever_a_zero_at_rest_channel_is() {
+		let plan = Plan {
+			stopwatch: None,
+			..SHOWN_PLAN
+		};
+		let rates = |shown: &[u16], listed: &[u16]| -> std::vec::Vec<(u16, bool, u32)> {
+			plan.rates(shown, listed).map(|r| (r.channel, r.foreground, r.period_ms)).collect()
+		};
+		assert_eq!(
+			rates(&[1], &[1]),
+			[(0, true, 500), (1, true, 500)],
+			"on the glass, the speed comes with it"
+		);
+		assert_eq!(
+			rates(&[2], &[1, 2]),
+			[(0, false, 1000), (1, false, 1000), (2, true, 500)],
+			"and goes to the background with it"
+		);
+		assert_eq!(rates(&[2], &[2]), [(2, true, 500)], "on no page, neither is read");
 	}
 
 	#[test]
@@ -971,10 +1101,59 @@ mod tests {
 			min: 0.0,
 			max: 100.0,
 		};
-		assert_eq!(PLAN.chart(1), Some(boost));
-		assert_eq!(PLAN.chart(2), Some(load));
 		let all: std::vec::Vec<Chart> = PLAN.charts().collect();
 		assert_eq!(all, [boost, load], "slots are dense and in plan order");
+	}
+
+	/// `todo/dash/27`: the generator writes every join as an index, and the image refuses to
+	/// build on one that points past its table.
+	#[test]
+	fn the_joins_hold_only_where_every_index_names_something_and_the_slots_are_dense() {
+		const { assert!(PLAN.joins_hold() && SHOWN_PLAN.joins_hold()) };
+		// A test's slices are leaked to be `'static`, as a plan's are.
+		let leak = |pages: &[Page]| -> &'static [Page] { std::vec::Vec::leak(pages.to_vec()) };
+		let with_pages = |pages: &[Page]| Plan { pages: leak(pages), ..PLAN };
+		let chart = |slot: u8, volts: Option<u16>| Page::Chart {
+			title: "",
+			channel: 1,
+			slot,
+			min: 0.0,
+			max: 1.0,
+			volts,
+		};
+		assert!(with_pages(&[chart(0, Some(2))]).joins_hold());
+		assert!(!with_pages(&[chart(1, None)]).joins_hold(), "a slot past the first chart's");
+		assert!(!with_pages(&[chart(0, None), chart(0, None)]).joins_hold(), "one slot twice");
+		assert!(!with_pages(&[chart(0, Some(3))]).joins_hold(), "a voltage on no channel");
+		let cells = |cells: &'static [u16]| Page::Values {
+			title: "",
+			cells,
+			volts: None,
+		};
+		assert!(!with_pages(&[cells(&[0, 3])]).joins_hold(), "a cell on no channel");
+		let unitless = Plan { units: &[], ..PLAN };
+		assert!(!unitless.joins_hold(), "a channel's unit past the units");
+		let far = Plan {
+			standstill: Some(Standstill::Speed(3)),
+			..PLAN
+		};
+		assert!(!far.joins_hold(), "a standstill on no channel");
+	}
+
+	#[test]
+	fn a_page_reads_what_it_shows_and_its_strips_voltage() {
+		let chart = Page::Chart {
+			title: "",
+			channel: 1,
+			slot: 0,
+			min: 0.0,
+			max: 1.0,
+			volts: Some(4),
+		};
+		let read: std::vec::Vec<u16> = chart.reads().collect();
+		assert_eq!(read, [1, 4]);
+		let read: std::vec::Vec<u16> = PAGES[0].reads().collect();
+		assert_eq!(read, [0, 1], "no voltage on it, none read for it");
 	}
 
 	const PARTED: Unit = Unit {
@@ -1129,12 +1308,6 @@ mod tests {
 	}
 
 	#[test]
-	fn a_channel_without_a_chart_page_has_no_chart() {
-		assert_eq!(PLAN.chart(0), None);
-		assert_eq!(PLAN.chart(7), None);
-	}
-
-	#[test]
 	fn signed_i16_both_orders() {
 		let be = channel(0, 16, true, true, 1.0, 0.0);
 		assert_eq!(be.raw(&[0xFF, 0xFE]), Some(-2));
@@ -1209,7 +1382,7 @@ mod tests {
 		static CHANNELS: [Channel; 3] = [
 			channel(0, 8, false, true, 1.0, 0.0),
 			Channel {
-				unit: 0x7E1,
+				unit: 1,
 				..channel(0, 8, false, true, 1.0, 0.0)
 			},
 			channel(8, 8, false, true, 1.0, 0.0),
@@ -1218,7 +1391,7 @@ mod tests {
 		static PAGES: [Page; 1] = [Page::Values {
 			title: "",
 			cells: &CELLS,
-			volts: true,
+			volts: None,
 		}];
 		static PLAN: Plan = Plan {
 			vin: "VIN",
@@ -1230,13 +1403,15 @@ mod tests {
 			stalk: None,
 			stopwatch: None,
 			buttons: &[],
-			strip: None,
+			standstill: None,
 		};
-		let engine: std::vec::Vec<u16> = PLAN.channels_of(&UNITS[0]).map(|(i, _)| i).collect();
+		let engine: std::vec::Vec<u16> = PLAN.channels_of(0).map(|(i, _)| i).collect();
 		assert_eq!(engine, [0, 2]);
-		assert_eq!(PLAN.channel(1).map(|c| c.unit), Some(0x7E1));
+		let gearbox: std::vec::Vec<u16> = PLAN.channels_of(1).map(|(i, _)| i).collect();
+		assert_eq!(gearbox, [1]);
 		assert_eq!(PLAN.channel(9), None);
-		assert_eq!(PLAN.unit_of(&CHANNELS[1]).map(|u| u.response), Some(0x7E9));
+		assert_eq!(PLAN.unit(&CHANNELS[1]).response, 0x7E9, "the channel's unit, by its index");
+		assert!(PLAN.joins_hold());
 	}
 
 	/// A neutral ladder in the shape an ODIS text table has: bounded bands in table order,
@@ -1449,60 +1624,52 @@ mod tests {
 		);
 	}
 
-	/// Channel 0 is the battery voltage. Page 0 shows it as a cell, page 1 charts it, page 2
-	/// shows other channels with the voltage on, page 3 has it off, page 4 is a chart of another
-	/// channel with a title.
+	/// Channel 0 is the battery voltage, resolved as the generator resolves it: page 0 shows it
+	/// as a cell and page 1 charts it, so neither strip shows it; page 2 shows other channels
+	/// with the voltage on; page 3 has it off; page 4 is a chart of another channel with a title.
 	fn strip_plan() -> Plan {
 		static PAGES: [Page; 5] = [
 			Page::Values {
 				title: "BATTERY",
 				cells: &[0, 1],
-				volts: true,
+				volts: None,
 			},
 			Page::Chart {
 				title: "",
 				channel: 0,
+				slot: 0,
 				min: 10.0,
 				max: 15.0,
-				volts: true,
+				volts: None,
 			},
 			Page::Values {
 				title: "",
 				cells: &[1, 2],
-				volts: true,
+				volts: Some(0),
 			},
 			Page::Values {
 				title: "QUIET",
 				cells: &[2],
-				volts: false,
+				volts: None,
 			},
 			Page::Chart {
 				title: "BOOST",
 				channel: 1,
+				slot: 1,
 				min: 0.0,
 				max: 2.5,
-				volts: true,
+				volts: Some(0),
 			},
 		];
-		Plan {
-			pages: &PAGES,
-			strip: Some(StripPlan { volts: 0 }),
-			..PLAN
-		}
+		Plan { pages: &PAGES, ..PLAN }
 	}
 
 	#[test]
-	fn the_strip_shows_the_voltage_where_the_page_lets_it_and_does_not_show_it_already() {
+	fn the_strips_channel_is_listed_where_a_page_shows_it_there() {
 		let plan = strip_plan();
-		let volts: std::vec::Vec<Option<u16>> = (0..6).map(|page| plan.strip_volts(page)).collect();
-		assert_eq!(
-			volts,
-			[None, None, Some(0), None, Some(0), None],
-			"a cell of its own, its own chart, shown, volts = false, shown over a chart, no such page"
-		);
+		assert!(plan.joins_hold());
 		assert_eq!(plan.strip_listed(), Some(0));
-		assert_eq!(PLAN.strip_volts(0), None, "no [strip], no voltage anywhere");
-		assert_eq!(PLAN.strip_listed(), None);
+		assert_eq!(PLAN.strip_listed(), None, "no [strip], no voltage anywhere");
 		let quiet = Plan {
 			pages: &strip_plan().pages[..2],
 			..strip_plan()
@@ -1513,7 +1680,6 @@ mod tests {
 			"no page shows it in the strip: it is read as its pages read it"
 		);
 	}
-
 	#[test]
 	fn the_strip_of_a_page_is_its_title_and_its_voltage_as_read() {
 		let plan = strip_plan();

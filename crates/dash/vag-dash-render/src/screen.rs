@@ -337,22 +337,22 @@ mod tests {
 		Page::Values {
 			title: "a",
 			cells: &[0, 1],
-			volts: true,
+			volts: None,
 		},
 		Page::Values {
 			title: "b",
 			cells: &[2],
-			volts: true,
+			volts: None,
 		},
 		Page::Values {
 			title: "high",
 			cells: &[3, 4, 5],
-			volts: true,
+			volts: None,
 		},
 		Page::Values {
 			title: "low",
 			cells: &[6],
-			volts: true,
+			volts: None,
 		},
 	];
 
@@ -431,7 +431,7 @@ mod tests {
 			stalk: None,
 			stopwatch: None,
 			buttons: &[],
-			strip: None,
+			standstill: None,
 		};
 		let cells = |page: u8| match plan.pages[usize::from(page)] {
 			Page::Values { cells, .. } => cells,

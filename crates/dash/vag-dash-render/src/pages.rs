@@ -61,14 +61,15 @@ mod tests {
 		let values = Page::Values {
 			title: "engine",
 			cells: &[0, 1, 2, 3],
-			volts: true,
+			volts: None,
 		};
 		let chart = Page::Chart {
 			title: "",
 			channel: 1,
+			slot: 0,
 			min: 0.0,
 			max: 2.5,
-			volts: true,
+			volts: None,
 		};
 		assert_eq!(cells(&values), &[0, 1, 2, 3]);
 		assert_eq!(cells(&chart), &[1]);

@@ -1,31 +1,31 @@
 // `to_rust` on the test fixture of `src/dash.rs` (a lever, a stopwatch, buttons and a strip),
 // not on any car's data. Compiled by `tests/generated_plan.rs`. Do not edit by hand: rewrite it with
 // `BLESS=1 cargo test -p vag-cli-core generated_source`, then run the tests again.
-use vag_dash_render::plan::{Band, ButtonPlan, Channel, Page, Plan, StalkPlan, StopwatchPlan, StripPlan, Unit};
+use vag_dash_render::plan::{Band, ButtonPlan, Channel, Page, Plan, StalkPlan, Standstill, StopwatchPlan, Unit};
 use vag_dash_render::stalk::{StateIndex, States};
 use vag_dash_render::control::Command;
 use vag_dash_render::alarm::Alarm;
 
-pub static PLAN: Plan = Plan { vin: "TESTVIN0000000001", language: "en", units: &UNITS, channels: &CHANNELS, pages: &PAGES, alarms: &ALARMS, stalk: Some(StalkPlan { rocker: 3, switch: 4, cruise: 5, rocker_states: &STALK_ROCKER, switch_states: &STALK_SWITCH, cruise_states: &STALK_CRUISE, states: States { next: StateIndex(1), previous: StateIndex(2), measure: StateIndex(3), switch_off: StateIndex(1), cruise_off: StateIndex(0) } }), stopwatch: Some(StopwatchPlan { speed: 1, km_h_per_unit: 0.0271, marks: &MARKS }), buttons: &BUTTONS, strip: Some(StripPlan { volts: 2 }) };
+pub static PLAN: Plan = Plan { vin: "TESTVIN0000000001", language: "en", units: &UNITS, channels: &CHANNELS, pages: &PAGES, alarms: &ALARMS, stalk: Some(StalkPlan { rocker: 3, switch: 4, cruise: 5, rocker_states: &STALK_ROCKER, switch_states: &STALK_SWITCH, cruise_states: &STALK_CRUISE, states: States { next: StateIndex(1), previous: StateIndex(2), measure: StateIndex(3), switch_off: StateIndex(1), cruise_off: StateIndex(0) } }), stopwatch: Some(StopwatchPlan { speed: 1, km_h_per_unit: 0.0271, marks: &MARKS }), buttons: &BUTTONS, standstill: Some(Standstill::Speed(1)) };
 
 static UNITS: [Unit; 2] = [
-	Unit { request: 0x7E0, response: 0x7E8, part_number: "PART1" },
-	Unit { request: 0x75A, response: 0x7C4, part_number: "PART2" },
+	Unit { request: 0x7E0, response: 0x7E8, part_number: "PART1" }, // 0
+	Unit { request: 0x75A, response: 0x7C4, part_number: "PART2" }, // 1
 ];
 
 static CHANNELS: [Channel; 6] = [
-	Channel { unit: 0x7E0, did: 0x1001, bit_offset: 0, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "°C", label: "One", proven: false, hz: 2.0, setpoint: None, zero_at_rest: false },
-	Channel { unit: 0x7E0, did: 0x3001, bit_offset: 0, bit_length: 16, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "°C", label: "Speed", proven: false, hz: 50.0, setpoint: None, zero_at_rest: false },
-	Channel { unit: 0x7E0, did: 0x3002, bit_offset: 0, bit_length: 16, signed: false, big_endian: true, factor: 1.0, offset: -40.0, decimals: 0, unit_text: "°C", label: "Offset speed", proven: false, hz: 2.0, setpoint: None, zero_at_rest: false },
-	Channel { unit: 0x75A, did: 0x4C21, bit_offset: 32, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "", label: "Messy", proven: false, hz: 2.0, setpoint: None, zero_at_rest: false },
-	Channel { unit: 0x75A, did: 0x4C21, bit_offset: 24, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "", label: "Switch", proven: false, hz: 2.0, setpoint: None, zero_at_rest: false },
-	Channel { unit: 0x7E0, did: 0x2001, bit_offset: 0, bit_length: 16, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "", label: "Cruise status", proven: false, hz: 2.0, setpoint: None, zero_at_rest: false },
+	Channel { unit: 0, did: 0x1001, bit_offset: 0, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "°C", label: "One", proven: false, hz: 2.0, setpoint: None, zero_at_rest: false },
+	Channel { unit: 0, did: 0x3001, bit_offset: 0, bit_length: 16, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "°C", label: "Speed", proven: false, hz: 50.0, setpoint: None, zero_at_rest: false },
+	Channel { unit: 0, did: 0x3002, bit_offset: 0, bit_length: 16, signed: false, big_endian: true, factor: 1.0, offset: -40.0, decimals: 0, unit_text: "°C", label: "Offset speed", proven: false, hz: 2.0, setpoint: None, zero_at_rest: false },
+	Channel { unit: 1, did: 0x4C21, bit_offset: 32, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "", label: "Messy", proven: false, hz: 2.0, setpoint: None, zero_at_rest: false },
+	Channel { unit: 1, did: 0x4C21, bit_offset: 24, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "", label: "Switch", proven: false, hz: 2.0, setpoint: None, zero_at_rest: false },
+	Channel { unit: 0, did: 0x2001, bit_offset: 0, bit_length: 16, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "", label: "Cruise status", proven: false, hz: 2.0, setpoint: None, zero_at_rest: false },
 ];
 
 static CELLS_0: [u16; 1] = [0];
 static PAGES: [Page; 2] = [
-	Page::Values { title: "T", cells: &CELLS_0, volts: true },
-	Page::Chart { title: "Speed", channel: 1, min: 0.0, max: 250.0, volts: false },
+	Page::Values { title: "T", cells: &CELLS_0, volts: Some(2) },
+	Page::Chart { title: "Speed", channel: 1, slot: 0, min: 0.0, max: 250.0, volts: None },
 ];
 
 static ALARMS: [Alarm; 0] = [
@@ -64,4 +64,4 @@ static BUTTONS: [ButtonPlan; 3] = [
 ];
 
 /// FNV-1a 64 of every byte above this line: which plan this is (`vag_cli_core::dash::plan_id`).
-pub const PLAN_ID: u64 = 0xc41722748e875190;
+pub const PLAN_ID: u64 = 0x1a93b72a285c90a2;

@@ -4,8 +4,8 @@
 //! lower one, or both — `dash.toml`'s `alarm_max` and `alarm_min`, each with the value it goes
 //! off at — and a channel paired with a specified value may carry a drift rule. The board
 //! watches every such channel in the background, on every page, and when one crosses it raises
-//! the **first values page that shows the channel** and inverts its cell. That is the whole
-//! rule; everything below is about it not being annoying, because an alarm that flickers or
+//! the **first values page that shows the channel** and inverts its cell — or, for a channel no
+//! values page shows, its chart page, whose header is inverted. That is the whole rule; everything below is about it not being annoying, because an alarm that flickers or
 //! that cannot be dismissed is one the driver learns to ignore, and then it may as well not
 //! exist.
 //!
@@ -158,8 +158,8 @@ pub enum Rule {
 pub struct Alarm {
 	/// Watched whether or not it is on the screen.
 	pub channel: ChannelId,
-	/// The page to raise: the first values page of the plan that shows the channel — that is
-	/// what makes the takeover an explanation rather than an interruption. The generator
+	/// The page to raise: the first values page of the plan that shows the channel, else its
+	/// chart page — that is what makes the takeover an explanation rather than an interruption. The generator
 	/// finds it, because pages live in the plan.
 	pub page: PageId,
 	pub rule: Rule,
@@ -686,27 +686,27 @@ mod tests {
 		Page::Values {
 			title: "",
 			cells: &[],
-			volts: false,
+			volts: None,
 		},
 		Page::Values {
 			title: "",
 			cells: &[],
-			volts: false,
+			volts: None,
 		},
 		Page::Values {
 			title: "",
 			cells: &[0, 1, 2, 3],
-			volts: false,
+			volts: None,
 		},
 		Page::Values {
 			title: "",
 			cells: &[4],
-			volts: false,
+			volts: None,
 		},
 		Page::Values {
 			title: "",
 			cells: &[10, 11],
-			volts: false,
+			volts: None,
 		},
 	];
 
@@ -1359,17 +1359,17 @@ mod tests {
 			Page::Values {
 				title: "",
 				cells: &[0],
-				volts: false,
+				volts: None,
 			},
 			Page::Values {
 				title: "",
 				cells: &[],
-				volts: false,
+				volts: None,
 			},
 			Page::Values {
 				title: "",
 				cells: &[1, 0],
-				volts: false,
+				volts: None,
 			},
 		];
 		const HOT: Rule = Rule::Bounds {

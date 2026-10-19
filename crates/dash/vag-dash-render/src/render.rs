@@ -1342,6 +1342,16 @@ where
 	let width = area.size.width;
 	let height = area.size.height;
 	let ink = BinaryColor::On;
+	// An alarm on a chart page inverts the chart's header, as one on a values page inverts its
+	// cell: the header's line is lit and its text dark, the dark row under it stays, so the
+	// trace keeps its edge (`todo/dash/27`, archived).
+	let head_ink = if cell.alarm {
+		let line = Rectangle::new(Point::zero(), Size::new(width, HEADER_ROWS as u32 - 1));
+		let _ = target.fill_solid(&line, BinaryColor::On);
+		BinaryColor::Off
+	} else {
+		ink
+	};
 
 	// The header carries what a chart cannot show about itself: what it is, what
 	// the vertical extent is, and how much time the width holds. Without the
@@ -1354,10 +1364,13 @@ where
 	// Under a strip that carries the page's title the label goes: the title says what the
 	// chart is, and the same word twice reads as two things (owner, 2026-10-19).
 	let after = if label {
-		match theme
-			.label
-			.render(cell.label, Point::new(0, 0), VerticalPosition::Top, FontColor::Transparent(ink), target)
-		{
+		match theme.label.render(
+			cell.label,
+			Point::new(0, 0),
+			VerticalPosition::Top,
+			FontColor::Transparent(head_ink),
+			target,
+		) {
 			Ok(dim) => dim.advance.x + 6,
 			Err(_) => {
 				report.glyph_missing = true;
@@ -1395,7 +1408,7 @@ where
 		tail.as_str(),
 		Point::new(after, 1),
 		VerticalPosition::Top,
-		FontColor::Transparent(ink),
+		FontColor::Transparent(head_ink),
 		target,
 	) {
 		Ok(dim) => {
@@ -1622,6 +1635,40 @@ mod tests {
 		// And the label survived: somewhere in the alarmed column's label row
 		// there is an unlit pixel, which is the dark text on the lit ground.
 		assert!((64..128).any(|x| !lit(&display, x, 3)), "the label is drawn dark on the lit ground");
+	}
+
+	/// A channel shown only on a chart page can carry an alarm: its page is raised and the
+	/// chart's header line inverted, the row under it and the trace left as they are.
+	#[test]
+	fn an_alarm_on_a_chart_inverts_its_header_line_and_nothing_else() {
+		let samples = [0.5f32; 8];
+		let draw_one = |cell: Cell<'static>| {
+			let mut display = panel();
+			let frame = Frame::Chart {
+				cell,
+				min: 0.0,
+				max: 2.5,
+				samples: &samples,
+				seconds_per_sample: 0.2,
+			};
+			draw(&frame, &Theme::bold_mono(), &mut display);
+			display
+		};
+		let plain = draw_one(Cell::new("BOOST", Some(0.5), "bar", 2));
+		let alarmed = draw_one(Cell::new("BOOST", Some(0.5), "bar", 2).alarmed());
+		let far = PANEL.width as i32 - 1;
+		assert!(lit(&alarmed, far, 0) && !lit(&plain, far, 0), "the header's line is lit ground");
+		assert!((0..PANEL.width as i32).any(|x| !lit(&alarmed, x, 3)), "its text is drawn dark on it");
+		let under = HEADER_ROWS - 1;
+		assert!(
+			(0..PANEL.width as i32).all(|x| lit(&alarmed, x, under) == lit(&plain, x, under)),
+			"the dark row under the header is the plain chart's"
+		);
+		for y in HEADER_ROWS..PANEL.height as i32 {
+			for x in 0..PANEL.width as i32 {
+				assert_eq!(lit(&alarmed, x, y), lit(&plain, x, y), "({x}, {y}) under the header changed");
+			}
+		}
 	}
 
 	#[test]

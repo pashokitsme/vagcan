@@ -183,6 +183,10 @@ impl Default for Budget {
 		Budget {
 			ceiling_per_s: 100,
 			foreground_floor_per_s: 25,
+			// The reference car's measurement shipped as the default, not a protocol limit: ISO
+			// 14229-1 leaves the count to the server, and on that car eight answered and twelve
+			// were refused. Known for one car only; another car's unit that takes fewer is
+			// learned as single-only, never guessed at.
 			max_dids_per_request: 8,
 			pull_forward_permille: 250,
 			backoff_first_ms: 250,

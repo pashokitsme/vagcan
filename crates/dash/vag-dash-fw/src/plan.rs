@@ -56,6 +56,15 @@ const _: () = assert!(
 // What the generator refuses, refused again where it would bite: a pin the board has no
 // input for, one given twice, or more buttons than free pins is an image that does not
 // build rather than a button that silently does nothing.
+// Every join the generator wrote — a channel's unit, a page's cells, its strip's voltage, a
+// chart's history slot, the standstill's channel — names something this plan has: the board
+// indexes by them and never searches (`todo/dash/27`), so one that did not would be a panic on
+// the car rather than an image that does not build.
+const _: () = assert!(
+	PLAN.joins_hold(),
+	"the plan's indices do not join: build it again with `vagcan dev dash build <VIN>`"
+);
+
 const _: () = assert!(
 	PLAN.buttons_fit(),
 	"the plan's [[button]]s do not fit this board: at most 3, on GPIO 3, 4 or 5, each once"

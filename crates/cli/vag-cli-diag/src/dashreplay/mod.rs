@@ -132,7 +132,7 @@ mod tests {
 
 	const fn channel(did: u16, label: &'static str) -> Channel {
 		Channel {
-			unit: 0x7E0,
+			unit: 0,
 			did,
 			bit_offset: 0,
 			bit_length: 16,
@@ -155,12 +155,12 @@ mod tests {
 		Page::Values {
 			title: "MAIN",
 			cells: &[0],
-			volts: true,
+			volts: None,
 		},
 		Page::Values {
 			title: "HIGH",
 			cells: &[1],
-			volts: true,
+			volts: None,
 		},
 	];
 	static RULES: [Alarm; 1] = [Alarm {
@@ -174,14 +174,18 @@ mod tests {
 	static PLAN: Plan = Plan {
 		vin: "TESTVIN0000000001",
 		language: "en",
-		units: &[],
+		units: &[vag_dash_render::plan::Unit {
+			request: 0x7E0,
+			response: 0x7E8,
+			part_number: "PART",
+		}],
 		channels: &CHANNELS,
 		pages: &PAGES,
 		alarms: &RULES,
 		stalk: None,
 		stopwatch: None,
 		buttons: &[],
-		strip: None,
+		standstill: None,
 	};
 
 	#[test]
@@ -219,6 +223,7 @@ mod tests {
 			stopwatch: None,
 			buttons: vec![],
 			strip: None,
+			standstill: None,
 		};
 		assert!(unreplayed(&plan).is_empty(), "a plan without them replays whole");
 		plan.stalk = Some(Stalk {
