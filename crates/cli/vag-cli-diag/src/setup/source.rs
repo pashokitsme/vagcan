@@ -948,11 +948,11 @@ pub fn project_id(io: &mut impl Asker, source: &Source, existing: &[String], rer
 
 /// Where projects live, in words, for a sentence a person reads.
 ///
-/// **A literal path in printed copy is a promise**, and this one has already
-/// broken once: `~/.vagcan/data/measured/` outlived the directory it named and
-/// sent somebody on a real car to put a proven row where nothing was looking for
-/// it. So it is asked of [`crate::datadir`], which owns the layout, rather than
-/// written out here — and falls back to the shape only when there is no home
+/// **A literal path in printed copy is a promise**, and one has already broken:
+/// a path printed after its directory was retired sent somebody on a real car to
+/// put a proven row where nothing was looking for it. So it is asked of
+/// [`crate::datadir`], which owns the layout, rather than written out here —
+/// and falls back to the shape only when there is no home
 /// directory to resolve against, which is the one case where naming a real path
 /// is impossible rather than merely stale.
 fn projects_in() -> String {

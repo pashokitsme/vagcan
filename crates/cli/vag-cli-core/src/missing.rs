@@ -317,9 +317,9 @@ mod tests {
 		// not copied the labels in yet. It must send the reader to `setup`, name
 		// the directory it looked in, and never to a drive — the numbers are
 		// real, only the names are absent, so a drive would be the wrong loop.
-		let m = no_fault_labels(Path::new("/home/x/.vagcan/data/extracted"));
+		let m = no_fault_labels(Path::new("/home/x/.vagcan/rod"));
 		assert!(m.contains("vagcan setup <path to the ODIS project folder>"), "{m}");
-		assert!(m.contains("/home/x/.vagcan/data/extracted"), "the reader must see where it looked:\n{m}");
+		assert!(m.contains("/home/x/.vagcan/rod"), "the reader must see where it looked:\n{m}");
 		assert!(m.contains(VCDS_DOWNLOAD), "no VCDS install is a case, not an oversight:\n{m}");
 		assert!(m.contains("~/.vagcan/data/"), "the point is that setup copies what it read in:\n{m}");
 		assert!(m.contains("deleted afterwards"), "an ODIS project is then disposable:\n{m}");

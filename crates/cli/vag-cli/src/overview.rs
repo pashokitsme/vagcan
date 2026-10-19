@@ -58,7 +58,7 @@ pub enum Cars {
 	/// which, so both ways of saying it are offered.
 	Ambiguous(Vec<String>),
 	/// Something named a project that is not there — a typo in `--project`, in
-	/// `VAGCAN_PROJECT` or in `~/.vagcan/config.json`. Kept apart from
+	/// `VAGCAN_PROJECT` or in `~/.vagcan/config.toml`. Kept apart from
 	/// [`Cars::Ambiguous`] because the advice there is to name one, which is
 	/// exactly what just failed. Carries [`project::current`]'s own words, so
 	/// this screen reports the cause every other command reports.

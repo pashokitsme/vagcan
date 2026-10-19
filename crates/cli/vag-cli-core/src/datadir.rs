@@ -60,13 +60,12 @@ pub fn resolve(relative: &str) -> PathBuf {
 ///                                       from, and what came of each unit — `crate::registry`
 ///       measurements/                   proven-on-car rows, one file per part number
 ///       sources.json                    where this project's data came from
-///     extracted/                      the layout from before projects existed,
-///     measured/                       moved into a project on the next `setup`
-///                                     run and then gone — see `crate::migrate`
 ///   config.toml                       settings, and the marks `watch` keeps:
 ///                                     which project a bare command means, which
 ///                                     language names are shown in, favourites by VIN
 ///   names.csv                         the owner's own wording, by text id
+///   unit-numbers.json                 hand-written unit number -> request id
+///                                     pairings, read by `vag_uds_client::address`
 ///   cars/
 ///     XW8AD4NE9JH008917/              one directory per car, named for its VIN
 ///       units.json                    its control units, as each said what it is
@@ -84,12 +83,9 @@ pub fn resolve(relative: &str) -> PathBuf {
 /// itself answers and holds what is true of one car and no other — its car
 /// file, its drives, the record of its units.
 ///
-/// **`data/` holds both the old layout and the new one, and they are told apart
-/// by name.** `extracted` and `measured` are the pre-project directories;
-/// anything else under `data/` is a project. Two rules enforce that rather than
-/// assume it: [`crate::migrate::pending`] keys on those two names existing
-/// rather than on `data/` existing, which is now always true, and
-/// [`crate::project::folder_name`] refuses both as project names.
+/// **Every directory under `data/` is a project**, whatever it is called, and
+/// nothing else there is read. A machine with no project has nothing to read
+/// from, and the remedy is `vagcan setup`.
 ///
 /// One dot-directory rather than each platform's convention.
 /// `dirs::config_dir` would scatter this across `~/.config` and
@@ -101,8 +97,7 @@ pub fn resolve(relative: &str) -> PathBuf {
 /// holds the `(identifier, raw form, factor, offset)` rows this project proved
 /// on a vehicle; the label files provably cannot supply those
 /// (`.archive/research/labels/rod-labels.md` §4.0c) and nothing but a car can recreate
-/// them. That is the one distinction a reader of the tree needs, and why
-/// `crate::migrate` copies before it removes.
+/// them. That is the one distinction a reader of the tree needs.
 ///
 /// Deliberately not built on [`resolve`]. That walks parent directories looking
 /// for something that already exists, which is right for a path someone typed
@@ -115,10 +110,8 @@ pub fn vagcan_dir() -> anyhow::Result<PathBuf> {
 /// Where the projects live — `~/.vagcan/data/`, one directory per platform.
 ///
 /// **The directory is called `data/`, not `projects/`.** It is what a person
-/// opens looking for their car's data, and it is also where the pre-project
-/// `extracted/` and `measured/` sat — so the two layouts are siblings now, and
-/// the note on [`vagcan_dir`] says how they are told apart. The function keeps
-/// the name of the *role* because that is what a caller means by it.
+/// opens looking for their car's data. The function keeps the name of the
+/// *role* because that is what a caller means by it.
 ///
 /// Named for what the *source* calls the vehicle, not for its VIN: an ODIS
 /// project ships its own identifier (`SK37X`) and a VCDS-only project is named
@@ -585,12 +578,11 @@ mod tests {
 	#[test]
 	fn the_one_path_this_crate_does_not_own_is_still_under_the_dot_directory() {
 		// `vag_uds_client` reads the number-to-id override itself, by a path it
-		// owns and this crate cannot change without a file somebody wrote by
-		// hand being silently ignored. `crate::migrate` leaves it exactly where
-		// it is for that reason; all that is asserted here is that it is still
-		// inside `~/.vagcan` and not in a checkout.
+		// owns. All that is asserted here is that it is inside `~/.vagcan`, not
+		// in a checkout, and not under `data/`, where every directory is a project.
 		let owned = Path::new(vag_uds_client::address::OVERRIDE_PATH);
 		assert!(owned.starts_with(".vagcan"), "{owned:?}");
+		assert!(!owned.starts_with(".vagcan/data"), "{owned:?}");
 		assert!(!owned.is_absolute(), "it is joined onto the home directory: {owned:?}");
 	}
 

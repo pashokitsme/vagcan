@@ -2827,7 +2827,7 @@ mod tests {
 		let empty = vag_data_labels::catalog::CatalogStore::open("/definitely/not/here");
 		let channels = crate::plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
 		let causes = [(0x70E_u16, "EV_BCMMQB: no file of that name in this installation".to_string())].into();
-		let text = coverage_report(&identities, &channels, "/x/data/measured", Some("SK37X"), &causes);
+		let text = coverage_report(&identities, &channels, "/x/data/SK37X/measurements", Some("SK37X"), &causes);
 		assert!(text.contains("nothing to show for 70E\n"), "{text}");
 		assert!(text.contains("— it answers, but neither the project SK37X"), "{text}");
 		assert!(text.contains("describes its identifiers"), "{text}");
@@ -2840,7 +2840,7 @@ mod tests {
 			ident(0x713, "EV_Brake"),
 		];
 		let channels = crate::plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
-		let text = coverage_report(&identities, &channels, "/x/data/measured", Some("SK37X"), &causes);
+		let text = coverage_report(&identities, &channels, "/x/data/SK37X/measurements", Some("SK37X"), &causes);
 		assert!(text.contains("nothing to show for 70E 713\n"), "{text}");
 		assert!(text.contains("— they answer, but neither"), "{text}");
 		assert!(text.contains("    70E EV_BCMMQB:"), "{text}");
@@ -2889,9 +2889,9 @@ mod tests {
 		let identities = vec![ident(0x714), ident(0x713), ident(0x70C)];
 		let empty = vag_data_labels::catalog::CatalogStore::open("/definitely/not/here");
 		let channels = crate::plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
-		let text = coverage_report(&identities, &channels, "/x/data/measured", None, &Default::default());
+		let text = coverage_report(&identities, &channels, "/x/data/SK37X/measurements", None, &Default::default());
 		assert!(text.contains("has no scalings on this machine"), "{text}");
-		assert!(text.contains("/x/data/measured"), "{text}");
+		assert!(text.contains("/x/data/SK37X/measurements"), "{text}");
 		assert!(text.contains(crate::missing::scalings_path()), "{text}");
 		assert!(!text.contains("calibrate"), "{text}");
 	}
@@ -2913,7 +2913,7 @@ mod tests {
 		let empty = vag_data_labels::catalog::CatalogStore::open("/definitely/not/here");
 		let channels = crate::plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
 		assert!(channels.iter().any(|c| c.is_standard()), "the engine has its standard rows");
-		let text = coverage_report(&identities, &channels, "/x/data/measured", Some("SK37X"), &Default::default());
+		let text = coverage_report(&identities, &channels, "/x/data/SK37X/measurements", Some("SK37X"), &Default::default());
 		assert!(text.contains("has no scalings on this machine"), "{text}");
 		assert!(!text.contains("named and scaled from this project"), "{text}");
 		// 714 answers nothing described; the route to a source is given once.
