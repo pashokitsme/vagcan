@@ -80,7 +80,28 @@ impl Found {
 	}
 }
 
+/// Said before the first Bluetooth call, on macOS only.
+///
+/// macOS lets a program use Bluetooth only with the permission of the terminal app it runs
+/// in. A terminal started by another app (an IDE, an agent) answers to that app instead, and
+/// when it has no Bluetooth entitlement macOS kills the process at the first call — exit 134,
+/// no output, no error to catch. So this is said before that call, not in an error after it.
+pub const PERMISSION_HINT: &str = "\
+Bluetooth: macOS needs permission for your terminal app (System Settings → Privacy & Security → Bluetooth).
+If the program ends right after this line, the terminal was started by another app (an IDE, an agent): run it from Terminal.app.";
+
+/// [`PERMISSION_HINT`] where it applies: the platforms whose Bluetooth kills a process it
+/// does not allow.
+pub fn permission_hint() -> Option<&'static str> {
+	cfg!(target_os = "macos").then_some(PERMISSION_HINT)
+}
+
+/// This computer's first Bluetooth adapter. The first Bluetooth call of every tool here, so
+/// [`permission_hint`] is said on stderr before it.
 pub async fn adapter() -> Result<Adapter> {
+	if let Some(hint) = permission_hint() {
+		eprintln!("{hint}");
+	}
 	Manager::new().await?.adapters().await?.into_iter().next().context(
 		"no Bluetooth adapter (on macOS this also means Bluetooth access was denied: allow the app that runs \
              this in System Settings → Privacy & Security → Bluetooth)",
@@ -418,6 +439,16 @@ pub fn flush() {
 mod tests {
 	use super::*;
 	use futures::stream;
+
+	/// Said before the call macOS kills a process at, so a person sees why it ended.
+	#[test]
+	fn the_permission_hint_says_where_to_allow_bluetooth_and_what_to_run_it_from() {
+		let lines: Vec<&str> = PERMISSION_HINT.lines().collect();
+		assert_eq!(lines.len(), 2, "short: {PERMISSION_HINT}");
+		assert!(lines[0].contains("System Settings → Privacy & Security → Bluetooth"), "{}", lines[0]);
+		assert!(lines[1].contains("Terminal.app"), "{}", lines[1]);
+		assert_eq!(permission_hint().is_some(), cfg!(target_os = "macos"));
+	}
 
 	#[test]
 	fn a_scan_stops_a_moment_after_the_first_board_and_at_the_cap_when_none_comes() {

@@ -246,7 +246,9 @@ fn signal<H>(board: &Board<H>) -> String {
 	}
 }
 
-/// The boards in range, over this computer's first Bluetooth adapter.
+/// The boards in range, over this computer's first Bluetooth adapter. Getting the adapter
+/// says [`vag_dash_ble::PERMISSION_HINT`] first on macOS, which kills a process it does not
+/// allow Bluetooth before any error can be printed.
 async fn scan_ble() -> Result<Vec<Board>> {
 	let adapter = vag_dash_ble::adapter().await?;
 	let found = vag_dash_ble::scan_boards(&adapter, BLE_SCAN).await?;
