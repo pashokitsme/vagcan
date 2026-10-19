@@ -21,11 +21,11 @@ measurement from the board's `exch=`.**
   exchange answered after one fixed time.
 - `dash::bus_notes` prints, never refuses:
   `bus: an estimate at 34 ms an exchange, an upper bound from a BLE recording on the reference car; it refuses nothing; the lever is read 20 times a second with cruise off, 2 with it on`,
-  then one line per page — `bus: page N "T" ~P % with cruise off, ~Q % with it on — reads X r/s of
-  h, …` — and one for a stopwatch run. A read is named when it gets fewer readings than its rate
-  asks, more than the window's two ends explain (2 in the minute), from the cruise-off run. The
-  pages behind the glass, thinned first by design, are said as "the other pages less often than
-  once a second". `Error::Bus` is gone: the firmware build, `dev recording dash` and the editor's
+  then one line per page — `bus: page N "T" cruise off ~P % — reads X r/s of h, …; cruise on ~Q %
+  — reads …` — and one for a stopwatch run. Each run names its own reads: a read that gets fewer
+  readings than its rate asks, more than the window's two ends explain (2 in the minute). The
+  pages behind the glass, thinned first by design, are said in brackets: "(the other pages less
+  often than once a second)". `Error::Bus` is gone: the firmware build, `dev recording dash` and the editor's
   catalog take the owner's plan again.
 - **The constant: 34 ms an exchange, an upper bound.** From `research/captures/ble-10hz.csv`
   (the car, 2026-09-26, `watch --device ble --hz 10`, 140 s): readings of one exchange share the
@@ -45,8 +45,9 @@ measurement from the board's `exch=`.**
 - Tests: ten alarm channels on one unit at 10 Hz are served (20 exchanges a second); eight on
   eight units at 9 Hz are thinned (72); ten units at 2.9 Hz served at 99 %, at 3 Hz thinned; the
   pages behind the glass thinned; a run reads its speed ahead of the pages; the build's lines for
-  a plain plan, three channels at 50 Hz, the lever with a stopwatch, and a plan shaped like the
-  owner's (eight pages, the strip, the lever, six alarms), which builds.
+  a plain plan, three channels at 50 Hz, the lever with a stopwatch, six alarm channels at 50 Hz
+  beside the lever (each cruise run with its own reads), and a plan shaped like the owner's
+  (eight pages, the strip, the lever, six alarms), which builds.
 
 ## The owner's plan at 34 ms (2026-10-20, built from a scratch copy of `~/.vagcan`)
 
@@ -54,13 +55,13 @@ measurement from the board's `exch=`.**
 
 ```
 bus: an estimate at 34 ms an exchange, an upper bound from a BLE recording on the reference car; it refuses nothing; the lever is read 20 times a second with cruise off, 2 with it on
-bus: page 1 "DRIVE" ~100 % with cruise off, ~100 % with it on — reads 02:IDE00075 SPEED 7.7/s of 20, 01:IDE00405 ENGINE RPM 7.3/s of 10, 713:IDE03660 ACCELERATION 6.7/s of 10, the lever 7.7/s of 20
-bus: page 2 "TEMPERATURES" ~93 % with cruise off, ~41 % with it on — reads the lever 17.4/s of 20
-bus: page 3 ~100 % with cruise off, ~51 % with it on — reads the lever 17.3/s of 20; the other pages less often than once a second
-bus: page 4 "IGNITION TIMING ANGLE" ~93 % with cruise off, ~41 % with it on — reads the lever 17.4/s of 20
-bus: page 5 "MISFIRE" ~93 % with cruise off, ~41 % with it on — reads the lever 17.4/s of 20
-bus: page 6 "BRAKES" ~93 % with cruise off, ~41 % with it on — reads the lever 17.4/s of 20
-bus: a stopwatch run ~100 % — reads 02:IDE00075 SPEED 10.2/s of 20; the other pages less often than once a second
+bus: page 1 "DRIVE" cruise off ~100 % — reads 02:IDE00075 SPEED 7.7/s of 20, 01:IDE00405 ENGINE RPM 7.3/s of 10, 713:IDE03660 ACCELERATION 6.7/s of 10, the lever 7.7/s of 20; cruise on ~100 % — reads 02:IDE00075 SPEED 8.5/s of 20, 01:IDE00405 ENGINE RPM 9.4/s of 10, 713:IDE03660 ACCELERATION 9.4/s of 10
+bus: page 2 "TEMPERATURES" cruise off ~93 % — reads the lever 17.4/s of 20; cruise on ~41 %
+bus: page 3 cruise off ~100 % — reads the lever 17.3/s of 20 (the other pages less often than once a second); cruise on ~51 %
+bus: page 4 "IGNITION TIMING ANGLE" cruise off ~93 % — reads the lever 17.4/s of 20; cruise on ~41 %
+bus: page 5 "MISFIRE" cruise off ~93 % — reads the lever 17.4/s of 20; cruise on ~41 %
+bus: page 6 "BRAKES" cruise off ~93 % — reads the lever 17.4/s of 20; cruise on ~41 %
+bus: a stopwatch run ~100 % — reads 02:IDE00075 SPEED 10.2/s of 20 (the other pages less often than once a second)
 ```
 
 ## Open

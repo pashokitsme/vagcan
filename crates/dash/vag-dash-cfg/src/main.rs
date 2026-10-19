@@ -58,6 +58,8 @@ struct DashState {
 	generation: Option<u32>,
 	/// The id of the plan the board's image was built with, as `vagcan dev dash build` prints it.
 	plan: Option<String>,
+	/// `panel`, or `adapter` while the board is a plain CAN adapter.
+	mode: Option<String>,
 	kind: Option<String>,
 	cells: Option<String>,
 	/// The board's fault count once it has ended: the stored codes, or `?` for no count.
@@ -110,6 +112,7 @@ impl DashState {
 				"run_pending" => s.run_pending = Some(value != "0"),
 				"gen" => s.generation = value.parse().ok(),
 				"plan" => s.plan = Some(value.to_string()),
+				"mode" => s.mode = Some(value.to_string()),
 				"kind" => s.kind = Some(value.to_string()),
 				"cells" => s.cells = Some(value.to_string()),
 				"faults" => s.faults = Some(value.to_string()),
@@ -156,7 +159,11 @@ impl DashState {
 	fn bus(&self) -> Option<String> {
 		let exch = self.exch.as_deref()?;
 		let Some(per_s) = exch.strip_suffix("/s") else {
-			return Some("not counted yet".to_string());
+			// An adapter's exchanges are the host's, and the board does not count them.
+			return Some(match self.mode.as_deref() {
+				Some("adapter") => "not counted while an adapter".to_string(),
+				_ => "not counted yet".to_string(),
+			});
 		};
 		Some(match self.exch_ms.as_deref() {
 			Some(ms) if ms != "-" => format!("{per_s} exchanges a second, {ms} ms an answered one"),
@@ -473,7 +480,11 @@ mod tests {
 			state(" exch=0.1/s exch_ms=-").bus().as_deref(),
 			Some("0.1 exchanges a second, none answered")
 		);
-		assert_eq!(state(" exch=- exch_ms=-").bus().as_deref(), Some("not counted yet"));
+		assert_eq!(state(" mode=panel exch=- exch_ms=-").bus().as_deref(), Some("not counted yet"));
+		assert_eq!(
+			state(" mode=adapter exch=- exch_ms=-").bus().as_deref(),
+			Some("not counted while an adapter")
+		);
 		assert_eq!(state("").bus(), None);
 	}
 }

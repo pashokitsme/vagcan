@@ -488,12 +488,6 @@ impl Plan {
 		Some(value)
 	}
 
-	/// The strip's channel, where any page's strip shows it — what the generator's `bus:` line
-	/// counts beside the alarms, as read on every page.
-	pub fn strip_listed(&self) -> Option<u16> {
-		self.pages.iter().find_map(Page::volts)
-	}
-
 	/// What the strip over page `page` shows, `value_of` giving a channel's current reading:
 	/// the page's title and its voltage ([`Page::volts`]). A page the plan does not have
 	/// — the stopwatch's — has no title or voltage ([`Strip::NONE`]). The board's panel and
@@ -1829,17 +1823,14 @@ mod tests {
 	fn the_strips_channel_is_listed_where_a_page_shows_it_there() {
 		let plan = strip_plan();
 		assert!(plan.joins_hold());
-		assert_eq!(plan.strip_listed(), Some(0));
-		assert_eq!(PLAN.strip_listed(), None, "no [strip], no voltage anywhere");
+		let listed = |plan: &Plan| plan.pages.iter().find_map(Page::volts);
+		assert_eq!(listed(&plan), Some(0));
+		assert_eq!(listed(&PLAN), None, "no [strip], no voltage anywhere");
 		let quiet = Plan {
 			pages: &strip_plan().pages[..2],
 			..strip_plan()
 		};
-		assert_eq!(
-			quiet.strip_listed(),
-			None,
-			"no page shows it in the strip: it is read as its pages read it"
-		);
+		assert_eq!(listed(&quiet), None, "no page shows it in the strip: it is read as its pages read it");
 	}
 	#[test]
 	fn the_strip_of_a_page_is_its_title_and_its_voltage_as_read() {

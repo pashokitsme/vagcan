@@ -2427,8 +2427,8 @@ fn resolve_alarms(input: &Input, channels: &[Channel], pages: &[Page], notes: &m
 
 /// Bus time, estimated by the board's own planner run over the plan (`dash/bus_time.rs`): a line
 /// that says what the estimate is, then one per page on the glass — its share of the bus with
-/// cruise off and, with a lever, on — and one for a stopwatch run, each naming the reads the bus
-/// would serve slower than their rate.
+/// cruise off and, with a lever, on, each run with the reads it would serve slower than their
+/// rate — and one for a stopwatch run.
 ///
 /// **Said, never refused** (2026-10-20). The cost an exchange is an upper bound from a BLE
 /// recording; at it every page of the owner's plan came out short, and that plan runs on the
@@ -2468,32 +2468,36 @@ fn bus_notes(plan: &Plan, inputs: &[ChannelInput]) -> Vec<String> {
 	let mut notes = vec![format!(
 		"bus: an estimate at {EXCHANGE_MS} ms an exchange, an upper bound from a BLE recording on the reference car; it refuses nothing{lever}"
 	)];
-	for estimate in bus_time::estimate(&device, EXCHANGE_MS) {
-		let run = &estimate.cruise_off;
-		let mut line = match run.glass {
-			Glass::Page(page) => match device.pages[page].title() {
-				"" => format!("bus: page {}", page + 1),
-				title => format!("bus: page {} {title:?}", page + 1),
-			},
-			Glass::Run => "bus: a stopwatch run".to_string(),
-		};
-		line.push(' ');
-		line.push_str(&percent(run.busy));
-		if let Some(on) = &estimate.cruise_on {
-			line.push_str(&format!(" with cruise off, {} with it on", percent(on.busy)));
-		}
+	// One run's share, the reads it would serve slower than their rate, and whether it thins the
+	// pages behind the glass: `~88 % — reads the lever 18.9/s of 20`.
+	let said = |run: &bus_time::Run| {
+		let mut text = percent(run.busy);
 		if !run.thinned.is_empty() {
 			let reads: Vec<String> = run
 				.thinned
 				.iter()
 				.map(|t| format!("{} {}/s of {}", what(t.channel), shown(t.got_per_s), shown(t.asked_per_s)))
 				.collect();
-			line.push_str(&format!(" — reads {}", reads.join(", ")));
+			text.push_str(&format!(" — reads {}", reads.join(", ")));
 		}
 		if run.behind_thinned {
-			line.push_str("; the other pages less often than once a second");
+			text.push_str(" (the other pages less often than once a second)");
 		}
-		notes.push(line);
+		text
+	};
+	for estimate in bus_time::estimate(&device, EXCHANGE_MS) {
+		let off = &estimate.cruise_off;
+		let glass = match off.glass {
+			Glass::Page(page) => match device.pages[page].title() {
+				"" => format!("page {}", page + 1),
+				title => format!("page {} {title:?}", page + 1),
+			},
+			Glass::Run => "a stopwatch run".to_string(),
+		};
+		notes.push(match &estimate.cruise_on {
+			Some(on) => format!("bus: {glass} cruise off {}; cruise on {}", said(off), said(on)),
+			None => format!("bus: {glass} {}", said(off)),
+		});
 	}
 	notes
 }
@@ -5023,7 +5027,7 @@ mod tests {
 			bus_lines(&built),
 			[
 				"bus: an estimate at 34 ms an exchange, an upper bound from a BLE recording on the reference car; it refuses nothing; the lever is read 20 times a second with cruise off, 2 with it on",
-				"bus: page 1 \"T\" ~85 % with cruise off, ~24 % with it on",
+				"bus: page 1 \"T\" cruise off ~85 %; cruise on ~24 %",
 				"bus: a stopwatch run ~100 % — reads 01:IDE00010 Speed 14.4/s of 50",
 			]
 		);
@@ -5058,17 +5062,52 @@ mod tests {
 			bus_lines(&built),
 			[
 				"bus: an estimate at 34 ms an exchange, an upper bound from a BLE recording on the reference car; it refuses nothing; the lever is read 20 times a second with cruise off, 2 with it on",
-				"bus: page 1 \"T\" ~88 % with cruise off, ~31 % with it on — reads the lever 18.9/s of 20",
-				"bus: page 2 \"P0\" ~85 % with cruise off, ~24 % with it on",
-				"bus: page 3 \"P1\" ~85 % with cruise off, ~24 % with it on",
-				"bus: page 4 \"P2\" ~85 % with cruise off, ~24 % with it on",
-				"bus: page 5 \"P3\" ~88 % with cruise off, ~31 % with it on — reads the lever 18.9/s of 20",
-				"bus: page 6 \"P4\" ~88 % with cruise off, ~31 % with it on — reads the lever 18.9/s of 20",
-				"bus: page 7 \"P5\" ~88 % with cruise off, ~31 % with it on — reads the lever 18.9/s of 20",
-				"bus: page 8 \"P6\" ~88 % with cruise off, ~31 % with it on — reads the lever 18.9/s of 20",
+				"bus: page 1 \"T\" cruise off ~88 % — reads the lever 18.9/s of 20; cruise on ~31 %",
+				"bus: page 2 \"P0\" cruise off ~85 %; cruise on ~24 %",
+				"bus: page 3 \"P1\" cruise off ~85 %; cruise on ~24 %",
+				"bus: page 4 \"P2\" cruise off ~85 %; cruise on ~24 %",
+				"bus: page 5 \"P3\" cruise off ~88 % — reads the lever 18.9/s of 20; cruise on ~31 %",
+				"bus: page 6 \"P4\" cruise off ~88 % — reads the lever 18.9/s of 20; cruise on ~31 %",
+				"bus: page 7 \"P5\" cruise off ~88 % — reads the lever 18.9/s of 20; cruise on ~31 %",
+				"bus: page 8 \"P6\" cruise off ~88 % — reads the lever 18.9/s of 20; cruise on ~31 %",
 			]
 		);
 	}
+	/// Six alarm channels of one unit at 50 Hz beside the lever: one exchange carries the six, fifty
+	/// a second, so cruise on thins them too — each run says its own reads.
+	#[test]
+	fn each_cruise_run_says_its_own_reads() {
+		let rows = (0..6u16)
+			.map(|i| {
+				(
+					ENGINE,
+					reading(0x4101 + i, "Alarmed", &format!("IDE0010{i}"), 0, 8, false, true, 1.0, 0.0),
+				)
+			})
+			.collect();
+		let mut input: String = (0..6)
+			.map(|i| format!("[[channel]]\nref = \"01:IDE0010{i}\"\nhz = 50\nalarm_max = 5\n"))
+			.collect();
+		input.push_str(&values_page_titled("A", &["01:IDE00100", "01:IDE00101", "01:IDE00102", "01:IDE00103"]));
+		input.push_str(&values_page_titled("B", &["01:IDE00104", "01:IDE00105"]));
+		input.push_str(LEVER);
+		let built = build_with_lever_and(&input, Extra { rows, ..Extra::default() }).unwrap();
+		let six = |per_s: &str| {
+			(0..6)
+				.map(|i| format!("01:IDE0010{i} Alarmed {per_s}/s of 50"))
+				.collect::<Vec<_>>()
+				.join(", ")
+		};
+		assert_eq!(
+			bus_lines(&built)[1],
+			format!(
+				"bus: page 1 \"T\" cruise off ~100 % — reads {}, the lever 14.7/s of 20; cruise on ~100 % — reads {}",
+				six("14.7"),
+				six("27.4")
+			)
+		);
+	}
+
 	/// `alarm_priority` orders the alarms (owner, 2026-10-19): with it first, ascending; ties and
 	/// the channels without it in the file's order.
 	#[test]
@@ -5550,7 +5589,7 @@ mod tests {
 			[Some(2), None, None],
 			"page 1 shows it; the chart has it off; page 3 has it as a cell"
 		);
-		assert_eq!(device.strip_listed(), Some(2));
+		assert_eq!(device.pages.iter().find_map(vag_dash_render::plan::Page::volts), Some(2));
 		assert_eq!(device.strip(1, |_| None).title, "Speed");
 
 		assert!(built.notes.iter().any(|n| n == "strip: volts 01:IDE00011 on page 1"), "{:?}", built.notes);

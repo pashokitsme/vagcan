@@ -675,10 +675,10 @@ name the channel, `X: …`.
 - The build estimates each page: the board's scheduler run over the plan, every exchange taken as
   34 ms. That is an upper bound, from a BLE recording on the reference car.
 - One line per page on screen, with cruise off (the lever read 20 times a second) and on (2), and
-  one for a stopwatch run. A read the estimate would serve slower than its `hz` is named:
+  one for a stopwatch run. Each names the reads it would serve slower than their `hz`:
 
   ```
-  bus: page 2 "TEMPERATURES" ~93 % with cruise off, ~41 % with it on — reads the lever 17.4/s of 20
+  bus: page 2 "TEMPERATURES" cruise off ~93 % — reads the lever 17.4/s of 20; cruise on ~41 %
   ```
 
 - The build refuses nothing for bus time.
