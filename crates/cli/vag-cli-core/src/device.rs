@@ -246,7 +246,9 @@ fn signal<H>(board: &Board<H>) -> String {
 	}
 }
 
-/// The boards in range, over this computer's first Bluetooth adapter.
+/// The boards in range, over this computer's first Bluetooth adapter. Getting the adapter
+/// says [`vag_dash_ble::PERMISSION_HINT`] first on macOS, which kills a process it does not
+/// allow Bluetooth before any error can be printed.
 async fn scan_ble() -> Result<Vec<Board>> {
 	let adapter = vag_dash_ble::adapter().await?;
 	let found = vag_dash_ble::scan_boards(&adapter, BLE_SCAN).await?;
@@ -301,7 +303,7 @@ enum Found {
 
 /// Why a command that does not go through the dash board is refused, on each way to it.
 pub struct NotThroughTheBoard<'a> {
-	/// With `--device ble…`; also added under "no USB-CAN adapter found".
+	/// With `--device ble…` or `--ble`.
 	pub over_ble: &'a str,
 	/// With the board on its cable, on its `dash` image, and no `--slcan`.
 	pub over_usb: &'a str,
@@ -312,8 +314,9 @@ pub struct NotThroughTheBoard<'a> {
 /// Refused before a session starts: `--device ble…` with `why.over_ble` ([`SLCAN_OVER_BLE`]
 /// with `slcan`), and the board on its `dash` image with `why.over_usb` — unless `slcan`
 /// made it a plain adapter, where the cable's own guards apply. Otherwise a USB device is
-/// resolved as [`resolve_with`] resolves one, with `why.over_ble` added when none is found,
-/// so nobody is left wondering why the board over BLE was not tried.
+/// resolved as [`resolve_with`] resolves one. With none found, the message is the plain "no
+/// USB-CAN adapter": `why.over_ble` under it read as an answer to a request nobody made, and
+/// the BLE hint other commands get is left off, since BLE is refused here.
 pub fn resolve_cable_for(requested: Option<&str>, slcan: bool, why: &NotThroughTheBoard) -> Result<String> {
 	resolve_cable_for_with(requested, slcan, why, list_adapters().map_err(Into::into), probe)
 }
@@ -335,8 +338,7 @@ pub fn resolve_cable_for_with(
 		// refused here, so it must not stand in the way of another device either.
 		None => match choose_usb(listing, probe, slcan, slcan)? {
 			Found::Picked(usb) => usb,
-			Found::Nothing(no_cable) if slcan => bail!("{no_cable}"),
-			Found::Nothing(no_cable) => bail!("{no_cable}\n{}", why.over_ble),
+			Found::Nothing(no_cable) => bail!("{no_cable}"),
 			Found::OnlyThroughTheBoard => bail!("{}", why.over_usb),
 		},
 	};
@@ -1078,13 +1080,15 @@ mod tests {
 	}
 
 	#[test]
-	fn a_command_that_needs_a_cable_refuses_ble_and_says_why_when_no_cable_is_found() {
+	fn a_command_that_needs_a_cable_refuses_ble_and_says_nothing_of_ble_when_not_asked() {
 		for requested in ["ble", "ble:vagcan-dash"] {
 			let err = cable(Some(requested), Ok(vec![canable()]), never).unwrap_err();
 			assert_eq!(err.to_string(), WHY.over_ble);
 		}
+		// BLE was not asked for, so the refusal of BLE is not said.
 		let err = cable(None, Ok(vec![]), never).unwrap_err().to_string();
-		assert!(err.contains("no USB-CAN adapter found") && err.contains(WHY.over_ble), "{err}");
+		assert!(err.contains("no USB-CAN adapter found") && !err.contains(WHY.over_ble), "{err}");
+		assert!(!err.contains("Bluetooth"), "no hint at a link this command refuses: {err}");
 		assert_eq!(cable(None, Ok(vec![canable()]), never).unwrap(), CANABLE);
 		assert_eq!(cable(Some(CANABLE), Ok(vec![canable()]), never).unwrap(), CANABLE);
 	}

@@ -130,17 +130,17 @@ impl std::fmt::Display for NoLabelData {
 		writeln!(
 			f,
 			"\n\
-             vagcan learns a car from an extracted ODIS-Service project, in one command:\n    \
+             vagcan reads a car model's data from an extracted ODIS-Service project:\n    \
              vagcan setup <path to the ODIS project folder>\n\n\
              A VCDS installation works too — names and fault text, and the channels of the\n\
              units of every car `vagcan watch`, `measure` or `units --identify` records:\n    \
              vagcan setup <path to the VCDS installation>\n\
              Neither to hand? Leave the path off: it asks which, and can fetch VCDS.\n\n\
              It is offline — no adapter, no car. An ODIS project reads in seconds; a VCDS\n\
-             installation takes minutes, most of them searching for keys the first time.\n\
-             What it reads lands in a project under ~/.vagcan/data/. An ODIS project can be\n\
-             deleted afterwards; keep a VCDS installation: a unit the tool meets later —\n\
-             swapped, updated, or asleep the first time — is read from it.\n\n\
+             installation can take tens of minutes the first time, most of it searching for\n\
+             keys. What it reads lands in a project under ~/.vagcan/data/. An ODIS project\n\
+             can be deleted afterwards; keep a VCDS installation: a unit the tool meets\n\
+             later — swapped, updated, or asleep the first time — is read from it.\n\n\
              VCDS is Ross-Tech's, and free from them directly:\n    \
              {VCDS_DOWNLOAD}"
 		)
@@ -374,7 +374,9 @@ mod tests {
 	/// The fix line, cut out of a rendered message so two of them can be
 	/// compared without the part that is meant to differ.
 	fn fix_only(message: &str) -> String {
-		let at = message.find("vagcan learns a car").unwrap_or_else(|| panic!("no fix in:\n{message}"));
+		let at = message
+			.find("vagcan reads a car model")
+			.unwrap_or_else(|| panic!("no fix in:\n{message}"));
 		message[at..].to_string()
 	}
 
@@ -387,7 +389,9 @@ mod tests {
 		let sites = [
 			no_label_data("The measurement names", "`vagcan dev vcds names`", Path::new("/n.json")).to_string(),
 			no_fault_labels(Path::new("/rod")),
-			NoLabelData::new("No car has been set up yet.").looked_in(Path::new("/data")).to_string(),
+			NoLabelData::new("No project has been set up yet.")
+				.looked_in(Path::new("/data"))
+				.to_string(),
 			NoLabelData::new("The project `SK37X` has no label cache.")
 				.looked_for(Path::new("/c.sqlite"))
 				.to_string(),
@@ -433,11 +437,11 @@ mod tests {
 		assert!(file.to_string().contains("Looked for: /x/cache.sqlite"), "{file}");
 		// A directory is looked *in*. Same message, and the preposition is the
 		// reader's only clue whether to expect a file at the end of the path.
-		let dir = NoLabelData::new("No car has been set up yet.").looked_in(Path::new("/x/data"));
+		let dir = NoLabelData::new("No project has been set up yet.").looked_in(Path::new("/x/data"));
 		assert!(dir.to_string().contains("Looked in: /x/data"), "{dir}");
 		// And a site with no path worth showing simply has none, rather than an
 		// empty line where one would have been.
-		let bare = NoLabelData::new("No car has been set up yet.").to_string();
+		let bare = NoLabelData::new("No project has been set up yet.").to_string();
 		assert!(!bare.contains("Looked"), "{bare}");
 		assert_eq!(fix_only(&bare), fix_only(&dir.to_string()));
 	}

@@ -33,18 +33,18 @@ and the commands are written bare for readability.
 | Which car is this? | `vagcan info` |
 | Which control units does it have? | `vagcan units --identify` |
 | What does one unit say about itself? | `vagcan units --identify 01` |
-| Fault codes, one unit | `vagcan faults --ecu 01` |
+| Fault codes, one unit | `vagcan faults --unit 01` |
 | Fault codes, whole car, **named** | `vagcan faults` |
-| Standard OBD-II sensors | `vagcan sensors --ecu 01` |
+| Standard OBD-II sensors | `vagcan sensors --unit 01` |
 | Monitor for N seconds | `vagcan watch --did "01:2029,202A" --for 20 --hz 10` |
 | One instantaneous sample | `vagcan watch --did "01:2029" --for 1 --hz 2` |
 | What a unit's data declares it answers | `vagcan watch` — one tab per unit |
 | Time an acceleration run | `vagcan measure` |
 | Open a saved run as a chart page | `vagcan measure view` (offline) |
 
-Naming a unit: a short number (`01` engine, `02` gearbox, `09`, `16`, `17`) or a
-request id (`713`, `70E`). `vagcan units` lists this car's. The two id blocks answer
-by different rules, which is why `--ecu 17` and `--ecu 714` are not interchangeable
+Naming a unit: a short number (`01` engine, `02` gearbox) or a request id (`713`,
+`70E`), as `vagcan units` lists them for this car. The two id blocks answer by
+different rules, which is why `--unit 17` and `--unit 714` are not interchangeable
 guesses — pass what `units` printed.
 
 ## Monitoring for a set time
@@ -59,7 +59,8 @@ interrupt.
 vagcan watch --did "01:2029,202A 02:3816" --for 30 --hz 10 --out drive.csv
 ```
 
-- `--did` is `unit:did,did unit:did`. A bare list means the engine.
+- `--did` is `unit:did,did unit:did`. A bare list means the engine. A text id the Key
+  column shows (`01:IDE00191`) works in place of an identifier.
 - One CSV row per poll cycle. **Every value carries its own time column** (`name_t_s`)
   because identifiers are polled in batches and columns are up to a cycle apart —
   use those, not the row's `t_s`, when correlating anything.
@@ -85,8 +86,8 @@ happen.
 
 ```bash
 vagcan faults                    # named, whole car — the form to prefer
-vagcan faults --ecu 01            # one unit
-vagcan faults --ecu 01,02,713     # several
+vagcan faults --unit 01           # one unit
+vagcan faults --unit 01,02,713    # several
 ```
 
 **Run `vagcan setup` once, and faults come out named.** Without it the output is
@@ -161,7 +162,7 @@ refused on a moving car and never through the dash board.
 - **Never pass `--extended` casually.** The extended diagnostic session is workshop
   mode, and a unit that assists the driver may stop assisting while it is in one.
 - **Never reach for a sweep to answer a small question.** `units --identify 01` is the
-  one sweep left — 256 reads of one unit. `vagcan units --identify`, `faults --ecu` and
+  one sweep left — 256 reads of one unit. `vagcan units --identify`, `faults --unit` and
   `watch` answer most questions with four reads a unit, or none.
 - **Never suggest adding a write service** — coding, adaptation, clearing faults,
   flashing. `CLAUDE.md` forbids it outright.

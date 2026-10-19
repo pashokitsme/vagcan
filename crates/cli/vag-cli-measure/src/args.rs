@@ -89,7 +89,7 @@ pub struct Args {
 #[derive(Parser)]
 #[command(name = "vagcan-measure", version, about = "Time a car's acceleration, from its own speed signal.")]
 pub struct Cli {
-	/// Which car's data to read — a directory name under `~/.vagcan/data/`.
+	/// Which project to read — a directory name under `~/.vagcan/data/`.
 	///
 	/// The diagnostics binary carries this as a global flag, so the two
 	/// spellings would otherwise read different directories from the same

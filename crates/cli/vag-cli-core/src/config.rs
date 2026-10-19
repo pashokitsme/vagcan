@@ -123,7 +123,7 @@ pub fn path() -> Result<PathBuf> {
 const FRESH: &str = "\
 # vagcan settings. Yours to edit — comments and layout are kept.\n\
 \n\
-# Which car's data a bare command means, as a directory name under ~/.vagcan/data/.\n\
+# Which project a bare command reads, as a directory name under ~/.vagcan/data/.\n\
 # `vagcan setup` writes this; VAGCAN_PROJECT and --project override it.\n\
 # project = \"SK37X\"\n\
 \n\
@@ -163,6 +163,13 @@ pub fn load() -> Document {
 
 fn load_at(path: &Path) -> Document {
 	migrate_json(path);
+	// No file yet: the commented template, in memory. Reading settings writes
+	// nothing — a bare `vagcan` used to leave a config.toml behind — and the
+	// first [`save`] writes the template with its change, so the first person
+	// to open the file still learns what the options are.
+	if !path.exists() {
+		return FRESH.parse().unwrap_or_default();
+	}
 	std::fs::read_to_string(path)
 		.ok()
 		.and_then(|text| text.parse::<Document>().ok())
@@ -181,13 +188,9 @@ fn migrate_json(toml_path: &Path) {
 	}
 	let Some(dir) = toml_path.parent() else { return };
 	let json = dir.join("config.json");
-	let Ok(text) = std::fs::read_to_string(&json) else {
-		// No old file either: start from the commented template, so the first
-		// person to open this learns what the options are.
-		let _ = std::fs::create_dir_all(dir);
-		let _ = std::fs::write(toml_path, FRESH);
-		return;
-	};
+	// No old file either: nothing to carry over, and nothing is written —
+	// [`load_at`] hands out the template until something is saved.
+	let Ok(text) = std::fs::read_to_string(&json) else { return };
 	let mut document: Document = FRESH.parse().unwrap_or_default();
 	if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
 		&& let Some(project) = value.get("project").and_then(|v| v.as_str())
@@ -373,6 +376,23 @@ mod tests {
 		assert_eq!(project(&document).as_deref(), Some("SK37X"));
 		assert!(dir.join("config.toml").is_file());
 		assert!(!dir.join("config.json").exists(), "the old file is gone, not shadowed");
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn reading_settings_writes_nothing_and_the_first_save_writes_the_template() {
+		// A bare `vagcan` or `--help` read the settings and left a config.toml
+		// behind on a machine that had never been set up.
+		let dir = temp("fresh");
+		let path = dir.join("config.toml");
+		let mut document = load_at(&path);
+		assert!(!path.exists(), "a read wrote the file");
+		assert_eq!(project(&document), None, "the template sets nothing");
+		document["project"] = toml_edit::value("SK37X");
+		write_at(&path, &document).unwrap();
+		let text = std::fs::read_to_string(&path).unwrap();
+		assert!(text.contains("# vagcan settings."), "the template's comments are kept: {text}");
+		assert_eq!(project(&load_at(&path)).as_deref(), Some("SK37X"));
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 

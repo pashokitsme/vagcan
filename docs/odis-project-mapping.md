@@ -1,5 +1,12 @@
 # VW's project names, and which vehicles each covers
 
+**To pick your project:** find your car's model under its brand below. The `project` column is
+the ODIS-Service project to extract and read:
+
+```sh
+vagcan setup <the extracted project folder>
+```
+
 **What this is.** `S42 — Fahrzeugprojektzuordnung` (vehicle-project mapping), version
 3.0.0, transcribed from VW's own HTML rendering into markdown. It is the authority for
 what an ODIS project *name* means: `SK37X` is not a car, it is a **platform**, and this

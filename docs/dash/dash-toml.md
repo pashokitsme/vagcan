@@ -8,24 +8,28 @@ the stopwatch and buttons on the board's pins. One file per car, written by hand
 ```
 
 The build resolves every name in it against the car's recorded units (`~/.vagcan/cars/<VIN>/units.json`,
-written by `vagcan units --identify` or `vagcan watch` with the car) and the project's label data, and
-writes the plan the firmware links. The board resolves nothing itself.
+written by `vagcan watch`, `vagcan measure` or `vagcan units --identify` with the car) and the project's
+label data, and writes the dash configuration the firmware is built from. The board resolves nothing
+itself.
+
+The steps from a new car to a flashed board are in the README: [Building the dash](../../README.md#building-the-dash).
 
 ## Build it
 
 | what you want | run |
 |---|---|
-| see the plan and the reasons, no firmware | `vagcan dev dash build <VIN>` |
+| see the dash configuration and the reasons, no firmware | `vagcan dev dash build <VIN>` |
+| build and flash the board, in a clone | `just fw-flash` (needs `cargo install espflash --locked` once) |
 | build the firmware for that car | `VAGCAN_DASH_VIN=<VIN> cargo build --release --bin dash` in `crates/dash/vag-dash-fw` |
-| check the firmware compiles, no car | `VAGCAN_DASH_NO_CAR=1 cargo build --release --bin dash` (an empty plan — do not flash it) |
+| check the firmware compiles, no car | `VAGCAN_DASH_NO_CAR=1 cargo build --release --bin dash` (an empty configuration — do not flash it) |
 
 Both run the same build. `vagcan dev dash build` is for reading the result — and, with a VCDS
 installation, it is a step before the firmware build only when no command with the car has read
-the channels of the plan's units yet: it reads them from the installation (offline, minutes the
-first time), which the firmware build never does. A firmware build for a car whose plan uses a
-unit whose channels have not been read is refused; the refusal names `vagcan dev dash build
+the channels of the units the configuration uses yet: it reads them from the installation (offline,
+minutes the first time), which the firmware build never does. A firmware build that uses a unit
+whose channels have not been read is refused; the refusal names `vagcan dev dash build
 <VIN>`, or `vagcan setup <VCDS installation>` when the installation is no longer where `setup`
-read it. A recorded unit the plan does not use is a note in the build's output, never a refusal.
+read it. A recorded unit the configuration does not use is a note in the build's output, never a refusal.
 
 | setting | for | what it does |
 |---|---|---|
@@ -41,9 +45,30 @@ Outputs, both under `~/.vagcan/dash/<VIN>/`:
 | `plan.json` | reading, and the simulator |
 | `plan.rs` | the firmware, which `include!`s it |
 
+### Reading the build's output
+
+One line per channel:
+
+```
+COOLANT ← 01:IDE00025 F405@0/8 u BE ×1 -40 at 2 Hz declared (IDE00025)
+```
+
+| part | means |
+|---|---|
+| `COOLANT` | the label on the panel |
+| `01:IDE00025` | the channel as `dash.toml` names it |
+| `F405` | the identifier the board reads |
+| `@0/8` | the value starts at bit 0 of the answer and is 8 bits long; ` bits` follows when the length is not whole bytes |
+| `u` / `i` | unsigned / signed |
+| `BE` / `LE` | big-endian / little-endian |
+| `×1 -40` | the scaling: raw value × 1, then − 40 |
+| `at 2 Hz` | readings a second while its page is up |
+| `declared` / `proven` | from the project's label data (ODIS or VCDS) / measured on a car |
+| `(IDE00025)` | VW's channel id, or the row's name when it has none |
+
 ## A full example
 
-Every section, every key. The identifiers, text ids and state names are **one car's** (Škoda
+Every section, every key. The identifiers, channel ids and state names are **one car's** (Škoda
 Octavia III). Take yours from your car: see [How to find names for your car](#how-to-find-names-for-your-car).
 
 ```toml
@@ -51,14 +76,14 @@ vin = "XW8AD4NE9JH008917"
 language = "ru"                    # labels (names.csv's ru column) and the board's own words
 
 [[channel]]
-ref = "01:IDE00025"                # coolant temperature, by text id
+ref = "01:IDE00025"                # coolant temperature, by channel id
 label = "ОЖ"                       # the name on the panel
 decimals = 0
 hz = 10                            # readings a second while its page is up
 
 [[channel]]
 ref = "01:IDE00191"                # boost pressure, actual
-setpoint = "01:IDE00190"           # boost pressure, specified: same unit; no [[channel]] needed
+setpoint = "01:IDE00190"           # boost pressure, target value: same unit; no [[channel]] needed
 decimals = 2
 hz = 10
 
@@ -138,7 +163,7 @@ type: `decimals = "2"` is refused, never read as absent.
 - Keywords are lowercase: `kind = "Values"` and `direction = "Above"` are refused.
 
 Check the build's output after every edit. It prints one line per channel (with its rate) and per
-specified value, then one for the stopwatch, the lever and each button, then one per alarm. Notes
+target value, then one for the stopwatch, the lever and each button, then one per alarm. Notes
 come in between, such as nothing turning the page.
 
 ### Top level
@@ -162,11 +187,11 @@ One per value the board reads.
 | `label` | string | no | `names.csv` in `language`, then the project's wording | The name on the panel. Ten characters fit a page of four cells; longer collides with the next cell. |
 | `decimals` | integer, 0 to 3 | no | from the scaling: 0 for a step of 1 or more, one place per decade under 1, at most 3 | Places after the point. |
 | `hz` | number, above 0, at most 100 | no | 2 | Readings a second while a page showing it is up. |
-| `setpoint` | string: a channel on the same unit | no | none | What the unit asked for. The panel draws the difference under the number; a `drift` alarm watches it. |
+| `setpoint` | string: a channel on the same unit | no | none | The channel's target value, as its unit sets it. The panel draws the distance from target under the number; a `drift` alarm watches it. |
 | `zero_at_rest` | `true` or `false` | no | `false` | Shows 0 while the car stands (the stopwatch's `speed` reads 0). For an acceleration sensor, which reads the road's slope as acceleration at a standstill. Needs a `[stopwatch]`. Alarms and charts still see the value as read. |
 
-- The row must scale linearly: a number. An enumeration, or a proven point with no slope, is
-  refused.
+- The row must scale linearly: a number. An enumeration, or a single point measured on a car with no
+  slope, is refused.
 - A channel on no page is not read, unless it is the stopwatch's `speed`, another channel's
   `setpoint`, or `[strip]`'s `volts`.
 
@@ -268,7 +293,7 @@ one for the previous, one to turn the stopwatch on and off.
 **Every key but `read` and `cruise` is a text from your car's ODIS project, not an id.**
 
 - `rocker` and `switch` are **field names**. A field is part of one identifier's answer. It has a
-  name and its bits; in the project it usually has no text id.
+  name and its bits; in the project it usually has no channel id.
 - `next`, `previous`, `measure`, `switch_off` and `cruise_off` are **state texts**. A state is a
   band of raw values with a text, and has no id at all.
 - They are in the project's language: German for the steering column unit, English for the
@@ -286,7 +311,7 @@ and note which state each position shows. A wrong text makes the build list the 
 
 | key | type | required | default | what it does |
 |---|---|---|---|---|
-| `read` | string: `<unit>:<DID>` | yes | — | The one identifier whose answer carries both the rocker and the switch. No text id. No `@` but `@0`. |
+| `read` | string: `<unit>:<DID>` | yes | — | The one identifier whose answer carries both the rocker and the switch. No channel id. No `@` but `@0`. |
 | `rocker` | string: a field name from the project | yes | — | The field of `read` that the lever moves. |
 | `switch` | string: a field name from the project | yes | — | The field of `read` with the cruise main switch. Not the rocker. |
 | `next` | string: a state text of `rocker` | yes | — | Next page. |
@@ -389,12 +414,15 @@ Two spellings, both `<unit>:<row>`:
 
 | spelling | example | when |
 |---|---|---|
-| text id | `01:IDE00025` | The usual one: stable across variants, and what `names.csv` is keyed by. |
-| identifier | `02:380A`, `02:3816@3` | A row with no text id: a proven one, or a standard OBD-II parameter. `@` is the bit offset, 0 when left out. |
+| channel id | `01:IDE00025` | The usual one: stable across variants, and what `names.csv` is keyed by. |
+| identifier | `02:380A`, `02:3816@3` | A row with no channel id: one measured on a car, or a standard OBD-II parameter. `@` is the bit offset, 0 when left out. |
 
 - The unit is a short number (`01`, `02`, `4B`) or a request id (`7E0`, `714`).
-- An identifier is exactly four hex digits. Anything else after the colon is a text id.
-- A text id takes no `@`.
+- A **channel id** is VW's own id for a measurement, such as `IDE00025`. The build's messages call it a "text id".
+- An identifier is exactly four hex digits. Anything else after the colon is a channel id.
+- A channel id takes no `@`.
+- `vagcan watch --did` takes the same spellings as `ref`: `<unit>:<DID>`, `<unit>:<channel id>`,
+  `<unit>:<DID>@<bit>`. It also takes a pair as the Key column shows it, `01:IDE00191/IDE00190`: both rows.
 - Which variant of the unit the car has is not written here. It comes from the car's record of its units.
 - One row is one channel however it is spelled. `01:IDE00191` and `01:202A` are the same row:
   declaring both is refused, and a page, an alarm, a `setpoint` or `speed` may use either
@@ -405,13 +433,13 @@ Two spellings, both `<unit>:<row>`:
 | you need | how |
 |---|---|
 | the units the car has, and their numbers | `vagcan units` |
-| a channel's unit, identifier and text id | `vagcan watch`, press `,` for settings, set "Key at the end of each row" to shown. The ECU, DID and Key columns are the unit, the identifier and the text id. |
-| a text id by the channel's name | `vagcan dev glossary` writes `~/.vagcan/names.csv`: every text id the project knows, with its name in the `current` column. Search it. It does not say which unit. |
-| a bit offset | Write the text id. When several rows answer to it, the build refuses and lists each as `DID@bit name`. Copy one as `<unit>:<DID>@<bit>`. An identifier with no `@` is bit 0: a row that starts at another bit is refused as not declared, with no list. |
+| a channel's unit, identifier and channel id | `vagcan watch`, press `,` for settings, set "Key at the end of each row" to shown. The Unit, DID and Key columns are the control unit, the identifier and the channel id. |
+| a channel id by the channel's name | `vagcan dev glossary` writes `~/.vagcan/names.csv`: every channel id the project knows, with its name in the `current` column. Search it. It does not say which unit. |
+| a bit offset | Write the channel id. When several rows answer to it, the build refuses and lists each as `DID@bit name`. Copy one as `<unit>:<DID>@<bit>`. An identifier with no `@` is bit 0: a row that starts at another bit is refused as one the unit does not have, with no list. |
 | the lever's identifier | Record `vagcan watch --out lever.csv` with the identifiers of the lever's unit selected, working the lever. Then `vagcan dev recording discover --log lever.csv` sorts the identifiers into never moved, stepped and continuous. |
 | `[stalk]` field names | Put any name in `rocker`. The build refuses and lists every field of `read`. |
 | state names | A wrong state name makes the build list the field's states. `vagcan watch --did <unit>:<DID>` shows a field's current state by name: work the lever and watch which state appears. |
-| what the build made of each name | `vagcan dev dash build <VIN>`: one line per channel with its identifier, bits, scaling, rate and source, and per specified value; then the stopwatch, the lever and each button; then the alarms. |
+| what the build made of each name | `vagcan dev dash build <VIN>`: one line per channel (see [Reading the build's output](#reading-the-builds-output)), and per target value; then the stopwatch, the lever and each button; then the alarms. |
 
 ## Limits
 
@@ -452,8 +480,8 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `language "xx" is not one this build has words for` | `"en"` or `"ru"`. |
 | ``line N: `survey` is no longer read — delete the line`` | Delete it. The units come from the car's record, not from a file named here. |
 | `no record of <VIN>'s control units at <path>` | Connect to the car once: `vagcan units --identify` or `vagcan watch` writes it. |
-| `the channels of N control units … have not been read from the VCDS installation (…)` | Only the units the plan uses count. Run `vagcan dev dash build <VIN>` once: it reads them from the installation, offline, then builds. If the refusal goes on to say the installation `is not on this machine any more`, or names the project's own note of it, re-run `vagcan setup <VCDS installation>` first. If `dev dash build` is what just ran, the lines above it say what stopped the read. |
-| `the channels of N control units … (…), which the plan does not use` | Not a refusal: a note among the build's lines, and the plan builds. Those units' channels are read by the next `watch`, `measure` or `units --identify` with the car, or by `vagcan dev dash build <VIN>`; when the note says the installation is gone, re-run `vagcan setup <VCDS installation>` if you want them. |
+| `the channels of N control units … have not been read from the VCDS installation (…)` | Only the units the configuration uses count. Run `vagcan dev dash build <VIN>` once: it reads them from the installation, offline, then builds. If the refusal goes on to say the installation `is not on this machine any more`, or names the project's own note of it, re-run `vagcan setup <VCDS installation>` first. If `dev dash build` is what just ran, the lines above it say what stopped the read. |
+| `the channels of N control units … (…), which the plan does not use` | Not a refusal: a note among the build's lines, and the build goes on. Those units' channels are read by the next `watch`, `measure` or `units --identify` with the car, or by `vagcan dev dash build <VIN>`; when the note says the installation is gone, re-run `vagcan setup <VCDS installation>` if you want them. |
 | `no [[channel]]` / `no [[page]]` | Add one. A single `[channel]` or `[page]` with one pair of brackets counts as none. |
 | `alarm must be written as [[alarm]] tables` | Two pairs of brackets. |
 | `stalk must be one [stalk] table` / `stopwatch must be one [stopwatch] table` | One pair of brackets. |
@@ -489,9 +517,9 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `X and Y are the same row …; keep one [[channel]]` | Delete one. |
 | `X: its setpoint Y is on another unit` | Pair channels of one unit only. |
 | `X: its setpoint Y reads in "a" against the channel's "b"` | Pair a row in the same unit of measure. |
-| `X: its setpoint Y is the channel itself` | Name the specified value, not the actual one. |
+| `X: its setpoint Y is the channel itself` | Name the target value, not the channel itself. |
 | `X: its setpoint Y has a setpoint of its own` | Remove one of the two. |
-| `X: its setpoint Y is read at A Hz and the channel it explains at B Hz` | Give both the same `hz`. Two channels sharing one specified value need the same `hz` too. |
+| `X: its setpoint Y is read at A Hz and the channel it explains at B Hz` | Give both the same `hz`. Two channels sharing one target value need the same `hz` too. |
 
 **Pages**
 
@@ -600,14 +628,14 @@ build prints it after `dash plan for VIN <VIN>:`.
 - A channel on the page on screen: at its `hz`.
 - A channel only on other pages, charts included: once a second, or at its `hz` if slower.
 - A channel an alarm watches: at its `hz`, whatever page is up.
-- A specified value: with its channel.
+- A target value (`setpoint`): with its channel.
 - `[strip]`'s `volts`: as a cell of every page whose strip shows it.
 - Any other channel on no page: not read, except the stopwatch's `speed` while the stopwatch is
   on.
 - All channels together: at most 100 requests a second. Asked for more, the board reads them
   more slowly than their `hz`. The build does not check it.
-- At start-up the board checks each unit's part number (`F187`) against the plan. A unit that
-  answers another number is not read: after replacing a unit, run `vagcan units --identify` and rebuild.
+- At start-up the board checks each unit's part number (`F187`) against the one the dash was built
+  for. A unit that answers another number is not read: after replacing a unit, run `vagcan units --identify` and rebuild.
 
 **Paging**
 
@@ -627,7 +655,7 @@ build prints it after `dash plan for VIN <VIN>:`.
   `cruise_off`. A missing reading counts as not off.
 - It is read every 50 ms while it is the dash's, every 500 ms otherwise, every 100 ms with the
   stopwatch on and `km_h_per_unit` above 0. The cruise status is read every 200 ms, while the
-  lever's unit answers with the plan's part number.
+  lever's unit answers with the part number the dash was built for.
 - A press is two readings in a row in the same state: hold it at least 0.1 s, 0.2 s with the
   stopwatch on. A shorter press can be missed. Holding does not repeat.
 - `next` and `previous` wrap round the pages. With the stopwatch on they do nothing.

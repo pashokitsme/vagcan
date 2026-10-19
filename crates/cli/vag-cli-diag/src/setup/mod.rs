@@ -106,6 +106,11 @@ fn codes_language(file_name: &str) -> Option<&'static str> {
 /// its own file in identifier `F19E`.
 const SHARED_ROD_FILES: &[&str] = &["RD.rod", "MUX.rod"];
 
+/// What the first read of a VCDS installation into a project costs, said
+/// before it starts.
+const FIRST_READ_TAKES_LONG: &str = "The first read can take tens of minutes, most of it searching for keys.\n\
+                                     Later runs reuse what it finds.";
+
 pub struct Options<'a> {
 	/// The VCDS installation root. Without one, an installation is offered for
 	/// download and the run continues into the same parse.
@@ -702,6 +707,12 @@ fn read_vcds_files(root: &Path, project: &crate::project::Project, refresh: bool
 	replace_if_another_build(root, &pool, refresh)?;
 	std::fs::create_dir_all(&pool).with_context(|| format!("creating {}", pool.display()))?;
 	println!("Reading the VCDS installation at {}", root.display());
+	// Said before the wait, not during it: a first read is mostly key searches,
+	// and nothing on screen says how long those are until the units' lines
+	// start counting down in step 5. A project with keys already has had it.
+	if !project.rod_keys().is_file() {
+		println!("{FIRST_READ_TAKES_LONG}");
+	}
 
 	// The copy runs first and the derivations then read from it, so afterwards
 	// `~/.vagcan` is the one set of raw files the car commands read. The
@@ -1136,20 +1147,13 @@ fn names(pool: &Path, project: &crate::project::Project) -> Result<Step> {
 		&& let Ok(bytes) = std::fs::read(&source)
 		&& vag_data_labels::rod::key_cost(&bytes, "TXT") == Some(vag_data_labels::rod::KeyCost::AnchorSweep)
 	{
-		{
-			println!("[3/5] Measurement names — skipped: {name} masks its key.");
-			return Ok(Step::Missing {
-				what: "the measurement names",
-				why: format!(
-					"{name} is a *shifted* container, so its text section has no\n    \
-                     anchor to search from — the only route is every legal anchor\n    \
-                     against the full space, which is hours to days rather than\n    \
-                     the minute or two an ordinary table costs. Step 5 names its\n    \
-                     channels from this table too, so there they go by their\n    \
-                     identifiers. See .archive/research/labels/tttext2.md §3.3"
-				),
-			});
-		}
+		// Why, for the next reader of this code: `.archive/research/labels/tttext2.md`
+		// §3.3. The person running `setup` is owed what it costs them and what to do.
+		println!("[3/5] Measurement names — skipped: {name} opens only inside VCDS itself.");
+		return Ok(Step::Missing {
+			what: "the measurement names",
+			why: names_only_in_vcds(&name),
+		});
 	}
 	println!("[3/5] Measurement names — opening {name}, then reading every record under its own key.");
 	let scratch = out.with_file_name("tttext-scratch");
@@ -1297,6 +1301,21 @@ fn rod_keys(pool: &Path, project: &crate::project::Project) -> Result<Step> {
 	})
 }
 
+/// The report's line for a text table only VCDS itself opens: what it costs
+/// the reader, and what to do about it.
+///
+/// "Instead", not "too": a second VCDS installation replaces the first in a
+/// project. The English build is the one [`vendor`] fetches, and its text table
+/// opens.
+fn names_only_in_vcds(name: &str) -> String {
+	format!(
+		"{name} opens only inside VCDS itself.\n    \
+         `vagcan watch` shows this installation's channels by reading id, not by name.\n    \
+         For the names, read an English VCDS instead: `vagcan setup` with no path,\n    \
+         then pick \"Download VCDS\"."
+	)
+}
+
 /// Whether `out` was written after `source` last changed.
 ///
 /// The freshness rule the label cache already uses, applied to a file rather
@@ -1382,11 +1401,7 @@ fn report(steps: &[Step], scalings: bool, fault_labels: bool) -> String {
 		}
 	}
 	if steps.iter().any(|s| matches!(s, Step::Missing { .. })) {
-		let _ = writeln!(
-			out,
-			"\nThe rest is usable. What is missing above is missing from the installation \n\
-             that was read, so a different or newer VCDS may have it."
-		);
+		let _ = writeln!(out, "\nThe rest is usable.");
 	}
 	// The fault line is conditional because it was a lie on the ODIS-only path:
 	// it announced that the labels are copied in after a run that copied
@@ -1808,6 +1823,27 @@ mod tests {
 		let r = report(&steps, false, true);
 		assert!(r.contains("NOT recovered"), "{r}");
 		assert!(r.contains("The rest is usable"), "{r}");
+	}
+
+	#[test]
+	fn a_text_table_only_vcds_opens_is_reported_as_its_cost_and_its_remedy() {
+		// The Russian build's table: the report once spent seven lines on why
+		// (containers, anchors, a research file). The reader is owed what it
+		// costs them and what to type.
+		let steps = [Step::Missing {
+			what: "the measurement names",
+			why: names_only_in_vcds("TTText-RUS.rod"),
+		}];
+		let r = report(&steps, false, true);
+		assert!(
+			r.contains("the measurement names: NOT recovered — TTText-RUS.rod opens only inside VCDS itself."),
+			"{r}"
+		);
+		assert!(r.contains("by reading id, not by name"), "{r}");
+		assert!(r.contains("read an English VCDS instead") && r.contains("\"Download VCDS\""), "{r}");
+		for jargon in ["shifted", "anchor", ".archive", "masks"] {
+			assert!(!r.contains(jargon), "{jargon}: {r}");
+		}
 	}
 
 	#[test]

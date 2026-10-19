@@ -111,11 +111,12 @@ pub async fn run(tool: Tool) -> Result<()> {
 			println!("\nwrote {}", written.json.display());
 			println!("wrote {}", written.rust.display());
 			let plan = &written.built.plan;
+			let count = |n: usize, what: &str| format!("{n} {}", crate::render::plural(n, what));
 			println!(
-				"{} channels on {} units, {} pages",
-				plan.channels.len(),
-				plan.units.len(),
-				plan.pages.len()
+				"{} on {}, {}",
+				count(plan.channels.len(), "channel"),
+				count(plan.units.len(), "unit"),
+				count(plan.pages.len(), "page")
 			);
 			Ok(())
 		}

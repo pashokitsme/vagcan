@@ -80,13 +80,17 @@ fn long_about() -> String {
 	version,
 	about = "Read a VAG car (VW / Audi / Škoda / SEAT) over CAN. \
              Wiring: OBD-II pin 6 → CAN-H, pin 14 → CAN-L, pin 5 → GND, termination OFF. \
-             Start with `vagcan devices`.",
-	long_about = long_about()
+             Start with `vagcan setup`.",
+	long_about = long_about(),
+	// After the subcommands exist: it decides, command by command, where `--project` and
+	// `--slcan` are shown.
+	scoped_globals()
 )]
 struct Cli {
-	/// Which car's data to read — a directory name under `~/.vagcan/data/`.
+	/// Which project to read — a directory name under `~/.vagcan/data/`.
 	///
-	/// Only needed with more than one car set up. `vagcan setup` writes down
+	/// A project is one car model's data, from `vagcan setup`. Only needed with
+	/// more than one project set up. `vagcan setup` writes down
 	/// the one it just built, `VAGCAN_PROJECT` overrides that for a shell, and
 	/// this overrides both for one command.
 	//
@@ -113,12 +117,94 @@ struct Cli {
 	command: Option<Command>,
 }
 
+/// The commands each global flag means something on, by their path under `vagcan`.
+///
+/// `--project` is read where a command consults the project's data; `--slcan` where a
+/// command opens an adapter. Everywhere else the flag is still accepted — `vagcan --slcan
+/// setup` parses as it always did — but not shown: on `setup`, `devices` or `dev vcds rod`
+/// the two lines were noise in every help screen. A path not listed hides both, so a new
+/// command shows a flag only once somebody has said it means something there.
+const GLOBALS_APPLY: &[(&str, &[&str])] = &[
+	(
+		"project",
+		&[
+			"units",
+			"faults",
+			"watch",
+			"measure",
+			"measure setup",
+			"dev glossary",
+			"dev recording dash",
+			"dev dash build",
+			"dev vcds labels",
+			"dev vcds names",
+			"dev vcds stats",
+			"dev vcds tttext",
+		],
+	),
+	(
+		"slcan",
+		&[
+			"info",
+			"units",
+			"faults",
+			"sensors",
+			"watch",
+			"measure",
+			"measure setup",
+			"dev sniff",
+			"dev vcds labels",
+		],
+	),
+];
+
+/// Whether global flag `id` is shown on the command at `path`.
+fn global_applies(id: &str, path: &str) -> bool {
+	GLOBALS_APPLY.iter().any(|(flag, paths)| *flag == id && paths.contains(&path))
+}
+
+/// [`GLOBALS_APPLY`], applied to the command tree.
+///
+/// A trait so that the derive can call it (`#[command(scoped_globals())]`) after it has
+/// added the subcommands: then `Cli::command()`, `Cli::parse()` and every test's
+/// `try_parse_from` see one tree, rather than a parse that bypasses the scoping.
+trait ScopedGlobals {
+	fn scoped_globals(self) -> Self;
+}
+
+impl ScopedGlobals for clap::Command {
+	fn scoped_globals(self) -> Self {
+		let globals: Vec<clap::Arg> = self.get_arguments().filter(|a| a.is_global_set()).cloned().collect();
+		scope_globals(self, &globals, "")
+	}
+}
+
+/// Give every subcommand under `command` its own copy of each global flag, shown or hidden.
+///
+/// clap copies a global flag into a subcommand only when the subcommand has none of that
+/// name, so a copy put there first is the one it keeps — and a value given on it still
+/// reaches `Cli`, which reads globals by name.
+fn scope_globals(mut command: clap::Command, globals: &[clap::Arg], path: &str) -> clap::Command {
+	let names: Vec<String> = command.get_subcommands().map(|s| s.get_name().to_owned()).collect();
+	for name in names {
+		let here = if path.is_empty() { name.clone() } else { format!("{path} {name}") };
+		command = command.mut_subcommand(&name, |mut sub| {
+			for flag in globals {
+				let shown = global_applies(flag.get_id().as_str(), &here);
+				sub = sub.arg(flag.clone().hide(!shown));
+			}
+			scope_globals(sub, globals, &here)
+		});
+	}
+	command
+}
+
 // Clone because a command that stopped for want of label data is run again
 // once that data has been made — see `dispatch_or_offer`. Nothing here is more
 // than a handful of strings and flags.
 #[derive(Clone, Subcommand)]
 enum Command {
-	/// Learn a car from a VCDS installation or an ODIS project. Offline.
+	/// Read a car model's data from a VCDS installation or an ODIS project. Offline.
 	///
 	/// Everything the label files contribute — the parsed label files
 	/// themselves, the measurement names, the `.rod` section keys, the
@@ -136,8 +222,8 @@ enum Command {
 	/// `~/.vagcan/data/<id>/`, and a second source is added to a project rather
 	/// than replacing what is in it; where both describe a channel, ODIS wins.
 	///
-	/// An ODIS project reads in seconds; a VCDS installation takes minutes,
-	/// most of them searching for keys the first time. It touches no car.
+	/// An ODIS project reads in seconds; a VCDS installation can take tens of
+	/// minutes the first time, most of it searching for keys. It touches no car.
 	/// Running it again on a source already in the project replaces what that
 	/// source wrote before and leaves every other source's data where it is,
 	/// and a second VCDS installation replaces the first. A VCDS run skips the
@@ -163,25 +249,27 @@ enum Command {
 	/// Bluetooth is not looked for here: give a command `--ble`.
 	Devices,
 
-	/// Identify the car: VIN, engine and gearbox passports.
+	/// Identify the car: VIN, and the engine's and gearbox's part numbers and software versions.
 	Info {
 		#[command(flatten)]
 		device: DeviceArg,
 	},
 
-	/// Ask the gateway which control units this car has.
+	/// List the car's control units.
 	///
-	/// One read of the gateway's installation list, instead of sweeping every
-	/// diagnostic address and waiting out a timeout for each one the car does
-	/// not have. `--identify` has every unit name itself; `--identify <unit>`
-	/// has one of them say everything it knows.
+	/// One read of the car's list of control units, which the gateway keeps, instead
+	/// of asking every diagnostic address and waiting out a timeout for each one the
+	/// car does not have. Each is named from what is already on this machine — the
+	/// project's label files and what an earlier `--identify` recorded — and nothing
+	/// more is asked of the car for it. `--identify` has every unit name itself;
+	/// `--identify <unit>` has one of them say everything it knows.
 	#[command(mut_arg("device", |a| a.help(UNITS_DEVICE_HELP)))]
 	Units {
 		#[command(flatten)]
 		device: DeviceArg,
 		/// Have the units name themselves: part number, component name and the
 		/// ODX file that describes each (F187, F197, F19E, F1A2), for every unit
-		/// the gateway lists, the gateway itself and the powertrain. Slower, and
+		/// on the car's list, the gateway itself and the powertrain. Slower, and
 		/// a unit that does not answer is reported as such. What they said is
 		/// recorded under `~/.vagcan/cars/<VIN>/units.json` — the list `vagcan
 		/// setup` and `vagcan dev dash build` work from when the car is not
@@ -193,8 +281,9 @@ enum Command {
 		/// identification block instead: every software and hardware version,
 		/// the supplier numbers, the ODX label file the unit is described by,
 		/// and whatever else answers, named where the meaning is documented and
-		/// raw where it is not. That is 256 reads of one control unit, so it is
-		/// refused on a moving car.
+		/// raw where it is not. That is a sweep: it reads one unit's
+		/// identification block, 256 entries (F100–F1FF), one after another — so
+		/// it is refused on a moving car.
 		#[arg(long, value_name = "UNIT", num_args = 0..=1)]
 		identify: Option<Option<String>>,
 		/// Read one unit's identification block while the car is moving.
@@ -219,10 +308,13 @@ enum Command {
 	Faults {
 		#[command(flatten)]
 		device: DeviceArg,
-		/// Read only these units, e.g. `01,713,70E`. Default: every unit the
-		/// gateway lists.
-		#[arg(long, value_name = "LIST")]
-		ecu: Option<String>,
+		/// Read only these control units, e.g. `01,713,70E`: short numbers or
+		/// request ids, as `vagcan units` lists them. Default: every unit the car
+		/// lists.
+		//
+		// `--ecu` was its name until 2026-10-19 and still parses, unlisted.
+		#[arg(long, alias = "ecu", value_name = "UNITS")]
+		unit: Option<String>,
 		/// Also dump each fault's raw extended-data record as hex. The layout is
 		/// per-unit and mostly undecoded — for offline analysis.
 		#[arg(long)]
@@ -243,7 +335,9 @@ enum Command {
 		/// catalogue is sealed with one, and recovering one costs ~95 s of
 		/// every core — so they are kept as data, not searched for per run.
 		/// Default: this project's `rod-keys.json`, written by `vagcan setup`.
-		#[arg(long, value_name = "FILE")]
+		//
+		// Not on `-h`: nobody reading a car needs it, and `--help` still has it.
+		#[arg(long, value_name = "FILE", hide_short_help = true)]
 		iv_cache: Option<String>,
 	},
 
@@ -260,10 +354,12 @@ enum Command {
 	Sensors {
 		#[command(flatten)]
 		device: DeviceArg,
-		/// Control unit: a short number (01 engine, 02 gearbox, 09, 16, 17) or
-		/// a request id (713, 70E). `vagcan units` lists this car's.
-		#[arg(long, default_value = "01", value_name = "ID")]
-		ecu: String,
+		/// Control unit: a short number or a request id, as `vagcan units` lists
+		/// them, e.g. 01 (the engine) or 713.
+		//
+		// `--ecu` was its name until 2026-10-19 and still parses, unlisted.
+		#[arg(long, alias = "ecu", default_value = "01", value_name = "UNIT")]
+		unit: String,
 	},
 
 	/// Live view of the car — configured from inside, not by flags.
@@ -280,9 +376,15 @@ enum Command {
 	Watch {
 		#[command(flatten)]
 		device: DeviceArg,
-		/// Start with these selected, e.g. `01:2029,202A 713:1001`. The part
-		/// before the colon is a unit — short number or request id — and a
-		/// bare list means the engine.
+		/// Start with these selected, e.g. `01:2029,202A 713:1001 01:IDE00191`.
+		/// Each is a control unit (short number or request id), a colon, and an
+		/// identifier, a text id or `<identifier>@<bit>` — as `dash.toml` writes
+		/// a channel. A bare list means the engine.
+		///
+		/// An identifier selects every field it carries, and one nothing
+		/// describes is shown as bytes. A text id is what the Key column shows
+		/// (turned on in the settings), and a pair it shows as `A/B` is both
+		/// rows; the unit is what the Unit column shows.
 		#[arg(long, value_name = "SPEC")]
 		did: Option<String>,
 		/// Poll rate for this run. Without it, the rate last set on the settings
@@ -320,7 +422,9 @@ enum Command {
 		/// part number or ODX name of the control unit it describes, so a car
 		/// this tool has not seen before simply finds none.
 		/// Default: this project's `~/.vagcan/data/<project>/measurements`.
-		#[arg(long, value_name = "DIR")]
+		//
+		// Not on `-h`, as `faults --iv-cache`: a path override nobody reading a car needs.
+		#[arg(long, value_name = "DIR", hide_short_help = true)]
 		data: Option<String>,
 	},
 
@@ -611,7 +715,7 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 			let open = async || device::connect(device.requested(), slcan).await;
 			units(open, identify.is_some()).await
 		}
-		Command::Sensors { device, ecu } => sensors(async || device::connect(device.requested(), slcan).await, &ecu).await,
+		Command::Sensors { device, unit } => sensors(async || device::connect(device.requested(), slcan).await, &unit).await,
 		Command::Watch {
 			replay: Some(path),
 			data,
@@ -628,8 +732,10 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 			r#for,
 			..
 		} => {
+			// What `units` lists, `--did` and the Unit column use: 44 as well as 712.
+			labels::install_recorded_units();
 			let preselect = match did.as_deref() {
-				Some(spec) => plan::parse_spec(spec).map_err(|e| anyhow::anyhow!("--did: {e}"))?,
+				Some(spec) => plan::parse_checked(spec).map_err(|e| anyhow::anyhow!("--did: {e}"))?,
 				None => Vec::new(),
 			};
 			// A pipe, a log file or an agent gets the plain-console view
@@ -655,14 +761,15 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 		}
 		#[cfg(feature = "measure")]
 		Command::Measure(args) => {
-			measure::dispatch(args, &data_dir(None)?, async |device: Option<String>| {
+			// The project is resolved only by what reads its rows: `measure view` opens a file.
+			measure::dispatch(args, data_dir, async |device: Option<String>| {
 				device::connect(device.as_deref(), slcan).await
 			})
 			.await
 		}
 		Command::Faults {
 			device,
-			ecu,
+			unit,
 			details,
 			all,
 			supported,
@@ -672,12 +779,12 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 		} => {
 			faults::run(
 				async || device::connect(device.requested(), slcan).await,
-				ecu.as_deref(),
+				unit.as_deref(),
 				details,
 				all,
 				supported,
 				extended,
-				&rod_keys(iv_cache.as_deref())?,
+				iv_cache.as_deref(),
 			)
 			.await
 		}
@@ -737,19 +844,6 @@ fn data_dir(given: Option<&str>) -> Result<String> {
 	)
 }
 
-/// Where the recovered `.rod` section keys are, for this run.
-///
-/// Per project, not shared beside the `.rod` pool: a recovered key is a property
-/// of one file's *bytes*, and two VCDS builds ship a same-named `.rod` with
-/// different content (design §4.2).
-fn rod_keys(given: Option<&str>) -> Result<String> {
-	Ok(
-		datadir::or_default(given, || Ok(project::current()?.rod_keys()))?
-			.to_string_lossy()
-			.into_owned(),
-	)
-}
-
 /// A duration in seconds, rejected here rather than at the point of use.
 ///
 /// `Duration::from_secs_f64` panics on a negative, a NaN or an infinity, and
@@ -767,7 +861,7 @@ fn duration_arg(text: &str) -> Result<Duration, String> {
 /// `70E`. Which id block it lives on, and therefore which response rule
 /// applies, is decided by `vag_uds_client::address`.
 ///
-/// `flag` is the flag the unit was typed on (`--ecu`, `--identify`), and what an
+/// `flag` is the flag the unit was typed on (`--unit`, `--identify`), and what an
 /// error is said under.
 fn parse_ecu(flag: &str, text: &str) -> Result<UnitAddress> {
 	vag_uds_client::address::parse(text).map_err(|e| anyhow::anyhow!("{flag}: {e}"))
@@ -846,7 +940,8 @@ async fn sensors<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, ecu_text: &
 	use render::SensorLine;
 	use vag_data_labels::obd::{self, PIDS};
 
-	let unit = parse_ecu("--ecu", ecu_text)?;
+	labels::install_recorded_units();
+	let unit = parse_ecu("--unit", ecu_text)?;
 	let established = unit.is_emissions_related();
 	let mut uds = address_unit(open().await?, unit);
 
@@ -879,7 +974,8 @@ async fn sensors<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, ecu_text: &
 async fn odx_name_from_car<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, ecu_text: &str) -> Result<String> {
 	const ODX_FILE_NAME: u16 = 0xF19E;
 
-	let unit = parse_ecu("--ecu", ecu_text)?;
+	labels::install_recorded_units();
+	let unit = parse_ecu("--unit", ecu_text)?;
 	let mut uds = address_unit(open().await?, unit);
 	let data = uds
 		.read_data_by_identifier(ODX_FILE_NAME)
@@ -900,23 +996,26 @@ async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify: boo
 	// The label files turn a part number the car reports into the unit's diagnostic
 	// address and name, for any VAG car rather than for a list written here.
 	// They come from what `vagcan setup` extracted, so `units --identify`
-	// resolves names with no flag, and a machine that has not run setup simply
-	// identifies without them.
-	let label_files_dir = match identify {
-		// A machine with no project set up simply identifies without names —
-		// this is the ordinary "setup has not run yet" case, not an error.
-		true => project::current().ok().filter(labels::has_project_labels),
-		false => None,
-	};
+	// resolves names with no flag, the plain listing names what it can from them,
+	// and a machine that has not run setup simply goes without.
+	//
+	// A machine with no project set up simply identifies without names — this is
+	// the ordinary "setup has not run yet" case, not an error.
+	let label_files_dir = project::current().ok().filter(labels::has_project_labels);
 	let label_files = match &label_files_dir {
-		Some(project) => {
-			let db = labels::load_project(project)?;
-			// The label files' numbering, in force for the rest of the run: what
-			// each number *is*. Which id answers it is learned below, from the
-			// car.
-			labels::install_unit_numbers(&db);
-			Some(db)
-		}
+		Some(project) => match labels::load_project(project) {
+			Ok(db) => {
+				// The label files' numbering, in force for the rest of the run: what
+				// each number *is*. Which id answers it is learned below, from the
+				// car.
+				labels::install_unit_numbers(&db);
+				Some(db)
+			}
+			Err(e) if identify => return Err(e),
+			// The plain listing only borrows names from them, and a list of ids is
+			// still the answer without.
+			Err(_) => None,
+		},
 		None => None,
 	};
 
@@ -932,7 +1031,7 @@ async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify: boo
 	let (ids, unlisted) = match listed {
 		Ok(ids) => (ids, None),
 		Err(e) if identify => (Vec::new(), Some(e)),
-		Err(e) => return Err(anyhow::Error::new(e).context("reading the gateway's installation list")),
+		Err(e) => return Err(anyhow::Error::new(e).context("reading the car's list of control units from the gateway")),
 	};
 
 	if !identify {
@@ -940,9 +1039,28 @@ async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify: boo
 			println!("The gateway listed no control units.");
 			return Ok(());
 		}
-		println!("{} {}:\n", ids.len(), render::plural(ids.len(), "control unit"));
-		for id in ids {
-			println!("  {id:03X}");
+		// Names from this machine only — nothing more is asked of the car. A record
+		// that does not read is no names, not a failed listing.
+		let cars = walk::recorded_cars().unwrap_or_default();
+		let record = record_of_these(&ids, &cars);
+		let by_part = |part: &str| label_files.as_ref()?.unit_for_part(part).map(|u| (u.address, u.name.clone()));
+		let by_number = |number: u8| label_files.as_ref()?.unit_name(number).map(str::to_owned);
+		print!(
+			"{}",
+			render_listing(
+				&ids,
+				record.map(|car| car.units.as_slice()),
+				by_part,
+				by_number,
+				vag_uds_client::address::short_number
+			)
+		);
+		// The record is the one source here that may not be this car's: say whose it is.
+		if let Some(car) = record {
+			println!(
+				"\nNames: the label files, and what {}'s units said to `vagcan units --identify`.",
+				car.vin
+			);
 		}
 		return Ok(());
 	}
@@ -975,7 +1093,9 @@ async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify: boo
 	// An empty list is not a stop either: the gateway and the powertrain are
 	// asked, recorded and printed, as `watch` does in the same state.
 	match (&unlisted, ids.is_empty()) {
-		(Some(cause), _) => println!("The gateway did not answer its installation list ({cause}), so only the gateway and the powertrain were asked:\n"),
+		(Some(cause), _) => {
+			println!("The gateway did not give the car's list of control units ({cause}), so only the gateway and the powertrain were asked:\n")
+		}
 		(None, true) => println!("The gateway listed no control units, so only the gateway and the powertrain were asked:\n"),
 		(None, false) => println!(
 			"{} {} listed by the gateway, and the gateway and the powertrain besides:\n",
@@ -1038,6 +1158,52 @@ async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify: boo
 	Ok(())
 }
 
+/// The one recorded car whose record holds every unit the gateway listed, if there is exactly
+/// one.
+///
+/// The plain listing reads no VIN, so it cannot ask which car this is. A record that covers
+/// the list is this car's, or one built like it; with two or more there is no telling which,
+/// so none is used.
+fn record_of_these<'a>(listed: &[u16], cars: &'a [vag_cli_core::units::Recorded]) -> Option<&'a vag_cli_core::units::Recorded> {
+	let mut covering = cars
+		.iter()
+		.filter(|car| listed.iter().all(|id| car.units.iter().any(|u| u.request == *id)));
+	match (covering.next(), covering.next()) {
+		(Some(one), None) => Some(one),
+		_ => None,
+	}
+}
+
+/// The plain `units` listing: each request id, the short number it goes by, and a name.
+///
+/// The name is, in order: what the label files call the part number the unit reported (with
+/// the number they give it), what they call its short number, and what the unit called itself
+/// (`F197`). The part number and that last name come from `record`, what an earlier
+/// `--identify` wrote down. With none of them, just the id.
+fn render_listing(
+	ids: &[u16],
+	record: Option<&[plan::UnitIdentity]>,
+	by_part: impl Fn(&str) -> Option<(u8, String)>,
+	by_number: impl Fn(u8) -> Option<String>,
+	short: impl Fn(u16) -> Option<u8>,
+) -> String {
+	let mut out = format!("{} {}:\n\n", ids.len(), render::plural(ids.len(), "control unit"));
+	for &id in ids {
+		let said = record.and_then(|units| units.iter().find(|u| u.request == id));
+		let from_part = said.and_then(|u| u.part_number.as_deref()).and_then(&by_part);
+		let number = from_part.as_ref().map(|(n, _)| *n).or_else(|| short(id));
+		let name = from_part
+			.map(|(_, name)| name)
+			.or_else(|| number.and_then(&by_number))
+			.or_else(|| said.and_then(|u| u.component.clone()));
+		let number = number.map(|n| format!("{n:02X}")).unwrap_or_default();
+		let line = format!("  {id:03X}  {number:<3} {}", name.unwrap_or_default());
+		out.push_str(line.trim_end());
+		out.push('\n');
+	}
+	out
+}
+
 /// Write or refresh the owner's glossary (see the `Glossary` subcommand docs).
 fn glossary_command() -> Result<()> {
 	let project = project::current()?;
@@ -1051,7 +1217,9 @@ fn glossary_command() -> Result<()> {
 		seeded.blank
 	);
 	println!(
-		"Write in the `{}` column and it wins over ODIS and VCDS wherever that \n         channel is shown. The `current` column is what it is called today and is \n         not read back. Change which column is used with `language` in {}.",
+		"Write in the `{}` column and it wins over ODIS and VCDS wherever that\n\
+         channel is shown. The `current` column is what it is called today and is\n\
+         not read back. Change which column is used with `language` in {}.",
 		language.code(),
 		config::path()?.display()
 	);
@@ -1326,7 +1494,8 @@ mod tests {
 				panic!("{args:?} is not measure")
 			};
 			let mut seen = None;
-			let stopped = measure::dispatch(parsed, "/definitely/not/here", async |device| -> Result<vag_cli_core::bus::Bus> {
+			let here = |_: Option<&str>| Ok("/definitely/not/here".to_string());
+			let stopped = measure::dispatch(parsed, here, async |device| -> Result<vag_cli_core::bus::Bus> {
 				seen = Some(device);
 				bail!("no adapter here")
 			})
@@ -1334,6 +1503,58 @@ mod tests {
 			assert!(stopped.is_err(), "{args:?}");
 			assert_eq!(seen, Some(Some(adapter.to_owned())), "{args:?}");
 		}
+	}
+
+	/// `measure view` opens the file it is given and nothing else, so it asks for no
+	/// project: on a machine with none it used to fail before reading the file. `--data`
+	/// reaches the rows' resolver, on the run and on `setup`, where it was dropped.
+	#[cfg(feature = "measure")]
+	#[tokio::test]
+	async fn measure_asks_for_the_project_only_where_it_reads_the_rows() {
+		let parse = |args: &[&str]| match Cli::try_parse_from(args).unwrap().command {
+			Some(Command::Measure(parsed)) => parsed,
+			_ => panic!("{args:?} is not measure"),
+		};
+		let mut asked = Vec::new();
+		let viewed = measure::dispatch(
+			parse(&["vagcan", "measure", "view", "/nonexistent/session.json"]),
+			|given: Option<&str>| {
+				asked.push(given.map(str::to_owned));
+				bail!("no project")
+			},
+			async |_| -> Result<vag_cli_core::bus::Bus> { bail!("no adapter here") },
+		)
+		.await;
+		let said = format!("{:#}", viewed.expect_err("there is no such file"));
+		assert!(said.contains("reading the session"), "{said}");
+		assert!(asked.is_empty(), "view asked for the rows: {asked:?}");
+
+		for (args, data) in [
+			(&["vagcan", "measure", "--data", "/rows"][..], Some("/rows")),
+			(&["vagcan", "measure", "setup", "--data", "/rows"], Some("/rows")),
+			(&["vagcan", "measure", "--data", "/rows", "setup"], Some("/rows")),
+			(&["vagcan", "measure"], None),
+		] {
+			let mut asked = Vec::new();
+			let stopped = measure::dispatch(
+				parse(args),
+				|given: Option<&str>| {
+					asked.push(given.map(str::to_owned));
+					bail!("no project")
+				},
+				async |_| -> Result<vag_cli_core::bus::Bus> { bail!("no adapter here") },
+			)
+			.await;
+			assert_eq!(format!("{:#}", stopped.expect_err("stopped")), "no project", "{args:?}");
+			assert_eq!(asked, vec![data.map(str::to_owned)], "{args:?}");
+		}
+		let twice = measure::dispatch(
+			parse(&["vagcan", "measure", "--data", "/a", "setup", "--data", "/b"]),
+			|_: Option<&str>| Ok(String::new()),
+			async |_| -> Result<vag_cli_core::bus::Bus> { bail!("no adapter here") },
+		)
+		.await;
+		assert!(format!("{:#}", twice.expect_err("named twice")).contains("named twice"));
 	}
 
 	#[test]
@@ -1497,8 +1718,8 @@ mod tests {
 		const NOWHERE: &str = "/nonexistent/vagcan-test";
 		let keys = format!("{NOWHERE}/rod-keys.json");
 		let cases: [(Vec<&str>, &str); 3] = [
-			(vec!["vagcan", "sensors", "--ecu", "ZZZ"], "--ecu"),
-			(vec!["vagcan", "faults", "--ecu", "ZZZ", "--iv-cache", &keys], ""),
+			(vec!["vagcan", "sensors", "--unit", "ZZZ"], "--unit"),
+			(vec!["vagcan", "faults", "--unit", "ZZZ", "--iv-cache", &keys], ""),
 			(vec!["vagcan", "units", "--identify", "ZZZ"], "ZZZ"),
 		];
 		for (args, why) in cases {
@@ -1513,12 +1734,12 @@ mod tests {
 	}
 
 	/// A unit that does not parse is said under the flag the person typed: `units` takes
-	/// its unit on `--identify`, and an error about `--ecu` there names a flag not given.
+	/// its unit on `--identify`, and an error about `--unit` there names a flag not given.
 	#[tokio::test]
 	async fn a_unit_that_does_not_parse_is_named_by_the_flag_typed() {
 		let cases = [
 			(vec!["vagcan", "units", "--identify", "ZZZ"], "--identify: "),
-			(vec!["vagcan", "sensors", "--ecu", "ZZZ"], "--ecu: "),
+			(vec!["vagcan", "sensors", "--unit", "ZZZ"], "--unit: "),
 		];
 		for (args, flag) in cases {
 			let mut args = args.clone();
@@ -1615,5 +1836,193 @@ mod tests {
 		let help = flag_help(&["units"], "identify");
 		assert!(help.contains("713"), "{help}");
 		assert!(help.contains("moving car"), "{help}");
+	}
+
+	/// The help of the command at `path`, the short (`-h`) or the long (`--help`) one.
+	fn help_of(path: &[&str], long: bool) -> String {
+		let mut cli = Cli::command();
+		cli.build();
+		let sub = path.iter().fold(&mut cli, |c, name| {
+			c.find_subcommand_mut(name).unwrap_or_else(|| panic!("no {name} in {path:?}"))
+		});
+		match long {
+			true => sub.render_long_help().to_string(),
+			false => sub.render_help().to_string(),
+		}
+	}
+
+	/// Every command path under `vagcan`, as `GLOBALS_APPLY` spells them.
+	fn every_path() -> Vec<String> {
+		fn walk(command: &clap::Command, path: &str, out: &mut Vec<String>) {
+			for sub in command.get_subcommands().filter(|s| s.get_name() != "help") {
+				let here = if path.is_empty() {
+					sub.get_name().to_owned()
+				} else {
+					format!("{path} {}", sub.get_name())
+				};
+				out.push(here.clone());
+				walk(sub, &here, out);
+			}
+		}
+		let mut out = Vec::new();
+		walk(&Cli::command(), "", &mut out);
+		out
+	}
+
+	#[test]
+	fn the_global_flags_are_shown_only_where_they_mean_something() {
+		let paths = every_path();
+		for (flag, applies) in GLOBALS_APPLY {
+			// `measure` is a cargo feature; its rows mean nothing in a build without it.
+			for path in applies.iter().filter(|p| cfg!(feature = "measure") || !p.starts_with("measure")) {
+				assert!(paths.iter().any(|p| p == path), "{flag}: no command `{path}`");
+			}
+		}
+		for path in &paths {
+			let words: Vec<&str> = path.split(' ').collect();
+			let help = help_of(&words, false);
+			for (flag, _) in GLOBALS_APPLY {
+				assert_eq!(
+					help.contains(&format!("--{flag}")),
+					global_applies(flag, path),
+					"`vagcan {path} -h` and --{flag}:\n{help}"
+				);
+			}
+		}
+		// The noise the owner saw, named.
+		for path in [&["setup"][..], &["devices"], &["dev", "vcds", "rod"]] {
+			let help = help_of(path, false);
+			assert!(!help.contains("--slcan") && !help.contains("--project"), "{path:?}:\n{help}");
+		}
+		#[cfg(feature = "measure")]
+		assert!(!help_of(&["measure", "view"], false).contains("--slcan"));
+		// Every command that can read through the board offers `--slcan`.
+		for command in commands_with_device() {
+			// The command's path: its words up to the first flag or argument.
+			let path: Vec<&str> = command[1..].iter().copied().take_while(|w| !w.starts_with('-') && *w != "dir").collect();
+			assert!(help_of(&path, false).contains("--slcan"), "{command:?}");
+		}
+		assert!(help_of(&["dev", "sniff"], false).contains("--slcan"));
+		// The top level still lists both: they can be written there for any command.
+		let top = Cli::command().render_help().to_string();
+		assert!(top.contains("--slcan") && top.contains("--project"), "{top}");
+	}
+
+	#[test]
+	fn a_hidden_global_flag_still_parses_wherever_it_did() {
+		for args in [
+			&["vagcan", "setup", "--slcan", "--project", "SK37X"][..],
+			&["vagcan", "--slcan", "--project", "SK37X", "setup"],
+			&["vagcan", "devices", "--slcan", "--project", "SK37X"],
+			&["vagcan", "dev", "--slcan", "--project", "SK37X", "sniff"],
+			&["vagcan", "dev", "vcds", "rod", "f.rod", "--slcan", "--project", "SK37X"],
+			&["vagcan", "units", "--slcan", "--project", "SK37X"],
+		] {
+			let cli = Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+			assert!(cli.slcan, "{args:?}");
+			assert_eq!(cli.project.as_deref(), Some("SK37X"), "{args:?}");
+		}
+	}
+
+	#[test]
+	fn short_and_long_help_name_the_same_first_command() {
+		let short = Cli::command().render_help().to_string();
+		let long = Cli::command().render_long_help().to_string();
+		assert!(short.contains("Start with `vagcan setup`"), "{short}");
+		let start = long.split("START HERE").nth(1).expect("--help has START HERE");
+		let first = start.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
+		assert!(first.starts_with("vagcan setup"), "{first}");
+	}
+
+	#[test]
+	fn a_unit_is_unit_on_every_command_and_ecu_still_parses() {
+		for (path, flag) in [(&["faults"][..], "unit"), (&["sensors"], "unit")] {
+			let help = help_of(path, false);
+			assert!(help.contains(&format!("--{flag} <UNIT")), "{path:?}:\n{help}");
+			assert!(!help.contains("--ecu"), "{path:?}:\n{help}");
+		}
+		let labels = help_of(&["dev", "vcds", "labels"], false);
+		assert!(labels.contains("--unit <UNIT>") && !labels.contains("--ecu"), "{labels}");
+		let sensors = |args: &[&str]| match Cli::try_parse_from(args).unwrap().command {
+			Some(Command::Sensors { unit, .. }) => unit,
+			_ => panic!("not sensors"),
+		};
+		assert_eq!(sensors(&["vagcan", "sensors", "--ecu", "713"]), "713");
+		assert_eq!(sensors(&["vagcan", "sensors", "--unit", "713"]), "713");
+		let faults = |args: &[&str]| match Cli::try_parse_from(args).unwrap().command {
+			Some(Command::Faults { unit, .. }) => unit,
+			_ => panic!("not faults"),
+		};
+		assert_eq!(faults(&["vagcan", "faults", "--ecu", "01,713"]).as_deref(), Some("01,713"));
+		assert!(Cli::try_parse_from(["vagcan", "dev", "vcds", "labels", "d", "--from-car", "--ecu", "02"]).is_ok());
+	}
+
+	#[test]
+	fn the_help_speaks_plainly() {
+		let info = help_of(&["info"], true);
+		assert!(!info.contains("passport"), "{info}");
+		let units = help_of(&["units"], true);
+		assert!(!units.contains("installation list"), "{units}");
+		assert!(units.contains("list of control units"), "{units}");
+		// "Sweep" is said once in so many words, where it is done.
+		let identify = flag_help(&["units"], "identify");
+		assert!(
+			identify.contains("That is a sweep: it reads one unit's identification block, 256 entries"),
+			"{identify}"
+		);
+		// A path override is for `--help`, not for the first screen.
+		assert!(!help_of(&["faults"], false).contains("--iv-cache"));
+		assert!(help_of(&["faults"], true).contains("--iv-cache"));
+		assert!(!help_of(&["watch"], false).contains("--data"));
+		assert!(help_of(&["watch"], true).contains("--data"));
+	}
+
+	fn identity(request: u16, part: &str, component: &str) -> plan::UnitIdentity {
+		plan::UnitIdentity {
+			request,
+			part_number: Some(part.to_string()),
+			component: Some(component.to_string()),
+			..plan::UnitIdentity::default()
+		}
+	}
+
+	#[test]
+	fn the_plain_listing_names_each_unit_from_what_is_on_this_machine() {
+		// Invented parts and names; the rule is what is tested.
+		let record = [identity(0x7E0, "PART-E", "ENGINE SELF"), identity(0x713, "PART-B", "BRAKES SELF")];
+		let by_part = |part: &str| (part == "PART-B").then(|| (0x03, "Brakes by part".to_string()));
+		let by_number = |n: u8| (n == 0x01).then(|| "Engine by number".to_string());
+		let short = |request: u16| (request == 0x7E0).then_some(0x01);
+		let listing = render_listing(&[0x7E0, 0x713, 0x70A], Some(&record), by_part, by_number, short);
+		assert_eq!(
+			listing,
+			"3 control units:\n\n  \
+			 7E0  01  Engine by number\n  \
+			 713  03  Brakes by part\n  \
+			 70A\n"
+		);
+		// No label files: what the units called themselves.
+		let listing = render_listing(&[0x7E0, 0x713], Some(&record), |_| None, |_| None, short);
+		assert_eq!(listing, "2 control units:\n\n  7E0  01  ENGINE SELF\n  713      BRAKES SELF\n");
+		// Nothing on this machine: the ids, as before.
+		let listing = render_listing(&[0x7E0, 0x713], None, |_| None, |_| None, |_| None);
+		assert_eq!(listing, "2 control units:\n\n  7E0\n  713\n");
+	}
+
+	#[test]
+	fn the_plain_listing_uses_a_record_only_when_one_car_covers_the_list() {
+		let car = |vin: &str, requests: &[u16]| vag_cli_core::units::Recorded {
+			vin: vin.to_string(),
+			units: requests.iter().map(|r| identity(*r, "P", "C")).collect(),
+		};
+		let cars = [
+			car("TESTVIN0000000001", &[0x7E0, 0x713]),
+			car("TESTVIN0000000002", &[0x7E0, 0x713, 0x70A]),
+		];
+		assert_eq!(record_of_these(&[0x7E0, 0x70A], &cars).map(|c| c.vin.as_str()), Some("TESTVIN0000000002"));
+		// Both cover it: no telling which this is.
+		assert_eq!(record_of_these(&[0x7E0, 0x713], &cars), None);
+		// A unit no record has: not a car recorded here.
+		assert_eq!(record_of_these(&[0x7E0, 0x746], &cars), None);
 	}
 }

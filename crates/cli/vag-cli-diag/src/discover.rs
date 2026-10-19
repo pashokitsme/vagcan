@@ -173,6 +173,13 @@ pub fn classify(csv: &str) -> Result<Vec<Column>, String> {
 
 	let mut out = Vec::new();
 	for (name, samples) in series(csv) {
+		// A `_t_s` heading the pairing could not pair is still a timestamp, not
+		// a state: a recording written before names were quoted splits
+		// `Cruise control, cancel` into ` cancel_t_s` and `Cruise control`, and
+		// the timestamp then counted as a candidate with "46 changes".
+		if name.ends_with("_t_s") {
+			continue;
+		}
 		let mut values: Vec<String> = Vec::new();
 		let mut transitions = Vec::new();
 		let mut previous: Option<&String> = None;
@@ -293,6 +300,19 @@ pub fn co_changing(columns: &[Column], window: f64) -> Vec<(String, String, f64)
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_timestamp_column_left_unpaired_is_not_a_candidate() {
+		// Unquoted `Lever, cancel` in an old header: ` cancel_t_s` is followed by
+		// `Lever`, not ` cancel`, so it is not paired — and it steps like a state.
+		let csv = "t_s,Lever, cancel_t_s,Lever, cancel\n0.0,1.0,0,1.0,0\n0.1,1.1,1,1.1,1\n0.2,1.2,0,1.2,0\n";
+		let columns = classify(csv).unwrap();
+		assert!(
+			columns.iter().all(|c| !c.name.ends_with("_t_s")),
+			"{:?}",
+			columns.iter().map(|c| &c.name).collect::<Vec<_>>()
+		);
+	}
 
 	#[test]
 	fn a_state_written_as_marked_bytes_is_still_a_state_and_a_missed_read_no_change() {
