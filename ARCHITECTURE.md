@@ -473,15 +473,15 @@ An ESP32-C3 with a CAN transceiver and an OLED, on the OBD port. Firmware in
 units (`units.json`) and the project's cache, and writes a Rust `static` with every channel resolved — unit,
 identifier, bit layout, scaling, unit, label. The image links it. A project cache is
 ~88 MB and the C3 has 400 KB of RAM, so nothing else could work; and a board holding a
-fixed list of identifiers cannot sweep. What may be written in that file — channels, pages,
-alarms, a channel's specified value, the cruise lever (`[stalk]`), the stopwatch
+fixed list of identifiers cannot sweep. What may be written in that file — channels and their
+alarms, pages, a channel's specified value, the cruise lever (`[stalk]`), the stopwatch
 (`[stopwatch]`), buttons on the board's pins (`[[button]]`) — is
 [`docs/dash/dash-toml.md`](docs/dash/dash-toml.md).
 
 **One bus, one conversation, on the board too.** `can_task` owns the TWAI controller and
 runs every exchange through one scheduler, `vag_uds_client::schedule::Planner`, one at a
 time. It reads each unit's part number (`F187`) first and subscribes to the unit's channels
-only when it matches the plan: the visible page and every alarm's channels at each channel's `hz` from `dash.toml`
+only when it matches the plan: the visible page and every channel with an alarm at each channel's `hz` from `dash.toml`
 (2 Hz by default), other pages at 1 Hz. `Plan::rates_in` sets the exceptions: the lever at
 20 Hz while cruise and its switch both read off, 2 Hz otherwise, 10 Hz while the stopwatch is up with a factor; the
 cruise status at 5 Hz while the lever's unit answers as the plan's; the stopwatch's speed at its `hz`, foreground on any
@@ -533,6 +533,14 @@ taken, or its data missing over 3 s (`stalk::Closer`) — is not a command: the 
 through `Screen::close_stopwatch`, as the adapter screen ends the mode, so it never silences an
 alarm, is never dropped by a full queue and never waits for the settings. The board's BOOT and
 RESET buttons are not inputs; `GPIO9` is left to the ROM.
+
+**An alarm is part of a channel** (owner, 2026-10-19): a channel's `alarm_max`, `alarm_min` and
+drift keys, not a rule of its own. Each is one rule in the plan, raising the first values page
+that shows its channel; `alarm_priority`, then the order in the file, is the priority. The
+board's alarm state is sized by the plan, so nothing counts the rules. The build says what the
+board reads on every page ahead of the page on the glass — alarm channels at their `hz`, the
+strip's voltage, the lever — and refuses nothing: that count is identifiers, the planner batches
+up to eight a request, and bus time would need the planner run at a measured cost per exchange.
 
 **Rendering is shared with the laptop.** `vag-dash-render` turns a `Frame` (a values page
 of up to four cells, or a chart page) into pixels on any `embedded-graphics` target. On

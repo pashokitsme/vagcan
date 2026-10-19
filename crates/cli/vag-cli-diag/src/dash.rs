@@ -55,15 +55,15 @@ pub enum Tool {
 	/// ["01:IDE00025"]`. A channel is `<unit>:<text id>` or
 	/// `<unit>:<DID>[@<bit offset>]`, and may carry its own `label`,
 	/// `decimals` and `hz` (readings a second while shown, 2 otherwise); a page is `values` (1 to 4 cells) or `chart` (one `cell`
-	/// between `min` and `max`). An optional `[[alarm]]` (at most 4, in priority order)
-	/// names `channels` from that list, the `page` title of a values page showing all of
-	/// them, `direction` (`below` or `above`), `trip` and `release`; the board then shows
-	/// that page when a value crosses `trip`, whatever page is up.
+	/// between `min` and `max`). A channel may carry an alarm: `alarm_max` and/or
+	/// `alarm_min`, each with an optional `alarm_max_off` / `alarm_min_off` where it goes off
+	/// again; the board then shows the first values page with that channel when it crosses,
+	/// whatever page is up. The channels' order is the alarms' priority.
 	///
 	/// A channel may also carry `setpoint = "<unit>:<row>"` — what its unit asked for, on the
-	/// same unit — and the panel then draws the difference under the number. An `[[alarm]]`
-	/// with `kind = "drift"` watches that difference: `percent`, `release_percent`, `hold_ms`
-	/// (how long it has to hold) and `min_setpoint` (under which the rule says nothing).
+	/// same unit — and the panel then draws the difference under the number. A drift alarm
+	/// watches that difference: `drift_percent`, `drift_off_percent`, `drift_hold_ms` (how long
+	/// it has to hold) and `drift_min_setpoint` (under which it says nothing).
 	///
 	/// `docs/dash/dash-toml.md` is the whole grammar, with the limits and every refusal.
 	///

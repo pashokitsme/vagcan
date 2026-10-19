@@ -70,17 +70,17 @@ only draws it. As built after the owner's rounds on the previews (2026-09-15):
 
 ## 4. The drift alarm
 
-A new rule kind beside the existing threshold rules:
+Keys of the channel since 2026-10-19 (`04`, "The rule"); until then an `[[alarm]]` with
+`kind = "drift"`, `percent`, `release_percent`, `hold_ms`, `min_setpoint`, the same numbers:
 
 ```toml
-[[alarm]]
-kind = "drift"
-channels = ["01:IDE00191"]
-page = "MAIN"
-percent = 10          # fires when |actual − specified| exceeds 10 % of the specified value
-release_percent = 6   # clears under 6 %
-hold_ms = 1000        # and only once it has held that long
-min_setpoint = 0.5    # below this specified value the rule says nothing
+[[channel]]
+ref = "01:IDE00191"
+setpoint = "01:IDE00190"
+drift_percent = 10          # on when |actual − specified| reaches 10 % of the specified value
+drift_off_percent = 6       # off at or under 6 %
+drift_hold_ms = 1000        # and only once it has held that long
+drift_min_setpoint = 0.5    # below this specified value the alarm says nothing
 ```
 
 - **`hold_ms` is what makes it usable.** A turbocharger lags its own setpoint on every throttle
@@ -90,8 +90,8 @@ min_setpoint = 0.5    # below this specified value the rule says nothing
   a throttle commanded to 0.2° would trip on 0.03°.
 - Hysteresis (`release_percent`), the 2.5 s hold after the release and the button that silences
   the episode are the existing machinery (`vag_dash_render::alarm`), unchanged.
-- The existing `direction`/`trip`/`release` rules stay as they are; `kind` defaults to the
-  threshold rule so every `dash.toml` written so far still builds.
+- (2026-09-15) The threshold rules stayed as they were. Since 2026-10-19 both are channel keys
+  and `[[alarm]]` is refused with its rewrite (`04`).
 
 ## 5. Built and merged, 2026-09-15 (PR #4, `7d8e0a5`)
 

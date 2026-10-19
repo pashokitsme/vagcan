@@ -3,18 +3,21 @@
 **Subsystem:** dash · **Crates:** `vag-dash-render`, `vag-cli-core` (plan), `vag-dash-fw` ·
 **Needs the car:** partly (thresholds)
 
-**State (2026-09-26):** on `master` — threshold rules since PR #2 (2026-09-14), the drift rule
-(`18`) since PR #4 (2026-09-15); the four recommended rules below are in the owner's `dash.toml`
-since 2026-09-22, and on the bench the board polls their channels on every page. Rules are
-`[[alarm]]` tables in `dash.toml`, checked at plan build and carried into `plan.json` /
-`plan.rs`; the board reads their channels at full rate on every page, takes the screen,
-inverts the offending cell and silences on a short press. **2026-09-26:** the hardware-free
-replay exists — `vagcan dev recording dash <VIN> --log FILE.csv [--press S]…` runs a
-`watch --out` recording through the board's `Screen`, alarms, `Plan::rates` and renderer and
-logs every takeover, hand-back and silence. Since the same day the offending cell blinks
-while the value is out and holds still through the hold (owner). Open: a run on the car, where the misfire window
-and every threshold are checked, and a recording with the retard channels to replay (see
-"Done when").
+**State (2026-10-19):** alarms are **keys of the channel they watch** (owner, 2026-10-19:
+«нужно просто иметь возможность задать пороговое значение … Типа минимальное и
+максимальное»), on `feat/dash-thresholds`: `alarm_max` / `alarm_min` with their off values
+(`alarm_max_off` / `alarm_min_off`, 5 % inside by default, at least one step of the channel's
+resolution) and the drift keys (`drift_percent`, `drift_off_percent`, `drift_hold_ms`,
+`drift_min_setpoint`). An alarm raises the first values page that shows its channel;
+`alarm_priority`, then the file's order, is the priority. `[[alarm]]` is refused with its
+rewrite; `MAX_ALARMS` is gone, and nothing replaces it but the build's informational `bus:` line
+(owner, 2026-10-19: a bus-time check is its own task, after the architectural review). The
+board's alarm state is sized by the plan (`ALARM_COUNT` slots), the replay's by a `Vec`. The
+owner's `dash.toml` still has the four `[[alarm]]` rules: its rewrite is in the hand-off of the
+change, and the file is the owner's to replace. Before that (2026-09-26): threshold rules since
+PR #2, the drift rule since PR #4, the replay since PR #6, the blink since PR #7. Open: a run
+on the car, where the misfire window and every threshold are checked, and a recording with the
+retard channels to replay (see "Done when").
 
 ## Goal
 
@@ -24,60 +27,58 @@ threshold, replaces whatever is showing with the view that explains why.
 Agreed with the owner 2026-08-20. The reference device does this with a red LED and a
 buzzer past −2°; we do it with the screen, which carries more.
 
-## The rule — `[[alarm]]` in `dash.toml`
+## The rule — keys of a `[[channel]]` (2026-10-19)
 
-Rules are the owner's data, never code (controller, 2026-09-14):
+The owner's data, never code. Until 2026-10-19 a rule was an `[[alarm]]` table naming
+channels and a page; two ways to write one job is a defect, so it went:
 
 ```toml
-[[alarm]]
-channels = ["01:IDE…", "01:IDE…"]   # refs that appear under [[channel]]
-page = "RETARD"                      # title of a values page showing all of them
-direction = "below"                  # or "above"
-trip = -2.0                          # fires at or beyond
-release = -1.5                       # clears only past this, back the other way
+[[channel]]
+ref = "01:IDE…"
+alarm_max = 125        # on at or above
+alarm_max_off = 120    # off at or under; default alarm_max − 5 % of |alarm_max|, at least one step
+alarm_min = 40         # on at or below (either bound, or both)
+alarm_min_off = 45     # off at or above; default alarm_min + 5 % of |alarm_min|, at least one step
 ```
 
-Order in the file is priority. At most **4** rules (`alarm::MAX_ALARMS`): each rule's
-channels are read at full rate on every page, and one press ends one episode.
+- **One rule per channel and kind**: a channel's bounds are one rule, its drift another. The
+  page is the first values page with the channel as a cell; a channel with an alarm and no
+  such page is refused.
+- **Priority**: `alarm_priority` (integer ≥ 1, 1 first; only on a channel with an alarm), then
+  the `[[channel]]` order for ties and channels without it; bounds before drift.
+- **Several out on one page**: every channel out that the page on the glass shows is marked —
+  its own alarm's page or not (review, 2026-10-19) — each with its own episode's highlight; the page is the highest showing rule's. One press
+  silences every episode on that page; one out on another page then takes the glass. The old
+  multi-channel rule was one episode with the worst cell marked; per channel, a cylinder newly
+  out on a page nobody silenced is news of its own.
+- **Off values**: `alarm_max_off < alarm_max`, `alarm_min_off > alarm_min`, and with both,
+  `alarm_min_off < alarm_max_off` — all compared in `f32`. An `_off` key without its bound is
+  refused. "Off" is the owner's word; no "hysteresis" or "release" in what a person reads.
+- **No count, no refusal**: the cap of four rules went, and a budget of 75 identifiers a
+  second that replaced it in review was dropped by the owner the same day — the unit was wrong
+  (100 and 25 are policy numbers, the car serves 45–48 exchanges a second, the planner batches up
+  to 8 identifiers a request). The build prints `bus:` — what the board reads in the foreground
+  on every page (alarm channels and setpoints at their `hz`, the strip's voltage, the lever at
+  its fastest, the cruise status), in reads a second, by unit and by share — and refuses
+  nothing. A bus-time check, the planner run over the plan at a measured cost per exchange, is a
+  separate task. The reference car's plan reads 47 a second this way.
+- A `plan.json` written while rules were `[[alarm]]` tables is refused with what to do.
 
-Two rules to start (2026-09-22; the retard moved to −6.0/−4.5 on 2026-09-26, table below):
-**ignition retard** (`200A`–`200D`, trip −2.0°, release −1.5°,
-`below`) and **misfires** (`291D`–`2920`, trip and release to be set on the car — a count
-per 1000 revolutions is not a quantity anyone should guess a threshold for).
+**The owner's values** (2026-09-22, researched that day; the research note is not in the
+repository, its sources are summarised here). None is VW's own number for this ECU, and the
+car confirms each:
 
-**In the owner's `dash.toml` since 2026-09-22**, with values researched on that day (the
-research note is not in the repository; its sources are summarised here). None is VW's own
-number for this ECU, and the car confirms each:
-
-| rule | channels | values | resting on |
+| alarm | channels | values | resting on |
 |---|---|---|---|
-| misfires, `above` | `291D`–`2920` (a count per 1000 revolutions, ×1) | trip 5, release 3 | VW's 0…2 per cylinder in the `06J-906-026-CCT` label (another engine unit); CARB 13 CCR 1968.2's 1 % = 20 per 1000 revolutions; if too eager, 20 / 10 |
-| knock retard, `below` | `200A`–`200D` (s16 ×0.01 °, retard negative) | trip −6.0, release −4.5 (2026-09-26; was −2.0/−1.5) | −2.0 fired on every full-throttle pull on 95 RON (−2.6° and past). Owner and tuner logs of stock EA888 (this engine among them) put 3–4° at WOT in the normal band and start to worry past −6 ([octavia-club A7](https://www.octavia-club.ru/f/A7/50139-pro-propuski-zazhiganiya-i-detonaciyu-na/p3), [drive2 CJSA](https://www.drive2.ru/l/539781320352466409/), [drive2 Tiguan](https://www.drive2.ru/l/582226042597582973/)); release two 0.75° steps above (logged values sit on a 0.375° grid — inference). No OEM number; medium-low confidence. Better: from 10–20 recorded pulls |
-| coolant, `above` | `F405` | trip 115, release 110 | the top of VW's 80…115 °C warm spec (EA888 gen1/2 labels); release inferred |
-| boost drift | `202A` against `2029` | 10 %, release 5 %, 2000 ms, floor 1.3 bar | inference only; the floor matters because the pressures are absolute (~0.99 bar at rest) |
+| misfires | `291D`–`2920` (a count per 1000 revolutions, ×1) | `alarm_max` 5, off 3 | VW's 0…2 per cylinder in the `06J-906-026-CCT` label (another engine unit); CARB 13 CCR 1968.2's 1 % = 20 per 1000 revolutions; if too eager, 20 / 10 |
+| knock retard | `200A`–`200D` (s16 ×0.01 °, retard negative) | `alarm_min` −6.0, off −4.5 (2026-09-26; was −2.0/−1.5) | −2.0 fired on every full-throttle pull on 95 RON (−2.6° and past). Owner and tuner logs of stock EA888 (this engine among them) put 3–4° at WOT in the normal band and start to worry past −6 ([octavia-club A7](https://www.octavia-club.ru/f/A7/50139-pro-propuski-zazhiganiya-i-detonaciyu-na/p3), [drive2 CJSA](https://www.drive2.ru/l/539781320352466409/), [drive2 Tiguan](https://www.drive2.ru/l/582226042597582973/)); off two 0.75° steps above (logged values sit on a 0.375° grid — inference). No OEM number; medium-low confidence. Better: from 10–20 recorded pulls |
+| coolant | `F405` | `alarm_max` 115, off 110 | the top of VW's 80…115 °C warm spec (EA888 gen1/2 labels); off value inferred |
+| boost drift | `202A` against `2029` | 10 %, off 5 %, 2000 ms, floor 1.3 bar | inference only; the floor matters because the pressures are absolute (~0.99 bar at rest) |
 
 Unknown until the car: whether the misfire window rolls or latches and what it reads at idle,
-the retard's sign and how often −2.0 comes on the owner's fuel, the boost lag on a tip-in.
+the retard's sign and how often −6.0 comes on the owner's fuel, the boost lag on a tip-in.
 
-`vagcan dev dash build` refuses, with the rule's number (`alarm #n: …`):
-
-| what | message |
-|---|---|
-| a channel not under `[[channel]]` | `01:X is not in the [[channel]] list` |
-| no channels | `watches no channels` |
-| no values page with that title | `no values page is titled "X" — a chart page has no title and cannot explain an alarm` |
-| two values pages with that title | `N values pages are titled "X" — give them different titles` |
-| the page misses a watched channel | `page "X" does not show 01:Y — the page an alarm raises shows every channel it watches` |
-| `release` on the wrong side | `release R is not above trip T — a "below" alarm releases above where it trips` (and the `above` mirror) |
-| more than 4 rules | `N [[alarm]] rules, and the board holds at most 4 — …` |
-| more than 8 pages (`pages::MAX_PAGES`, the board's) | `N [[page]] tables, and the board holds at most 8` |
-
-`trip` and `release` are compared in `f32`, as the board compares them: `trip = 100.000001`
-with `release = 100` is one value there, and refused.
-
-Shape errors (`direction` not `below`/`above`, a missing or non-finite `trip`/`release`,
-a missing `page`) are refused when `dash.toml` is parsed. A `plan.json` from before alarms
-loads with no rules.
+The refusals are listed in `docs/dash/dash-toml.md` ("What the build refuses", **Alarms**).
 
 ## The behaviour, which is the hard part
 
@@ -180,17 +181,19 @@ accepts per request is still a bench measurement — see `06`.
 - **`vag-dash-render/src/plan.rs`** — `Plan::alarms`; `ChannelId` is the plan's channel
   index and `PageId` its page index, because an image is built for one plan. `Plan::rates`
   keeps watched channels foreground.
-- **`vag-cli-core/src/dash.rs`** — `[[alarm]]` parsed, checked, written to `plan.json` and
-  `plan.rs`.
+- **`vag-cli-core/src/dash.rs`** — a channel's alarm keys parsed, checked, resolved to one
+  rule per channel and kind with its page, ordered by `alarm_priority`, the `bus:` line
+  (`bus_note`), written to
+  `plan.json` and `plan.rs`; an `[[alarm]]` table refused with its rewrite (`migrate_alarms`).
 - **`vag-dash-fw/src/bin/dash.rs`** — every panel frame calls `Screen::frame` with the
   cursor and the value store (`None` when stale, the existing `STALE` rule), draws
-  `glass.page`, and inverts the cell whose channel is `glass.inverted`; it publishes the
+  `glass.page`, and inverts every cell whose channel `glass.inverted` holds; it publishes the
   drawn page for the bus task's subscriptions. `control_task` routes every input's command
   through `Screen::command` (`dash/19`, "Input backends"). On USB: each takeover (per rule), `over`, `silenced`, and once
   an alarm page the board does not hold — the cursor's page is drawn instead of freezing.
 
 ```rust
-let mut screen = Screen::<ALARM_COUNT>::new(PLAN.alarms, PLAN.stopwatch.is_some());
+let mut screen = Screen::new(PLAN.alarms, [AlarmSlot::CLEAR; ALARM_COUNT], PLAN.stopwatch.is_some());
 // Every frame: the page the driver chose, the clock, the store.
 let glass = screen.frame(config.active_page, pages, now_ms, |i| value_of(i));
 // Any input's press, as a command:

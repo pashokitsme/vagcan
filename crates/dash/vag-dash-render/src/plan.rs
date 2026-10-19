@@ -43,13 +43,15 @@ pub struct Plan {
 	/// configuration refer to these by index.
 	pub channels: &'static [Channel],
 	pub pages: &'static [Page],
-	/// The owner's `[[alarm]]` rules, in priority order. A [`ChannelId`] is an
-	/// index into [`Plan::channels`] and a [`PageId`](crate::alarm::PageId) an index
-	/// into [`Plan::pages`]: an image is built for one plan, so an index is a name
-	/// that cannot drift. The generator has checked each rule — its page is a values
-	/// page holding every channel it watches, and its release is on the far side of
-	/// its trip — and carries at most [`MAX_ALARMS`](crate::alarm::MAX_ALARMS).
-	pub alarms: &'static [Alarm<'static>],
+	/// The alarms the owner's `[[channel]]`s carry — `alarm_max`, `alarm_min`, `drift_*` — one
+	/// rule per channel and kind, in priority order: the channels' order in `dash.toml`, a
+	/// channel's bounds before its drift. A [`ChannelId`] is an index into [`Plan::channels`]
+	/// and a [`PageId`](crate::alarm::PageId) an index into [`Plan::pages`]: an image is built
+	/// for one plan, so an index is a name that cannot drift. The generator has checked each
+	/// rule — its page is the first values page that shows the channel, its off values are on
+	/// the inside of its bounds — and that what the board reads on every page fits the bus
+	/// budget; no count caps them.
+	pub alarms: &'static [Alarm],
 	/// The cruise lever as buttons (`todo/dash/19`), where the owner's `[stalk]` names one.
 	pub stalk: Option<StalkPlan>,
 	/// The stopwatch page, where the owner's `[stopwatch]` names a speed channel.
@@ -336,6 +338,10 @@ pub struct Rate {
 	pub period_ms: u32,
 }
 
+/// The most cells a values page holds — four columns on the panel. The generator refuses a page
+/// with more, and an alarm marks at most this many cells on the page it raises.
+pub const MAX_VALUE_CELLS: usize = 4;
+
 /// What one page shows. Indices are into [`Plan::channels`].
 ///
 /// Both kinds carry the strip's two settings: the `title` drawn in it (and, on a values page,
@@ -614,10 +620,10 @@ impl Plan {
 	/// specified value a drift rule measures against.
 	pub fn watched(&self, index: u16) -> bool {
 		self.alarms.iter().any(|alarm| {
-			alarm.channels.contains(&ChannelId(index))
+			alarm.channel == ChannelId(index)
 				|| match alarm.rule {
-					Rule::Threshold { .. } => false,
-					Rule::Drift { specified, .. } => specified.contains(&ChannelId(index)),
+					Rule::Bounds { .. } => false,
+					Rule::Drift { specified, .. } => specified == ChannelId(index),
 				}
 		})
 	}
@@ -1060,20 +1066,18 @@ mod tests {
 
 	#[test]
 	fn a_channel_an_alarm_watches_is_read_at_its_own_rate_whatever_page_is_up() {
-		use crate::alarm::{Direction, PageId, Rule};
+		use crate::alarm::{Bound, PageId, Rule};
 		const FAST: Channel = Channel {
 			hz: 10.0,
 			..channel(0, 8, false, true, 1.0, 0.0)
 		};
 		const CHANNELS: [Channel; 3] = [FAST, FAST, channel(0, 8, false, true, 1.0, 0.0)];
-		static WATCHED: [ChannelId; 1] = [ChannelId(1)];
-		static ALARMS: [Alarm<'static>; 1] = [Alarm {
-			channels: &WATCHED,
+		static ALARMS: [Alarm; 1] = [Alarm {
+			channel: ChannelId(1),
 			page: PageId(2),
-			rule: Rule::Threshold {
-				trip: 10.0,
-				release: 8.0,
-				direction: Direction::Above,
+			rule: Rule::Bounds {
+				max: Some(Bound { at: 10.0, off: 8.0 }),
+				min: None,
 			},
 		}];
 		let plan = Plan {
@@ -1266,20 +1270,18 @@ mod tests {
 	/// Channels 0 and 1 are the driver's; 2 the rocker, 3 the switch (both of one identifier),
 	/// 4 the cruise status, 5 the stopwatch's speed at 50 Hz, 6 a channel an alarm watches.
 	fn lever_plan() -> Plan {
-		use crate::alarm::{Direction, PageId};
+		use crate::alarm::{Bound, PageId};
 		const FAST: Channel = Channel {
 			hz: 10.0,
 			..channel(0, 8, false, true, 1.0, 0.0)
 		};
 		static CHANNELS: [Channel; 7] = [FAST, FAST, FAST, FAST, FAST, Channel { hz: 50.0, ..FAST }, FAST];
-		static WATCHED: [ChannelId; 1] = [ChannelId(6)];
-		static ALARMS: [Alarm<'static>; 1] = [Alarm {
-			channels: &WATCHED,
+		static ALARMS: [Alarm; 1] = [Alarm {
+			channel: ChannelId(6),
 			page: PageId(0),
-			rule: Rule::Threshold {
-				trip: 10.0,
-				release: 8.0,
-				direction: Direction::Above,
+			rule: Rule::Bounds {
+				max: Some(Bound { at: 10.0, off: 8.0 }),
+				min: None,
 			},
 		}];
 		static MARKS: [u16; 2] = [60, 100];

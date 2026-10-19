@@ -24,6 +24,18 @@
 //! hz = 10                          # optional; how often the panel reads it, 2 otherwise
 //! setpoint = "01:IDE00190"         # optional; what the unit asked for, on the same unit
 //! zero_at_rest = true              # optional; 0 while the stopwatch's speed reads 0
+//! alarm_max = 105                  # optional; an alarm at or above this, on every page
+//! alarm_max_off = 100              # optional; it goes off at or under this; 5 % under by default
+//! alarm_min = 40                   # optional; an alarm at or below this (either bound, or both)
+//! alarm_min_off = 45               # optional; it goes off at or above this; 5 % over by default
+//!
+//! [[channel]]
+//! ref = "01:IDE00191"
+//! setpoint = "01:IDE00190"
+//! drift_percent = 10               # optional, with a setpoint: an alarm this far from it
+//! drift_off_percent = 6            # off again at or under this share
+//! drift_hold_ms = 1000             # and only once the drift has held that long
+//! drift_min_setpoint = 0.5         # under this specified value the drift says nothing
 //!
 //! [[channel]]
 //! ref = "02:IDE00102"
@@ -33,7 +45,7 @@
 //!
 //! [[page]]
 //! kind = "values"
-//! title = "MAIN"                   # optional; drawn in the strip, and alarms name the page by it
+//! title = "MAIN"                   # optional; drawn in the strip
 //! cells = ["01:IDE00025", "02:IDE00102"]
 //! volts = false                    # optional; true by default — the strip's voltage on this page
 //!
@@ -43,22 +55,6 @@
 //! cell = "01:IDE00025"
 //! min = 70
 //! max = 110
-//!
-//! [[alarm]]                        # optional; at most 4, in priority order
-//! channels = ["01:IDE00025"]       # each under [[channel]], all shown on `page`
-//! page = "MAIN"                    # the title of a values page
-//! direction = "above"              # or "below"
-//! trip = 105                       # fires at or past this
-//! release = 100                    # clears only once back past this
-//!
-//! [[alarm]]                        # the other kind: drift from a specified value
-//! kind = "drift"
-//! channels = ["01:IDE00191"]       # each with a `setpoint` of its own
-//! page = "MAIN"
-//! percent = 10                     # fires past this share of the specified value
-//! release_percent = 6              # clears under this share
-//! hold_ms = 1000                   # and only once the drift has held that long
-//! min_setpoint = 0.5               # under this specified value the rule says nothing
 //!
 //! [stalk]                          # optional: the cruise lever as buttons (`todo/dash/19`)
 //! read = "70C:1105"                # the one identifier carrying the rocker and the switch
@@ -80,6 +76,11 @@
 //! pin = 3                          # 3, 4 or 5 — the board's free pins
 //! action = "next"                  # next | previous | stopwatch
 //! ```
+//!
+//! An alarm raises the first values page that shows its channel. Its priority is the channel's
+//! `alarm_priority` (1 first), then the channels' order in the file. The build's `bus:` line says
+//! what the board reads on every page ahead of the page on the glass — it informs, and refuses
+//! nothing.
 //!
 //! A unit is spelled the way every other command spells it — `01`, `02`, or a
 //! request id — and a channel by the text id the row carries (stable across
@@ -116,9 +117,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use toml_edit::{Document, Item};
-use vag_dash_render::alarm::MAX_ALARMS;
 use vag_dash_render::control::{BUTTON_PINS, Command, MAX_BUTTONS, is_button_pin};
 use vag_dash_render::pages::MAX_PAGES;
+use vag_dash_render::plan::MAX_VALUE_CELLS;
 use vag_dash_render::stopwatch::{MAX_MARKS, MIN_FIT_SAMPLES, SLOWEST_SPEED_PERIOD_MS, START_FIT_MS};
 use vag_data_labels::catalog::{CatalogStore, Level, ReadId, Scaling};
 use vag_data_labels::measure::RawForm;
@@ -225,7 +226,60 @@ pub struct ChannelInput {
 	/// `zero_at_rest = true`: shown as 0 while the car stands, the stopwatch's speed reading 0
 	/// (owner, 2026-10-05: the ESC's acceleration reads the road's slope at a standstill).
 	pub zero_at_rest: bool,
+	/// `alarm_max` and its `alarm_max_off`, where the channel has an upper bound.
+	pub alarm_max: Option<BoundInput>,
+	/// `alarm_min` and its `alarm_min_off`, where it has a lower one.
+	pub alarm_min: Option<BoundInput>,
+	/// The `drift_*` keys, where the channel has a drift alarm.
+	pub drift: Option<DriftInput>,
+	/// `alarm_priority`: 1 is the most important. Channels with it come before channels without,
+	/// ascending; ties, and channels without it, keep the file's order (owner, 2026-10-19).
+	pub alarm_priority: Option<u32>,
 }
+
+impl ChannelInput {
+	/// A channel by its reference and nothing else.
+	fn bare(reference: Reference) -> ChannelInput {
+		ChannelInput {
+			reference,
+			label: None,
+			decimals: None,
+			hz: None,
+			setpoint: None,
+			zero_at_rest: false,
+			alarm_max: None,
+			alarm_min: None,
+			drift: None,
+			alarm_priority: None,
+		}
+	}
+}
+
+/// One bound of a channel, as `dash.toml` writes it (owner, 2026-10-19): the alarm at or past
+/// `at`, and off again at `off` — further inside — or, where the file gives none, at the
+/// default [`build`] derives from the channel's resolution.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoundInput {
+	pub at: f64,
+	pub off: Option<f64>,
+}
+
+/// A channel's drift alarm (`todo/dash/18-setpoints-and-drift.md` §4): the channel more than
+/// `percent` of its specified value away from it, for `hold_ms` without a break; off again at
+/// or under `off_percent`; nothing said while the specified value is under `min_setpoint`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DriftInput {
+	pub percent: f64,
+	pub off_percent: f64,
+	pub hold_ms: u64,
+	pub min_setpoint: f64,
+}
+
+/// How far inside its bound an alarm goes off when the file gives no `_off` value: this share
+/// of the bound's magnitude (owner, 2026-10-19: 5 %), and never less than one step of the
+/// channel's resolution — `|factor|`, what one count of its raw value is worth: a distance the
+/// unit cannot report is no distance.
+pub const DEFAULT_OFF_SHARE: f64 = 0.05;
 
 /// A channel's rate when `dash.toml` gives none (owner, 2026-09-14).
 pub const DEFAULT_HZ: f64 = 2.0;
@@ -266,43 +320,6 @@ impl PageInput {
 pub struct StripInput {
 	/// The battery voltage: a `[[channel]]`.
 	pub volts: Reference,
-}
-
-/// Which way a reading has to go for an `[[alarm]]` to fire.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Direction {
-	/// At or below `trip`; clears above `release`.
-	Below,
-	/// At or above `trip`; clears below `release`.
-	Above,
-}
-
-/// What an `[[alarm]]` watches for: a threshold, or drift from a specified value.
-#[derive(Debug, Clone, PartialEq)]
-pub enum AlarmRuleInput {
-	Threshold {
-		direction: Direction,
-		trip: f64,
-		release: f64,
-	},
-	/// `todo/dash/18-setpoints-and-drift.md` §4. Every channel it watches must have a
-	/// `setpoint`, or there is nothing to be far from.
-	Drift {
-		percent: f64,
-		release_percent: f64,
-		hold_ms: u64,
-		min_setpoint: f64,
-	},
-}
-
-/// One `[[alarm]]` of the input: the owner's rule, never the code's.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AlarmInput {
-	pub channels: Vec<Reference>,
-	/// The title of the values page the rule raises.
-	pub page: String,
-	pub rule: AlarmRuleInput,
 }
 
 /// `[stalk]`: the cruise lever as buttons (`todo/dash/19`). Every name is the ODIS
@@ -372,10 +389,9 @@ mod action_name {
 pub struct Input {
 	pub vin: String,
 	pub language: Option<Language>,
+	/// In the file's order, which is also the alarms' priority.
 	pub channels: Vec<ChannelInput>,
 	pub pages: Vec<PageInput>,
-	/// In the file's order, which is priority.
-	pub alarms: Vec<AlarmInput>,
 	pub stalk: Option<StalkInput>,
 	pub stopwatch: Option<StopwatchInput>,
 	/// In the file's order.
@@ -406,6 +422,18 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 			),
 		);
 	}
+	// `[[alarm]]` is gone (owner, 2026-10-19): an alarm is keys of the channel it watches. Two
+	// ways to write one job is a defect, so the old one is refused, with its rewrite.
+	if let Some(item) = doc.get("alarm") {
+		let declared: Vec<String> = doc
+			.get("channel")
+			.and_then(Item::as_array_of_tables)
+			.into_iter()
+			.flat_map(|tables| tables.iter())
+			.filter_map(|table| table.get("ref").and_then(Item::as_str).map(str::to_string))
+			.collect();
+		return Err(top.refuse("alarm", migrate_alarms(item, &declared)));
+	}
 
 	top.takes(&strict::TOP)?;
 	let string = |item: Option<&Item>, what: &str| -> Result<String, Error> {
@@ -415,6 +443,7 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 			.filter(|s| !s.is_empty())
 			.ok_or_else(|| Error::Parse(format!("dash.toml: {what} is missing or not a string")))
 	};
+	let number = |item: Option<&Item>| item.and_then(|i| i.as_float().or_else(|| i.as_integer().map(|n| n as f64)));
 	let vin = string(doc.get("vin"), "vin")?;
 	let language = match top.string("language", "a string, \"en\" or \"ru\"")? {
 		Some(code) => {
@@ -470,6 +499,18 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 					.as_bool()
 					.ok_or_else(|| Error::Parse(format!("dash.toml: {reference}: zero_at_rest is not true or false")))?,
 			};
+			let (alarm_max, alarm_min, drift) = parse_alarms(&at, table, &number)?;
+			let alarm_priority = match at.integer("alarm_priority", "a whole number, 1 or more")? {
+				None => None,
+				Some(_) if alarm_max.is_none() && alarm_min.is_none() && drift.is_none() => {
+					return Err(at.refuse(
+						"alarm_priority",
+						"alarm_priority needs an alarm on the channel: alarm_max, alarm_min or drift_percent".to_string(),
+					));
+				}
+				Some(n) if n >= 1 && n <= i64::from(u32::MAX) => Some(n as u32),
+				Some(n) => return Err(at.refuse("alarm_priority", format!("alarm_priority {n} is not a whole number, 1 or more"))),
+			};
 			channels.push(ChannelInput {
 				reference,
 				label,
@@ -477,6 +518,10 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 				hz,
 				setpoint,
 				zero_at_rest,
+				alarm_max,
+				alarm_min,
+				drift,
+				alarm_priority,
 			});
 		}
 	}
@@ -486,7 +531,6 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 		));
 	}
 
-	let number = |item: Option<&Item>| item.and_then(|i| i.as_float().or_else(|| i.as_integer().map(|n| n as f64)));
 	let mut pages = Vec::new();
 	if let Some(tables) = doc.get("page").and_then(Item::as_array_of_tables) {
 		for (i, table) in tables.iter().enumerate() {
@@ -548,97 +592,6 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 		return Err(Error::Parse("dash.toml: no [[page]]".to_string()));
 	}
 
-	let mut alarms = Vec::new();
-	if let Some(item) = doc.get("alarm") {
-		// A single `[alarm]` table would otherwise be skipped without a word, and an alarm
-		// the owner believes is armed and is not is the one failure an alarm cannot have.
-		let tables = item
-			.as_array_of_tables()
-			.ok_or_else(|| Error::Parse("dash.toml: alarm must be written as [[alarm]] tables, one per rule".to_string()))?;
-		for (i, table) in tables.iter().enumerate() {
-			let n = i + 1;
-			let at = Reader::new(text, table, format!("[[alarm]] {n}"));
-			// No `kind` is the threshold rule, so every `dash.toml` written before drift
-			// existed still builds. The kind comes first: it decides which keys the rule takes.
-			let drift = match at.string("kind", "a string, \"threshold\" or \"drift\"")?.map(str::trim) {
-				None | Some("threshold") => false,
-				Some("drift") => true,
-				Some(other) => {
-					return Err(Error::Parse(format!(
-						"dash.toml: alarm #{n}: kind {other:?} is not \"threshold\" or \"drift\""
-					)));
-				}
-			};
-			at.takes(if drift { &strict::DRIFT } else { &strict::THRESHOLD })?;
-			let channels = table
-				.get("channels")
-				.and_then(Item::as_array)
-				.ok_or_else(|| Error::Parse(format!("dash.toml: alarm #{n} has no channels list")))?
-				.iter()
-				.map(|v| {
-					v.as_str()
-						.ok_or_else(|| Error::Parse(format!("dash.toml: alarm #{n}: a channel is not a string")))
-						.and_then(Reference::parse)
-				})
-				.collect::<Result<Vec<_>, _>>()?;
-			let page = string(table.get("page"), &format!("alarm #{n}'s page"))?;
-			// The board compares in `f32`, so a threshold past what one holds is refused
-			// rather than turned into an infinity nothing ever reaches.
-			let threshold = |what: &str| match number(table.get(what)) {
-				Some(v) if fits_f32(v) => Ok(v),
-				Some(v) if v.is_finite() => Err(Error::Parse(format!(
-					"dash.toml: alarm #{n}: {what} {v:e} is too large for the board, which holds it as a 32-bit float (at most {:e})",
-					f32::MAX
-				))),
-				_ => Err(Error::Parse(format!("dash.toml: alarm #{n} needs {what}, a finite number"))),
-			};
-			let rule = if drift {
-				// Above zero as the board holds it too: a share an `f32` rounds to 0 is a
-				// `release_percent` nothing ever drops under, a rule that never clears.
-				let share = |what: &str| match threshold(what)? {
-					v if v > 0.0 && (v as f32) > 0.0 => Ok(v),
-					v if v > 0.0 => Err(Error::Parse(format!(
-						"dash.toml: alarm #{n}: {what} {v:e} is too small for the board, which would hold it as 0"
-					))),
-					v => Err(Error::Parse(format!("dash.toml: alarm #{n}: {what} {v} is not above zero"))),
-				};
-				let hold_ms = match table.get("hold_ms").and_then(Item::as_integer) {
-					Some(ms) if ms >= 0 => ms as u64,
-					_ => {
-						return Err(Error::Parse(format!(
-							"dash.toml: alarm #{n} needs hold_ms, whole milliseconds the drift has to hold"
-						)));
-					}
-				};
-				let min_setpoint = match threshold("min_setpoint")? {
-					v if v >= 0.0 => v,
-					v => return Err(Error::Parse(format!("dash.toml: alarm #{n}: min_setpoint {v} is below zero"))),
-				};
-				AlarmRuleInput::Drift {
-					percent: share("percent")?,
-					release_percent: share("release_percent")?,
-					hold_ms,
-					min_setpoint,
-				}
-			} else {
-				let direction = match string(table.get("direction"), &format!("alarm #{n}'s direction"))?.as_str() {
-					"below" => Direction::Below,
-					"above" => Direction::Above,
-					other => {
-						return Err(Error::Parse(format!(
-							"dash.toml: alarm #{n}: direction {other:?} is not \"below\" or \"above\""
-						)));
-					}
-				};
-				AlarmRuleInput::Threshold {
-					direction,
-					trip: threshold("trip")?,
-					release: threshold("release")?,
-				}
-			};
-			alarms.push(AlarmInput { channels, page, rule });
-		}
-	}
 	// A typo in a `[[button]]` table is refused here, like any other key; its values are read
 	// by `parse_buttons` below.
 	if let Some(tables) = doc.get("button").and_then(Item::as_array_of_tables) {
@@ -667,7 +620,6 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 		language,
 		channels,
 		pages,
-		alarms,
 		stalk,
 		stopwatch,
 		buttons,
@@ -675,6 +627,202 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 	})
 }
 
+/// A channel's `alarm_max`, `alarm_min` and drift, as written.
+type ChannelAlarms = (Option<BoundInput>, Option<BoundInput>, Option<DriftInput>);
+
+/// A `[[channel]]`'s alarm keys, shape only: its bounds as written and its drift. The defaults
+/// of `alarm_max_off` and `alarm_min_off`, the check of one bound against the other and the
+/// drift's setpoint are [`build`]'s: they need the resolved channel.
+fn parse_alarms(at: &Reader<'_>, table: &toml_edit::Table, number: &impl Fn(Option<&Item>) -> Option<f64>) -> Result<ChannelAlarms, Error> {
+	// The board compares in `f32`, so a value past what one holds is refused rather than turned
+	// into an infinity nothing ever reaches.
+	let value = |key: &str| -> Result<Option<f64>, Error> {
+		let Some(item) = table.get(key) else { return Ok(None) };
+		match number(Some(item)) {
+			None => Err(at.refuse(key, format!("{key} must be a number, not {}", strict::a(item.type_name())))),
+			Some(v) if fits_f32(v) => Ok(Some(v)),
+			Some(v) => Err(at.refuse(
+				key,
+				format!("{key} {v:e} is not a number the board's 32-bit float holds (within ±{:e})", f32::MAX),
+			)),
+		}
+	};
+	let bound = |key: &str, off_key: &str, inside: &str, beyond: fn(f32, f32) -> bool| -> Result<Option<BoundInput>, Error> {
+		match (value(key)?, value(off_key)?) {
+			(None, None) => Ok(None),
+			(None, Some(_)) => Err(at.refuse(off_key, format!("{off_key} needs {key}: it is the value the {key} alarm goes off at"))),
+			(Some(at_value), off) => {
+				if let Some(off) = off
+					&& !beyond(off as f32, at_value as f32)
+				{
+					return Err(at.refuse(
+						off_key,
+						format!(
+							"{off_key} {} is not {inside} {key} {} — the alarm goes off once the value is back at {off_key}",
+							off as f32, at_value as f32
+						),
+					));
+				}
+				Ok(Some(BoundInput { at: at_value, off }))
+			}
+		}
+	};
+	let alarm_max = bound("alarm_max", "alarm_max_off", "under", |off, at| off < at)?;
+	let alarm_min = bound("alarm_min", "alarm_min_off", "over", |off, at| off > at)?;
+
+	const DRIFT: [&str; 4] = ["drift_percent", "drift_off_percent", "drift_hold_ms", "drift_min_setpoint"];
+	let given: Vec<&str> = DRIFT.iter().copied().filter(|k| table.contains_key(k)).collect();
+	if given.is_empty() {
+		return Ok((alarm_max, alarm_min, None));
+	}
+	let missing: Vec<&str> = DRIFT.iter().copied().filter(|k| !table.contains_key(k)).collect();
+	if !missing.is_empty() {
+		return Err(at.refuse(
+			given[0],
+			format!("a drift alarm takes all four of {} — missing {}", DRIFT.join(", "), missing.join(", ")),
+		));
+	}
+	// Above zero as the board holds it too: a share an `f32` rounds to 0 is a `drift_off_percent`
+	// nothing ever drops to, an alarm that never goes off.
+	let share = |key: &str| -> Result<f64, Error> {
+		match value(key)?.expect("checked present") {
+			v if v > 0.0 && (v as f32) > 0.0 => Ok(v),
+			v if v > 0.0 => Err(at.refuse(key, format!("{key} {v:e} is too small for the board, which would hold it as 0"))),
+			v => Err(at.refuse(key, format!("{key} {v} is not above zero"))),
+		}
+	};
+	let percent = share("drift_percent")?;
+	let off_percent = share("drift_off_percent")?;
+	if off_percent as f32 >= percent as f32 {
+		return Err(at.refuse(
+			"drift_off_percent",
+			format!(
+				"drift_off_percent {off_percent} is not under drift_percent {percent} — the alarm goes off once the drift is back at drift_off_percent"
+			),
+		));
+	}
+	let hold_ms = match table.get("drift_hold_ms").and_then(Item::as_integer) {
+		Some(ms) if ms >= 0 => ms as u64,
+		_ => return Err(at.refuse("drift_hold_ms", "drift_hold_ms must be whole milliseconds, 0 or more".to_string())),
+	};
+	let min_setpoint = match value("drift_min_setpoint")?.expect("checked present") {
+		v if v >= 0.0 => v,
+		v => return Err(at.refuse("drift_min_setpoint", format!("drift_min_setpoint {v} is below zero"))),
+	};
+	Ok((
+		alarm_max,
+		alarm_min,
+		Some(DriftInput {
+			percent,
+			off_percent,
+			hold_ms,
+			min_setpoint,
+		}),
+	))
+}
+
+/// What to write instead of the `[[alarm]]` tables `item` holds: each rule's numbers as the keys
+/// of every channel it listed, one `[[channel]]` block per channel, read loosely — a rule that
+/// cannot be read is said in words. `declared` is the file's `[[channel]]` refs, in order: where
+/// the old rules' order is not the channels', each block carries the `alarm_priority` that keeps
+/// it — no channel moves, so nothing on the board is renumbered (owner, 2026-10-19).
+fn migrate_alarms(item: &Item, declared: &[String]) -> String {
+	let number = |item: Option<&Item>| -> Option<String> {
+		let item = item?;
+		item
+			.as_integer()
+			.map(|n| n.to_string())
+			.or_else(|| item.as_float().map(|v| format!("{v:?}")))
+	};
+	// Per channel, in the order the rules name them — the old priority — the number of the first
+	// rule that names it, and its keys.
+	type Block = (String, usize, Vec<(&'static str, String)>);
+	let mut blocks: Vec<Block> = Vec::new();
+	let mut unread = 0;
+	for (n, table) in item.as_array_of_tables().into_iter().flat_map(|tables| tables.iter()).enumerate() {
+		let get = |key: &str| number(table.get(key));
+		let channels: Vec<String> = table
+			.get("channels")
+			.and_then(Item::as_array)
+			.map(|list| list.iter().filter_map(|v| v.as_str()).map(|c| c.trim().to_string()).collect())
+			.unwrap_or_default();
+		let keys: Option<Vec<(&'static str, String)>> = match table.get("kind").and_then(Item::as_str).map(str::trim) {
+			Some("drift") => match (get("percent"), get("release_percent"), get("hold_ms"), get("min_setpoint")) {
+				(Some(p), Some(r), Some(h), Some(m)) => Some(vec![
+					("drift_percent", p),
+					("drift_off_percent", r),
+					("drift_hold_ms", h),
+					("drift_min_setpoint", m),
+				]),
+				_ => None,
+			},
+			None | Some("threshold") => match (table.get("direction").and_then(Item::as_str), get("trip"), get("release")) {
+				(Some("above"), Some(trip), Some(release)) => Some(vec![("alarm_max", trip), ("alarm_max_off", release)]),
+				(Some("below"), Some(trip), Some(release)) => Some(vec![("alarm_min", trip), ("alarm_min_off", release)]),
+				_ => None,
+			},
+			Some(_) => None,
+		};
+		let Some(keys) = keys.filter(|_| !channels.is_empty()) else {
+			unread += 1;
+			continue;
+		};
+		// A key a channel already has from an earlier rule cannot be written twice.
+		let clash = channels.iter().any(|c| {
+			blocks
+				.iter()
+				.any(|(at, _, have)| at == c && have.iter().any(|(k, _)| keys.iter().any(|(new, _)| new == k)))
+		});
+		if clash {
+			unread += 1;
+			continue;
+		}
+		for channel in channels {
+			match blocks.iter_mut().find(|(at, _, _)| *at == channel) {
+				Some((_, _, have)) => have.extend(keys.iter().cloned()),
+				None => blocks.push((channel, n + 1, keys.clone())),
+			}
+		}
+	}
+	let mut why = String::from(
+		"[[alarm]] is gone: an alarm is now keys of the [[channel]] it watches. It raises the first values page that shows \
+		 that channel — `page` is gone. Delete every [[alarm]] table",
+	);
+	if blocks.is_empty() {
+		why.push('.');
+	} else {
+		// The old priority was the rules' order; without `alarm_priority` the new one is the
+		// channels' order in the file.
+		let old: Vec<&str> = blocks.iter().map(|(c, _, _)| c.as_str()).collect();
+		let now: Vec<&str> = declared.iter().map(|c| c.trim()).filter(|c| old.contains(c)).collect();
+		let kept: Vec<&str> = old.iter().copied().filter(|c| now.contains(c)).collect();
+		let reordered = now != kept;
+		why.push_str(" and add these keys to the [[channel]] with the same ref:\n");
+		for (channel, rule, keys) in &blocks {
+			why.push_str(&format!("\n[[channel]]\nref = {channel:?}\n"));
+			for (key, value) in keys {
+				why.push_str(&format!("{key} = {value}\n"));
+			}
+			if reordered {
+				why.push_str(&format!("alarm_priority = {rule}\n"));
+			}
+		}
+		if reordered {
+			why.push_str(
+				"\nalarm_priority keeps the [[alarm]] order: the channels are not in it in the file, and without alarm_priority \
+				 the order in the file decides.",
+			);
+		}
+	}
+	if unread > 0 || blocks.is_empty() {
+		why.push_str(
+			"\nA threshold rule's trip and release become alarm_max and alarm_max_off for direction = \"above\", alarm_min and \
+			 alarm_min_off for \"below\"; a drift rule's percent, release_percent, hold_ms and min_setpoint become drift_percent, \
+			 drift_off_percent, drift_hold_ms and drift_min_setpoint.",
+		);
+	}
+	why
+}
 /// `[strip]`, shape only: the channel the voltage is read from. Whether it is a `[[channel]]`
 /// is [`build`]'s question.
 fn parse_strip(item: &Item, source: &str, string: &impl Fn(Option<&Item>, &str) -> Result<String, Error>) -> Result<StripInput, Error> {
@@ -885,10 +1033,8 @@ pub enum Error {
 		reference: Reference,
 	},
 	Page(usize, String),
-	/// An `[[alarm]]` the board could not honour, by its number in the file.
-	Alarm(usize, String),
-	/// More `[[alarm]]` rules than [`MAX_ALARMS`].
-	TooManyAlarms(usize),
+	/// A channel's alarm keys the board could not honour.
+	Alarm(Reference, String),
 	/// More `[[page]]` tables than the board holds, [`MAX_PAGES`].
 	TooManyPages(usize),
 	/// One row declared twice under two spellings — `01:IDE00191` and `01:202A`.
@@ -940,7 +1086,7 @@ impl fmt::Display for Error {
 			),
 			Error::PageRefersToUnknown { page, reference } => write!(f, "page #{page}: {reference} is not in the [[channel]] list"),
 			Error::Page(n, why) => write!(f, "page #{n}: {why}"),
-			Error::Alarm(n, why) => write!(f, "alarm #{n}: {why}"),
+			Error::Alarm(r, why) => write!(f, "{r}: {why}"),
 			Error::TooManyPages(n) => write!(f, "{n} [[page]] tables, and the board holds at most {MAX_PAGES}"),
 			Error::Setpoint { channel, setpoint, why } => {
 				write!(f, "{channel}: its setpoint {setpoint} {why}")
@@ -948,10 +1094,6 @@ impl fmt::Display for Error {
 			Error::Stalk(why) => write!(f, "[stalk] {why}"),
 			Error::Stopwatch(why) => write!(f, "[stopwatch] {why}"),
 			Error::Strip(why) => write!(f, "[strip] {why}"),
-			Error::TooManyAlarms(n) => write!(
-				f,
-				"{n} [[alarm]] rules, and the board holds at most {MAX_ALARMS} — each rule's channels are read at full rate on every page"
-			),
 		}
 	}
 }
@@ -1003,9 +1145,9 @@ fn default_hz() -> f64 {
 	DEFAULT_HZ
 }
 
-/// One page. `title` is drawn in the strip over it, and a values page's is the name an alarm
-/// raises it by; `volts` is whether the strip shows the voltage there. A `plan.json` written
-/// before the strip has no chart titles and no `volts`: none, and on.
+/// One page. `title` is drawn in the strip over it; `volts` is whether the strip shows the
+/// voltage there. A `plan.json` written before the strip has no chart titles and no `volts`:
+/// none, and on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Page {
@@ -1037,30 +1179,41 @@ pub struct Strip {
 	pub volts: u16,
 }
 
-/// One alarm's rule, resolved. `specified` is indices into the plan's channels, one per
-/// watched channel, in the same order.
+/// One bound of a channel, resolved: the alarm at or past `at`, off again at `off` — the
+/// file's, or the default [`build`] derived.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Bound {
+	pub at: f64,
+	pub off: f64,
+}
+
+/// One alarm's rule, resolved. `specified` is the plan index of the channel's specified value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum AlarmRule {
-	Threshold {
-		direction: Direction,
-		trip: f64,
-		release: f64,
+	/// `alarm_max` and `alarm_min`, either or both.
+	Bounds {
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		max: Option<Bound>,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		min: Option<Bound>,
 	},
+	/// The `drift_*` keys.
 	Drift {
-		specified: Vec<u16>,
+		specified: u16,
 		percent: f64,
-		release_percent: f64,
+		off_percent: f64,
 		hold_ms: u64,
 		min_setpoint: f64,
 	},
 }
 
-/// One alarm, resolved: indices into the plan's channels and pages, which is what
+/// One alarm, resolved: one channel's bounds or its drift, and the first values page that
+/// shows the channel — indices into the plan's channels and pages, which is what
 /// `vag_dash_render::alarm::ChannelId` and `PageId` are for an image built for one plan.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Alarm {
-	pub channels: Vec<u16>,
+	pub channel: u16,
 	pub page: u16,
 	#[serde(flatten)]
 	pub rule: AlarmRule,
@@ -1123,7 +1276,9 @@ pub struct Plan {
 	pub units: Vec<Unit>,
 	pub channels: Vec<Channel>,
 	pub pages: Vec<Page>,
-	/// In priority order. A `plan.json` written before alarms existed has none.
+	/// In priority order: the channels' order, a channel's bounds before its drift. A
+	/// `plan.json` written before alarms existed has none; one written while they were
+	/// `[[alarm]]` tables is refused ([`Plan::from_json`]).
 	#[serde(default)]
 	pub alarms: Vec<Alarm>,
 	/// A `plan.json` written before the lever existed has none.
@@ -1144,8 +1299,23 @@ impl Plan {
 		serde_json::to_string_pretty(self).expect("a plan serialises")
 	}
 
+	/// A `plan.json` written while alarms were `[[alarm]]` tables (before 2026-10-19) is refused
+	/// with what to do: the file is generated, and a rule read into the new shape by guesswork
+	/// would watch something the owner did not write.
 	pub fn from_json(text: &str) -> Result<Plan, serde_json::Error> {
-		serde_json::from_str(text)
+		use serde::de::Error as _;
+		let value: serde_json::Value = serde_json::from_str(text)?;
+		let old = value
+			.get("alarms")
+			.and_then(serde_json::Value::as_array)
+			.is_some_and(|alarms| alarms.iter().any(|a| a.get("channels").is_some()));
+		if old {
+			return Err(serde_json::Error::custom(
+				"this plan.json was written when alarms were [[alarm]] tables — move them onto the channels in dash.toml \
+				 (docs/dash/dash-toml.md, \"Alarms\") and build the plan again with `vagcan dev dash build <VIN>`",
+			));
+		}
+		serde_json::from_value(value)
 	}
 
 	/// The plan as the board holds it — what [`to_rust`] writes as source, built in memory
@@ -1161,8 +1331,11 @@ impl Plan {
 		fn text(s: &str) -> &'static str {
 			String::leak(s.to_string())
 		}
-		fn ids(channels: &[u16]) -> &'static [ChannelId] {
-			Vec::leak(channels.iter().map(|&c| ChannelId(c)).collect())
+		fn bound(b: &Option<Bound>) -> Option<device_alarm::Bound> {
+			b.map(|b| device_alarm::Bound {
+				at: b.at as f32,
+				off: b.off as f32,
+			})
 		}
 		let units = self
 			.units
@@ -1222,27 +1395,23 @@ impl Plan {
 			.alarms
 			.iter()
 			.map(|a| device_alarm::Alarm {
-				channels: ids(&a.channels),
+				channel: ChannelId(a.channel),
 				page: PageId(a.page),
 				rule: match &a.rule {
-					AlarmRule::Threshold { direction, trip, release } => device_alarm::Rule::Threshold {
-						trip: *trip as f32,
-						release: *release as f32,
-						direction: match direction {
-							Direction::Below => device_alarm::Direction::Below,
-							Direction::Above => device_alarm::Direction::Above,
-						},
+					AlarmRule::Bounds { max, min } => device_alarm::Rule::Bounds {
+						max: bound(max),
+						min: bound(min),
 					},
 					AlarmRule::Drift {
 						specified,
 						percent,
-						release_percent,
+						off_percent,
 						hold_ms,
 						min_setpoint,
 					} => device_alarm::Rule::Drift {
-						specified: ids(specified),
+						specified: ChannelId(*specified),
 						percent: *percent as f32,
-						release_percent: *release_percent as f32,
+						off_percent: *off_percent as f32,
 						hold_ms: *hold_ms,
 						min_setpoint: *min_setpoint as f32,
 					},
@@ -1322,7 +1491,7 @@ fn read_of(c: &Channel) -> (u16, u16, u32, u32) {
 	(c.unit, c.did, c.bit_offset, c.bit_length)
 }
 
-/// What a page cell, an alarm channel or the stopwatch's speed names, among the plan's channels.
+/// What a page cell, the strip's voltage or the stopwatch's speed names, among the plan's channels.
 enum Named {
 	/// A `[[channel]]`, by plan index.
 	Channel(u16),
@@ -1340,8 +1509,8 @@ impl Named {
 	}
 }
 
-/// The plan index of a channel the input names, by what the name resolves to: a page cell or an
-/// alarm channel may spell a row differently from its `[[channel]]` and still mean it.
+/// The plan index of a channel the input names, by what the name resolves to: a page cell may
+/// spell a row differently from its `[[channel]]` and still mean it.
 ///
 /// Only the first `declared` channels are the input's `[[channel]]`s; after them come the
 /// setpoints the build added, and a name that lands on one of those is [`Named::Setpoint`], in
@@ -1362,14 +1531,7 @@ fn index_by_row(
 	if let Some(index) = index_of.get(reference) {
 		return named(usize::from(*index));
 	}
-	let probe = ChannelInput {
-		reference: reference.clone(),
-		label: None,
-		decimals: None,
-		hz: None,
-		setpoint: None,
-		zero_at_rest: false,
-	};
+	let probe = ChannelInput::bare(reference.clone());
 	let Ok(resolved) = resolve_channel(&probe, offered, units, &mut Vec::new()) else {
 		return Named::Unknown;
 	};
@@ -1535,7 +1697,7 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 		index_of.insert(wanted.reference.clone(), index);
 	}
 	// The owner's `[[channel]]`s, one plan channel each and in order; everything after them the
-	// build adds, and no page, alarm or stopwatch may name.
+	// build adds, and no page, strip or stopwatch may name.
 	let declared = channels.len();
 
 	// Second pass, so a setpoint may name a channel the input declares later — and so a
@@ -1562,12 +1724,9 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 		// the same identifier would draw `+0.00` for ever and never trip a drift rule
 		// (review, 2026-09-15).
 		let hidden = ChannelInput {
-			reference: reference.clone(),
-			label: None,
 			decimals: wanted.decimals,
 			hz: wanted.hz,
-			setpoint: None,
-			zero_at_rest: false,
+			..ChannelInput::bare(reference.clone())
 		};
 		// Resolved into a log of its own: a setpoint that turns out to be a channel the input
 		// already has is not added, and a build log saying it was would be a lie.
@@ -1705,7 +1864,11 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 		let why = "only dashsim or dashcfg's set page turns the page";
 		notes.push(format!("input: no [stalk] and no [[button]] with next or previous — {why}"));
 	}
-	if !input.alarms.is_empty() && stalk.is_none() && input.buttons.is_empty() {
+	let alarmed = input
+		.channels
+		.iter()
+		.any(|c| c.alarm_max.is_some() || c.alarm_min.is_some() || c.drift.is_some());
+	if alarmed && stalk.is_none() && input.buttons.is_empty() {
 		let why = "an alarm stays up until its channel answers in range again; only dashsim silences it";
 		notes.push(format!("input: no [stalk] and no [[button]] — {why}"));
 	}
@@ -1731,7 +1894,7 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 	}
 
 	// The board holds `MAX_PAGES`, and an alarm raises a page by its plan index: a page
-	// past the board's is one an alarm could name and the glass could never show.
+	// past the board's is one an alarm could raise and the glass could never show.
 	if input.pages.len() > MAX_PAGES {
 		return Err(Error::TooManyPages(input.pages.len()));
 	}
@@ -1748,7 +1911,7 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 		};
 		match page {
 			PageInput::Values { title, cells, volts } => {
-				if cells.is_empty() || cells.len() > 4 {
+				if cells.is_empty() || cells.len() > MAX_VALUE_CELLS {
 					return Err(Error::Page(n, format!("a values page holds 1 to 4 cells, not {}", cells.len())));
 				}
 				let cells = cells.iter().map(index).collect::<Result<Vec<_>, _>>()?;
@@ -1798,148 +1961,238 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 		strip_notes(strip, &wanted.volts, &channels, &pages, &mut notes);
 	}
 
-	// Alarms last: a rule names channels and a page, and both are resolved by now.
-	if input.alarms.len() > MAX_ALARMS {
-		return Err(Error::TooManyAlarms(input.alarms.len()));
-	}
-	let mut alarms = Vec::new();
-	for (i, wanted) in input.alarms.iter().enumerate() {
-		let n = i + 1;
-		let refuse = |why: String| Error::Alarm(n, why);
-		if wanted.channels.is_empty() {
-			return Err(refuse("watches no channels".to_string()));
-		}
-		let watched = wanted
-			.channels
-			.iter()
-			.map(|r| match index_by_row(r, &channels, declared, &index_of, &offered, units) {
-				Named::Channel(index) => Ok(index),
-				Named::Setpoint => Err(refuse(Named::setpoint_refusal(r))),
-				Named::Unknown => Err(refuse(format!("{r} is not in the [[channel]] list"))),
-			})
-			.collect::<Result<Vec<u16>, _>>()?;
-		// The page is named by title, and only a values page can be raised: a takeover shows
-		// cells, and a chart has one cell and no room to invert it. A chart's title is the
-		// strip's, never an alarm's.
-		let titled: Vec<(usize, &Vec<u16>)> = pages
-			.iter()
-			.enumerate()
-			.filter_map(|(p, page)| match page {
-				Page::Values { title, cells, .. } if *title == wanted.page => Some((p, cells)),
-				_ => None,
-			})
-			.collect();
-		let (page, cells) = match titled.as_slice() {
-			[one] => *one,
-			[] => {
-				return Err(refuse(format!(
-					"no values page is titled {:?} — an alarm raises a values page, never a chart",
-					wanted.page
-				)));
-			}
-			many => {
-				return Err(refuse(format!(
-					"{} values pages are titled {:?} — give them different titles",
-					many.len(),
-					wanted.page
-				)));
-			}
-		};
-		if let Some((r, _)) = wanted.channels.iter().zip(&watched).find(|&(_, index)| !cells.contains(index)) {
-			return Err(refuse(format!(
-				"page {:?} does not show {r} — the page an alarm raises shows every channel it watches",
-				wanted.page
-			)));
-		}
-		let refs: Vec<String> = wanted.channels.iter().map(ToString::to_string).collect();
-		// Compared as the board will compare them, in `f32`: two thresholds a hair apart in
-		// the file can be one value there, and one value is no hysteresis.
-		let rule = match wanted.rule {
-			AlarmRuleInput::Threshold { direction, trip, release } => {
-				let (board_trip, board_release) = (trip as f32, release as f32);
-				match direction {
-					Direction::Below if board_release <= board_trip => {
-						return Err(refuse(format!(
-							"release {board_release} is not above trip {board_trip} — a \"below\" alarm releases above where it trips"
-						)));
-					}
-					Direction::Above if board_release >= board_trip => {
-						return Err(refuse(format!(
-							"release {board_release} is not below trip {board_trip} — an \"above\" alarm releases below where it trips"
-						)));
-					}
-					_ => {}
-				}
-				notes.push(format!(
-					"alarm #{n}: {} at or {} {trip}, released past {release} → page {:?}",
-					refs.join(", "),
-					if direction == Direction::Below { "below" } else { "above" },
-					wanted.page
-				));
-				AlarmRule::Threshold { direction, trip, release }
-			}
-			AlarmRuleInput::Drift {
-				percent,
-				release_percent,
-				hold_ms,
-				min_setpoint,
-			} => {
-				if release_percent as f32 >= percent as f32 {
-					return Err(refuse(format!(
-						"release_percent {release_percent} is not under percent {percent} — a drift alarm releases under where it trips"
-					)));
-				}
-				// Every watched channel needs the other half of its pair, or the rule has
-				// nothing to measure against.
-				let mut specified = Vec::new();
-				for (r, index) in wanted.channels.iter().zip(&watched) {
-					match channels[*index as usize].setpoint {
-						Some(s) => specified.push(s),
-						None => {
-							return Err(refuse(format!(
-								"{r} has no setpoint — a drift rule watches channels the plan pairs with a specified value"
-							)));
-						}
-					}
-				}
-				notes.push(format!(
-					"alarm #{n}: {} more than {percent}% from its specified value for {hold_ms} ms, released under {release_percent}%, ignored under {min_setpoint} → page {:?}",
-					refs.join(", "),
-					wanted.page
-				));
-				AlarmRule::Drift {
-					specified,
-					percent,
-					release_percent,
-					hold_ms,
-					min_setpoint,
-				}
-			}
-		};
-		alarms.push(Alarm {
-			channels: watched,
-			page: page as u16,
-			rule,
-		});
-	}
-
-	Ok(Built {
-		plan: Plan {
-			vin: input.vin.clone(),
-			language: language.code().to_string(),
-			units: plan_units,
-			channels,
-			pages,
-			alarms,
-			stalk,
-			stopwatch,
-			buttons: input.buttons.clone(),
-			strip,
-		},
-		notes,
-	})
+	// Alarms last: a channel's alarm raises the first values page that shows it, and the pages
+	// are resolved by now.
+	let alarms = resolve_alarms(input, &channels, &pages, &mut notes)?;
+	let plan = Plan {
+		vin: input.vin.clone(),
+		language: language.code().to_string(),
+		units: plan_units,
+		channels,
+		pages,
+		alarms,
+		stalk,
+		stopwatch,
+		buttons: input.buttons.clone(),
+		strip,
+	};
+	// What the board reads whatever the page shows, said and never refused: a count of
+	// identifiers is not bus time (owner, 2026-10-19).
+	notes.push(bus_note(&plan, &input.channels));
+	Ok(Built { plan, notes })
 }
 
+/// Every `[[channel]]`'s alarms, in priority order — `alarm_priority` ascending, then the file's
+/// order; a channel's bounds before its drift — each raising the first values page that shows
+/// the channel. `channels[i]` is `input`'s i-th.
+fn resolve_alarms(input: &Input, channels: &[Channel], pages: &[Page], notes: &mut Vec<String>) -> Result<Vec<Alarm>, Error> {
+	// Each rule with its channel's priority, for the sort at the end.
+	let mut alarms: Vec<(Option<u32>, Alarm)> = Vec::new();
+	for (i, wanted) in input.channels.iter().enumerate() {
+		let first_key = match (&wanted.alarm_max, &wanted.alarm_min, &wanted.drift) {
+			(Some(_), _, _) => "alarm_max",
+			(None, Some(_), _) => "alarm_min",
+			(None, None, Some(_)) => "drift_percent",
+			(None, None, None) => continue,
+		};
+		let refuse = |why: String| Error::Alarm(wanted.reference.clone(), why);
+		let index = i as u16;
+		let channel = &channels[i];
+		// Only a values page can be raised: a takeover inverts a cell, and a chart has none.
+		let Some(page) = pages
+			.iter()
+			.position(|p| matches!(p, Page::Values { cells, .. } if cells.contains(&index)))
+		else {
+			return Err(refuse(format!(
+				"{first_key} needs a values page that shows the channel — the alarm raises the first one with it as a cell, and no [[page]] of kind \"values\" has it"
+			)));
+		};
+		let raises = match &pages[page] {
+			Page::Values { title, .. } if !title.is_empty() => format!("page {} {title:?}", page + 1),
+			_ => format!("page {}", page + 1),
+		};
+		let priority = wanted.alarm_priority.map_or_else(String::new, |n| format!(", priority {n}"));
+		// One step of the channel's resolution, what one count of its raw value is worth: a
+		// distance the unit cannot report is no distance (owner, 2026-10-19). A factor of 0 — a
+		// value that never moves — has none, and the display's step stands in.
+		let step = match channel.factor.abs() {
+			f if f > 0.0 => f,
+			_ => 10f64.powi(-i32::from(channel.decimals)),
+		};
+		let away = |at: f64| (DEFAULT_OFF_SHARE * at.abs()).max(step);
+		// A default is rounded to the places the step has: the rounding moves it at most half a
+		// step, so it stays at least half a step inside its bound, and the build's line and
+		// `plan.json` read `1.4`, not `1.4000000000000001`. Twelve places is past any resolution
+		// a unit reports and still exact in an f64.
+		let places = (-step.log10()).ceil().clamp(0.0, 12.0) as i32;
+		let scale = 10f64.powi(places);
+		let shown = |v: f64| (v * scale).round() / scale;
+		let max = wanted
+			.alarm_max
+			.map(|b| (b.at, b.off.unwrap_or_else(|| shown(b.at - away(b.at))), b.off.is_none()));
+		let min = wanted
+			.alarm_min
+			.map(|b| (b.at, b.off.unwrap_or_else(|| shown(b.at + away(b.at))), b.off.is_none()));
+		// Checked as the board holds them, in `f32`: a default the narrowing makes the bound
+		// itself is no off value at all.
+		let default_said = |derived: bool| if derived { " (its default)" } else { "" };
+		if let Some((at, off, derived)) = max
+			&& off as f32 >= at as f32
+		{
+			return Err(refuse(format!(
+				"alarm_max_off {off}{} is alarm_max {at} on the board — write alarm_max_off under it",
+				default_said(derived)
+			)));
+		}
+		if let Some((at, off, derived)) = min
+			&& off as f32 <= at as f32
+		{
+			return Err(refuse(format!(
+				"alarm_min_off {off}{} is alarm_min {at} on the board — write alarm_min_off over it",
+				default_said(derived)
+			)));
+		}
+		if let (Some((_, max_off, max_derived)), Some((_, min_off, min_derived))) = (max, min)
+			&& min_off as f32 >= max_off as f32
+		{
+			return Err(refuse(format!(
+				"alarm_min_off {min_off}{} is not under alarm_max_off {max_off}{} — no value would be off for both; write the two so that alarm_min_off is under alarm_max_off",
+				default_said(min_derived),
+				default_said(max_derived)
+			)));
+		}
+		if max.is_some() || min.is_some() {
+			let mut said = Vec::new();
+			if let Some((at, off, derived)) = max {
+				said.push(format!("at or above {at}, off at or under {off}{}", default_said(derived)));
+			}
+			if let Some((at, off, derived)) = min {
+				said.push(format!("at or below {at}, off at or above {off}{}", default_said(derived)));
+			}
+			notes.push(format!("alarm: {} {} → {raises}{priority}", wanted.reference, said.join("; ")));
+			let bound = |b: Option<(f64, f64, bool)>| b.map(|(at, off, _)| Bound { at, off });
+			alarms.push((
+				wanted.alarm_priority,
+				Alarm {
+					channel: index,
+					page: page as u16,
+					rule: AlarmRule::Bounds {
+						max: bound(max),
+						min: bound(min),
+					},
+				},
+			));
+		}
+		if let Some(drift) = wanted.drift {
+			// The drift is measured against what the unit asked for: no pair, nothing to be far from.
+			let Some(specified) = channel.setpoint else {
+				return Err(refuse(
+					"drift_percent needs a setpoint — the drift is measured against what the unit asked for".to_string(),
+				));
+			};
+			notes.push(format!(
+				"alarm: {} {}% or more from its specified value for {} ms, off at or under {}%, nothing said under {} → {raises}{priority}",
+				wanted.reference, drift.percent, drift.hold_ms, drift.off_percent, drift.min_setpoint
+			));
+			alarms.push((
+				wanted.alarm_priority,
+				Alarm {
+					channel: index,
+					page: page as u16,
+					rule: AlarmRule::Drift {
+						specified,
+						percent: drift.percent,
+						off_percent: drift.off_percent,
+						hold_ms: drift.hold_ms,
+						min_setpoint: drift.min_setpoint,
+					},
+				},
+			));
+		}
+	}
+	// Stable: ties, and every channel without a priority, keep the file's order.
+	alarms.sort_by_key(|(priority, _)| (priority.is_none(), *priority));
+	Ok(alarms.into_iter().map(|(_, alarm)| alarm).collect())
+}
+
+/// What the board reads in the foreground whatever page is up, ahead of the page on the glass:
+/// the board's own rule (`vag_dash_render::plan::Plan::rates_in`, what its panel subscribes) with
+/// only the strip's voltage on the glass, the lever's gate open — its fastest — and no
+/// stopwatch. That is every alarm's channel and specified value at its `hz`, the strip's voltage
+/// at its own (it is read with every page that shows it), the lever and the cruise status; the
+/// pages not shown are read in the background, thinned first, and left out.
+///
+/// **Said, never refused** (owner, 2026-10-19). It counts identifiers, and identifiers are not
+/// bus time: the planner puts up to eight of one unit in one request, and what the car serves is
+/// exchanges — 45–48 a second on the reference car (`research/dash/can-bring-up.md` §9.15). A check
+/// of bus time would run the planner over the plan at a measured cost per exchange; until then
+/// this line is information, by unit and by share.
+fn bus_note(plan: &Plan, inputs: &[ChannelInput]) -> String {
+	use vag_dash_render::plan::{Mode, Timing};
+	let device = plan.to_device();
+	let strip: Vec<u16> = device.strip_listed().into_iter().collect();
+	let mode = Mode {
+		gate_open: true,
+		stopwatch: Timing::Off,
+		lever: true,
+	};
+	let name = |index: u16| -> String {
+		let channel = &plan.channels[usize::from(index)];
+		match inputs.get(usize::from(index)) {
+			Some(wanted) => format!("{} {}", wanted.reference, channel.label),
+			None => format!("{} {}", channel.source, channel.label),
+		}
+	};
+	let per_s = |period_ms: u32| 1000.0 / f64::from(period_ms.max(1));
+	let shown = |v: f64| {
+		let text = format!("{v:.1}");
+		text.strip_suffix(".0").map(str::to_string).unwrap_or(text)
+	};
+	let (mut alarmed, mut others) = (Vec::new(), Vec::new());
+	let mut units: Vec<(u16, f64)> = Vec::new();
+	let mut total = 0.0;
+	for rate in device.rates_in(&strip, &[], mode).filter(|rate| rate.foreground) {
+		let rate_s = per_s(rate.period_ms);
+		total += rate_s;
+		let unit = plan.channels[usize::from(rate.channel)].unit;
+		match units.iter_mut().find(|(u, _)| *u == unit) {
+			Some((_, sum)) => *sum += rate_s,
+			None => units.push((unit, rate_s)),
+		}
+		let stalk = plan.stalk.as_ref();
+		if stalk.is_some_and(|s| s.rocker == rate.channel) {
+			others.push(format!("the lever {}/s", shown(rate_s)));
+		} else if stalk.is_some_and(|s| s.cruise == rate.channel) {
+			others.push(format!("the cruise status {}/s", shown(rate_s)));
+		} else if device.watched(rate.channel) {
+			alarmed.push((rate_s, format!("{} {}/s", name(rate.channel), shown(rate_s))));
+		} else {
+			others.push(format!("the strip's voltage {} {}/s", name(rate.channel), shown(rate_s)));
+		}
+	}
+	if total == 0.0 {
+		return "bus: nothing is read on every page but the page on the glass".to_string();
+	}
+	let by_unit: Vec<String> = units
+		.iter()
+		.map(|(unit, sum)| {
+			let label = UnitAddress::from_request(*unit).map_or_else(|| format!("{unit:03X}"), |a| a.label());
+			format!("{label} {}/s", shown(*sum))
+		})
+		.collect();
+	let mut shares: Vec<String> = Vec::new();
+	if !alarmed.is_empty() {
+		let list: Vec<&str> = alarmed.iter().map(|(_, s)| s.as_str()).collect();
+		shares.push(format!("alarms {} ({})", shown(alarmed.iter().map(|(r, _)| r).sum()), list.join(", ")));
+	}
+	shares.extend(others);
+	format!(
+		"bus: on every page, ahead of the page on the glass, {} reads a second — by unit {}; {}",
+		shown(total),
+		by_unit.join(", "),
+		shares.join("; ")
+	)
+}
 /// What the build says of the strip: which pages show the voltage, and a channel that does not
 /// read in volts, which the strip writes it as.
 fn strip_notes(strip: Strip, reference: &Reference, channels: &[Channel], pages: &[Page], notes: &mut Vec<String>) {
@@ -2356,8 +2609,8 @@ fn alarm_imports(plan: &Plan) -> Vec<&'static str> {
 		return imports;
 	}
 	imports.extend(["ChannelId", "PageId", "Rule"]);
-	if plan.alarms.iter().any(|a| matches!(a.rule, AlarmRule::Threshold { .. })) {
-		imports.push("Direction");
+	if plan.alarms.iter().any(|a| matches!(a.rule, AlarmRule::Bounds { .. })) {
+		imports.push("Bound");
 	}
 	imports
 }
@@ -2397,7 +2650,7 @@ pub fn to_rust(plan: &Plan) -> String {
 	}
 	// Only what the rules actually name: the firmware lints the generated file with
 	// `-D warnings`, so an unused import is a build that fails (review, 2026-09-15). A plan
-	// whose rules are all drift never names `Direction`; one with no rules names nothing but
+	// whose rules are all drift never names `Bound`; one with no rules names nothing but
 	// the type itself.
 	let mut imports = alarm_imports(plan);
 	imports.sort_unstable();
@@ -2500,50 +2753,31 @@ pub fn to_rust(plan: &Plan) -> String {
 	}
 	let _ = writeln!(out, "];");
 	let _ = writeln!(out);
-	for (i, a) in plan.alarms.iter().enumerate() {
-		let ids = |channels: &[u16]| {
-			let list: Vec<String> = channels.iter().map(|c| format!("ChannelId({c})")).collect();
-			format!("[{}]", list.join(", "))
-		};
-		let _ = writeln!(
-			out,
-			"static ALARM_CHANNELS_{i}: [ChannelId; {}] = {};",
-			a.channels.len(),
-			ids(&a.channels)
-		);
-		if let AlarmRule::Drift { specified, .. } = &a.rule {
-			let _ = writeln!(out, "static ALARM_SPECIFIED_{i}: [ChannelId; {}] = {};", specified.len(), ids(specified));
-		}
-	}
-	let _ = writeln!(out, "static ALARMS: [Alarm<'static>; {}] = [", plan.alarms.len());
-	for (i, a) in plan.alarms.iter().enumerate() {
+	let bound = |b: &Option<Bound>| match b {
+		Some(b) => format!("Some(Bound {{ at: {}, off: {} }})", float(b.at), float(b.off)),
+		None => "None".to_string(),
+	};
+	let _ = writeln!(out, "static ALARMS: [Alarm; {}] = [", plan.alarms.len());
+	for a in &plan.alarms {
 		let rule = match &a.rule {
-			AlarmRule::Threshold { direction, trip, release } => format!(
-				"Rule::Threshold {{ trip: {}, release: {}, direction: Direction::{} }}",
-				float(*trip),
-				float(*release),
-				match direction {
-					Direction::Below => "Below",
-					Direction::Above => "Above",
-				}
-			),
+			AlarmRule::Bounds { max, min } => format!("Rule::Bounds {{ max: {}, min: {} }}", bound(max), bound(min)),
 			AlarmRule::Drift {
+				specified,
 				percent,
-				release_percent,
+				off_percent,
 				hold_ms,
 				min_setpoint,
-				..
 			} => format!(
-				"Rule::Drift {{ specified: &ALARM_SPECIFIED_{i}, percent: {}, release_percent: {}, hold_ms: {hold_ms}, min_setpoint: {} }}",
+				"Rule::Drift {{ specified: ChannelId({specified}), percent: {}, off_percent: {}, hold_ms: {hold_ms}, min_setpoint: {} }}",
 				float(*percent),
-				float(*release_percent),
+				float(*off_percent),
 				float(*min_setpoint)
 			),
 		};
 		let _ = writeln!(
 			out,
-			"\tAlarm {{ channels: &ALARM_CHANNELS_{i}, page: PageId({}), rule: {rule} }},",
-			a.page
+			"\tAlarm {{ channel: ChannelId({}), page: PageId({}), rule: {rule} }},",
+			a.channel, a.page
 		);
 	}
 	let _ = writeln!(out, "];");
@@ -2742,7 +2976,7 @@ pub fn resolve(inputs: Inputs) -> anyhow::Result<Resolved> {
 }
 
 /// The units a build input reads: its channels and their specified values, the stalk's
-/// read and its cruise status, the stopwatch's speed, the strip's voltage. A page or an alarm names a channel
+/// read and its cruise status, the stopwatch's speed, the strip's voltage. A page names a channel
 /// from that list, so the channels are the whole of it — what has to have had its
 /// channels read before the plan can be built, and nothing else.
 pub fn referenced_units(input: &Input) -> std::collections::BTreeSet<u16> {
@@ -2922,15 +3156,10 @@ mod tests {
 			vin: "TESTVIN0000000001".into(),
 			language: None,
 			channels: vec![ChannelInput {
-				reference: parse("01:IDE00025"),
-				label: None,
-				decimals: None,
-				hz: None,
 				setpoint: Some(parse("02:IDE00190")),
-				zero_at_rest: false,
+				..ChannelInput::bare(parse("01:IDE00025"))
 			}],
 			pages: Vec::new(),
-			alarms: Vec::new(),
 			stalk: Some(StalkInput {
 				request: 0x70C,
 				did: 0x1105,
@@ -3034,17 +3263,13 @@ mod tests {
 		format!("[[page]]\nkind = \"values\"\ntitle = \"{title}\"\ncells = [{}]\n", list.join(", "))
 	}
 
-	fn alarm(channels: &[&str], page: &str, direction: &str, trip: f64, release: f64) -> String {
-		let list: Vec<String> = channels.iter().map(|c| format!("\"{c}\"")).collect();
-		format!(
-			"[[alarm]]\nchannels = [{}]\npage = \"{page}\"\ndirection = \"{direction}\"\ntrip = {trip:?}\nrelease = {release:?}\n",
-			list.join(", ")
-		)
-	}
+	/// No alarm keys on any of [`build_with_alarms`]'s channels.
+	const NO_ALARMS: [&str; 3] = ["", "", ""];
 
-	/// Three neutral channels on one unit; values pages `A` (channels 0 and 1) and `B`
-	/// (channel 2), a chart of channel 0; then whatever the test appends.
-	fn build_with_alarms(extra: &str) -> Result<Built, Error> {
+	/// Three neutral channels on one unit, each followed by its line of `keys` (alarm keys,
+	/// `\n`-separated); values pages `A` (channels 0 and 1) and `B` (channel 2), a chart of
+	/// channel 0; then whatever the test appends.
+	fn build_with_alarms(keys: [&str; 3], extra: &str) -> Result<Built, Error> {
 		let here = tempfile::tempdir().unwrap();
 		let extracted = extracted_with(
 			here.path(),
@@ -3053,14 +3278,21 @@ mod tests {
 				vec![
 					reading(0x1001, "One", "IDE00001", 0, 8, false, true, 1.0, 0.0),
 					reading(0x1002, "Two", "IDE00002", 0, 8, false, true, 1.0, 0.0),
-					reading(0x1003, "Three", "IDE00003", 0, 8, false, true, 1.0, 0.0),
+					Reading {
+						unit: Some("°C".to_string()),
+						..reading(0x1003, "Three", "IDE00003", 0, 16, true, true, 0.1, 0.0)
+					},
 				],
 			)],
 			&[],
 		);
 		let store = CatalogStore::open(here.path().join("proven"));
+		let line = |keys: &str| if keys.is_empty() { String::new() } else { format!("{keys}\n") };
 		let text = format!(
-			"vin = \"TESTVIN0000000001\"\n[[channel]]\nref = \"01:IDE00001\"\n[[channel]]\nref = \"01:IDE00002\"\n[[channel]]\nref = \"01:IDE00003\"\n{}{}[[page]]\nkind = \"chart\"\ncell = \"01:IDE00001\"\nmin = 0\nmax = 10\n{extra}",
+			"vin = \"TESTVIN0000000001\"\n[[channel]]\nref = \"01:IDE00001\"\n{}[[channel]]\nref = \"01:IDE00002\"\n{}[[channel]]\nref = \"01:IDE00003\"\n{}{}{}[[page]]\nkind = \"chart\"\ncell = \"01:IDE00001\"\nmin = 0\nmax = 10\n{extra}",
+			line(keys[0]),
+			line(keys[1]),
+			line(keys[2]),
 			values_page_titled("A", &["01:IDE00001", "01:IDE00002"]),
 			values_page_titled("B", &["01:IDE00003"]),
 		);
@@ -3153,11 +3385,9 @@ mod tests {
 		);
 	}
 
-	/// The drift rule the tests build on: page `A` shows the drifting channel.
-	fn drift_alarm(percent: f64, release_percent: f64) -> String {
-		format!(
-			"[[alarm]]\nkind = \"drift\"\nchannels = [\"01:IDE00191\"]\npage = \"A\"\npercent = {percent:?}\nrelease_percent = {release_percent:?}\nhold_ms = 1000\nmin_setpoint = 0.5\n"
-		)
+	/// The drift keys the tests build on, for the channel paired with a setpoint.
+	fn drift_alarm(percent: f64, off_percent: f64) -> String {
+		format!("drift_percent = {percent:?}\ndrift_off_percent = {off_percent:?}\ndrift_hold_ms = 1000\ndrift_min_setpoint = 0.5\n")
 	}
 
 	#[test]
@@ -3170,24 +3400,32 @@ mod tests {
 		assert_eq!(
 			built.plan.alarms,
 			vec![Alarm {
-				channels: vec![0],
+				channel: 0,
 				page: 0,
 				rule: AlarmRule::Drift {
-					specified: vec![1],
+					specified: 1,
 					percent: 10.0,
-					release_percent: 6.0,
+					off_percent: 6.0,
 					hold_ms: 1000,
 					min_setpoint: 0.5,
 				},
 			}]
 		);
+		assert!(
+			built.notes.iter().any(
+				|n| n == "alarm: 01:IDE00191 10% or more from its specified value for 1000 ms, off at or under 6%, nothing said under 0.5 → page 1 \"A\""
+			),
+			"{:?}",
+			built.notes
+		);
 		let json = built.plan.to_json();
 		assert_eq!(Plan::from_json(&json).unwrap(), built.plan);
 		assert!(json.contains("\"kind\": \"drift\""), "{json}");
 		let rust = to_rust(&built.plan);
-		assert!(rust.contains("static ALARM_SPECIFIED_0: [ChannelId; 1] = [ChannelId(1)];"), "{rust}");
 		assert!(
-			rust.contains("rule: Rule::Drift { specified: &ALARM_SPECIFIED_0, percent: 10.0, release_percent: 6.0, hold_ms: 1000, min_setpoint: 0.5 }"),
+			rust.contains(
+				"Alarm { channel: ChannelId(0), page: PageId(0), rule: Rule::Drift { specified: ChannelId(1), percent: 10.0, off_percent: 6.0, hold_ms: 1000, min_setpoint: 0.5 } },"
+			),
 			"{rust}"
 		);
 	}
@@ -3195,27 +3433,90 @@ mod tests {
 	#[test]
 	fn a_drift_rule_over_a_channel_with_no_specified_value_is_refused() {
 		let why = build_with_setpoint(&format!("[[channel]]\nref = \"01:IDE00191\"\n{}", drift_alarm(10.0, 6.0))).unwrap_err();
-		assert!(matches!(&why, Error::Alarm(1, why) if why.contains("has no setpoint")), "{why}");
+		assert_eq!(
+			why.to_string(),
+			"01:IDE00191: drift_percent needs a setpoint — the drift is measured against what the unit asked for"
+		);
 	}
 
 	#[test]
-	fn a_drift_rule_that_does_not_release_under_its_percent_is_refused() {
+	fn a_drift_rule_that_does_not_go_off_under_its_percent_is_refused() {
 		let why = build_with_setpoint(&format!(
 			"[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\n{}",
 			drift_alarm(10.0, 10.0)
 		))
-		.unwrap_err();
-		assert!(matches!(&why, Error::Alarm(1, why) if why.contains("releases under")), "{why}");
-	}
-
-	#[test]
-	fn an_alarm_of_an_unknown_kind_is_refused() {
-		let why = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\n[[alarm]]\nkind = \"wobble\"\nchannels = [\"01:IDE00191\"]\npage = \"A\"\n")
-			.unwrap_err();
+		.unwrap_err()
+		.to_string();
 		assert!(
-			matches!(&why, Error::Parse(why) if why.contains("is not \"threshold\" or \"drift\"")),
+			why.ends_with(
+				"[[channel]] 1: drift_off_percent 10 is not under drift_percent 10 — the alarm goes off once the drift is back at drift_off_percent"
+			),
 			"{why}"
 		);
+	}
+
+	/// `[[alarm]]` is gone (owner, 2026-10-19): a file that still has it is refused with its own
+	/// numbers written as the channel keys that replace it — TOML that parses as it is printed —
+	/// and, where the rules' order is not the channels', the `alarm_priority` that keeps it.
+	#[test]
+	fn an_alarm_table_is_refused_with_its_rewrite_on_the_channels() {
+		let channels = ["01:IDE00191", "01:IDE01775", "01:IDE01776", "01:IDE00155"]
+			.map(|c| format!("[[channel]]\nref = \"{c}\"\n"))
+			.concat();
+		let text = format!(
+			"vin = \"TESTVIN0000000001\"\n{channels}[[page]]\nkind = \"values\"\ntitle = \"A\"\ncells = [\"01:IDE00191\"]\n\
+			[[alarm]]\nchannels = [\"01:IDE01775\", \"01:IDE01776\"]\npage = \"MISFIRE\"\ndirection = \"above\"\ntrip = 5\nrelease = 3\n\
+			[[alarm]]\nchannels = [\"01:IDE00155\"]\npage = \"RETARD\"\ndirection = \"below\"\ntrip = -6.0\nrelease = -4.5\n\
+			[[alarm]]\nkind = \"drift\"\nchannels = [\"01:IDE00191\"]\npage = \"MAIN\"\npercent = 10\nrelease_percent = 5\nhold_ms = 2000\nmin_setpoint = 1.3\n"
+		);
+		let why = parse_input(&text).unwrap_err().to_string();
+		assert!(
+			why.starts_with("dash.toml: line 14: [[alarm]] is gone: an alarm is now keys of the [[channel]] it watches."),
+			"{why}"
+		);
+		assert!(why.contains("`page` is gone"), "{why}");
+		assert!(
+			why.contains("\n[[channel]]\nref = \"01:IDE00155\"\nalarm_min = -6.0\nalarm_min_off = -4.5\nalarm_priority = 2\n"),
+			"one key a line: {why}"
+		);
+		assert!(!why.contains("A threshold rule's"), "every rule was read: no rule in words: {why}");
+		// The printed blocks are TOML: pasted under a `vin` and a page, they parse to the keys.
+		let (_, rest) = why.split_once("same ref:\n").expect("the blocks follow");
+		let (blocks, after) = rest.split_once("\nalarm_priority keeps").expect("the order is said");
+		let pasted = format!("vin = \"X\"\n{blocks}\n[[page]]\nkind = \"values\"\ncells = [\"01:IDE00191\"]\n");
+		let input = parse_input(&pasted).unwrap_or_else(|e| panic!("{e}\n{pasted}"));
+		let refs: Vec<String> = input.channels.iter().map(|c| c.reference.to_string()).collect();
+		assert_eq!(refs, ["01:IDE01775", "01:IDE01776", "01:IDE00155", "01:IDE00191"], "in the rules' order");
+		assert_eq!(input.channels[0].alarm_max, Some(BoundInput { at: 5.0, off: Some(3.0) }));
+		assert_eq!(input.channels[2].alarm_min, Some(BoundInput { at: -6.0, off: Some(-4.5) }));
+		assert_eq!(
+			input.channels[3].drift,
+			Some(DriftInput {
+				percent: 10.0,
+				off_percent: 5.0,
+				hold_ms: 2000,
+				min_setpoint: 1.3
+			})
+		);
+		// The drift channel comes first in the file and was the last rule: each channel takes its
+		// rule's number, and with it the old order — no channel moves.
+		let priorities: Vec<Option<u32>> = input.channels.iter().map(|c| c.alarm_priority).collect();
+		assert_eq!(priorities, [Some(1), Some(1), Some(2), Some(3)]);
+		assert!(after.contains("without alarm_priority the order in the file decides"), "{after}");
+		// In the rules' order already, no priority is written.
+		let ordered = text.replace(
+			&channels,
+			&["01:IDE01775", "01:IDE01776", "01:IDE00155", "01:IDE00191"]
+				.map(|c| format!("[[channel]]\nref = \"{c}\"\n"))
+				.concat(),
+		);
+		assert!(!parse_input(&ordered).unwrap_err().to_string().contains("alarm_priority"));
+		// One it cannot read is said in words, as is a single `[alarm]`.
+		let odd = text.replace("direction = \"below\"", "direction = \"sideways\"");
+		assert!(parse_input(&odd).unwrap_err().to_string().contains("A threshold rule's trip and"));
+		let single = "vin = \"X\"\n[[channel]]\nref = \"01:IDE00001\"\n[alarm]\npage = \"T\"\n";
+		let why = parse_input(single).unwrap_err().to_string();
+		assert!(why.contains("Delete every [[alarm]] table.\nA threshold rule's"), "{why}");
 	}
 
 	#[test]
@@ -3243,7 +3544,7 @@ mod tests {
 	}
 
 	#[test]
-	fn a_plan_whose_rules_are_all_drift_does_not_import_direction() {
+	fn a_plan_whose_rules_are_all_drift_does_not_import_bound() {
 		// The firmware lints the generated plan with `-D warnings`, so an unused import is a
 		// build that fails.
 		let built = build_with_setpoint(&format!(
@@ -3253,7 +3554,7 @@ mod tests {
 		.unwrap();
 		let rust = to_rust(&built.plan);
 		assert!(rust.contains("use vag_dash_render::alarm::{Alarm, ChannelId, PageId, Rule};"), "{rust}");
-		assert!(!rust.contains("Direction"), "{rust}");
+		assert!(!rust.contains("Bound"), "{rust}");
 	}
 
 	#[test]
@@ -3288,9 +3589,9 @@ mod tests {
 	}
 
 	#[test]
-	fn a_page_and_an_alarm_may_spell_a_channel_as_its_other_spelling() {
+	fn an_alarm_finds_its_page_by_the_row_whatever_the_page_spells_it() {
 		let built = build_with_setpoint(
-			"[[channel]]\nref = \"01:IDE00191\"\n[[alarm]]\nchannels = [\"01:202A\"]\npage = \"B\"\ndirection = \"above\"\ntrip = 2.5\nrelease = 2.3\n[[page]]\nkind = \"values\"\ntitle = \"B\"\ncells = [\"01:202A\"]\n",
+			"[[channel]]\nref = \"01:IDE00191\"\nalarm_max = 2.5\nalarm_max_off = 2.3\n[[page]]\nkind = \"values\"\ntitle = \"B\"\ncells = [\"01:202A\"]\n",
 		)
 		.unwrap();
 		assert_eq!(built.plan.channels.len(), 1, "one row, one channel");
@@ -3301,7 +3602,11 @@ mod tests {
 				.iter()
 				.any(|p| matches!(p, Page::Values { title, cells, .. } if title == "B" && cells == &vec![0]))
 		);
-		assert_eq!(built.plan.alarms[0].channels, vec![0]);
+		assert_eq!(
+			(built.plan.alarms[0].channel, built.plan.alarms[0].page),
+			(0, 0),
+			"the first page that shows it"
+		);
 	}
 
 	#[test]
@@ -3343,9 +3648,9 @@ mod tests {
 
 	#[test]
 	fn the_plan_in_memory_is_the_one_the_generated_static_describes() {
-		use vag_dash_render::alarm::{ChannelId, Direction as DeviceDirection, PageId, Rule};
+		use vag_dash_render::alarm::{Bound as DeviceBound, ChannelId, PageId, Rule};
 		use vag_dash_render::plan::Page as DevicePage;
-		let built = build_with_alarms(&alarm(&["01:IDE00002"], "A", "below", -2.0, -1.5)).unwrap();
+		let built = build_with_alarms(["", "alarm_min = -2.0\nalarm_min_off = -1.5", ""], "").unwrap();
 		let device = built.plan.to_device();
 		let rust = to_rust(&built.plan);
 
@@ -3383,21 +3688,19 @@ mod tests {
 			]
 		);
 		assert_eq!(device.alarms.len(), 1);
-		assert_eq!(device.alarms[0].channels, [ChannelId(1)]);
-		assert_eq!(device.alarms[0].page, PageId(0));
+		assert_eq!((device.alarms[0].channel, device.alarms[0].page), (ChannelId(1), PageId(0)));
 		assert_eq!(
 			device.alarms[0].rule,
-			Rule::Threshold {
-				trip: -2.0,
-				release: -1.5,
-				direction: DeviceDirection::Below
+			Rule::Bounds {
+				max: None,
+				min: Some(DeviceBound { at: -2.0, off: -1.5 }),
 			}
 		);
 		assert!(device.watched(1) && !device.watched(0), "the board's own question answers from it");
 	}
 
 	#[test]
-	fn a_drift_rule_in_memory_pairs_the_same_specified_values_as_the_source() {
+	fn a_drift_rule_in_memory_pairs_the_same_specified_value_as_the_source() {
 		use vag_dash_render::alarm::{ChannelId, Rule};
 		let built = build_with_setpoint(&format!(
 			"[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\n{}",
@@ -3408,17 +3711,18 @@ mod tests {
 		let specified = built.plan.channels.iter().position(|c| c.did == 0x2029).unwrap() as u16;
 		let actual = built.plan.channels.iter().position(|c| c.did == 0x202A).unwrap() as u16;
 		assert_eq!(device.channels[usize::from(actual)].setpoint, Some(specified));
-		assert_eq!(device.alarms[0].channels, [ChannelId(actual)]);
+		assert_eq!(device.alarms[0].channel, ChannelId(actual));
 		assert_eq!(
 			device.alarms[0].rule,
 			Rule::Drift {
-				specified: &[ChannelId(specified)],
+				specified: ChannelId(specified),
 				percent: 10.0,
-				release_percent: 6.0,
+				off_percent: 6.0,
 				hold_ms: 1000,
 				min_setpoint: 0.5
 			}
 		);
+		assert!(device.watched(specified) && device.watched(actual));
 	}
 
 	#[test]
@@ -3917,65 +4221,69 @@ mod tests {
 	}
 
 	#[test]
-	fn alarms_reach_both_outputs_in_file_order_by_plan_index() {
-		let text = format!(
-			"{}{}",
-			alarm(&["01:IDE00003"], "B", "above", 10.0, 8.0),
-			alarm(&["01:IDE00002", "01:IDE00001"], "A", "below", 0.0, 1.0)
-		);
-		let built = build_with_alarms(&text).unwrap();
+	fn alarms_reach_both_outputs_in_the_channels_order_by_plan_index() {
+		let built = build_with_alarms(
+			[
+				"alarm_min = 0\nalarm_min_off = 1",
+				"alarm_max = 10\nalarm_max_off = 8",
+				"alarm_max = 105\nalarm_min = 40",
+			],
+			"",
+		)
+		.unwrap();
 		assert_eq!(
 			built.plan.alarms,
 			vec![
 				Alarm {
-					channels: vec![2],
-					page: 1,
-					rule: AlarmRule::Threshold {
-						direction: Direction::Above,
-						trip: 10.0,
-						release: 8.0
+					channel: 0,
+					page: 0,
+					rule: AlarmRule::Bounds {
+						max: None,
+						min: Some(Bound { at: 0.0, off: 1.0 }),
 					},
 				},
 				Alarm {
-					channels: vec![1, 0],
+					channel: 1,
 					page: 0,
-					rule: AlarmRule::Threshold {
-						direction: Direction::Below,
-						trip: 0.0,
-						release: 1.0
+					rule: AlarmRule::Bounds {
+						max: Some(Bound { at: 10.0, off: 8.0 }),
+						min: None,
+					},
+				},
+				Alarm {
+					channel: 2,
+					page: 1,
+					rule: AlarmRule::Bounds {
+						max: Some(Bound { at: 105.0, off: 99.8 }),
+						min: Some(Bound { at: 40.0, off: 42.0 }),
 					},
 				},
 			],
-			"the file's order is the priority"
+			"the channels' order is the priority; 5 % inside each bound by default"
 		);
-		assert!(
-			built.notes.iter().any(|n| n.starts_with("alarm #1: 01:IDE00003 at or above 10")),
-			"{:?}",
-			built.notes
-		);
+		for note in [
+			"alarm: 01:IDE00002 at or above 10, off at or under 8 → page 1 \"A\"",
+			"alarm: 01:IDE00003 at or above 105, off at or under 99.8 (its default); at or below 40, off at or above 42 (its default) → page 2 \"B\"",
+		] {
+			assert!(built.notes.iter().any(|n| n == note), "{note}: {:?}", built.notes);
+		}
 
 		let json = built.plan.to_json();
 		assert_eq!(Plan::from_json(&json).unwrap(), built.plan);
-		assert!(json.contains("\"direction\": \"above\""), "{json}");
+		assert!(json.contains("\"kind\": \"bounds\""), "{json}");
 
 		let rust = to_rust(&built.plan);
 		assert!(
-			rust.contains("use vag_dash_render::alarm::{Alarm, ChannelId, Direction, PageId, Rule};"),
+			rust.contains("use vag_dash_render::alarm::{Alarm, Bound, ChannelId, PageId, Rule};"),
 			"{rust}"
 		);
 		assert!(
 			rust.contains("alarms: &ALARMS, stalk: None, stopwatch: None, buttons: &[], strip: None }"),
 			"{rust}"
 		);
+		assert!(rust.contains("static ALARMS: [Alarm; 3] = ["), "{rust}");
 		assert!(
-			rust.contains("static ALARM_CHANNELS_1: [ChannelId; 2] = [ChannelId(1), ChannelId(0)];"),
-			"{rust}"
-		);
-		assert!(rust.contains("static ALARMS: [Alarm<'static>; 2] = ["), "{rust}");
-		assert!(
-			rust.contains(
-				"Alarm { channels: &ALARM_CHANNELS_0, page: PageId(1), rule: Rule::Threshold { trip: 10.0, release: 8.0, direction: Direction::Above } },"
-			),
+			rust.contains("\tAlarm { channel: ChannelId(1), page: PageId(0), rule: Rule::Bounds { max: Some(Bound { at: 10.0, off: 8.0 }), min: None } },"),
 			"{rust}"
 		);
 
@@ -3986,78 +4294,263 @@ mod tests {
 		assert!(old.alarms.is_empty());
 		let rust = to_rust(&old);
 		assert!(rust.contains("use vag_dash_render::alarm::Alarm;\n"), "{rust}");
-		assert!(rust.contains("static ALARMS: [Alarm<'static>; 0] = ["), "{rust}");
+		assert!(rust.contains("static ALARMS: [Alarm; 0] = ["), "{rust}");
 		assert!(!rust.contains("ChannelId"), "{rust}");
+	}
+
+	/// A `plan.json` written while alarms were `[[alarm]]` tables is generated, and is refused
+	/// with what to do rather than read by guesswork.
+	#[test]
+	fn a_plan_json_with_alarm_tables_is_refused_with_what_to_do() {
+		let built = build_with_alarms(NO_ALARMS, "").unwrap();
+		let mut json: serde_json::Value = serde_json::from_str(&built.plan.to_json()).unwrap();
+		json["alarms"] = serde_json::json!([
+			{ "channels": [1], "page": 0, "kind": "threshold", "direction": "above", "trip": 10.0, "release": 8.0 }
+		]);
+		let why = Plan::from_json(&json.to_string()).unwrap_err().to_string();
+		assert!(why.starts_with("this plan.json was written when alarms were [[alarm]] tables"), "{why}");
+		assert!(why.contains("vagcan dev dash build <VIN>"), "{why}");
 	}
 
 	#[test]
 	fn an_alarm_the_board_could_not_honour_is_refused_and_the_message_says_why() {
-		let refused = |text: &str| build_with_alarms(text).unwrap_err().to_string();
-		let good = alarm(&["01:IDE00001"], "A", "below", 0.0, 1.0);
+		let refused = |keys: [&str; 3]| build_with_alarms(keys, "").unwrap_err().to_string();
+		// Read when the input is: by line and channel.
+		let parse = |keys: &str| {
+			let why = refused(["", keys, ""]);
+			let (_, why) = why.split_once("[[channel]] 2: ").unwrap_or_else(|| panic!("{why}"));
+			why.to_string()
+		};
 		assert_eq!(
-			refused(&alarm(&["01:IDE00009"], "A", "below", 0.0, 1.0)),
-			"alarm #1: 01:IDE00009 is not in the [[channel]] list"
-		);
-		assert_eq!(refused(&alarm(&[], "A", "below", 0.0, 1.0)), "alarm #1: watches no channels");
-		assert_eq!(
-			refused(&alarm(&["01:IDE00001"], "NOPE", "below", 0.0, 1.0)),
-			"alarm #1: no values page is titled \"NOPE\" — an alarm raises a values page, never a chart"
-		);
-		assert_eq!(
-			refused(&format!(
-				"{}{}",
-				values_page_titled("A", &["01:IDE00003"]),
-				alarm(&["01:IDE00003"], "A", "above", 1.0, 0.0)
-			)),
-			"alarm #1: 2 values pages are titled \"A\" — give them different titles"
+			parse("alarm_max_off = 3"),
+			"alarm_max_off needs alarm_max: it is the value the alarm_max alarm goes off at"
 		);
 		assert_eq!(
-			refused(&alarm(&["01:IDE00003", "01:IDE00001"], "B", "above", 10.0, 8.0)),
-			"alarm #1: page \"B\" does not show 01:IDE00001 — the page an alarm raises shows every channel it watches"
+			parse("alarm_min_off = 3"),
+			"alarm_min_off needs alarm_min: it is the value the alarm_min alarm goes off at"
 		);
 		assert_eq!(
-			refused(&alarm(&["01:IDE00001"], "A", "below", 0.0, -1.0)),
-			"alarm #1: release -1 is not above trip 0 — a \"below\" alarm releases above where it trips"
+			parse("alarm_max = 10\nalarm_max_off = 12"),
+			"alarm_max_off 12 is not under alarm_max 10 — the alarm goes off once the value is back at alarm_max_off"
 		);
 		assert_eq!(
-			refused(&alarm(&["01:IDE00001"], "A", "below", 0.5, 0.5)),
-			"alarm #1: release 0.5 is not above trip 0.5 — a \"below\" alarm releases above where it trips",
-			"no band is no hysteresis"
+			parse("alarm_max = 10\nalarm_max_off = 10"),
+			"alarm_max_off 10 is not under alarm_max 10 — the alarm goes off once the value is back at alarm_max_off",
+			"an off value at the bound is no off value"
 		);
 		assert_eq!(
-			refused(&alarm(&["01:IDE00003"], "B", "above", 10.0, 12.0)),
-			"alarm #1: release 12 is not below trip 10 — an \"above\" alarm releases below where it trips"
+			parse("alarm_max = 100.000001\nalarm_max_off = 100.0"),
+			"alarm_max_off 100 is not under alarm_max 100 — the alarm goes off once the value is back at alarm_max_off",
+			"apart in the file, one value in the board's f32"
+		);
+		assert_eq!(
+			parse("alarm_min = 0\nalarm_min_off = -1"),
+			"alarm_min_off -1 is not over alarm_min 0 — the alarm goes off once the value is back at alarm_min_off"
+		);
+		assert_eq!(parse("alarm_max = \"hot\""), "alarm_max must be a number, not a string");
+		assert_eq!(
+			parse("alarm_min = 1e40"),
+			format!("alarm_min 1e40 is not a number the board's 32-bit float holds (within ±{:e})", f32::MAX)
+		);
+		assert_eq!(
+			parse("drift_percent = 10"),
+			"a drift alarm takes all four of drift_percent, drift_off_percent, drift_hold_ms, drift_min_setpoint — missing drift_off_percent, drift_hold_ms, drift_min_setpoint"
+		);
+		assert_eq!(
+			parse("drift_hold_ms = 10"),
+			"a drift alarm takes all four of drift_percent, drift_off_percent, drift_hold_ms, drift_min_setpoint — missing drift_percent, drift_off_percent, drift_min_setpoint"
+		);
+		assert_eq!(
+			parse("drift_percent = 10\ndrift_off_percent = 1e-50\ndrift_hold_ms = 0\ndrift_min_setpoint = 0"),
+			"drift_off_percent 1e-50 is too small for the board, which would hold it as 0"
+		);
+		assert_eq!(
+			parse("drift_percent = 10\ndrift_off_percent = 5\ndrift_hold_ms = -1\ndrift_min_setpoint = 0"),
+			"drift_hold_ms must be whole milliseconds, 0 or more"
+		);
+		assert_eq!(
+			parse("drift_percent = 10\ndrift_off_percent = 5\ndrift_hold_ms = 0\ndrift_min_setpoint = -1"),
+			"drift_min_setpoint -1 is below zero"
+		);
+		// Resolved: the bounds against each other, with the defaults in.
+		assert_eq!(
+			refused(["", "alarm_max = 10\nalarm_min = 9", ""]),
+			"01:IDE00002: alarm_min_off 10 (its default) is not under alarm_max_off 9 (its default) — no value would be off for both; write the two so that alarm_min_off is under alarm_max_off"
+		);
+		assert_eq!(
+			refused(["", "alarm_max = 10\nalarm_max_off = 5\nalarm_min = 2\nalarm_min_off = 6", ""]),
+			"01:IDE00002: alarm_min_off 6 is not under alarm_max_off 5 — no value would be off for both; write the two so that alarm_min_off is under alarm_max_off"
+		);
+		build_with_alarms(["", "alarm_max = 10\nalarm_max_off = 6\nalarm_min = 2\nalarm_min_off = 5", ""], "").unwrap();
+	}
+
+	/// The off value an alarm without one goes off at: 5 % of the bound inside it, never less than
+	/// one step of the channel's resolution — what one count of its raw value is worth — and not of
+	/// its display (owner, 2026-10-19).
+	#[test]
+	fn the_default_off_value_is_five_percent_inside_and_never_under_one_step_of_the_resolution() {
+		let off = |keys: &str, which: usize| -> (f64, f64) {
+			let built = build_with_alarms(["", "", keys], "").unwrap();
+			match &built.plan.alarms[0].rule {
+				AlarmRule::Bounds { max, min } => {
+					let b = [max, min][which].expect("the bound is there");
+					(b.at, b.off)
+				}
+				other => panic!("{other:?}"),
+			}
+		};
+		// Channel 2 scales by 0.1: its step is 0.1.
+		assert_eq!(off("alarm_max = 125", 0), (125.0, 118.8), "118.75, to the step's one place");
+		assert_eq!(off("alarm_max = -20", 0), (-20.0, -21.0), "5 % of the magnitude, inside");
+		assert_eq!(off("alarm_min = 40", 1), (40.0, 42.0));
+		assert_eq!(off("alarm_min = -6", 1), (-6.0, -5.7));
+		assert_eq!(off("alarm_max = 1", 0), (1.0, 0.9), "5 % is 0.05, under one step");
+		assert_eq!(off("alarm_min = 0", 1), (0.0, 0.1), "a bound at zero is one step");
+		// The resolution, not the display: shown without decimals, the channel still steps by 0.1.
+		assert_eq!(off("decimals = 0\nalarm_max = 1", 0), (1.0, 0.9));
+		// Rounded, so the build's line says a number: 1.33 + 0.1 is 1.4300000000000002.
+		assert_eq!(off("alarm_min = 1.33", 1), (1.33, 1.4));
+		let built = build_with_alarms(["", "", "alarm_min = 1.33"], "").unwrap();
+		assert!(
+			built
+				.notes
+				.iter()
+				.any(|n| n.contains("at or below 1.33, off at or above 1.4 (its default)")),
+			"{:?}",
+			built.notes
+		);
+		// A channel that counts by one steps by one, however many decimals it is shown with.
+		for keys in ["alarm_max = 5", "decimals = 2\nalarm_max = 5"] {
+			let built = build_with_alarms([keys, "", ""], "").unwrap();
+			assert!(
+				matches!(&built.plan.alarms[0].rule, AlarmRule::Bounds { max: Some(Bound { at, off }), .. } if (*at, *off) == (5.0, 4.0)),
+				"{keys}: {:?}",
+				built.plan.alarms
+			);
+		}
+	}
+
+	/// What the board reads ahead of the page on the glass whatever page is up — every alarm's
+	/// channel at its rate, the strip's voltage, the lever — is said, by unit and by share, and
+	/// never refused (owner, 2026-10-19): a count of identifiers is not bus time. The pages not
+	/// shown are not counted.
+	#[test]
+	fn what_the_board_reads_on_every_page_is_said_and_never_refused() {
+		let built = build_with_alarms(["alarm_max = 5\nhz = 10", "alarm_max = 5\nhz = 2", ""], "").unwrap();
+		assert!(
+			built.notes.iter().any(|n| n
+				== "bus: on every page, ahead of the page on the glass, 12 reads a second — by unit 01 12/s; alarms 12 (01:IDE00001 One 10/s, 01:IDE00002 Two 2/s)"),
+			"the page not shown (channel 2) is not counted: {:?}",
+			built.notes
+		);
+		// Far more than the old budget's 75: built, and said.
+		let built = build_with_alarms(["alarm_max = 5\nhz = 100", "alarm_max = 5\nhz = 100", "alarm_max = 5\nhz = 100"], "").unwrap();
+		assert!(
+			built
+				.notes
+				.iter()
+				.any(|n| n.starts_with("bus: on every page, ahead of the page on the glass, 300 reads a second — by unit 01 300/s;")),
+			"{:?}",
+			built.notes
+		);
+		let quiet = build_with_alarms(NO_ALARMS, "").unwrap();
+		assert!(
+			quiet
+				.notes
+				.iter()
+				.any(|n| n == "bus: nothing is read on every page but the page on the glass"),
+			"{:?}",
+			quiet.notes
+		);
+	}
+
+	/// Eight full values pages, a strip, the lever, and six channels with an alarm at 5 Hz: the
+	/// alarms, the lever, the cruise status and the strip's voltage are what is said —
+	/// 30 + 20 + 5 + 2, by unit — and the pages' 1/s reads behind the glass are not (review,
+	/// 2026-10-19).
+	#[test]
+	fn eight_full_pages_a_strip_the_lever_and_six_alarms_are_said_by_unit() {
+		let rows = (0..6u16)
+			.map(|i| {
+				(
+					ENGINE,
+					reading(0x4101 + i, "Alarmed", &format!("IDE0010{i}"), 0, 8, false, true, 1.0, 0.0),
+				)
+			})
+			.collect();
+		let mut input: String = (0..6)
+			.map(|i| format!("[[channel]]\nref = \"01:IDE0010{i}\"\nhz = 5\nalarm_max = 5\n"))
+			.collect();
+		let all: Vec<String> = (0..6).map(|i| format!("01:IDE0010{i}")).chain(["01:IDE00001".to_string()]).collect();
+		for page in 0..7 {
+			let cells: Vec<&str> = (0..4).map(|k| all[(page + k) % all.len()].as_str()).collect();
+			input.push_str(&values_page_titled(&format!("P{page}"), &cells));
+		}
+		input.push_str(STRIP);
+		input.push_str(LEVER);
+		let built = build_with_lever_and(&input, Extra { rows, ..Extra::default() }).unwrap();
+		assert_eq!(built.plan.pages.len(), MAX_PAGES);
+		let bus = built.notes.iter().find(|n| n.starts_with("bus: ")).expect("the bus line");
+		assert!(
+			bus.starts_with("bus: on every page, ahead of the page on the glass, 57 reads a second — by unit 01 37/s, 75A 20/s; alarms 30 ("),
+			"{bus}"
 		);
 		assert!(
-			refused(&format!("{good}{}", alarm(&["01:IDE00009"], "A", "below", 0.0, 1.0))).starts_with("alarm #2: "),
-			"a rule is named by its place in the file"
+			bus.ends_with("; the strip's voltage 01:IDE00011 Offset speed 2/s; the lever 20/s; the cruise status 5/s"),
+			"{bus}"
+		);
+	}
+
+	/// `alarm_priority` orders the alarms (owner, 2026-10-19): with it first, ascending; ties and
+	/// the channels without it in the file's order.
+	#[test]
+	fn alarm_priority_orders_the_alarms_before_the_file_does() {
+		let order = |keys: [&str; 3]| -> Vec<u16> { build_with_alarms(keys, "").unwrap().plan.alarms.iter().map(|a| a.channel).collect() };
+		assert_eq!(order(["alarm_max = 5", "alarm_max = 5", "alarm_max = 5"]), [0, 1, 2], "the file's order");
+		assert_eq!(
+			order(["alarm_max = 5", "alarm_max = 5\nalarm_priority = 2", "alarm_max = 5\nalarm_priority = 1"]),
+			[2, 1, 0]
 		);
 		assert_eq!(
-			refused(&good.repeat(MAX_ALARMS + 1)),
-			format!(
-				"{} [[alarm]] rules, and the board holds at most 4 — each rule's channels are read at full rate on every page",
-				MAX_ALARMS + 1
-			)
+			order(["alarm_max = 5\nalarm_priority = 3", "alarm_max = 5", "alarm_max = 5\nalarm_priority = 3"]),
+			[0, 2, 1],
+			"a tie keeps the file's order, and no priority comes last"
 		);
-		assert_eq!(build_with_alarms(&good.repeat(MAX_ALARMS)).unwrap().plan.alarms.len(), MAX_ALARMS);
+		let built = build_with_alarms(["", "", "alarm_max = 5\nalarm_priority = 1"], "").unwrap();
+		assert!(built.notes.iter().any(|n| n.ends_with("→ page 2 \"B\", priority 1")), "{:?}", built.notes);
+		let refused = |keys: &str| {
+			let why = build_with_alarms(["", keys, ""], "").unwrap_err().to_string();
+			why.split_once("[[channel]] 2: ").map(|(_, why)| why.to_string()).unwrap_or(why)
+		};
 		assert_eq!(
-			refused(&alarm(&["01:IDE00003"], "B", "above", 100.000001, 100.0)),
-			"alarm #1: release 100 is not below trip 100 — an \"above\" alarm releases below where it trips",
-			"apart in the file, one value in the board's f32"
+			refused("alarm_max = 5\nalarm_priority = 0"),
+			"alarm_priority 0 is not a whole number, 1 or more"
+		);
+		assert_eq!(
+			refused("alarm_max = 5\nalarm_priority = -2"),
+			"alarm_priority -2 is not a whole number, 1 or more"
+		);
+		assert_eq!(
+			refused("alarm_max = 5\nalarm_priority = 1.5"),
+			"alarm_priority must be a whole number, 1 or more, not a float"
+		);
+		assert_eq!(
+			refused("alarm_priority = 1"),
+			"alarm_priority needs an alarm on the channel: alarm_max, alarm_min or drift_percent"
 		);
 	}
 
 	/// An alarm raises its page by plan index, and the board holds `MAX_PAGES`: a plan
-	/// with more is one whose alarm could name a page the glass never shows.
+	/// with more is one whose alarm could raise a page the glass never shows.
 	#[test]
 	fn more_pages_than_the_board_holds_are_refused() {
 		// The fixture has three pages of its own.
 		let extra = |n: usize| values_page_titled("P", &["01:IDE00001"]).repeat(n);
 		assert_eq!(
-			build_with_alarms(&extra(MAX_PAGES - 2)).unwrap_err().to_string(),
+			build_with_alarms(NO_ALARMS, &extra(MAX_PAGES - 2)).unwrap_err().to_string(),
 			format!("{} [[page]] tables, and the board holds at most 8", MAX_PAGES + 1)
 		);
-		assert_eq!(build_with_alarms(&extra(MAX_PAGES - 3)).unwrap().plan.pages.len(), MAX_PAGES);
+		assert_eq!(build_with_alarms(NO_ALARMS, &extra(MAX_PAGES - 3)).unwrap().plan.pages.len(), MAX_PAGES);
 	}
 
 	/// One language for the plan (owner, 2026-09-27): `dash.toml`'s `language` picks the board's
@@ -4124,8 +4617,8 @@ mod tests {
 	}
 
 	/// A setpoint with no `[[channel]]` of its own is read with its channel and never offered as
-	/// a cell (`todo/dash/18`, owner 2026-09-27): no page, alarm or stopwatch may name it, in
-	/// either spelling.
+	/// a cell (`todo/dash/18`, owner 2026-09-27): no page or stopwatch may name it, in either
+	/// spelling.
 	#[test]
 	fn a_setpoint_without_a_channel_of_its_own_is_never_a_cell() {
 		let paired = "[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\nhz = 50\n";
@@ -4138,15 +4631,6 @@ mod tests {
 				format!("page #1: {spelled} is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it")
 			);
 			let why = build_with_setpoint(&format!(
-				"{paired}[[alarm]]\nchannels = [\"{spelled}\"]\npage = \"A\"\ndirection = \"above\"\ntrip = 2.0\nrelease = 1.0\n"
-			))
-			.unwrap_err()
-			.to_string();
-			assert_eq!(
-				why,
-				format!("alarm #1: {spelled} is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it")
-			);
-			let why = build_with_setpoint(&format!(
 				"{paired}[stopwatch]\nspeed = \"{spelled}\"\nkm_h_per_unit = 0.0\nmarks = [60]\n"
 			))
 			.unwrap_err()
@@ -4157,13 +4641,13 @@ mod tests {
 			);
 		}
 		// Declared as a `[[channel]]` too, it is a channel like any other.
-		let declared = format!("{paired}[[channel]]\nref = \"01:IDE00190\"\nhz = 50\n");
+		let declared = format!("{paired}[[channel]]\nref = \"01:IDE00190\"\nhz = 50\nalarm_max = 2.0\nalarm_max_off = 1.0\n");
 		let built = build_with_setpoint(&format!(
-			"{declared}{}[[alarm]]\nchannels = [\"01:IDE00190\"]\npage = \"B\"\ndirection = \"above\"\ntrip = 2.0\nrelease = 1.0\n[stopwatch]\nspeed = \"01:IDE00190\"\nkm_h_per_unit = 0.0\nmarks = [60]\n",
+			"{declared}{}[stopwatch]\nspeed = \"01:IDE00190\"\nkm_h_per_unit = 0.0\nmarks = [60]\n",
 			values_page_titled("B", &["01:IDE00190"])
 		))
 		.unwrap();
-		assert_eq!(built.plan.alarms[0].channels, vec![1]);
+		assert_eq!(built.plan.alarms[0].channel, 1);
 		assert_eq!(built.plan.stopwatch.map(|s| s.speed), Some(1));
 	}
 
@@ -4238,58 +4722,6 @@ mod tests {
 		}
 	}
 
-	#[test]
-	fn an_alarm_of_the_wrong_shape_is_refused_when_the_input_is_read() {
-		let shape = |table: &str| {
-			let text = format!(
-				"vin = \"X\"\n[[channel]]\nref = \"01:IDE00001\"\n{}{table}",
-				values_page(&["01:IDE00001"])
-			);
-			parse_input(&text).unwrap_err().to_string()
-		};
-		let with = |lines: &str| format!("[[alarm]]\nchannels = [\"01:IDE00001\"]\npage = \"T\"\n{lines}\n");
-		assert_eq!(
-			shape(&with("direction = \"sideways\"\ntrip = 1\nrelease = 0")),
-			"dash.toml: alarm #1: direction \"sideways\" is not \"below\" or \"above\""
-		);
-		assert_eq!(
-			shape(&with("trip = 1\nrelease = 0")),
-			"dash.toml: alarm #1's direction is missing or not a string"
-		);
-		assert_eq!(
-			shape(&with("direction = \"above\"\nrelease = 0")),
-			"dash.toml: alarm #1 needs trip, a finite number"
-		);
-		assert_eq!(
-			shape(&with("direction = \"above\"\ntrip = 1\nrelease = \"low\"")),
-			"dash.toml: alarm #1 needs release, a finite number"
-		);
-		assert_eq!(
-			shape(&with("direction = \"above\"\ntrip = 1e40\nrelease = 0")),
-			format!(
-				"dash.toml: alarm #1: trip 1e40 is too large for the board, which holds it as a 32-bit float (at most {:e})",
-				f32::MAX
-			),
-			"past what the board's f32 holds: finite, and still refused"
-		);
-		assert_eq!(
-			shape(&with("direction = \"above\"\ntrip = nan\nrelease = 0")),
-			"dash.toml: alarm #1 needs trip, a finite number"
-		);
-		assert_eq!(
-			shape("[[alarm]]\npage = \"T\"\ndirection = \"above\"\ntrip = 1\nrelease = 0\n"),
-			"dash.toml: alarm #1 has no channels list"
-		);
-		assert_eq!(
-			shape("[[alarm]]\nchannels = [\"01:IDE00001\"]\ndirection = \"above\"\ntrip = 1\nrelease = 0\n"),
-			"dash.toml: alarm #1's page is missing or not a string"
-		);
-		assert_eq!(
-			shape("[alarm]\npage = \"T\"\n"),
-			"dash.toml: alarm must be written as [[alarm]] tables, one per rule"
-		);
-	}
-
 	/// The one writer is [`build_for_car`], it needs a VIN, and no test may
 	/// give it one — the same rule `watch/favourites.rs` keeps for itself.
 	#[test]
@@ -4341,6 +4773,8 @@ mod tests {
 	struct Extra {
 		/// More rows, each on [`ENGINE`] or on [`STALK_UNIT`].
 		rows: Vec<(u16, Reading)>,
+		/// Lines under each of the fixture's three `[[channel]]`s.
+		keys: [&'static str; 3],
 	}
 
 	/// An engine with a speed, a speed with an offset, a cruise status and a quantity; a
@@ -4408,8 +4842,9 @@ mod tests {
 		);
 		cache_written(&dir.join("cache.sqlite"));
 		let store = CatalogStore::open(dir.join("proven"));
+		let [one, speed, volts] = extra.keys.map(|keys| if keys.is_empty() { String::new() } else { format!("{keys}\n") });
 		let text = format!(
-			"vin = \"TESTVIN0000000001\"\n[[channel]]\nref = \"01:IDE00001\"\n[[channel]]\nref = \"01:IDE00010\"\nhz = 50\n[[channel]]\nref = \"01:IDE00011\"\n{}{input}",
+			"vin = \"TESTVIN0000000001\"\n[[channel]]\nref = \"01:IDE00001\"\n{one}[[channel]]\nref = \"01:IDE00010\"\nhz = 50\n{speed}[[channel]]\nref = \"01:IDE00011\"\n{volts}{}{input}",
 			values_page(&["01:IDE00001"])
 		);
 		build(
@@ -4560,12 +4995,17 @@ mod tests {
 	}
 
 	#[test]
-	fn an_alarm_never_raises_a_chart_whatever_its_title() {
-		let alarm = "[[alarm]]\nchannels = [\"01:IDE00010\"]\npage = \"Speed\"\ndirection = \"above\"\ntrip = 200\nrelease = 190\n";
-		let why = build_with_lever(&format!("{SPEED_CHART}{STRIP}{alarm}")).unwrap_err().to_string();
+	fn an_alarm_never_raises_a_chart() {
+		let speed_alarm = Extra {
+			keys: ["", "alarm_max = 200", ""],
+			..Extra::default()
+		};
+		let why = build_with_lever_and(&format!("{SPEED_CHART}{STRIP}"), speed_alarm)
+			.unwrap_err()
+			.to_string();
 		assert_eq!(
 			why,
-			"alarm #1: no values page is titled \"Speed\" — an alarm raises a values page, never a chart"
+			"01:IDE00010: alarm_max needs a values page that shows the channel — the alarm raises the first one with it as a cell, and no [[page]] of kind \"values\" has it"
 		);
 	}
 
@@ -4721,6 +5161,7 @@ mod tests {
 					],
 				),
 			)],
+			..Extra::default()
 		};
 		let why = build_with_lever_and(&LEVER.replacen("\"Switch\"", "\"Split\"", 1), split)
 			.unwrap_err()
@@ -4756,6 +5197,7 @@ mod tests {
 					),
 				),
 			],
+			..Extra::default()
 		}
 	}
 
@@ -4795,6 +5237,7 @@ mod tests {
 	fn two_fields_or_two_states_equal_once_trimmed_are_refused() {
 		let twin = Extra {
 			rows: vec![(STALK_UNIT, state_reading(STALK_DID, "Rocker ", "", 40, 8, ladder(&["a", "b"])))],
+			..Extra::default()
 		};
 		let why = build_with_lever_and(LEVER, twin).unwrap_err().to_string();
 		assert!(why.contains("rocker: 75A:4C21 has 2 fields named \"Rocker\""), "{why}");
@@ -4803,6 +5246,7 @@ mod tests {
 				STALK_UNIT,
 				state_reading(STALK_DID, "Twin", "", 40, 8, ladder(&["plus", "plus ", "minus", "limit"])),
 			)],
+			..Extra::default()
 		};
 		let why = build_with_lever_and(&LEVER.replacen("\"Rocker\"", "\"Twin\"", 1), twin)
 			.unwrap_err()
@@ -4823,6 +5267,7 @@ mod tests {
 		// A field name the identifier gives twice, exactly.
 		let twice = Extra {
 			rows: vec![(STALK_UNIT, state_reading(STALK_DID, "Switch", "", 40, 8, ladder(&["off", "on"])))],
+			..Extra::default()
 		};
 		let why = build_with_lever_and(LEVER, twice).unwrap_err().to_string();
 		assert!(why.contains("switch: 75A:4C21 has 2 fields named \"Switch\""), "{why}");
@@ -4849,6 +5294,7 @@ mod tests {
 					vec![Level::point(0, "off"), Level::point(1, "on")],
 				),
 			)],
+			..Extra::default()
 		}
 	}
 
@@ -4879,10 +5325,19 @@ mod tests {
 				STALK_UNIT,
 				state_reading(STALK_DID, "Also cruise", "IDE00030", 56, 8, ladder(&["off", "on"])),
 			)],
+			..Extra::default()
 		};
 		for cruise in ["75A:4C21@24", "75A:IDE00030"] {
 			let lever = LEVER.replacen("\"01:2001\"", &format!("{cruise:?}"), 1);
-			let why = build_with_lever_and(&lever, Extra { rows: inside.rows.clone() }).unwrap_err().to_string();
+			let why = build_with_lever_and(
+				&lever,
+				Extra {
+					rows: inside.rows.clone(),
+					..Extra::default()
+				},
+			)
+			.unwrap_err()
+			.to_string();
 			assert!(
 				why.starts_with(&format!("[stalk] cruise {cruise} is in read's own identifier 75A:4C21")),
 				"{cruise}: {why}"
@@ -4891,6 +5346,7 @@ mod tests {
 		// Another identifier on the same unit is another answer.
 		let beside = Extra {
 			rows: vec![(STALK_UNIT, state_reading(0x4C22, "Beside", "", 0, 8, ladder(&["off", "on"])))],
+			..Extra::default()
 		};
 		build_with_lever_and(&LEVER.replacen("01:2001", "75A:4C22", 1), beside).expect("another answer");
 	}
@@ -5205,22 +5661,25 @@ mod tests {
 	fn a_board_with_nothing_to_turn_its_pages_or_silence_its_alarms_is_said() {
 		let turns = "input: no [stalk] and no [[button]] with next or previous — only dashsim or dashcfg's set page turns the page";
 		let silences = "input: no [stalk] and no [[button]] — an alarm stays up until its channel answers in range again; only dashsim silences it";
-		let said = |input: &str| {
-			let notes = build_with_lever(input).unwrap().notes;
+		let said = |input: &str, alarm: bool| {
+			let extra = Extra {
+				keys: [if alarm { "alarm_max = 10\nalarm_max_off = 5" } else { "" }, "", ""],
+				..Extra::default()
+			};
+			let notes = build_with_lever_and(input, extra).unwrap().notes;
 			(notes.iter().any(|n| n == turns), notes.iter().any(|n| n == silences))
 		};
 		let second = values_page_titled("U", &["01:IDE00001"]);
-		let rule = alarm(&["01:IDE00001"], "T", "above", 10.0, 5.0);
-		assert_eq!(said(""), (false, false), "one page and no alarm: nothing to turn or silence");
-		assert_eq!(said(&second), (true, false), "two pages");
-		assert_eq!(said(&rule), (false, true), "an alarm");
-		assert_eq!(said(&format!("{second}{rule}")), (true, true), "both");
-		assert_eq!(said(&format!("{second}{rule}{LEVER}")), (false, false), "the lever pages and silences");
+		assert_eq!(said("", false), (false, false), "one page and no alarm: nothing to turn or silence");
+		assert_eq!(said(&second, false), (true, false), "two pages");
+		assert_eq!(said("", true), (false, true), "an alarm");
+		assert_eq!(said(&second, true), (true, true), "both");
+		assert_eq!(said(&format!("{second}{LEVER}"), true), (false, false), "the lever pages and silences");
 		for action in ["\"next\"", "\"previous\""] {
-			assert_eq!(said(&format!("{second}{rule}{}", button("3", action))), (false, false), "{action}");
+			assert_eq!(said(&format!("{second}{}", button("3", action)), true), (false, false), "{action}");
 		}
 		assert_eq!(
-			said(&format!("{second}{rule}{WATCH}{}", button("3", "\"stopwatch\""))),
+			said(&format!("{second}{WATCH}{}", button("3", "\"stopwatch\"")), true),
 			(true, false),
 			"a stopwatch button silences an alarm and turns no page"
 		);
@@ -5324,6 +5783,7 @@ mod tests {
 		let at = |hz: &str| {
 			let another = Extra {
 				rows: vec![(ENGINE, reading(0x3005, "Speed too", "IDE00014", 0, 16, false, true, 1.0, 0.0))],
+				..Extra::default()
 			};
 			let watch = WATCH.replacen("IDE00010", "IDE00014", 1);
 			build_with_lever_and(&format!("{watch}[[channel]]\nref = \"01:IDE00014\"\nhz = {hz}\n"), another)
@@ -5354,6 +5814,7 @@ mod tests {
 		let builds = |hz: f64| {
 			let another = Extra {
 				rows: vec![(ENGINE, reading(0x3005, "Speed too", "IDE00014", 0, 16, false, true, 1.0, 0.0))],
+				..Extra::default()
 			};
 			let watch = WATCH.replacen("IDE00010", "IDE00014", 1);
 			build_with_lever_and(&format!("{watch}[[channel]]\nref = \"01:IDE00014\"\nhz = {hz:?}\n"), another).is_ok()
@@ -5426,6 +5887,7 @@ mod tests {
 		// The cruise status, on a declared ladder, proven as points.
 		let ladder_status = Extra {
 			rows: vec![(ENGINE, state_reading(0x2006, "Cruise ladder", "IDE00023", 0, 8, ladder(&["off", "on"])))],
+			..Extra::default()
 		};
 		let why = build_with_proven(
 			&LEVER.replacen("01:2001", "01:IDE00023", 1),
