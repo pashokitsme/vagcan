@@ -264,6 +264,11 @@ pub trait Progress {
 	fn waiting(&mut self, what: &str);
 	/// One unit is done: what it came to, in a line.
 	fn done(&mut self, line: &str);
+	/// Unit `at` (from 0) of `of` is starting: `name` is its ODX name. A
+	/// [`Progress::done`] follows for every one.
+	fn unit(&mut self, at: usize, of: usize, name: &str) {
+		self.waiting(&format!("{name}: finding its measurement list — unit {} of {of}", at + 1));
+	}
 }
 
 /// The key cache, saved after every search so an interrupted run keeps what it
@@ -321,10 +326,7 @@ impl Summary {
 	pub fn detail(&self) -> String {
 		let mut detail = format!("{} channels for {} of {} unit{}", self.written, self.read, self.asked, plural(self.asked));
 		if self.not_channels > 0 {
-			detail.push_str(&format!(
-				"; {} listed rows are not channels (raw bytes, text, a type or OBD formula not decoded, a text table without words)",
-				self.not_channels
-			));
+			detail.push_str(&format!("; {} listed rows are not channels", self.not_channels));
 		}
 		if self.unread > 0 {
 			detail.push_str(&format!("; {} listed rows did not read", self.unread));
@@ -454,7 +456,10 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 	let units_of = match units_of {
 		UnitsLoad::Found { units, .. } => units,
 		other => {
-			notes.push(format!("UNIT.ROD did not open ({}): no channel carries a unit", units_why(&other)));
+			notes.push(match other {
+				UnitsLoad::NoFile => "this installation has no UNIT.ROD: channels show no unit of measure".to_string(),
+				_ => format!("UNIT.ROD did not open ({}): channels show no unit of measure", units_why(&other)),
+			});
 			unit_strings::UnitStrings::default()
 		}
 	};
@@ -468,7 +473,7 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 	for (at, (odx, version)) in units.iter().enumerate() {
 		// "unit N of M": the searches can take minutes each, and a count is what
 		// tells somebody watching how much of the wait is left.
-		progress.waiting(&format!("{odx}: finding its measurement list — unit {} of {}", at + 1, units.len()));
+		progress.unit(at, units.len(), odx);
 		let found = registry::unit_measurements(root, odx, version, &mut keys.cache, true, &registry);
 		keys.save();
 		log.units.push(Tried {
@@ -572,7 +577,7 @@ fn plural(n: usize) -> &'static str {
 /// then every channel is named by its identifier, with no ODX id, which is
 /// said in `notes`.
 fn words(root: &Path, cache: &mut IvCache, notes: &mut Vec<String>) -> (Words, CodePage) {
-	let unnamed = "channels are named by their identifier, with no ODX id";
+	let unnamed = "channels show their reading id, not a name";
 	for name in TEXT_TABLES {
 		let file = root.join(ODX_DIR).join(name);
 		let Ok(bytes) = std::fs::read(&file) else { continue };
@@ -589,7 +594,7 @@ fn words(root: &Path, cache: &mut IvCache, notes: &mut Vec<String>) -> (Words, C
 			return (Words::from_table(&vag_data_labels::tttext::read(&raw, page)), page);
 		}
 		let why = match key_cost(&bytes, "TXT") {
-			Some(KeyCost::AnchorSweep) => "it is shifted, which only VCDS's runtime key opens",
+			Some(KeyCost::AnchorSweep) => OPENS_ONLY_IN_VCDS,
 			_ => "the search for its key found nothing",
 		};
 		notes.push(format!("{name} did not open ({why}): {unnamed}"));
@@ -599,11 +604,16 @@ fn words(root: &Path, cache: &mut IvCache, notes: &mut Vec<String>) -> (Words, C
 	(Words::default(), CodePage::Windows1252)
 }
 
+/// Why a shifted file did not open, in words a reader needs: its key is made
+/// by VCDS while it runs, and no search here finds it
+/// (`.archive/research/labels/tttext2.md` §3.3).
+const OPENS_ONLY_IN_VCDS: &str = "it opens only inside VCDS itself";
+
 fn registry_why(load: &RegistryLoad) -> String {
 	match load {
 		RegistryLoad::NoFile => "there is no RM.rod in this installation".to_string(),
 		RegistryLoad::Locked { file } => format!("the search for {}'s key found nothing", file.display()),
-		RegistryLoad::Shifted { file } => format!("{} is a shifted container, which only VCDS's own runtime key opens", file.display()),
+		RegistryLoad::Shifted { file } => format!("{}: {OPENS_ONLY_IN_VCDS}", file.display()),
 		RegistryLoad::Found { .. } => String::new(),
 	}
 }
@@ -622,7 +632,7 @@ fn tables_why(load: &TablesLoad) -> String {
 	match load {
 		TablesLoad::NoFile => "there is none in this installation".to_string(),
 		TablesLoad::Locked { .. } => "the search for its key found nothing".to_string(),
-		TablesLoad::Shifted { .. } => "it is shifted, which only VCDS's runtime key opens".to_string(),
+		TablesLoad::Shifted { .. } => OPENS_ONLY_IN_VCDS.to_string(),
 		TablesLoad::Found { .. } => String::new(),
 	}
 }
@@ -631,7 +641,7 @@ fn units_why(load: &UnitsLoad) -> String {
 	match load {
 		UnitsLoad::NoFile => "there is none in this installation".to_string(),
 		UnitsLoad::Locked { .. } => "the search for its key found nothing".to_string(),
-		UnitsLoad::Shifted { .. } => "it is shifted, which only VCDS's runtime key opens".to_string(),
+		UnitsLoad::Shifted { .. } => OPENS_ONLY_IN_VCDS.to_string(),
 		UnitsLoad::Found { .. } => String::new(),
 	}
 }
@@ -644,7 +654,7 @@ fn unit_gap(outcome: &UnitMeasurements) -> &'static str {
 		UnitMeasurements::NoFile => "no file of that name in this installation",
 		UnitMeasurements::NoList { .. } => "none of its files lists measurements",
 		UnitMeasurements::Locked { .. } => "the search for its list's key found nothing",
-		UnitMeasurements::Shifted { .. } => "its list is shifted, which only VCDS's runtime key opens",
+		UnitMeasurements::Shifted { .. } => "its list opens only inside VCDS itself",
 		UnitMeasurements::Unresolved { .. } => "it includes a store this installation does not have",
 		UnitMeasurements::Mismatched { .. } => "its list is another install's file",
 	}
@@ -660,7 +670,7 @@ fn unit_why(outcome: &UnitMeasurements) -> String {
 			format!("the search for the key of [{section}] in {} found nothing", file.display())
 		}
 		UnitMeasurements::Shifted { file, section } => format!(
-			"[{section}] in {} is shifted — only VCDS's runtime key opens it; an ODIS project has this unit",
+			"[{section}] in {} opens only inside VCDS itself; an ODIS project has this unit",
 			file.display()
 		),
 		UnitMeasurements::Unresolved { file } => format!("{} includes a store this installation does not have", file.display()),
