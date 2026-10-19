@@ -53,18 +53,19 @@ const _: () = assert!(
 // `PLAN_ID`, the plan's id (`vag_cli_core::dash::plan_id`), comes with the generated source:
 // what the settings are saved against, and what the Hello reply and `state` name.
 
-// What the generator refuses, refused again where it would bite: a pin the board has no
-// input for, one given twice, or more buttons than free pins is an image that does not
-// build rather than a button that silently does nothing.
-// Every join the generator wrote — a channel's unit, a page's cells, its strip's voltage, a
-// chart's history slot, the standstill's channel — names something this plan has: the board
-// indexes by them and never searches (`todo/dash/27`), so one that did not would be a panic on
-// the car rather than an image that does not build.
+// Every index the generator wrote — a channel's unit and setpoint, a page's cells, its strip's
+// voltage, a chart's history slot, the lever's channels, the stopwatch's speed, the standstill's
+// channel, an alarm's channel, specified value and page — names something this plan has: the
+// board indexes by them and never searches (`todo/dash/27`), so one that did not would be a
+// panic on the car rather than an image that does not build.
 const _: () = assert!(
 	PLAN.joins_hold(),
 	"the plan's indices do not join: build it again with `vagcan dev dash build <VIN>`"
 );
 
+// What the generator refuses, refused again where it would bite: a pin the board has no
+// input for, one given twice, or more buttons than free pins is an image that does not
+// build rather than a button that silently does nothing.
 const _: () = assert!(
 	PLAN.buttons_fit(),
 	"the plan's [[button]]s do not fit this board: at most 3, on GPIO 3, 4 or 5, each once"

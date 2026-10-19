@@ -27,9 +27,11 @@ which is protocol and stays as it is.
   are one series, and a standstill from another unit at another rate would be a different moment
   in the launch fit.
 - **The source is read with what needs it.** A `zero_at_rest` channel pulls the standstill's
-  channel into the reads exactly as a channel pulls its specified value (`Plan::rates_in`,
-  `explains`): at its own rate with the cell on the glass, in the background with it on a page
-  not shown — so a page with the acceleration and no speed still knows when the car stands. The
+  channel into the reads as a channel pulls its specified value (`Plan::rates_in`, `need`): with
+  the cell on the glass, at the slower of its own rate and the fastest such cell's (its own where
+  the page shows it or the stopwatch is up — review, 2026-10-19: a 50 Hz speed is not read every
+  20 ms to zero a 10 Hz cell); in the background with it on a page not shown — so a page with the
+  acceleration and no speed still knows when the car stands. The
   replay's column matching counts it as read (`columns.rs`, `unused`).
 - **`zero_at_rest` needs a standstill source, not a `[stopwatch]`.** The plan build sets
   `standstill` from `[stopwatch] speed` — the one source today — and refuses `zero_at_rest` in a

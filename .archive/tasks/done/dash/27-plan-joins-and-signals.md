@@ -26,8 +26,10 @@ Now (`vag_dash_render::plan`):
   "no chart range" fallback are gone — a chart page always has its range.
 - `Page::reads()`: a page's cells and its strip voltage, what the bus lists for it on the board
   and in the replay.
-- `Plan::joins_hold()` (`const`) checks every index — a channel's unit, a page's cells, its
-  voltage, the slots `0..chart_count()` in page order, the standstill's channel. The firmware
+- `Plan::joins_hold()` (`const`) checks every index — a channel's unit and setpoint, a page's
+  cells, its voltage, the slots `0..chart_count()` in page order, the lever's rocker, switch and
+  cruise status, the stopwatch's speed, the standstill's channel, an alarm's channel, specified
+  value and page. The firmware
   asserts it at build time (`src/plan.rs`), as it does `buttons_fit()`.
 
 `plan.json` keeps naming a channel's unit by its request id and a page's `volts` as the owner's

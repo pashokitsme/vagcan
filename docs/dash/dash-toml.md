@@ -182,7 +182,7 @@ One per value the board reads.
 | `decimals` | integer, 0 to 3 | no | from the scaling: 0 for a step of 1 or more, one place per decade under 1, at most 3 | Places after the point. |
 | `hz` | number, above 0, at most 50 | no | 2 | Readings a second while a page showing it is up. |
 | `setpoint` | string: a channel on the same unit | no | none | The channel's target value, as its unit sets it. The panel draws the distance from target under the number; a drift alarm watches it. |
-| `zero_at_rest` | `true` or `false` | no | `false` | Shows 0 while the car stands: while the stopwatch's `speed` reads 0, which is then read whenever this channel is. For an acceleration sensor, which reads the road's slope as acceleration at a standstill. Needs a `[stopwatch]`. Alarms and charts still see the value as read. |
+| `zero_at_rest` | `true` or `false` | no | `false` | Shows 0 while the car stands: while the stopwatch's `speed` reads 0. The speed is then read whenever this channel is, at the slower of its own `hz` and this channel's — at its own where a page shows it or the stopwatch is up. For an acceleration sensor, which reads the road's slope as acceleration at a standstill. Needs a `[stopwatch]`. Alarms and charts still see the value as read. |
 | `alarm_max` | number | no | none | An alarm at this value or above. See [Alarms](#alarms). |
 | `alarm_max_off` | number, under `alarm_max` | no | `alarm_max` less 5 % of its size, at least one step of the channel's resolution | The alarm goes off once the value is back at this or under. Needs `alarm_max`. |
 | `alarm_min` | number | no | none | An alarm at this value or below. Either bound, or both. |

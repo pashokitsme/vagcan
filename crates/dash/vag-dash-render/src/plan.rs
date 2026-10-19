@@ -528,21 +528,55 @@ impl Plan {
 		count
 	}
 
-	/// Whether every join the generator resolved is one the board can index by: each channel's
-	/// unit is one of [`Plan::units`]; each index a page names — its cells, its chart's channel,
-	/// its strip's voltage — and the standstill's source are channels of the plan; and the
+	/// Whether every index the generator wrote is one the board can index by: each channel's
+	/// unit is one of [`Plan::units`]; each channel's setpoint, each index a page names — its
+	/// cells, its chart's channel, its strip's voltage — the lever's rocker, switch and cruise
+	/// status, the stopwatch's speed, the standstill's source and each alarm's channel and
+	/// specified value are channels of the plan; each alarm's page is one of its pages; and the
 	/// n-th chart page holds slot n, so the slots are `0..chart_count()`, each once. `const`, so
 	/// the firmware refuses to build on a plan that fails it: an index past its table would be
 	/// a panic on the car.
 	pub const fn joins_hold(&self) -> bool {
 		let channels = self.channels.len();
+		// A `const fn` calls no closure.
+		const fn on(index: u16, channels: usize) -> bool {
+			(index as usize) < channels
+		}
 		// `while` and indices, because iterators are not `const`.
 		let mut i = 0;
 		while i < channels {
 			if self.channels[i].unit as usize >= self.units.len() {
 				return false;
 			}
+			if let Some(setpoint) = self.channels[i].setpoint
+				&& !on(setpoint, channels)
+			{
+				return false;
+			}
 			i += 1;
+		}
+		if let Some(stalk) = &self.stalk
+			&& !(on(stalk.rocker, channels) && on(stalk.switch, channels) && on(stalk.cruise, channels))
+		{
+			return false;
+		}
+		if let Some(stopwatch) = &self.stopwatch
+			&& !on(stopwatch.speed, channels)
+		{
+			return false;
+		}
+		let mut a = 0;
+		while a < self.alarms.len() {
+			let alarm = &self.alarms[a];
+			if !on(alarm.channel.0, channels) || alarm.page.0 as usize >= self.pages.len() {
+				return false;
+			}
+			if let Rule::Drift { specified, .. } = alarm.rule
+				&& !on(specified.0, channels)
+			{
+				return false;
+			}
+			a += 1;
 		}
 		let mut slot = 0;
 		let mut p = 0;
@@ -560,13 +594,13 @@ impl Plan {
 				Page::Values { cells, volts, .. } => (*volts, *cells),
 			};
 			if let Some(volts) = volts
-				&& volts as usize >= channels
+				&& !on(volts, channels)
 			{
 				return false;
 			}
 			let mut c = 0;
 			while c < cells.len() {
-				if cells[c] as usize >= channels {
+				if !on(cells[c], channels) {
 					return false;
 				}
 				c += 1;
@@ -574,7 +608,7 @@ impl Plan {
 			p += 1;
 		}
 		match self.standstill {
-			Some(standstill) => (standstill.channel() as usize) < channels,
+			Some(standstill) => on(standstill.channel(), channels),
 			None => true,
 		}
 	}
@@ -677,7 +711,7 @@ impl Plan {
 			}
 			let speed = mode.stopwatch != Timing::Off && self.stopwatch.is_some_and(|s| s.speed == index);
 			// Timing, what a page shows is not what matters: the run is.
-			let on_glass = shown.contains(&index) || self.explains(index, shown);
+			let on_glass = self.need(index, shown);
 			let timing = mode.stopwatch == Timing::Timing;
 			if speed && timing {
 				Some(Rate {
@@ -686,17 +720,21 @@ impl Plan {
 					timing: true,
 					period_ms: own,
 				})
-			} else if speed || self.watched(index) || (on_glass && !timing) {
+			} else if speed || self.watched(index) {
 				foreground(own)
-			} else if listed.contains(&index) || self.explains(index, listed) || on_glass {
-				Some(Rate {
+			} else if let Some(period_ms) = on_glass.filter(|_| !timing) {
+				foreground(period_ms)
+			} else {
+				let needed = match (on_glass, self.need(index, listed)) {
+					(Some(a), Some(b)) => Some(a.min(b)),
+					(a, b) => a.or(b),
+				};
+				needed.map(|period_ms| Rate {
 					channel: index,
 					foreground: false,
 					timing: false,
-					period_ms: own.max(HIDDEN_PERIOD_MS),
+					period_ms: period_ms.max(HIDDEN_PERIOD_MS),
 				})
-			} else {
-				None
 			}
 		})
 	}
@@ -713,17 +751,29 @@ impl Plan {
 		})
 	}
 
-	/// Whether the channel at `index` is read exactly when a channel in `set` is, because that
-	/// channel cannot be shown without it: its specified value (`todo/dash/18` §2), or — for a
-	/// `zero_at_rest` channel — the standstill's source, without which its cell cannot know
-	/// whether the car stands.
-	fn explains(&self, index: u16, set: &[u16]) -> bool {
-		let stands_by = self.standstill.is_some_and(|s| s.channel() == index);
+	/// How often the channels in `set` need the channel at `index` read, `None` where they do
+	/// not need it at all. At its own rate where it is one of them, or the specified value of
+	/// one (`todo/dash/18` §2) — the cell draws the two together. Where it is only the
+	/// standstill's source, which a `zero_at_rest` channel in `set` cannot be shown without, no
+	/// faster than the fastest of those: a 10 Hz cell zeroed at rest is served by its source at
+	/// 10 Hz, whatever the source's own `hz`.
+	fn need(&self, index: u16, set: &[u16]) -> Option<u32> {
+		let own = self.channels[usize::from(index)].period_ms();
+		let in_set = |i: usize| set.contains(&(i as u16));
+		if set.contains(&index) || self.channels.iter().enumerate().any(|(i, c)| c.setpoint == Some(index) && in_set(i)) {
+			return Some(own);
+		}
+		if !self.standstill.is_some_and(|s| s.channel() == index) {
+			return None;
+		}
 		self
 			.channels
 			.iter()
 			.enumerate()
-			.any(|(i, c)| (c.setpoint == Some(index) || (stands_by && c.zero_at_rest)) && set.contains(&(i as u16)))
+			.filter(|&(i, c)| c.zero_at_rest && in_set(i))
+			.map(|(_, c)| c.period_ms())
+			.min()
+			.map(|fastest| own.max(fastest))
 	}
 
 	/// The channels of the unit at `unit` (an index into [`Plan::units`]), in plan order — what
@@ -1055,6 +1105,62 @@ mod tests {
 			"and goes to the background with it"
 		);
 		assert_eq!(rates(&[2], &[2]), [(2, true, 500)], "on no page, neither is read");
+	}
+
+	/// Review of `refactor/dash-plan-joins`: a 50 Hz stopwatch speed on no page, pulled onto the
+	/// glass only to zero a 10 Hz acceleration, is read at 10 Hz — every 100 ms, not every 20.
+	/// A cell of the page, or the stopwatch's own, it keeps its own rate; and it is never read
+	/// faster than its own `hz` for the sake of a faster cell.
+	#[test]
+	fn the_standstill_source_is_read_no_faster_than_the_cell_it_zeroes() {
+		let mut channels = SHOWN_CHANNELS;
+		channels[0].hz = 50.0;
+		channels[1].hz = 10.0;
+		let plan = Plan {
+			channels: std::vec::Vec::leak(channels.to_vec()),
+			..SHOWN_PLAN
+		};
+		let rates = |shown: &[u16], listed: &[u16], stopwatch: Timing| -> std::vec::Vec<(u16, bool, u32)> {
+			let mode = Mode {
+				stopwatch,
+				..Mode::default()
+			};
+			plan
+				.rates_in(shown, listed, mode)
+				.map(|r| (r.channel, r.foreground, r.period_ms))
+				.collect()
+		};
+		assert_eq!(
+			rates(&[1], &[1], Timing::Off),
+			[(0, true, 100), (1, true, 100)],
+			"only zeroing the cell: at the cell's rate"
+		);
+		assert_eq!(
+			rates(&[0, 1], &[0, 1], Timing::Off),
+			[(0, true, 20), (1, true, 100)],
+			"a cell of the page itself: its own"
+		);
+		assert_eq!(
+			rates(&[1], &[1], Timing::Up),
+			[(0, true, 20), (1, true, 100)],
+			"the stopwatch's speed: its own"
+		);
+		assert_eq!(
+			rates(&[2], &[1, 2], Timing::Off),
+			[(0, false, 1000), (1, false, 1000), (2, true, 500)],
+			"in the background, as the cell is"
+		);
+		let mut slow = channels;
+		slow[0].hz = 2.0;
+		let slow = Plan {
+			channels: std::vec::Vec::leak(slow.to_vec()),
+			..plan
+		};
+		assert_eq!(
+			slow.rates(&[1], &[1]).map(|r| (r.channel, r.period_ms)).collect::<std::vec::Vec<_>>(),
+			[(0, 500), (1, 100)],
+			"never faster than its own hz"
+		);
 	}
 
 	#[test]
@@ -1485,6 +1591,61 @@ mod tests {
 			}),
 			..PLAN
 		}
+	}
+
+	/// Review of `refactor/dash-plan-joins`: the lever's, the stopwatch's, a setpoint's and an
+	/// alarm's indices are ones the board indexes by too (`lever_unit` reads the rocker's channel
+	/// directly), so each is held to the plan's tables like a page's.
+	#[test]
+	fn the_joins_hold_for_the_lever_the_stopwatch_setpoints_and_alarms() {
+		use crate::alarm::{Bound, PageId};
+		let plan = lever_plan();
+		assert!(plan.joins_hold());
+		let past = plan.channels.len() as u16;
+		let stalk = plan.stalk.unwrap();
+		for (what, bad) in [
+			("a rocker on no channel", StalkPlan { rocker: past, ..stalk }),
+			("a switch on no channel", StalkPlan { switch: past, ..stalk }),
+			("a cruise status on no channel", StalkPlan { cruise: past, ..stalk }),
+		] {
+			assert!(!Plan { stalk: Some(bad), ..plan }.joins_hold(), "{what}");
+		}
+		let stopwatch = StopwatchPlan {
+			speed: past,
+			..plan.stopwatch.unwrap()
+		};
+		assert!(
+			!Plan {
+				stopwatch: Some(stopwatch),
+				..plan
+			}
+			.joins_hold(),
+			"a stopwatch speed on no channel"
+		);
+		let mut channels = plan.channels.to_vec();
+		channels[0].setpoint = Some(past);
+		let channels: &'static [Channel] = std::vec::Vec::leak(channels);
+		assert!(!Plan { channels, ..plan }.joins_hold(), "a setpoint on no channel");
+		let bound = Some(Bound { at: 10.0, off: 8.0 });
+		let pages = plan.pages.len() as u16;
+		let alarm = |alarm: Alarm| Plan {
+			alarms: std::vec::Vec::leak(std::vec![alarm]),
+			..plan
+		};
+		assert!(alarm(Alarm::bounds(ChannelId(6), PageId(0), bound, None)).joins_hold());
+		assert!(
+			!alarm(Alarm::bounds(ChannelId(past), PageId(0), bound, None)).joins_hold(),
+			"an alarm on no channel"
+		);
+		assert!(
+			!alarm(Alarm::bounds(ChannelId(6), PageId(pages), bound, None)).joins_hold(),
+			"an alarm on no page"
+		);
+		assert!(alarm(Alarm::drift(ChannelId(6), ChannelId(1), PageId(0), 10.0, 6.0, 1_000, 0.5)).joins_hold());
+		assert!(
+			!alarm(Alarm::drift(ChannelId(6), ChannelId(past), PageId(0), 10.0, 6.0, 1_000, 0.5)).joins_hold(),
+			"a specified value on no channel"
+		);
 	}
 
 	#[test]

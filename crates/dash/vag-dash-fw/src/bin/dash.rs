@@ -2880,8 +2880,8 @@ async fn panel_task(
 		}
 	}
 
-	// One history per chart the plan has, in the plan's order — `PLAN.chart`
-	// says which slot a channel's is. Every one of them takes a sample **every
+	// One history per chart the plan has, in the plan's order — a chart page's
+	// own `slot` says which is its. Every one of them takes a sample **every
 	// frame, whether or not a chart is on the glass**, so the chart page comes
 	// up with its last `WIDTH × FRAME_MS` already drawn. Sampling only while
 	// the chart was shown, and starting over on each entry, is why it used to
