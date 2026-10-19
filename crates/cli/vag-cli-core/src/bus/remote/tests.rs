@@ -368,6 +368,7 @@ async fn over_the_cable_a_reply_to_hello_and_the_images_text_are_ignored_and_a_b
 	let reply = HelloReply {
 		image: "dash".into(),
 		version: "0.1.0".into(),
+		plan: None,
 	};
 	board.send(Message::HelloReply(reply)).await;
 	board.pipe.write(b"can: 7E0 timeout\r\n").await.unwrap();

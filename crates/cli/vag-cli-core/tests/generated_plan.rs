@@ -10,7 +10,7 @@ mod generated {
 	include!("fixtures/lever_plan.rs");
 }
 
-use generated::PLAN;
+use generated::{PLAN, PLAN_ID};
 use vag_dash_render::control::{Command, is_button_pin};
 use vag_dash_render::plan::{ButtonPlan, state_of};
 use vag_dash_render::stalk::StateIndex;
@@ -32,6 +32,12 @@ fn the_generated_lever_plan_compiles_and_carries_the_lever_and_the_stopwatch() {
 	let stopwatch = PLAN.stopwatch.expect("a stopwatch");
 	assert_eq!((stopwatch.speed, stopwatch.marks), (1, &[60u16, 100][..]));
 	assert!((stopwatch.km_h_per_unit - 0.0271).abs() < 1e-7);
+}
+
+#[test]
+fn the_generated_source_names_its_plan() {
+	// The fixture's own id; what it is the hash of is `src/dash.rs`'s to test.
+	assert_eq!(PLAN_ID, 0x7fa5_728f_35ff_8bcd);
 }
 
 #[test]

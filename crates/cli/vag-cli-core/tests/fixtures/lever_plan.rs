@@ -62,3 +62,6 @@ static BUTTONS: [ButtonPlan; 3] = [
 	ButtonPlan { pin: 4, action: Command::Previous },
 	ButtonPlan { pin: 5, action: Command::Stopwatch },
 ];
+
+/// FNV-1a 64 of every byte above this line: which plan this is (`vag_cli_core::dash::plan_id`).
+pub const PLAN_ID: u64 = 0x7fa5728f35ff8bcd;

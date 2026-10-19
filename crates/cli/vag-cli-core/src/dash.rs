@@ -109,7 +109,8 @@
 //!
 //! `plan.json` for a person and the simulator, `plan.rs` for the firmware, both
 //! under `~/.vagcan/dash/<VIN>/` and neither committed anywhere: they are
-//! derived from VW's data and describe one owner's car.
+//! derived from VW's data and describe one owner's car. Both name the plan by its id
+//! ([`plan_id`]): `plan.rs` as `PLAN_ID`, `plan.json` as `id`.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -1295,8 +1296,20 @@ pub struct Plan {
 }
 
 impl Plan {
+	/// The plan, with its [`plan_id`] first as `"id"`: sixteen hex digits, as the board says it.
+	/// [`Plan::from_json`] skips it — it is derived, never read back as a fact.
 	pub fn to_json(&self) -> String {
-		serde_json::to_string_pretty(self).expect("a plan serialises")
+		#[derive(Serialize)]
+		struct Identified<'a> {
+			id: String,
+			#[serde(flatten)]
+			plan: &'a Plan,
+		}
+		let identified = Identified {
+			id: format!("{:016x}", plan_id(self)),
+			plan: self,
+		};
+		serde_json::to_string_pretty(&identified).expect("a plan serialises")
 	}
 
 	/// A `plan.json` written while alarms were `[[alarm]]` tables (before 2026-10-19) is refused
@@ -1912,7 +1925,7 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 		match page {
 			PageInput::Values { title, cells, volts } => {
 				if cells.is_empty() || cells.len() > MAX_VALUE_CELLS {
-					return Err(Error::Page(n, format!("a values page holds 1 to 4 cells, not {}", cells.len())));
+					return Err(Error::Page(n, format!("a values page holds 1 to {MAX_VALUE_CELLS} cells, not {}", cells.len())));
 				}
 				let cells = cells.iter().map(index).collect::<Result<Vec<_>, _>>()?;
 				pages.push(Page::Values {
@@ -2615,8 +2628,39 @@ fn alarm_imports(plan: &Plan) -> Vec<&'static str> {
 	imports
 }
 
-/// The plan as Rust source: a `static PLAN` of `vag_dash_render::plan::Plan`.
+/// The plan as Rust source: a `static PLAN` of `vag_dash_render::plan::Plan`, and last its
+/// [`plan_id`] as `PLAN_ID`.
 pub fn to_rust(plan: &Plan) -> String {
+	let mut out = source(plan);
+	let id = fnv1a64(out.as_bytes());
+	out.push_str(&format!(
+		"\n/// FNV-1a 64 of every byte above this line: which plan this is (`vag_cli_core::dash::plan_id`).\npub const PLAN_ID: u64 = 0x{id:016x};\n"
+	));
+	out
+}
+
+/// Which plan this is: FNV-1a 64 over its generated source ([`to_rust`] short of the id),
+/// byte for byte what the firmware compiles — so a plan the board would run differently on
+/// has another id, and the same plan has the same one on every machine and every build.
+/// The board keeps it beside its settings (`vag-dash-fw`'s `schema`) and says it in its
+/// Hello reply and its `state` line. A change to how the generator spells the source also
+/// changes it; that only makes the board say its settings were saved against another plan,
+/// and nothing of them is dropped for it.
+pub fn plan_id(plan: &Plan) -> u64 {
+	fnv1a64(source(plan).as_bytes())
+}
+
+/// 64-bit FNV-1a (Fowler–Noll–Vo; the offset basis and prime are the algorithm's own).
+fn fnv1a64(bytes: &[u8]) -> u64 {
+	const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+	const PRIME: u64 = 0x0000_0100_0000_01b3;
+	bytes
+		.iter()
+		.fold(OFFSET_BASIS, |hash, &byte| (hash ^ u64::from(byte)).wrapping_mul(PRIME))
+}
+
+/// The plan's source, short of its id: what [`plan_id`] is taken over.
+fn source(plan: &Plan) -> String {
 	use std::fmt::Write as _;
 	// `build` refuses a non-finite scaling, and `Debug` of a finite `f32`
 	// always spells a point or an exponent, so this is a valid literal.
@@ -5383,6 +5427,104 @@ mod tests {
 			 and run the tests again: tests/generated_plan.rs compiled the old file",
 			path.display()
 		);
+	}
+
+	/// The plan the id tests turn: a lever, a stopwatch, buttons, a strip and a chart.
+	fn every_part() -> Plan {
+		build_with_lever(&format!("{LEVER}{WATCH}{EVERY_ACTION}{STRIP}{SPEED_CHART}"))
+			.unwrap()
+			.plan
+	}
+
+	#[test]
+	fn a_plan_has_the_same_id_however_often_it_is_built_and_says_it_in_both_outputs() {
+		let (one, two) = (every_part(), every_part());
+		assert_eq!(plan_id(&one), plan_id(&two));
+		let id = plan_id(&one);
+		let rust = to_rust(&one);
+		assert!(rust.ends_with(&format!("pub const PLAN_ID: u64 = 0x{id:016x};\n")), "{rust}");
+		// The id is the hash of what precedes it, so anyone can check it from the file.
+		let above = rust.rsplit_once("\n///").unwrap().0;
+		assert_eq!(fnv1a64(above.as_bytes()), id);
+		let json: serde_json::Value = serde_json::from_str(&one.to_json()).unwrap();
+		assert_eq!(json["id"], format!("{id:016x}"));
+		assert_eq!(Plan::from_json(&one.to_json()).unwrap(), one, "the id is derived, not read back");
+	}
+
+	#[test]
+	fn anything_the_board_runs_differently_on_changes_the_id() {
+		let base = every_part();
+		let id = plan_id(&base);
+		type Change = (&'static str, fn(&mut Plan));
+		let changes: [Change; 12] = [
+			("a page title", |p| match &mut p.pages[0] {
+				Page::Values { title, .. } | Page::Chart { title, .. } => title.push('!'),
+			}),
+			("the pages' order", |p| p.pages.reverse()),
+			("a page's voltage", |p| match &mut p.pages[0] {
+				Page::Values { volts, .. } | Page::Chart { volts, .. } => *volts = !*volts,
+			}),
+			("a channel's rate", |p| p.channels[0].hz += 1.0),
+			("a channel's scaling", |p| p.channels[0].factor *= 2.0),
+			("a channel's label", |p| p.channels[0].label.push('x')),
+			("a unit's part number", |p| p.units[0].part_number.push('X')),
+			("the stopwatch's marks", |p| p.stopwatch.as_mut().unwrap().marks.push(130)),
+			("a button's action", |p| p.buttons.swap(0, 1)),
+			("the strip", |p| p.strip = None),
+			("the lever's states", |p| p.stalk.as_mut().unwrap().rocker_states[0].upper -= 1),
+			("the language", |p| p.language = "ru".to_string()),
+		];
+		for (what, change) in changes {
+			let mut changed = base.clone();
+			change(&mut changed);
+			assert_ne!(plan_id(&changed), id, "{what} changed and the id did not");
+		}
+		let mut alarmed = base.clone();
+		alarmed.alarms.push(Alarm {
+			channels: vec![0],
+			page: 0,
+			rule: AlarmRule::Threshold {
+				direction: Direction::Above,
+				trip: 100.0,
+				release: 95.0,
+			},
+		});
+		assert_ne!(plan_id(&alarmed), id, "an alarm added");
+		let mut tripped = alarmed.clone();
+		if let AlarmRule::Threshold { trip, .. } = &mut tripped.alarms[0].rule {
+			*trip = 101.0;
+		}
+		assert_ne!(plan_id(&tripped), plan_id(&alarmed), "an alarm's trip");
+	}
+
+	/// The firmware's CI build has no car and is built on this plan (`vag-dash-fw`'s `build.rs`).
+	/// Its id is pinned: it moves only when the generator spells every plan's source another
+	/// way — after which a board reflashed with an unchanged `dash.toml` says, once, that its
+	/// settings were saved against another plan.
+	#[test]
+	fn the_empty_plan_has_an_id_of_its_own() {
+		let empty = Plan {
+			vin: String::new(),
+			language: "en".to_string(),
+			units: Vec::new(),
+			channels: Vec::new(),
+			pages: Vec::new(),
+			alarms: Vec::new(),
+			stalk: None,
+			stopwatch: None,
+			buttons: Vec::new(),
+			strip: None,
+		};
+		assert_eq!(format!("{:016x}", plan_id(&empty)), "b56bfabe69e8ab5d");
+		assert_ne!(plan_id(&empty), plan_id(&every_part()));
+	}
+
+	#[test]
+	fn fnv1a64_is_the_published_function() {
+		// The reference vectors of the FNV specification (draft-eastlake-fnv).
+		assert_eq!(fnv1a64(b""), 0xcbf2_9ce4_8422_2325);
+		assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
+		assert_eq!(fnv1a64(b"foobar"), 0x8594_4171_f739_67e8);
 	}
 
 	/// Whether `BLESS` asks for the golden file to be rewritten: `1` and nothing else, so a

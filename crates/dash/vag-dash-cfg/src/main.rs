@@ -56,6 +56,8 @@ struct DashState {
 	/// A finished run of the stopwatch is in RAM and not yet in flash.
 	run_pending: Option<bool>,
 	generation: Option<u32>,
+	/// The id of the plan the board's image was built with, as `vagcan dev dash build` prints it.
+	plan: Option<String>,
 	kind: Option<String>,
 	cells: Option<String>,
 	/// The board's fault count once it has ended: the stored codes, or `?` for no count.
@@ -102,6 +104,7 @@ impl DashState {
 				"unsaved" => s.unsaved = Some(value != "0"),
 				"run_pending" => s.run_pending = Some(value != "0"),
 				"gen" => s.generation = value.parse().ok(),
+				"plan" => s.plan = Some(value.to_string()),
 				"kind" => s.kind = Some(value.to_string()),
 				"cells" => s.cells = Some(value.to_string()),
 				"faults" => s.faults = Some(value.to_string()),
@@ -129,6 +132,10 @@ impl DashState {
 			println!("│ brightness  {b:>3}  [{}{}]", "█".repeat(filled), "·".repeat(20 - filled));
 		}
 		println!("│ storage     {}", self.storage());
+		// No key: an image from before plans had an id.
+		if let Some(plan) = &self.plan {
+			println!("│ plan        {plan}");
+		}
 		println!("│ faults      {}", self.faults());
 		println!("└{}", "─".repeat(WIDTH));
 	}
@@ -418,6 +425,14 @@ mod tests {
 		let state = super::DashState::parse("state page=0/2 brightness=128 unsaved=1 gen=5 mode=panel kind=values cells=[2, 3, 0, 1]").unwrap();
 		assert_eq!(state.cells.as_deref(), Some("[2, 3, 0, 1]"));
 		assert_eq!(state.kind.as_deref(), Some("values"));
+		assert_eq!(state.generation, Some(5));
+		assert_eq!(state.plan, None, "an image from before plans had an id");
+	}
+
+	#[test]
+	fn the_plan_the_board_runs_is_read_off_its_state() {
+		let state = super::DashState::parse("state page=0/2 brightness=128 unsaved=0 run_pending=0 gen=5 plan=7fa5728f35ff8bcd mode=panel").unwrap();
+		assert_eq!(state.plan.as_deref(), Some("7fa5728f35ff8bcd"));
 		assert_eq!(state.generation, Some(5));
 	}
 }

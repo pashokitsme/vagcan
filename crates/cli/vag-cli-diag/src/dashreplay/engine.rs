@@ -2,7 +2,7 @@
 //!
 //! What decides the glass is the board's own code: [`Screen`] (the page cursor, the alarms
 //! and the commands the board's inputs give), [`Plan::rates`] (what the bus reads, and how often, for the page on
-//! the glass) and [`pages::from_plan`] (the pages the board holds). What this module adds is
+//! the glass) and [`pages::cells`] (what a page shows). What this module adds is
 //! the part of `vag-dash-fw`'s `bin/dash.rs` that is not a library — the frame loop, the value
 //! store with its staleness rule, and the cell composition in `panel_task` — mirrored here
 //! because the firmware cannot be built for the host. Where a constant is the board's, it
@@ -19,7 +19,7 @@ use vag_dash_render::alarm::{BLINK_MS, ChannelId, Rule, Slot as AlarmSlot};
 use vag_dash_render::button::{Button, Press as ButtonPress};
 use vag_dash_render::control::{self, Command};
 use vag_dash_render::history::History;
-use vag_dash_render::pages::{self, Layout, MAX_PAGES};
+use vag_dash_render::pages;
 use vag_dash_render::plan::{MAX_VALUE_CELLS, Page, Plan};
 use vag_dash_render::screen::{Change, Glass, Outcome, Screen};
 use vag_dash_render::{Board, Cell, Deviation, Frame, Links, Theme, draw_page};
@@ -106,9 +106,8 @@ struct Slot {
 
 /// The panel, run over one recording.
 pub struct Replay {
+	/// Its pages are the board's: its settings keep which one is up, not a list of their own.
 	plan: &'static Plan,
-	/// The board's pages, as its configuration holds them.
-	layouts: Vec<Layout<'static>>,
 	/// Per plan channel; `None` for one the recording does not carry.
 	series: Vec<Option<Series>>,
 	/// Short presses, in recording milliseconds, sorted.
@@ -168,7 +167,6 @@ impl Replay {
 		});
 		Ok(Replay {
 			plan,
-			layouts: pages::from_plan(plan.pages, MAX_PAGES, MAX_VALUE_CELLS).collect(),
 			series,
 			presses,
 			refused,
@@ -215,7 +213,7 @@ impl Replay {
 		let t = self.now;
 		self.now += FRAME_MS;
 		// The generator refuses more than `MAX_PAGES`, so the count fits.
-		let pages = self.layouts.len() as u8;
+		let pages = self.plan.pages.len() as u8;
 		let mut events = Vec::new();
 		if self.last.is_none() {
 			events.push(Event::Start { page: self.cursor });
@@ -303,10 +301,10 @@ impl Replay {
 	fn read(&mut self, t: u64) {
 		let glass = self.drawn.unwrap_or(self.cursor);
 		// The page's cells and the voltage its strip shows, as the board's bus task reads them.
-		let mut shown: Vec<u16> = self.layouts.get(usize::from(glass)).map_or(&[][..], |page| page.cells).to_vec();
+		let mut shown: Vec<u16> = self.plan.pages.get(usize::from(glass)).map_or(&[][..], pages::cells).to_vec();
 		shown.extend(self.plan.strip_volts(usize::from(glass)));
 		// Every page's cells, charts included: a chart samples its channel every frame.
-		let mut listed: Vec<u16> = self.layouts.iter().flat_map(|page| page.cells.iter().copied()).collect();
+		let mut listed: Vec<u16> = self.plan.pages.iter().flat_map(|page| pages::cells(page).iter().copied()).collect();
 		listed.extend(self.plan.strip_listed());
 		let mut wanted = vec![None; self.plan.channels.len()];
 		for rate in self.plan.rates(&shown, &listed) {
@@ -348,7 +346,7 @@ impl Replay {
 	/// Draw the last frame as the board's panel task draws it.
 	pub fn draw<D: DrawTarget<Color = BinaryColor>>(&self, target: &mut D) {
 		let Some((t, glass)) = self.last else { return };
-		let Some(layout) = self.layouts.get(usize::from(glass.page)) else {
+		let Some(page) = self.plan.pages.get(usize::from(glass.page)) else {
 			return;
 		};
 		let value_of = |i: u16| current(&self.slots, i, t);
@@ -386,12 +384,14 @@ impl Replay {
 		let theme = Theme::bold_mono();
 		// The page's title and voltage over it, as the board draws them (`Plan::strip`).
 		let strip = self.plan.strip(usize::from(glass.page), value_of);
-		if !layout.chart {
-			let cells: Vec<Cell<'_>> = layout.cells.iter().take(MAX_VALUE_CELLS).map(|&index| cell_of(index)).collect();
-			draw_page(&Frame::Values { cells: &cells }, &strip, &board, &theme, target);
-			return;
-		}
-		let index = layout.cells.first().copied().unwrap_or(0);
+		let index = match page {
+			Page::Values { cells, .. } => {
+				let cells: Vec<Cell<'_>> = cells.iter().take(MAX_VALUE_CELLS).map(|&index| cell_of(index)).collect();
+				draw_page(&Frame::Values { cells: &cells }, &strip, &board, &theme, target);
+				return;
+			}
+			Page::Chart { channel, .. } => *channel,
+		};
 		match self.plan.chart(index) {
 			Some(chart) => {
 				let frame = Frame::Chart {
