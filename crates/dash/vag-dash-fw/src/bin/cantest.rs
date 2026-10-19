@@ -20,8 +20,7 @@
 //!
 //! If that does not close on your board, set [`USE_JUMPER`] to `true` and put
 //! one wire between [`TX_PIN`] and [`RX_PIN`]. Both are chosen from GPIO6, 7,
-//! 10, 20, 21: GPIO0–5 are spoken for by the ADC divider and the wake button,
-//! and GPIO2, 8 and 9 are strapping pins.
+//! 10, 20, 21: GPIO2, 8 and 9 are strapping pins.
 //!
 //! # What each stage proves, and what none of them can
 //!
