@@ -164,11 +164,12 @@ pub struct UnitNamers {
 impl Namers {
 	/// Open whatever this machine has. Never fails for a shortage of data —
 	/// see [`Namers::is_empty`] — only for a VCDS pool that is there and will
-	/// not open.
-	pub fn open(iv_cache: &str) -> Result<Namers> {
+	/// not open, or for keys named with `--iv-cache` (`given`) that are not there.
+	pub fn open(keys: &std::path::Path, given: bool) -> Result<Namers> {
 		let vcds_root = crate::project::rod_pool()?;
 		let odis = crate::odisfaults::OdisFaults::open();
-		let vcds = open_vcds(&vcds_root, &crate::datadir::resolve(iv_cache), odis.is_some())?;
+		let odis_alone = odis.as_ref().is_some_and(|o| !o.has_vcds_source());
+		let vcds = open_vcds(&vcds_root, keys, given, odis_alone)?;
 		Ok(Namers { odis, vcds, vcds_root })
 	}
 
@@ -257,12 +258,24 @@ impl Namers {
 ///
 /// The pool of raw VCDS files is shared by every project and the keys that open
 /// it are per project ([`crate::project::Project::rod_keys`]), so a project set
-/// up from an ODIS project alone meets a full pool — another project's — and no
-/// keys. That is "this project has no VCDS text", not a refusal: its faults are
-/// named from ODIS. Only a project with nothing else to name a code with is
-/// told the keys are missing, since there the keys are the whole answer.
-fn open_vcds(root: &std::path::Path, keys: &std::path::Path, odis_present: bool) -> Result<Option<crate::faultnames::Namer>> {
-	if !crate::faultnames::has_fault_labels(root) || (odis_present && !keys.is_file()) {
+/// up from an ODIS project alone (`odis_alone`: ODIS fault text, and no VCDS
+/// installation among its sources) meets a full pool — another project's — and
+/// no keys. That is "this project has no VCDS text", not a refusal: its faults
+/// are named from ODIS.
+///
+/// Everywhere else missing keys are still refused. A project whose sources
+/// include VCDS has VCDS text of its own, and `[faults] language` may be what
+/// sends a code to it: naming from ODIS instead would print another language
+/// with nothing said. Keys named with `--iv-cache` (`given`) that are not there
+/// are a typo, said as one before anything else.
+fn open_vcds(root: &std::path::Path, keys: &std::path::Path, given: bool, odis_alone: bool) -> Result<Option<crate::faultnames::Namer>> {
+	if given && !keys.is_file() {
+		anyhow::bail!(
+			"--iv-cache {}: no such file. Leave the flag out to use this project's rod-keys.json.",
+			keys.display()
+		);
+	}
+	if !crate::faultnames::has_fault_labels(root) || (odis_alone && !keys.is_file()) {
 		return Ok(None);
 	}
 	crate::faultnames::Namer::open(root, keys).map(Some)
@@ -340,7 +353,7 @@ pub async fn run<L: UnitLink>(
 	all_codes: bool,
 	supported: bool,
 	extended: bool,
-	iv_cache: &str,
+	iv_cache: Option<&str>,
 ) -> Result<()> {
 	// Arguments first: the adapter is a single-user resource, so a typo in
 	// --unit must not cost the port before it is reported.
@@ -352,7 +365,9 @@ pub async fn run<L: UnitLink>(
 	// the shared pool of VCDS files — and from nowhere else. Neither being
 	// there is the ordinary "setup has not run yet" case: the codes are still
 	// read and shown as numbers, with a note that names `vagcan setup`.
-	let mut namers = Namers::open(iv_cache)?;
+	// The keys are per project (`rod-keys.json`) unless `--iv-cache` names a file.
+	let keys = crate::datadir::or_default(iv_cache, || Ok(crate::project::current()?.rod_keys()))?;
+	let mut namers = Namers::open(&keys, iv_cache.is_some())?;
 	let requested = only.map(|spec| unit_list("--unit", spec)).transpose()?;
 
 	let mut backend = open().await?;
@@ -563,7 +578,7 @@ pub async fn run<L: UnitLink>(
 			n => format!("{n} are failing now; the rest are history."),
 		}
 	);
-	crate::faultnames::offer_to_unseal(&sealed, &crate::datadir::resolve(iv_cache))?;
+	crate::faultnames::offer_to_unseal(&sealed, &keys)?;
 	Ok(())
 }
 
@@ -582,11 +597,10 @@ mod tests {
 	}
 
 	#[test]
-	fn a_project_from_odis_alone_is_not_refused_for_another_projects_vcds_pool() {
-		// The pool holds another project's VCDS files and this project has no
-		// `rod-keys.json`: with ODIS fault text there, `faults` names from ODIS
-		// rather than refusing before the adapter is opened. With nothing else to
-		// name a code with, the missing keys are still what the reader is told.
+	fn missing_keys_are_no_vcds_text_only_for_a_project_from_odis_alone_and_only_by_default() {
+		// The pool of raw VCDS files is shared by every project and the keys are per
+		// project, so a project set up from ODIS alone meets another project's pool
+		// and no `rod-keys.json`: its faults are named from ODIS, no refusal.
 		let base = std::env::temp_dir().join(format!("vagcan-odis-only-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&base);
 		std::fs::create_dir_all(base.join("UDS_EV")).unwrap();
@@ -595,11 +609,23 @@ mod tests {
 		let keys = base.join("project").join("rod-keys.json");
 		assert!(crate::faultnames::has_fault_labels(&base), "the fixture is a filled pool");
 
-		assert!(open_vcds(&base, &keys, true).expect("ODIS present: no refusal").is_none());
-		let refused = open_vcds(&base, &keys, false).err().expect("nothing else to name with");
+		assert!(
+			open_vcds(&base, &keys, false, true).expect("ODIS alone: no refusal").is_none(),
+			"a project from ODIS alone, another project's pool"
+		);
+		// A project whose sources include VCDS, its keys deleted: that VCDS text is the
+		// project's own, and printing ODIS's in another language instead would be silent.
+		let refused = open_vcds(&base, &keys, false, false).err().expect("ODIS and VCDS, keys missing");
 		assert!(refused.to_string().contains("rod-keys.json"), "{refused}");
-		// An empty pool is no VCDS text either way.
-		assert!(open_vcds(&base.join("empty"), &keys, false).unwrap().is_none());
+		// `--iv-cache` naming a file that is not there is a typo, said as one — whatever
+		// the project was set up from, and whether or not the pool has anything in it.
+		for (pool, odis_alone) in [(base.clone(), true), (base.clone(), false), (base.join("empty"), true)] {
+			let said = open_vcds(&pool, &keys, true, odis_alone).err().expect("an --iv-cache that is not there").to_string();
+			assert!(said.starts_with("--iv-cache"), "{said}");
+			assert!(said.contains(&keys.display().to_string()), "{said}");
+		}
+		// An empty pool, by default, is no VCDS text either way.
+		assert!(open_vcds(&base.join("empty"), &keys, false, false).unwrap().is_none());
 		let _ = std::fs::remove_dir_all(&base);
 	}
 

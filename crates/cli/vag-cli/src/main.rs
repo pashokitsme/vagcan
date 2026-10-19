@@ -781,7 +781,7 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 				all,
 				supported,
 				extended,
-				&rod_keys(iv_cache.as_deref())?,
+				iv_cache.as_deref(),
 			)
 			.await
 		}
@@ -836,19 +836,6 @@ async fn dispatch_dev(tool: Dev, slcan: bool) -> Result<()> {
 fn data_dir(given: Option<&str>) -> Result<String> {
 	Ok(
 		datadir::or_default(given, || Ok(project::current()?.measurements_dir()))?
-			.to_string_lossy()
-			.into_owned(),
-	)
-}
-
-/// Where the recovered `.rod` section keys are, for this run.
-///
-/// Per project, not shared beside the `.rod` pool: a recovered key is a property
-/// of one file's *bytes*, and two VCDS builds ship a same-named `.rod` with
-/// different content (design §4.2).
-fn rod_keys(given: Option<&str>) -> Result<String> {
-	Ok(
-		datadir::or_default(given, || Ok(project::current()?.rod_keys()))?
 			.to_string_lossy()
 			.into_owned(),
 	)
