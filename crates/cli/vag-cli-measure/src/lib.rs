@@ -1032,10 +1032,11 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 	if !prepared.banner.is_empty() {
 		println!("{}", prepared.banner);
 	}
+	let (channels, units) = (prepared.plan.by_address.len(), identities.len());
 	println!(
-		"{} channels on {} control units — timing from {}",
-		prepared.plan.by_address.len(),
-		identities.len(),
+		"{channels} channel{} on {units} control unit{} — timing from {}",
+		if channels == 1 { "" } else { "s" },
+		if units == 1 { "" } else { "s" },
 		prepared.meta.speed_source
 	);
 
