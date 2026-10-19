@@ -410,7 +410,7 @@ impl IvCache {
 ///
 /// Recovery costs about a minute of every core per section, and nothing in the
 /// live path can use it: reading a car needs the *answer*, which is a five-byte
-/// value in `catalogs/rod-iv-cache.json`, not the search that produced it. So
+/// value in the project's `rod-keys.json`, not the search that produced it. So
 /// the search ships in `vagcan dev vcds rod` and the CLI links only the cache lookup
 /// on the live path.
 pub(crate) mod crack;
