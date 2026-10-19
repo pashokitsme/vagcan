@@ -2052,6 +2052,17 @@ fn setup_adapter(before: &device::DeviceArg, after: &device::DeviceArg) -> anyho
 	}
 }
 
+/// The `--data` `setup` reads, by [`setup_adapter`]'s rule: before `setup` or after it, and
+/// two different ones refused rather than one of them dropped.
+fn setup_rows<'a>(before: Option<&'a str>, after: Option<&'a str>) -> anyhow::Result<Option<&'a str>> {
+	match (before, after) {
+		(Some(before), Some(after)) if before != after => {
+			anyhow::bail!("the rows' directory is named twice, `{before}` before `setup` and `{after}` after it — name it once")
+		}
+		(before, after) => Ok(after.or(before)),
+	}
+}
+
 /// Run whatever the command line asked for.
 ///
 /// The one entry point both binaries use, so `vagcan measure` and
@@ -2060,12 +2071,17 @@ fn setup_adapter(before: &device::DeviceArg, after: &device::DeviceArg) -> anyho
 /// measurements live is `core`'s question, and answering it twice is how two
 /// binaries end up reading different directories.
 ///
+/// **Called only by what reads them**, with the `--data` the command line gave: `view`
+/// opens a session file and nothing else, so it runs on a machine with no project, where a
+/// default resolved before dispatching made it fail for want of one. And `--data`, on the run
+/// and on `setup`, was accepted and never read; it is what this is handed now.
+///
 /// `open` opens the bus to the car on the adapter `--device` or `--ble` names (`None`: the one
 /// connected); it is called only by the commands that need a car, once their own
 /// arguments have been checked.
 pub async fn dispatch(
 	a: args::Args,
-	catalogs: &str,
+	catalogs: impl FnOnce(Option<&str>) -> anyhow::Result<String>,
 	open: impl AsyncFnOnce(Option<String>) -> anyhow::Result<vag_cli_core::bus::Bus>,
 ) -> anyhow::Result<()> {
 	match a.tool {
@@ -2077,14 +2093,15 @@ pub async fn dispatch(
 			device,
 			coast_from,
 			coast_to,
-			data: _,
+			data,
 			car,
 		}) => {
 			let device = setup_adapter(&a.device, &device)?;
+			let catalogs = catalogs(setup_rows(a.data.as_deref(), data.as_deref())?)?;
 			setup::run(
 				async || open(device).await,
 				setup::Options {
-					catalogs,
+					catalogs: &catalogs,
 					coast_from_kmh: coast_from,
 					coast_to_kmh: coast_to,
 					car: car.as_deref(),
@@ -2094,11 +2111,12 @@ pub async fn dispatch(
 		}
 		None => {
 			let device = a.device.requested().map(str::to_owned);
+			let catalogs = catalogs(a.data.as_deref())?;
 			run(
 				async || open(device).await,
 				Options {
 					car: a.car.as_deref(),
-					catalogs,
+					catalogs: &catalogs,
 					full: a.full,
 					minimal: a.minimal,
 					marks: a.marks.0,
@@ -3334,10 +3352,14 @@ mod tests {
 	/// The adapter `dispatch` hands `open` for this command line, or why it refused first.
 	pub(crate) async fn adapter_opened(parsed: args::Args) -> Result<Option<String>> {
 		let mut seen = None;
-		let refused = dispatch(parsed, "/definitely/not/here", async |device| -> Result<vag_cli_core::bus::Bus> {
-			seen = Some(device);
-			anyhow::bail!("no adapter here")
-		})
+		let refused = dispatch(
+			parsed,
+			|_: Option<&str>| Ok("/definitely/not/here".to_string()),
+			async |device| -> Result<vag_cli_core::bus::Bus> {
+				seen = Some(device);
+				anyhow::bail!("no adapter here")
+			},
+		)
 		.await
 		.expect_err("nothing to open");
 		seen.ok_or(refused)

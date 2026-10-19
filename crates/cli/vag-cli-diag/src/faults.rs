@@ -315,7 +315,7 @@ fn compose(
 	project_has_unit.then(|| ("not in this unit's fault table in the ODIS project".to_string(), false))
 }
 
-/// The request ids a `--ecu` list names, checked before the adapter is opened:
+/// The request ids a `--unit` list names, checked before the adapter is opened:
 /// the cable is a single-user resource, and holding it open to fail on a typo
 /// blocks the next attempt.
 fn unit_list(flag: &str, spec: &str) -> Result<Vec<u16>> {
@@ -343,7 +343,7 @@ pub async fn run<L: UnitLink>(
 	iv_cache: &str,
 ) -> Result<()> {
 	// Arguments first: the adapter is a single-user resource, so a typo in
-	// --ecu must not cost the port before it is reported.
+	// --unit must not cost the port before it is reported.
 	// The fault texts are opened before the port for the same reason: a missing
 	// `Codes.dat` is a mistake to report, not one to make after taking the
 	// adapter and reading the whole car.
@@ -353,7 +353,7 @@ pub async fn run<L: UnitLink>(
 	// there is the ordinary "setup has not run yet" case: the codes are still
 	// read and shown as numbers, with a note that names `vagcan setup`.
 	let mut namers = Namers::open(iv_cache)?;
-	let requested = only.map(|spec| unit_list("--ecu", spec)).transpose()?;
+	let requested = only.map(|spec| unit_list("--unit", spec)).transpose()?;
 
 	let mut backend = open().await?;
 

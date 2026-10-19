@@ -352,27 +352,119 @@ pub fn select_basics(channels: &mut [Channel]) -> usize {
 	count
 }
 
-/// Parse `01:2029,202A 714:2203` or a bare `2029,202A` (engine assumed).
+/// One thing `watch --did` asks to have on screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Wanted {
+	/// `<unit>:<DID>` — every field the identifier's answer carries: one read
+	/// answers all of them, and selecting one while dropping the rest would cost
+	/// nothing on the bus and lose rows on the screen.
+	Identifier { request: u16, did: u16 },
+	/// `<unit>:<text id>` or `<unit>:<DID>@<bit>` — one row, spelled exactly as a
+	/// `dash.toml` `ref` spells it, and parsed by the same parser
+	/// ([`crate::dash::Reference::parse`]).
+	Row(crate::dash::Reference),
+}
+
+impl Wanted {
+	/// The unit it is on.
+	pub fn request(&self) -> u16 {
+		match self {
+			Wanted::Identifier { request, .. }
+			| Wanted::Row(crate::dash::Reference::TextId { request, .. })
+			| Wanted::Row(crate::dash::Reference::Field { request, .. }) => *request,
+		}
+	}
+}
+
+/// Parse `01:2029,202A 714:2203`, `01:IDE00191`, `02:3816@4`, or a bare list
+/// (engine assumed).
 ///
-/// The unit before the colon is whatever `vag_uds_client::address` accepts: a
-/// short number for the units this project has established, or a request id
-/// for the rest.
-pub fn parse_spec(spec: &str) -> Result<Vec<(u16, u16)>, String> {
+/// Every spelling a `dash.toml` `ref` takes, so that a row found on `watch`'s
+/// screen — its Unit column and its Key — can be typed back as it is shown. The
+/// unit before the colon is whatever `vag_uds_client::address` accepts: a short
+/// number for the units this project has established, or a request id for the
+/// rest. Groups are separated by spaces, rows of one unit by commas.
+///
+/// A text id is checked only for its shape here; whether this car's unit has
+/// such a row is known once the car has said what it is ([`select_wanted`]).
+pub fn parse_spec(spec: &str) -> Result<Vec<Wanted>, String> {
+	use crate::dash::Reference;
 	let mut out = Vec::new();
 	for group in spec.split_whitespace() {
-		let (request, list) = match group.split_once(':') {
-			Some((unit, rest)) => (vag_uds_client::address::parse(unit)?.request, rest),
-			None => (ENGINE, group),
+		let (unit, list) = match group.split_once(':') {
+			Some((unit, rest)) => (unit.to_string(), rest),
+			None => (format!("{ENGINE:03X}"), group),
 		};
-		for did in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-			let did = u16::from_str_radix(did, 16).map_err(|_| format!("{did:?} is not a hex data identifier"))?;
-			out.push((request, did));
+		for item in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+			let did_part = item.split_once('@').map_or(item, |(did, _)| did);
+			// Hex too short to be an identifier is a mistyped one, not a text id:
+			// both vendors' text ids are longer than four characters.
+			if did_part.len() < 4 && did_part.chars().all(|c| c.is_ascii_hexdigit()) {
+				return Err(format!("{item:?}: an identifier is four hex digits, like 2029"));
+			}
+			let reference = Reference::parse(&format!("{unit}:{item}")).map_err(|e| e.to_string())?;
+			out.push(match reference {
+				Reference::Field { request, did, .. } if !item.contains('@') => Wanted::Identifier { request, did },
+				row => Wanted::Row(row),
+			});
 		}
 	}
 	if out.is_empty() {
 		return Err("no identifiers given".to_string());
 	}
 	Ok(out)
+}
+
+/// Select what `--did` asked for among the channels this car offers.
+///
+/// An identifier nothing describes is still watched, as bytes: it was named,
+/// and a row of raw bytes is an answer. A text id, or one field by its bit, that
+/// no channel of that unit carries is refused: there is nothing to read it as,
+/// and dropping it quietly would leave the screen short of what was asked for.
+pub fn select_wanted(channels: &mut Vec<Channel>, wanted: &[Wanted]) -> Result<(), String> {
+	use crate::dash::Reference;
+	for want in wanted {
+		let request = want.request();
+		let mut found = false;
+		for channel in channels.iter_mut().filter(|c| c.request == request) {
+			let hit = match want {
+				Wanted::Identifier { did, .. } => channel.did == *did,
+				Wanted::Row(Reference::TextId { text_id, .. }) => channel.text_id.as_deref() == Some(text_id.as_str()),
+				Wanted::Row(Reference::Field { did, bit_offset, .. }) => channel.did == *did && channel.key().2 == *bit_offset,
+			};
+			if hit {
+				channel.selected = true;
+				found = true;
+			}
+		}
+		match (want, found) {
+			(_, true) => {}
+			(Wanted::Identifier { did, .. }, false) => channels.push(Channel {
+				request,
+				did: *did,
+				def: None,
+				named: None,
+				proven: false,
+				text_id: None,
+				selected: true,
+			}),
+			(Wanted::Row(row @ Reference::TextId { .. }), false) => {
+				return Err(format!(
+					"{row}: this car's unit has no row with that text id — `watch` shows each row's in its Key column, \
+					 turned on in its settings"
+				));
+			}
+			(Wanted::Row(row @ Reference::Field { did, .. }), false) => {
+				let unit = UnitAddress::from_request(request)
+					.map(|a| a.label())
+					.unwrap_or_else(|| format!("{request:03X}"));
+				return Err(format!(
+					"{row}: nothing describes a field at that bit — `{unit}:{did:04X}` watches the whole identifier, as bytes"
+				));
+			}
+		}
+	}
+	Ok(())
 }
 
 #[cfg(test)]
@@ -671,20 +763,116 @@ mod tests {
 		assert!(!nameless.is_named());
 	}
 
+	/// `--did`'s identifiers, as `(request, did)`.
+	fn ids(spec: &str) -> Vec<(u16, u16)> {
+		parse_spec(spec)
+			.unwrap()
+			.into_iter()
+			.map(|w| match w {
+				Wanted::Identifier { request, did } => (request, did),
+				row => panic!("{spec}: {row:?} is not a whole identifier"),
+			})
+			.collect()
+	}
+
 	#[test]
 	fn a_spec_names_control_units_by_number_or_by_request_id() {
-		assert_eq!(parse_spec("2029,202A").unwrap(), vec![(ENGINE, 0x2029), (ENGINE, 0x202A)]);
-		assert_eq!(
-			parse_spec("01:2029 02:380A,3816").unwrap(),
-			vec![(ENGINE, 0x2029), (GEARBOX, 0x380A), (GEARBOX, 0x3816)]
-		);
+		assert_eq!(ids("2029,202A"), vec![(ENGINE, 0x2029), (ENGINE, 0x202A)]);
+		assert_eq!(ids("01:2029 02:380A,3816"), vec![(ENGINE, 0x2029), (GEARBOX, 0x380A), (GEARBOX, 0x3816)]);
 		// The cluster by number and by id are the same unit.
-		assert_eq!(parse_spec("17:2203").unwrap(), vec![(CLUSTER, 0x2203)]);
-		assert_eq!(parse_spec("714:2203").unwrap(), parse_spec("17:2203").unwrap());
+		assert_eq!(ids("17:2203"), vec![(CLUSTER, 0x2203)]);
+		assert_eq!(ids("714:2203"), ids("17:2203"));
 		// A unit with no established number is still reachable by its id.
-		assert_eq!(parse_spec("713:1001").unwrap(), vec![(0x713, 0x1001)]);
-		assert!(parse_spec("zz").is_err());
+		assert_eq!(ids("713:1001"), vec![(0x713, 0x1001)]);
 		assert!(parse_spec("").is_err());
+		assert!(parse_spec("ZZ:2029").is_err(), "not a unit");
+	}
+
+	/// What a `dash.toml` `ref` takes, `--did` takes: the row a person found on
+	/// `watch`'s screen can be typed back as the Unit and Key columns show it.
+	#[test]
+	fn a_spec_takes_every_spelling_a_dash_ref_takes() {
+		use crate::dash::Reference;
+		assert_eq!(
+			parse_spec("01:IDE00191").unwrap(),
+			vec![Wanted::Row(Reference::parse("01:IDE00191").unwrap())]
+		);
+		// A VCDS text id is six digits, and is a text id rather than an identifier.
+		assert_eq!(
+			parse_spec("713:123456").unwrap(),
+			vec![Wanted::Row(Reference::TextId {
+				request: 0x713,
+				text_id: "123456".to_string()
+			})]
+		);
+		assert_eq!(
+			parse_spec("02:3816@4").unwrap(),
+			vec![Wanted::Row(Reference::Field {
+				request: GEARBOX,
+				did: 0x3816,
+				bit_offset: 4
+			})]
+		);
+		// Spellings mixed in one group, and a bare text id on the engine.
+		assert_eq!(
+			parse_spec("01:2029,IDE00191 IDE00025").unwrap(),
+			vec![
+				Wanted::Identifier {
+					request: ENGINE,
+					did: 0x2029
+				},
+				Wanted::Row(Reference::parse("01:IDE00191").unwrap()),
+				Wanted::Row(Reference::parse("01:IDE00025").unwrap()),
+			]
+		);
+		// What the dash refuses, this refuses, and hex too short to be an identifier
+		// is said to be one mistyped.
+		assert!(parse_spec("01:IDE00191@3").is_err(), "a bit offset on a text id");
+		assert!(parse_spec("02:3816@x").is_err());
+		let short = parse_spec("01:202").unwrap_err();
+		assert!(short.contains("four hex digits"), "{short}");
+	}
+
+	fn bare(request: u16, did: u16, text_id: Option<&str>, bit: Option<u32>) -> Channel {
+		let mut c = known(request, did, "row");
+		c.selected = false;
+		c.text_id = text_id.map(str::to_string);
+		if let (Some(bit), Some(def)) = (bit, c.def.as_mut()) {
+			def.raw_form = RawForm::for_field(bit, 1, false, true).unwrap();
+		}
+		c
+	}
+
+	#[test]
+	fn what_a_spec_names_is_selected_by_identifier_text_id_or_bit() {
+		let offered = || {
+			vec![
+				bare(ENGINE, 0x202A, Some("IDE00191"), None),
+				bare(GEARBOX, 0x3816, Some("IDE00010"), Some(0)),
+				bare(GEARBOX, 0x3816, Some("IDE00011"), Some(4)),
+			]
+		};
+		let selected = |spec: &str| {
+			let mut channels = offered();
+			select_wanted(&mut channels, &parse_spec(spec).unwrap()).map(|()| {
+				channels
+					.iter()
+					.filter(|c| c.selected)
+					.map(|c| (c.request, c.did, c.key().2, c.def.is_some()))
+					.collect::<Vec<_>>()
+			})
+		};
+		assert_eq!(selected("01:IDE00191").unwrap(), vec![(ENGINE, 0x202A, 0, true)]);
+		assert_eq!(selected("02:3816@4").unwrap(), vec![(GEARBOX, 0x3816, 4, true)]);
+		// The whole identifier is every field of it.
+		assert_eq!(selected("02:3816").unwrap(), vec![(GEARBOX, 0x3816, 0, true), (GEARBOX, 0x3816, 4, true)]);
+		// An identifier nothing describes is watched as bytes.
+		assert_eq!(selected("713:1001").unwrap(), vec![(0x713, 0x1001, 0, false)]);
+		// A text id on the wrong unit, or one nobody has, is refused by its spelling.
+		let why = selected("02:IDE00191").unwrap_err();
+		assert!(why.starts_with("02:IDE00191: ") && why.contains("Key column"), "{why}");
+		let why = selected("02:3816@2").unwrap_err();
+		assert!(why.contains("`02:3816` watches the whole identifier"), "{why}");
 	}
 
 	#[test]

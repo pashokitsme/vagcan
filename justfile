@@ -70,11 +70,13 @@ bench secs="15" bin="cantx": _espflash
 build:
     cargo build --release -p vag-cli -p vag-cli-measure
 
-# install vagcan and vagcan-measure into ~/.cargo/bin, over whatever installed them before
-# (an old checkout's `crates/vagcan` package included); extra flags go to cargo: `just install --locked`
+# install vagcan into ~/.cargo/bin, over whatever installed it before (an old checkout's
+# `crates/vagcan` package included); extra flags go to cargo: `just install --locked`.
+# Not `vagcan-measure`: it is `vagcan measure` again, the same flags and the same code, there
+# because the stopwatch is a crate of its own on `core` alone. Nobody reading a car needs the
+# second copy (`cargo uninstall vag-cli-measure` removes one an earlier `just install` put there).
 install *args:
     cargo install --force --path crates/cli/vag-cli {{args}}
-    cargo install --force --path crates/cli/vag-cli-measure {{args}}
 
 # run vagcan from the checkout: `just vagcan info`, `just vagcan watch --device /dev/cu.usbmodem1101`
 vagcan *args:
