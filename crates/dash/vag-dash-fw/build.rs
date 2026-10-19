@@ -132,9 +132,8 @@ fn no_car() {
 /// a person's, and the build stops and says so.
 ///
 /// A car is a directory holding a `dash.toml` — the generator's own
-/// definition of one it can build for. The directory also holds things that
-/// are not cars (`preview/` is the renderer's pictures) and they do not
-/// count, or the fallback would refuse on the very machine it exists for.
+/// definition of one it can build for. Any other directory there is not a car
+/// and does not count.
 ///
 /// It reads the owner's home directory, never the checkout, so no car
 /// reaches the tree by this route either.
