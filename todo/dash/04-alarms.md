@@ -58,11 +58,12 @@ alarm_min_off = 45     # off at or above; default alarm_min + 5 % of |alarm_min|
 - **No count, no refusal**: the cap of four rules went, and a budget of 75 identifiers a
   second that replaced it in review was dropped by the owner the same day — the unit was wrong
   (100 and 25 are policy numbers, the car serves 45–48 exchanges a second, the planner batches up
-  to 8 identifiers a request). The build prints `bus:` — what the board reads in the foreground
-  on every page (alarm channels and setpoints at their `hz`, the strip's voltage, the lever at
-  its fastest, the cruise status), in reads a second, by unit and by share — and refuses
-  nothing. A bus-time check, the planner run over the plan at a measured cost per exchange, is a
-  separate task. The reference car's plan reads 47 a second this way.
+  to 8 identifiers a request). The build estimates bus time instead: the board's planner run over
+  the plan, every exchange at 34 ms (an upper bound from a BLE recording), one `bus:` line per
+  page on the glass — its share of the bus with cruise off and on, each with the reads it would
+  serve slower than their rate, alarm channels among them — and one for a stopwatch run. It
+  refuses nothing; the board's own `exch=` from a drive is the number a strict check waits for
+  ([`.archive/tasks/done/dash/24-bus-time-check.md`](../../.archive/tasks/done/dash/24-bus-time-check.md)).
 - A `plan.json` written while rules were `[[alarm]]` tables is refused with what to do.
 
 **The owner's values** (2026-09-22, researched that day; the research note is not in the
@@ -183,8 +184,8 @@ accepts per request is still a bench measurement — see `06`.
   index and `PageId` its page index, because an image is built for one plan. `Plan::rates`
   keeps watched channels foreground.
 - **`vag-cli-core/src/dash.rs`** — a channel's alarm keys parsed, checked, resolved to one
-  rule per channel and kind with its page, ordered by `alarm_priority`, the `bus:` line
-  (`bus_note`), written to
+  rule per channel and kind with its page, ordered by `alarm_priority`, the `bus:` lines
+  (`bus_notes`, an estimate from `dash/bus_time.rs`), written to
   `plan.json` and `plan.rs`; an `[[alarm]]` table refused with its rewrite (`migrate_alarms`).
 - **`vag-dash-fw/src/bin/dash.rs`** — every panel frame calls `Screen::frame` with the
   cursor and the value store (`None` when stale, the existing `STALE` rule), draws

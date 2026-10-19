@@ -58,6 +58,8 @@ struct DashState {
 	generation: Option<u32>,
 	/// The id of the plan the board's image was built with, as `vagcan dev dash build` prints it.
 	plan: Option<String>,
+	/// `panel`, or `adapter` while the board is a plain CAN adapter.
+	mode: Option<String>,
 	kind: Option<String>,
 	cells: Option<String>,
 	/// The board's fault count once it has ended: the stored codes, or `?` for no count.
@@ -66,6 +68,11 @@ struct DashState {
 	failing: Option<u32>,
 	/// The units counted of the units asked, as the board says them: `17/18`.
 	units: Option<String>,
+	/// The bus's exchanges a second over the board's last 10 s, `29.4/s`, or `-` before a window
+	/// has closed or while the board is an adapter.
+	exch: Option<String>,
+	/// How long an answered exchange took on average in that window, in ms, or `-`.
+	exch_ms: Option<String>,
 }
 
 impl DashState {
@@ -105,11 +112,14 @@ impl DashState {
 				"run_pending" => s.run_pending = Some(value != "0"),
 				"gen" => s.generation = value.parse().ok(),
 				"plan" => s.plan = Some(value.to_string()),
+				"mode" => s.mode = Some(value.to_string()),
 				"kind" => s.kind = Some(value.to_string()),
 				"cells" => s.cells = Some(value.to_string()),
 				"faults" => s.faults = Some(value.to_string()),
 				"failing" => s.failing = value.parse().ok(),
 				"units" => s.units = Some(value.to_string()),
+				"exch" => s.exch = Some(value.to_string()),
+				"exch_ms" => s.exch_ms = Some(value.to_string()),
 				_ => {}
 			}
 		}
@@ -137,7 +147,28 @@ impl DashState {
 			println!("│ plan        {plan}");
 		}
 		println!("│ faults      {}", self.faults());
+		// No key: an image from before the board counted its exchanges.
+		if let Some(bus) = self.bus() {
+			println!("│ bus         {bus}");
+		}
 		println!("└{}", "─".repeat(WIDTH));
+	}
+
+	/// The bus's own rate, for the panel's bus line: exchanges a second and how long an answered
+	/// one took, over the board's last 10 s; `None` from an image that does not count them.
+	fn bus(&self) -> Option<String> {
+		let exch = self.exch.as_deref()?;
+		let Some(per_s) = exch.strip_suffix("/s") else {
+			// An adapter's exchanges are the host's, and the board does not count them.
+			return Some(match self.mode.as_deref() {
+				Some("adapter") => "not counted while an adapter".to_string(),
+				_ => "not counted yet".to_string(),
+			});
+		};
+		Some(match self.exch_ms.as_deref() {
+			Some(ms) if ms != "-" => format!("{per_s} exchanges a second, {ms} ms an answered one"),
+			_ => format!("{per_s} exchanges a second, none answered"),
+		})
 	}
 
 	/// The board's fault count, for the panel's faults line: stored and failing now and how many
@@ -324,7 +355,7 @@ impl LineBuffer {
 }
 #[cfg(test)]
 mod tests {
-	use super::{Cli, DEFAULT_NAME, LineBuffer};
+	use super::{Cli, DEFAULT_NAME, DashState, LineBuffer};
 	use clap::Parser;
 	use clap::error::ErrorKind;
 
@@ -434,5 +465,26 @@ mod tests {
 		let state = super::DashState::parse("state page=0/2 brightness=128 unsaved=0 run_pending=0 gen=5 plan=7fa5728f35ff8bcd mode=panel").unwrap();
 		assert_eq!(state.plan.as_deref(), Some("7fa5728f35ff8bcd"));
 		assert_eq!(state.generation, Some(5));
+	}
+
+	/// `exch=` and `exch_ms=` (`vag_dash_fw::bus_rate`): the bus's rate, `-` before the board's
+	/// first window closes, no line from an image that does not count.
+	#[test]
+	fn the_state_says_the_buss_own_rate() {
+		let state = |tail: &str| DashState::parse(&format!("state page=0/2 brightness=77{tail}")).unwrap();
+		assert_eq!(
+			state(" exch=29.4/s exch_ms=34.0").bus().as_deref(),
+			Some("29.4 exchanges a second, 34.0 ms an answered one")
+		);
+		assert_eq!(
+			state(" exch=0.1/s exch_ms=-").bus().as_deref(),
+			Some("0.1 exchanges a second, none answered")
+		);
+		assert_eq!(state(" mode=panel exch=- exch_ms=-").bus().as_deref(), Some("not counted yet"));
+		assert_eq!(
+			state(" mode=adapter exch=- exch_ms=-").bus().as_deref(),
+			Some("not counted while an adapter")
+		);
+		assert_eq!(state("").bus(), None);
 	}
 }

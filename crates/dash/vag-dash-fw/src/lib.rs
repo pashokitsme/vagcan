@@ -5,6 +5,7 @@
 
 extern crate alloc;
 
+pub mod bus_rate;
 pub mod can;
 pub mod config;
 pub mod exchange;
