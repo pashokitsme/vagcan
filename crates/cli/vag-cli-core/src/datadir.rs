@@ -21,8 +21,7 @@ const MAX_PARENTS: usize = 6;
 /// What a described car has in its directory, and nothing else does.
 ///
 /// Named here because this module decides the layout — `measure::carfile` joins
-/// the same name onto [`car_dir`] — and because [`existing_folder`] has to know
-/// which of two directories for one VIN is the car.
+/// the same name onto [`car_dir`].
 pub const CAR_FILE: &str = "car.json";
 
 /// Resolve a default data path, or return it unchanged if it exists as given.
@@ -156,13 +155,8 @@ pub fn or_default(given: Option<&str>, default: impl FnOnce() -> anyhow::Result<
 /// for it, so one car got two directories, the car file in one and the sessions
 /// in the other, and `--full` refused on a car that had been set up. A name
 /// assembled from what each caller happens to know is not a name.
-///
-/// Directories named the old way are still found and still used — see
-/// [`car_folder_in`]. Nothing is renamed.
 pub fn car_dir(vin: &str) -> anyhow::Result<PathBuf> {
-	let cars = cars_dir()?;
-	let folder = car_folder_in(&cars, vin)?;
-	Ok(cars.join(folder))
+	Ok(cars_dir()?.join(car_folder(vin)?))
 }
 
 /// Every car this machine has met — `~/.vagcan/cars/`, one directory each.
@@ -331,55 +325,6 @@ fn car_folder(vin: &str) -> anyhow::Result<String> {
 	Ok(vin.to_string())
 }
 
-/// The folder this car already has, or the one it would be given.
-///
-/// The rule behind [`car_dir`], with `cars/` passed in so it can be tested
-/// without writing into the owner's own — the same reason [`vagcan_dir_in`]
-/// takes a home directory.
-///
-/// **A directory named the old way is used, not renamed.** Anyone who ran this
-/// tool before the name became the bare VIN has a `1.8l-R4-TFSI-<VIN>` holding
-/// their car file and their drives, and a rename under a running tool is the
-/// one operation here that can lose data: `watch` may have a file open in that
-/// directory, a second `vagcan` may be writing a session into it, and every
-/// path either of them resolved earlier stops pointing at anything. So the tail
-/// is still matched, the old directory still wins, and `mv` still works for
-/// anyone who wants the tidier name — this function will follow it.
-pub fn car_folder_in(cars: &Path, vin: &str) -> anyhow::Result<String> {
-	let wanted = car_folder(vin)?;
-	Ok(existing_folder(cars, &wanted).unwrap_or(wanted))
-}
-
-/// A directory this VIN already has, whatever it happens to be called.
-///
-/// The names are the bare VIN or, from before, `<slug>-<VIN>`, so the tail is
-/// matched on the whole VIN with its separator: a VIN is fixed-length and one
-/// car's must never match another's.
-///
-/// More than one is the state the two-directory bug left behind, so the order
-/// is decided rather than left to the filesystem: the folder holding the car
-/// file is the car — that file is what makes a car *described*, and losing
-/// sight of it is the failure being fixed — then the bare VIN, which is what a
-/// fresh run would create, then the first by name so that two runs with nothing
-/// to choose between them still agree.
-fn existing_folder(cars: &Path, vin: &str) -> Option<String> {
-	let tail = format!("-{vin}");
-	let Ok(entries) = std::fs::read_dir(cars) else { return None };
-	let mut found: Vec<String> = entries
-		.flatten()
-		.filter(|entry| entry.path().is_dir())
-		.filter_map(|entry| entry.file_name().into_string().ok())
-		.filter(|name| name == vin || name.ends_with(&tail))
-		.collect();
-	found.sort();
-	found
-		.iter()
-		.find(|name| cars.join(name).join(CAR_FILE).is_file())
-		.or_else(|| found.iter().find(|name| *name == vin))
-		.or_else(|| found.first())
-		.cloned()
-}
-
 /// The rule behind [`vagcan_dir`], with the home directory passed in so it can
 /// be tested without a process-wide `set_var` that the other tests would race.
 fn vagcan_dir_in(home: Option<PathBuf>) -> anyhow::Result<PathBuf> {
@@ -422,8 +367,7 @@ mod tests {
 
 	/// A unique-per-test temp dir, cleaned up on drop — the shape the rest of
 	/// this crate's file tests use. Nothing here may write into the owner's
-	/// own `~/.vagcan`, which is the whole reason [`car_folder_in`] takes the
-	/// `cars/` directory as an argument.
+	/// own `~/.vagcan`.
 	struct TempDir(PathBuf);
 
 	impl TempDir {
@@ -433,81 +377,12 @@ mod tests {
 			std::fs::create_dir_all(&path).unwrap();
 			TempDir(path)
 		}
-
-		/// A car directory as some earlier run left it.
-		fn car(&self, name: &str) -> PathBuf {
-			let path = self.0.join(name);
-			std::fs::create_dir_all(&path).unwrap();
-			path
-		}
 	}
 
 	impl Drop for TempDir {
 		fn drop(&mut self) {
 			let _ = std::fs::remove_dir_all(&self.0);
 		}
-	}
-
-	#[test]
-	fn a_car_that_already_has_a_directory_does_not_get_a_second_one() {
-		// The reported bug: `measure` named the folder from the VIN alone,
-		// `measure setup` named it from the VIN and the engine's component
-		// string, and one car ended up with the car file in one directory and
-		// its sessions in the other.
-		let cars = TempDir::new("second");
-		let vin = "XW8AD4NE9JH008917";
-		cars.car(vin);
-		let folder = car_folder_in(&cars.0, vin).unwrap();
-		assert_eq!(folder, vin);
-		std::fs::create_dir_all(cars.0.join(&folder)).unwrap();
-		assert_eq!(std::fs::read_dir(&cars.0).unwrap().count(), 1, "one car, one directory");
-	}
-
-	#[test]
-	fn a_directory_from_before_the_rename_is_used_rather_than_orphaned() {
-		// Anyone who ran this tool before the folder name became the bare VIN
-		// has their car file and their drives under the old name. A rename
-		// under a running tool can lose a drive somebody is recording; a stale
-		// folder name costs nothing.
-		let cars = TempDir::new("rename");
-		let vin = "XW8AD4NE9JH008917";
-		cars.car("old-name-XW8AD4NE9JH008917");
-		assert_eq!(car_folder_in(&cars.0, vin).unwrap(), "old-name-XW8AD4NE9JH008917");
-	}
-
-	#[test]
-	fn a_car_with_no_directory_yet_is_named_for_its_vin() {
-		let cars = TempDir::new("first");
-		assert_eq!(car_folder_in(&cars.0, "XW8AD4NE9JH008917").unwrap(), "XW8AD4NE9JH008917");
-		// And a `cars/` that does not exist yet is simply a car nobody has met.
-		assert_eq!(
-			car_folder_in(&cars.0.join("not-created"), "XW8AD4NE9JH008917").unwrap(),
-			"XW8AD4NE9JH008917"
-		);
-	}
-
-	#[test]
-	fn only_the_whole_vin_at_the_tail_is_another_car() {
-		// A VIN is fixed-length, so the tail is matched with its separator: a
-		// shorter one must never adopt a longer one's directory.
-		let cars = TempDir::new("tail");
-		cars.car("1.8l-R4-TFSI-XW8AD4NE9JH008917");
-		assert_eq!(car_folder_in(&cars.0, "XW8AD4NE9JH008918").unwrap(), "XW8AD4NE9JH008918");
-		assert_eq!(car_folder_in(&cars.0, "JH008917").unwrap(), "JH008917");
-	}
-
-	#[test]
-	fn when_one_car_has_two_directories_the_one_holding_the_car_file_wins() {
-		// The state this bug left on cars set up before it was fixed. Both
-		// callers have to land on the described car, whichever name each of
-		// them would have chosen, or `--full` goes on refusing.
-		let cars = TempDir::new("two");
-		let vin = "XW8AD4NE9JH008917";
-		cars.car(vin);
-		let described = cars.car("1.8l-R4-TFSI-XW8AD4NE9JH008917");
-		std::fs::write(described.join(CAR_FILE), "{}").unwrap();
-		assert_eq!(car_folder_in(&cars.0, vin).unwrap(), "1.8l-R4-TFSI-XW8AD4NE9JH008917");
-		assert_eq!(car_folder_in(&cars.0, vin).unwrap(), "1.8l-R4-TFSI-XW8AD4NE9JH008917");
 	}
 
 	#[test]

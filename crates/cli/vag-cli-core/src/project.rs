@@ -169,8 +169,7 @@ pub fn open_or_create(id: &str) -> Result<Project> {
 }
 
 /// The rule behind [`open_or_create`], with `data/` passed in so it can be
-/// tested without writing into the owner's own — the same reason
-/// `datadir::car_folder_in` takes `cars/`.
+/// tested without writing into the owner's own.
 fn open_or_create_in(projects: &Path, id: &str) -> Result<Project> {
 	let name = folder_name(id)?;
 	let dir = projects.join(&name);
