@@ -15,7 +15,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 | Command | What it does |
 |---|---|
 | `vagcan` | Shows where you stand: adapter, car data, what to type next |
-| `vagcan setup` | Reads an ODIS project or a VCDS installation, offline. Takes seconds for ODIS, up to tens of minutes the first time for VCDS |
+| `vagcan setup` | Reads an ODIS project or a VCDS installation, offline. Takes seconds for ODIS; the first VCDS read can take tens of minutes |
 | `vagcan devices` | Lists USB-CAN adapters and dash boards on USB |
 | `vagcan info` | VIN, and the engine's and gearbox's part numbers and software versions |
 | `vagcan units` | The car's control units, named from your label files and earlier `--identify` runs. `--identify` makes each one name itself |
@@ -239,7 +239,7 @@ For cars no ODIS project covers.
 - It has names and fault text, and the channels of the units of the cars `watch`, `measure` or `units --identify` records.
 - About 40 % of its unit files are locked to VCDS itself; ODIS covers those.
 - **The first read can take tens of minutes.** It searches for the keys of VCDS's encrypted files, unit by unit. The keys are kept, so each one is searched for once.
-- **A Russian-only VCDS gives fault text, but no measurement names.** `watch` then shows ids instead of names. Read an English VCDS instead, `vagcan setup <folder>`: a second installation replaces the first.
+- **A Russian-only VCDS gives fault text, but no measurement names.** `watch` then shows its channels by reading id. Read an English VCDS instead: `vagcan setup` with no path, then pick "Download VCDS". A second VCDS installation replaces the first.
 
 With VCDS alone, the channels come the first time `vagcan watch`, `vagcan measure` or
 `vagcan units --identify` runs with the car: it records which control units the car has and
@@ -289,7 +289,7 @@ Add `--slcan` to use a dash board on USB as a plain adapter (`vagcan --slcan dev
 vagcan faults --ble
 ```
 
-**No car or adapter yet?** These work offline: `vagcan setup`, `vagcan dev vcds names <text>` to search VW's measurement names, and `vagcan dev recording …` to read a recorded drive.
+**No car or adapter yet?** These work offline: `vagcan setup`, `vagcan dev vcds names <text>` to search the measurement names `setup` read (from VCDS, ODIS or both), and `vagcan dev recording …` to read a recorded drive.
 
 ## Building the dash
 
