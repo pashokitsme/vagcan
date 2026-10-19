@@ -206,6 +206,9 @@ crates/            all Rust. Three families and the product.
     vag-dash-render    a Frame in, pixels out, on any DrawTarget
     vag-dash-ble       BLE client (btleplug): scan, pick, open a NUS pipe
     vag-dash-cfg       binary `dashcfg` — configures the dash over BLE
+    vag-dash-wasm      the renderer as WebAssembly for `dev dash edit`'s page; built
+                       by `vag-cli-diag`'s build script and embedded, checked for wasm
+                       in CI's `test` job (`VAGCAN_DASH_WASM_REQUIRED`)
     vag-dash-fw        binary `dash` — the device itself. NOT a workspace member:
                        no_std for riscv32imc-unknown-none-elf with its own
                        build-std config. Build it from its own directory.
@@ -216,7 +219,7 @@ crates/            all Rust. Three families and the product.
                        its files live, the terminal widgets. Knows no command.
     vag-cli-diag       reading a car and the files that explain it: identify,
                        faults, the one guarded sweep (`units --identify <unit>`),
-                       watch, setup, vcds tooling
+                       watch, setup, dash build and edit, vcds tooling
     vag-cli-measure    binary `vagcan-measure` — the acceleration stopwatch.
                        Depends on `core` **alone**, checked symbol by symbol,
                        which is what makes it a crate rather than a directory.
@@ -238,8 +241,8 @@ research/        RE writeups + tooling (NOT shipped) for work still in progress:
                        and the buttons), `bleecho`, `bleuds` (one framed UDS request or
                        subscription over BLE) and `benchecu` (the CANable answering as
                        a control unit; bench pair only, refuses on car traffic);
-                       `layout-editor/` lays out pages in a browser on the real renderer
-                       (WebAssembly) and a car's resolved channels; `alarm-thresholds.md` is
+                       `layout-editor/` is notes only — the tool is `vagcan dev dash edit`
+                       now; `alarm-thresholds.md` is
                        where the oil and gearbox alarm numbers came from (2026-10-19)
   odis-dtc/            fault codes and their text in an ODIS project: the object
                        layouts the DTC loader reads, and the offline proof against

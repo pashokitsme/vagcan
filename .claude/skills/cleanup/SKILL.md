@@ -329,11 +329,14 @@ mixed in.
 
 ### Rules established on the 2026-10-19 pass
 
-- **Crates outside the workspace and outside CI are built in Phase 1.** `research/dash/layout-editor/`
-  holds two (`wasm/`, `catalog/`) with path dependencies on the workspace; PR #24 added
-  `dash::Input::strip` and the catalog stopped compiling the same day, with every gate green.
-  `cargo check` in each (the wasm one with `--target wasm32-unknown-unknown`), or its `build.sh`
-  against the car; a break is fixed in the pass, not noted.
+- **Crates outside the workspace and outside CI are built in Phase 1.** A crate with path
+  dependencies on the workspace that no CI job builds rots with every gate green: PR #24 added
+  `dash::Input::strip` and the layout editor's catalog stopped compiling the same day. Both of
+  those are in the workspace now (`vag-cli-diag/src/dash/catalog.rs`, `crates/dash/vag-dash-wasm`)
+  and CI's `test` job compiles the renderer for `wasm32-unknown-unknown` with
+  `VAGCAN_DASH_WASM_REQUIRED` set. For anything still outside both — `ls research/*/*/Cargo.toml`
+  and every non-member a CI job does not name — `cargo check` it in the pass; a break is fixed
+  in the pass, not noted.
 - **A file an agent prepared from the owner's data is checked against that data's mtime.** The
   thresholds engineer wrote the owner's migrated `dash.toml` from the file as it was when it
   started; the owner's new layout was written into the live file an hour later, so the migration
