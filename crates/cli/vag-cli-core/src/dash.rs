@@ -165,6 +165,17 @@ pub fn no_input(vin: &str, path: &Path) -> String {
 	)
 }
 
+/// What a build whose input is not at `path` says, without an errno (UX review, 2026-10-19).
+/// A path the build was `given` (`--input`) is a mistyped path, not a car with no file yet: it
+/// gets no starter.
+fn missing_input(vin: &str, path: &Path, given: bool) -> String {
+	if given {
+		format!("no file at {}", path.display())
+	} else {
+		no_input(vin, path)
+	}
+}
+
 /// What a build for a car with no record of its units says: the commands that write it, in one
 /// line. `units --identify` with no unit named, not `--identify <unit>`: that one is a sweep of
 /// one unit, and the record of every unit is what the build needs.
@@ -1071,11 +1082,14 @@ pub enum Error {
 	NoResponseRule(u16),
 	/// The resolved variant does not declare it and nothing proved it.
 	Undeclared(Reference),
-	/// A channel's name where its id goes — `01:Engine Coolant Temperature`. `ids` are the
-	/// spellings of the rows on that unit carrying that name, if any does.
+	/// A channel's name where its id goes — `01:Engine Coolant Temperature`, or a text with a
+	/// space no row is named. `ids` are the rows on that unit carrying that name that a numeric
+	/// cell takes, each spelled the way the build reads it as that row; `not_linear`, that the
+	/// name is carried only by rows the board cannot show.
 	NameNotId {
 		reference: Reference,
 		ids: Vec<String>,
+		not_linear: bool,
 	},
 	/// The unit is on the car's record, and the project has no channel at all for it.
 	NoChannels(Reference),
@@ -1142,12 +1156,19 @@ impl fmt::Display for Error {
 					"{r}: unit {unit} has {what} in this car's project data, and none was measured on a car — {FIND_IDS}"
 				)
 			}
-			Error::NameNotId { reference, ids } => {
+			Error::NameNotId { reference, ids, not_linear } => {
 				let Reference::TextId { text_id, .. } = reference else {
 					return write!(f, "{reference}: a name, not a channel id — {FIND_IDS}");
 				};
 				match ids.as_slice() {
-					[] => write!(f, "{reference}: {text_id:?} is a name, and dash.toml takes a channel's id — {FIND_IDS}"),
+					[] if *not_linear => write!(
+						f,
+						"{reference}: {text_id:?} is the name of a channel the board cannot show — its scaling is not linear; pick a numeric one: {FIND_IDS}"
+					),
+					[] => write!(
+						f,
+						"{reference}: {text_id:?} is a name or a mistyped id, and dash.toml takes a channel's id — {FIND_IDS}"
+					),
 					[one] => write!(f, "{reference}: {text_id:?} is the channel's name — write its id: {one}"),
 					many => write!(
 						f,
@@ -1882,18 +1903,30 @@ fn no_such_channel(reference: &Reference, offered: &[poll::Channel]) -> Error {
 	if named.is_empty() && !text_id.contains(char::is_whitespace) {
 		return Error::Undeclared(reference.clone());
 	}
+	// Only what a numeric cell takes is worth suggesting, and only in a spelling the build reads
+	// as that row: its text id where that is the one linear row carrying it — the rule of
+	// [`resolve_channel`] — its identifier and bit where that is, and nothing where neither is.
+	let is_linear = |c: &poll::Channel| matches!(c.def.as_ref().map(|d| &d.scaling), Some(Scaling::Linear(_)));
+	let bit_of = |c: &poll::Channel| c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset());
+	let linear: Vec<&poll::Channel> = on_unit.iter().copied().filter(|c| is_linear(c)).collect();
 	let mut ids: Vec<String> = Vec::new();
-	for c in named {
-		let spelled = match &c.text_id {
-			Some(id) => Reference::TextId {
+	for c in named.iter().copied().filter(|c| is_linear(c)) {
+		let by_text = c
+			.text_id
+			.as_ref()
+			.filter(|id| linear.iter().filter(|o| o.text_id.as_ref() == Some(*id)).count() == 1);
+		let by_field = linear.iter().filter(|o| o.did == c.did && bit_of(o) == bit_of(c)).count() == 1;
+		let spelled = match (by_text, by_field) {
+			(Some(id), _) => Reference::TextId {
 				request,
 				text_id: id.clone(),
 			},
-			None => Reference::Field {
+			(None, true) => Reference::Field {
 				request,
 				did: c.did,
-				bit_offset: c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset()),
+				bit_offset: bit_of(c),
 			},
+			(None, false) => continue,
 		}
 		.to_string();
 		if !ids.contains(&spelled) {
@@ -1902,6 +1935,7 @@ fn no_such_channel(reference: &Reference, offered: &[poll::Channel]) -> Error {
 	}
 	Error::NameNotId {
 		reference: reference.clone(),
+		not_linear: !named.is_empty() && !named.iter().any(|c| is_linear(c)),
 		ids,
 	}
 }
@@ -3199,8 +3233,7 @@ pub fn read_inputs(vin: &str, input: Option<&Path>) -> anyhow::Result<Inputs> {
 	let input_path = input.map(Path::to_path_buf).unwrap_or_else(|| dir.join("dash.toml"));
 	let text = match std::fs::read_to_string(&input_path) {
 		Ok(text) => text,
-		// What to write and where, not an errno (UX review, 2026-10-19).
-		Err(e) if e.kind() == std::io::ErrorKind::NotFound => anyhow::bail!(no_input(vin, &input_path)),
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => anyhow::bail!(missing_input(vin, &input_path, input.is_some())),
 		Err(e) => return Err(e).with_context(|| format!("reading the build input {}", input_path.display())),
 	};
 	let parsed = parse_input(&text)?;
@@ -4244,6 +4277,14 @@ mod tests {
 		let said = unknown.to_string();
 		assert!(said.starts_with("01:IDE99999: unit 01 has no channel with the id IDE99999"), "{said}");
 		assert!(said.contains(FIND_IDS), "the next step: {said}");
+		// The identifier form, in its own words.
+		let at = refuse("01:1234@8");
+		assert_eq!(at, Error::Undeclared(Reference::parse("01:1234@8").unwrap()));
+		assert!(
+			at.to_string()
+				.starts_with("01:1234@8: unit 01 has no channel at identifier 1234, bit 8 in this car's project data"),
+			"{at}"
+		);
 
 		let name = refuse("01:Engine Coolant Temperature");
 		assert_eq!(
@@ -4251,6 +4292,7 @@ mod tests {
 			Error::NameNotId {
 				reference: Reference::parse("01:Engine Coolant Temperature").unwrap(),
 				ids: vec!["01:IDE00025".to_string()],
+				not_linear: false,
 			}
 		);
 		assert_eq!(
@@ -4259,9 +4301,16 @@ mod tests {
 		);
 		// Not the case of the project's spelling, and not a name of this car's: still a name.
 		assert!(matches!(refuse("01:engine coolant temperature"), Error::NameNotId { ids, .. } if ids == ["01:IDE00025"]));
+		// A text with a space no row is named: a name, or an id typed wrong — not "a name" for sure.
 		let stranger = refuse("01:Oil Level");
-		assert!(matches!(&stranger, Error::NameNotId { ids, .. } if ids.is_empty()), "{stranger}");
-		assert!(stranger.to_string().contains(FIND_IDS), "{stranger}");
+		assert!(
+			matches!(&stranger, Error::NameNotId { ids, not_linear: false, .. } if ids.is_empty()),
+			"{stranger}"
+		);
+		assert_eq!(
+			stranger.to_string(),
+			format!("01:Oil Level: \"Oil Level\" is a name or a mistyped id, and dash.toml takes a channel's id — {FIND_IDS}")
+		);
 
 		let empty = refuse("02:IDE00191");
 		assert_eq!(empty, Error::NoChannels(Reference::parse("02:IDE00191").unwrap()));
@@ -4277,11 +4326,71 @@ mod tests {
 		assert!(texts[0] != texts[1] && texts[1] != texts[2] && texts[0] != texts[2]);
 	}
 
+	/// A name's suggestions are what a numeric cell takes, each in a spelling the build reads as
+	/// that row (review, 2026-10-19): no enumeration, and no text id two linear rows share.
+	#[test]
+	fn a_name_suggests_only_linear_rows_spelled_the_way_the_build_takes_them() {
+		let here = tempfile::tempdir().unwrap();
+		let enumeration = |did: u16, name: &str, text_id: &str| Reading {
+			unit: None,
+			scaling: Scaling::Enum {
+				levels: vec![Level::point(0, "off"), Level::point(1, "on")],
+			},
+			..reading(did, name, text_id, 0, 8, false, true, 1.0, 0.0)
+		};
+		let extracted = extracted_with(
+			here.path(),
+			&[(
+				"EV_Test_001",
+				vec![
+					// One name on an enumeration and a linear row sharing a text id: the linear
+					// one, by that id — the build's pick of the two.
+					enumeration(0x1003, "Gear", "IDE00003"),
+					reading(0x1006, "Gear", "IDE00003", 0, 8, false, true, 1.0, 0.0),
+					// One name and one text id on two linear rows: the id names neither, so each
+					// by identifier.
+					reading(0x1007, "Load", "IDE00007", 0, 8, false, true, 1.0, 0.0),
+					reading(0x1008, "Load", "IDE00007", 0, 8, false, true, 1.0, 0.0),
+					// A name only an enumeration carries.
+					enumeration(0x1009, "Door State", "IDE00009"),
+				],
+			)],
+			&[],
+		);
+		let store = CatalogStore::open(here.path().join("proven"));
+		let units = [identity(ENGINE, "PART1", "EV_Test")];
+		let refuse = |r: &str| build(&input(&[r], &values_page(&[r])), &store, &extracted, &units, Language::En).unwrap_err();
+
+		assert!(matches!(refuse("01:Gear"), Error::NameNotId { ids, .. } if ids == ["01:IDE00003"]));
+		assert!(matches!(refuse("01:Load"), Error::NameNotId { ids, .. } if ids == ["01:1007", "01:1008"]));
+		// Every suggestion builds, as the very row it was offered for.
+		for (spelled, did) in [("01:IDE00003", 0x1006), ("01:1007", 0x1007), ("01:1008", 0x1008)] {
+			let built =
+				build(&input(&[spelled], &values_page(&[spelled])), &store, &extracted, &units, Language::En).unwrap_or_else(|e| panic!("{spelled}: {e}"));
+			assert_eq!(built.plan.channels[0].did, did, "{spelled}");
+		}
+		let door = refuse("01:Door State");
+		assert!(
+			matches!(&door, Error::NameNotId { ids, not_linear: true, .. } if ids.is_empty()),
+			"{door}"
+		);
+		assert!(
+			door
+				.to_string()
+				.starts_with("01:Door State: \"Door State\" is the name of a channel the board cannot show"),
+			"{door}"
+		);
+	}
+
 	#[test]
 	fn a_missing_build_input_says_what_to_write_and_where_without_an_errno() {
 		let here = tempfile::tempdir().unwrap();
 		let path = here.path().join("dash.toml");
-		let why = format!("{:#}", read_inputs("TESTVIN0000000001", Some(&path)).unwrap_err());
+		// `--input` names a file that is not there: a path typed wrong, nothing to start from.
+		let given = format!("{:#}", read_inputs("TESTVIN0000000001", Some(&path)).unwrap_err());
+		assert_eq!(given, format!("no file at {}", path.display()));
+		// The car's own dash.toml is not there yet: what to write.
+		let why = missing_input("TESTVIN0000000001", &path, false);
 		assert!(why.starts_with("no dash.toml for TESTVIN0000000001 yet. Write "), "{why}");
 		assert!(why.contains(&path.display().to_string()), "where: {why}");
 		assert!(why.contains(&SMALLEST_INPUT.replace("<VIN>", "TESTVIN0000000001")), "what: {why}");

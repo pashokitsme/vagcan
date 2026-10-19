@@ -533,7 +533,10 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `unit XXX is not in the car's record of its units` | Connect to the car with that unit answering (`vagcan units --identify`), or fix the unit. |
 | `unit XXX: the car's record has no part number (F187) for it` | Run `vagcan units --identify` again. The board checks the unit by that number. |
 | `X: unit NN has no channel with the id … in this car's project data, and none was measured on a car` | This car's unit has no such row. Find its ids in `vagcan watch`: press `,` and set "Key at the end of each row" to shown. |
-| `X: "…" is the channel's name — write its id: NN:ID` (or `is the name of N channels`, or `is a name, and dash.toml takes a channel's id`) | Write the id instead of the name. |
+| `X: unit NN has no channel at identifier DDDD, bit B in this car's project data, and none was measured on a car` | No row at that identifier and bit on this car's unit. Check the identifier and the `@` bit, or find the row in `vagcan watch` as above. |
+| `X: "…" is the channel's name — write its id: NN:ID` (or `is the name of N channels — write the id of one`) | Write one of the listed ids instead of the name. |
+| `X: "…" is a name or a mistyped id, and dash.toml takes a channel's id` | Find the id in `vagcan watch` as above. |
+| `X: "…" is the name of a channel the board cannot show — its scaling is not linear` | The board shows numbers only. Pick a numeric row. |
 | `X: unit NN is in the car's record, but the project data has no channels for its variant` | The project describes nothing on that unit. Pick a channel of another unit. |
 | `X: N rows answer to it — name one by identifier and bit offset: DID@bit name, …` | Write one of the listed rows as `<unit>:<DID>@<bit>`. |
 | `X: scaling is an enumeration, not linear` (or `a single proven point with no slope`) | The board shows numbers only. Pick a numeric row. |
