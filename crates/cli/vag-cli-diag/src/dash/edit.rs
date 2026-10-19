@@ -31,24 +31,34 @@ const PAGE: &str = include_str!("editor.html");
 /// The renderer, as `build.rs` compiled it; empty when it could not.
 const WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/dash.wasm"));
 
-/// Why [`WASM`] is empty.
+/// Why [`WASM`] is empty: `build.rs`'s kind of failure on the first line (`not-installed` or
+/// `failed`), its words after it.
 const WASM_WHY: &str = include_str!(concat!(env!("OUT_DIR"), "/dash-wasm-why.txt"));
 
 /// Bumped when the shape of `channels.json` or the catalog's rules change, so a kept one is
 /// not served to a page that reads another.
-const CATALOG_FORMAT: &str = "1";
+const CATALOG_FORMAT: &str = "2";
 
-/// The refusal when this `vagcan` was built without the renderer.
+/// The refusal when this `vagcan` was built without the renderer, from `build.rs`'s
+/// [`WASM_WHY`]. A missing target is installed; any other failure is built again from clean.
 fn no_renderer(why: &str) -> String {
+	let (kind, said) = why.trim().split_once('\n').unwrap_or((why.trim(), ""));
+	if kind == "not-installed" {
+		return format!(
+			"this vagcan was built without the dash renderer for the browser: {}. Install the target, then build vagcan again — `just install` in a clone, or the `cargo install` it came from:\n\n  rustup target add wasm32-unknown-unknown\n  just install",
+			said.trim()
+		);
+	}
 	format!(
-		"this vagcan was built without the dash renderer for the browser ({why}). Install the target, then build vagcan again — `just install` in a clone, or the `cargo install` it came from:\n\n  rustup target add wasm32-unknown-unknown\n  just install"
+		"this vagcan was built without the dash renderer for the browser: its build failed — {}\n\nBuild vagcan again from clean — in a clone:\n\n  cargo clean -p vag-cli-diag\n  just install\n\nor run the `cargo install` it came from again.",
+		said.trim()
 	)
 }
 
 /// Prepare the editor's directory for `vin`, serve it, and open the page. Runs until Ctrl-C.
 pub async fn run(vin: &str) -> Result<()> {
 	if WASM.is_empty() {
-		bail!(no_renderer(WASM_WHY.trim()));
+		bail!(no_renderer(WASM_WHY));
 	}
 	let record = vag_cli_core::datadir::units_record(vin)?;
 	let units = vag_cli_core::units::read_record(&record)?.ok_or_else(|| anyhow::anyhow!("{}", dash::no_record(vin, &record)))?;
@@ -250,8 +260,10 @@ pub struct Response {
 	pub reason: &'static str,
 	pub content_type: &'static str,
 	pub body: Vec<u8>,
-	/// `HEAD`: the headers of the `GET`, and no body.
+	/// `HEAD`: the headers of the `GET`, and no body — a refusal's too.
 	pub head_only: bool,
+	/// The methods this server takes, said with a 405.
+	pub allow: Option<&'static str>,
 }
 
 impl Response {
@@ -262,12 +274,14 @@ impl Response {
 			content_type: "text/plain; charset=utf-8",
 			body: format!("{status} {reason}\n").into_bytes(),
 			head_only: false,
+			allow: None,
 		}
 	}
 
 	fn bytes(&self) -> Vec<u8> {
+		let allow = self.allow.map(|a| format!("Allow: {a}\r\n")).unwrap_or_default();
 		let mut out = format!(
-			"HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\
+			"HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{allow}Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\
 			 Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
 			 img-src 'self' data:; form-action 'none'; frame-ancestors 'none'\r\nConnection: close\r\n\r\n",
 			self.status,
@@ -288,6 +302,7 @@ impl Response {
 /// Only `GET` and `HEAD`; only a `Host` of this server — a page on another site that has a
 /// name resolve to 127.0.0.1 is refused rather than answered (DNS rebinding); and only a plain
 /// file name directly in `dir`: no separator, no `..`, no leading dot, no escapes, no link.
+/// A `HEAD` gets no body, whatever the answer.
 pub fn respond(dir: &Path, port: u16, head: &str) -> Response {
 	let mut lines = head.split("\r\n");
 	let mut parts = lines.next().unwrap_or_default().split(' ');
@@ -295,12 +310,26 @@ pub fn respond(dir: &Path, port: u16, head: &str) -> Response {
 	let head_only = match method {
 		"GET" => false,
 		"HEAD" => true,
-		_ => return Response::refuse(405, "Method Not Allowed"),
+		_ => {
+			return Response {
+				allow: Some("GET, HEAD"),
+				..Response::refuse(405, "Method Not Allowed")
+			};
+		}
 	};
 	let headers: BTreeMap<String, &str> = lines
 		.filter_map(|l| l.split_once(':'))
 		.map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim()))
 		.collect();
+	Response {
+		head_only,
+		..file(dir, port, target, &headers)
+	}
+}
+
+/// What `GET` of `target` answers: the file it names in `dir`, or the refusal. [`respond`]
+/// drops the body for `HEAD`.
+fn file(dir: &Path, port: u16, target: &str, headers: &BTreeMap<String, &str>) -> Response {
 	let ours = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
 	if !headers.get("host").is_some_and(|h| ours.iter().any(|o| o.eq_ignore_ascii_case(h))) {
 		return Response::refuse(403, "Forbidden");
@@ -331,7 +360,8 @@ pub fn respond(dir: &Path, port: u16, head: &str) -> Response {
 		reason: "OK",
 		content_type,
 		body,
-		head_only,
+		head_only: false,
+		allow: None,
 	}
 }
 
@@ -456,6 +486,26 @@ mod tests {
 		for method in ["POST", "PUT", "DELETE", "OPTIONS"] {
 			let r = respond(&dir, PORT, &format!("{method} / HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\n\r\n"));
 			assert_eq!(r.status, 405, "{method}");
+			let said = String::from_utf8(r.bytes()).unwrap();
+			assert!(said.contains("\r\nAllow: GET, HEAD\r\n"), "{method}: {said}");
+		}
+		let said = String::from_utf8(get(&dir, "/").bytes()).unwrap();
+		assert!(!said.contains("Allow:"), "only a 405 says it: {said}");
+		// A refused HEAD is a HEAD: headers, no body.
+		for (target, host, status) in [
+			("/nope.html", "127.0.0.1", 404),
+			("/", "evil.example", 403),
+			("/../dash.toml", "127.0.0.1", 404),
+		] {
+			let host = if host == "127.0.0.1" {
+				format!("{host}:{PORT}")
+			} else {
+				host.to_string()
+			};
+			let r = respond(&dir, PORT, &format!("HEAD {target} HTTP/1.1\r\nHost: {host}\r\n\r\n"));
+			assert_eq!(r.status, status, "{target}");
+			let said = String::from_utf8(r.bytes()).unwrap();
+			assert!(said.ends_with("\r\n\r\n"), "no body after a refused HEAD: {said:?}");
 		}
 		for host in ["", "Host: evil.example\r\n", "Host: 127.0.0.1:1\r\n", "Host: 127.0.0.1\r\n"] {
 			let r = respond(&dir, PORT, &format!("GET / HTTP/1.1\r\n{host}\r\n"));
@@ -497,6 +547,8 @@ mod tests {
 		for file in ["dash.wasm", "channels.json", "layout.json"] {
 			assert!(PAGE.contains(&format!("fetch(\"{file}\")")), "it loads {file}");
 		}
+		// Not even a `/favicon.ico` the server has no file for.
+		assert!(PAGE.contains("<link rel=\"icon\" href=\"data:,\">"));
 	}
 
 	#[test]
@@ -525,9 +577,35 @@ mod tests {
 	}
 
 	#[test]
-	fn a_build_without_the_renderer_says_what_to_install() {
-		let said = no_renderer("the wasm32-unknown-unknown target is not installed");
+	fn a_build_without_the_target_says_what_to_install() {
+		let said = no_renderer("not-installed\nthe wasm32-unknown-unknown target is not installed");
+		assert!(said.contains(": the wasm32-unknown-unknown target is not installed."), "{said}");
 		assert!(said.contains("rustup target add wasm32-unknown-unknown"), "{said}");
 		assert!(said.contains("build vagcan again"), "{said}");
+		assert!(!said.contains("not-installed"), "the kind is not words: {said}");
+	}
+
+	#[test]
+	fn a_failed_renderer_build_is_said_and_built_again_from_clean() {
+		// With the target installed, "install the target" is no answer: the build said why.
+		let said = no_renderer("failed\ncompiling crates/dash/vag-dash-wasm for wasm32-unknown-unknown failed: error[E0425] / x");
+		assert!(said.contains("its build failed — compiling crates/dash/vag-dash-wasm"), "{said}");
+		assert!(said.contains("error[E0425]"), "{said}");
+		assert!(said.contains("cargo clean -p vag-cli-diag"), "{said}");
+		assert!(!said.contains("rustup target add"), "{said}");
+	}
+
+	#[test]
+	fn the_reason_build_rs_writes_is_the_one_read_here() {
+		// The kinds are two strings in two files; this holds them together.
+		let script = include_str!("../../build.rs");
+		assert!(script.contains("const NOT_INSTALLED: &str = \"not-installed\";"));
+		assert!(script.contains("const FAILED: &str = \"failed\";"));
+		if WASM.is_empty() {
+			let kind = WASM_WHY.lines().next().unwrap_or_default();
+			assert!(kind == "not-installed" || kind == "failed", "{WASM_WHY:?}");
+		} else {
+			assert!(WASM_WHY.is_empty(), "{WASM_WHY:?}");
+		}
 	}
 }

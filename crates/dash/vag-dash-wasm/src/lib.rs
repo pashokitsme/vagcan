@@ -99,8 +99,8 @@ fn draw(json: &[u8], out: &mut Bits) -> bool {
 		return false;
 	};
 	out.0.fill(0);
-	// A board with BLE connected and no fault count yet: what the strip's right end holds most
-	// of the time. Not a reading of any car.
+	// A board with BLE connected whose fault count came back zero, nothing failing now: what
+	// the strip's right end holds most of the time. Not a reading of any car.
 	let board = Board {
 		links: Links { usb: false, ble: true },
 		rates: None,

@@ -114,9 +114,10 @@ fmt-check:
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
-# CI `test`: the workspace's tests
+# CI `test`: the workspace's tests, and the dash renderer compiled for the browser's page — a
+# renderer that does not build for wasm fails here (needs `rustup target add wasm32-unknown-unknown`)
 test:
-    cargo test --workspace
+    VAGCAN_DASH_WASM_REQUIRED=1 cargo test --workspace
 
 # CI `no-std`: the three crates the board links, without `std`, for the board's target
 no-std:

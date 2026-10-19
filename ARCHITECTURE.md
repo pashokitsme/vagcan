@@ -564,7 +564,9 @@ A recording holds no fault count, so the replay draws no badge.
 the panel with `vag-dash-render` compiled to WebAssembly (`vag-dash-wasm`). `vagcan` cannot
 compile WebAssembly when it runs, so `vag-cli-diag`'s build script compiles it while `vagcan` is
 built, with a second cargo, and embeds it — only when the `wasm32-unknown-unknown` target is
-installed; otherwise the command says to install it and build again. The channels it offers are
+installed; otherwise the command says to install it and build again. A compile that fails is
+tried again at the next build, and the command shows its error. CI's `test` job installs the
+target and sets `VAGCAN_DASH_WASM_REQUIRED`, which makes either case a failed build. The channels it offers are
 `watch`'s rows, each put through `dash::build` (`vag-cli-diag/src/dash/catalog.rs`): a row is a
 number only when a `[[channel]]` naming it builds, to that row. The page writes nothing; it
 shows the blocks to copy into `dash.toml`.

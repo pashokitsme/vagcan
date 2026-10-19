@@ -9,7 +9,7 @@
 //! the research evidence — which identifiers answered in the August surveys and recordings of
 //! one car — which is not data a command has for any other.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 use vag_cli_core::config::Language;
@@ -181,9 +181,11 @@ pub fn rows(sources: &Sources<'_>) -> Vec<Row> {
 	}
 	// One reference per row: its text id where that names this row and no other — the rule the
 	// build applies (a single linear row wins over enum rows sharing the id; otherwise the id
-	// must be the only match) — and `<unit>:<DID>[@bit]` otherwise. A spelling two rows would
-	// share names neither for sure, so only the first keeps it.
-	let mut taken = BTreeSet::new();
+	// must be the only match) — and `<unit>:<DID>[@bit]` otherwise. A spelling two rows share
+	// keeps the row the build resolves it to: the first linear one, or with none linear the
+	// first. `plan::available` holds one row per field today, so two rows at one identifier and
+	// bit do not reach here; this keeps the build's rule if that changes.
+	let mut taken: BTreeMap<String, usize> = BTreeMap::new();
 	let mut picked: Vec<(&plan::Channel, Reference)> = Vec::new();
 	for c in &described {
 		let by_text = c.text_id.as_deref().filter(|id| {
@@ -202,8 +204,13 @@ pub fn rows(sources: &Sources<'_>) -> Vec<Row> {
 			},
 			None => field,
 		};
-		if taken.insert(reference.to_string()) {
-			picked.push((c, reference));
+		match taken.get(&reference.to_string()) {
+			None => {
+				taken.insert(reference.to_string(), picked.len());
+				picked.push((c, reference));
+			}
+			Some(&at) if linear(c) && !linear(picked[at].0) => picked[at] = (c, reference),
+			Some(_) => {}
 		}
 	}
 
@@ -354,6 +361,20 @@ mod tests {
 			flag,
 			// A factor the board's f32 holds as 0.
 			reading(0x1004, "Tiny", "IDE00004", 0, 8, 1e-60),
+			// An enumeration and a linear row at one identifier and bit, neither with a text id:
+			// the project's rows reach `watch`'s list as one row per field.
+			Reading {
+				text_id: None,
+				unit: None,
+				scaling: Scaling::Enum {
+					levels: vec![Level::point(0, "off")],
+				},
+				..reading(0x1005, "Mode", "", 0, 8, 1.0)
+			},
+			Reading {
+				text_id: None,
+				..reading(0x1005, "Pressure", "", 0, 8, 0.5)
+			},
 		];
 		vag_data_db::put_readings(&cache, "/nowhere/TEST", "EV_Test_001", &readings).unwrap();
 		let extracted = Extracted::synthetic(cache, Default::default());
@@ -385,6 +406,20 @@ mod tests {
 		assert!(!gear.numeric && gear.refused.as_deref().unwrap().contains("enumeration"), "{gear:?}");
 		let tiny = row("01:IDE00004");
 		assert!(!tiny.numeric && tiny.refused.as_deref().unwrap().contains("32-bit float"), "{tiny:?}");
+		// Two rows of the project at one field are one row offered, and one spelling.
+		assert_eq!(rows.iter().filter(|r| r.reference == "01:1005").count(), 1, "{rows:#?}");
+		// Every row says what the build says of its reference alone: numeric ones build (below),
+		// and the rest are refused.
+		for r in rows.iter().filter(|r| !r.numeric) {
+			let built = dash::build(
+				&input_of(sources.vin, None, &[Reference::parse(&r.reference).unwrap()]),
+				&store,
+				&extracted,
+				&units,
+				Language::En,
+			);
+			assert!(built.is_err(), "{} is offered as not a number, and builds", r.reference);
+		}
 
 		// Each numeric row, alone in a dash.toml, builds — and under every alias too.
 		for r in rows.iter().filter(|r| r.numeric) {
