@@ -88,10 +88,10 @@ ref = "01:IDE00191"                # boost pressure, actual
 setpoint = "01:IDE00190"           # boost pressure, target value: same unit; no [[channel]] needed
 decimals = 2
 hz = 10
-drift_percent = 10                 # an alarm 10 % or more from the specified value…
+drift_percent = 10                 # an alarm 10 % or more from the target value…
 drift_hold_ms = 1000               # …for a second
 drift_off_percent = 6              # off again at 6 % or under
-drift_min_setpoint = 0.5           # nothing said while the specified value is under 0.5
+drift_min_setpoint = 0.5           # nothing said while the target value is under 0.5
 
 [[channel]]
 ref = "02:IDE00075"                # vehicle speed in km/h, the stopwatch's: on no page, read fast
@@ -183,10 +183,10 @@ One per value the board reads.
 | `alarm_max_off` | number, under `alarm_max` | no | `alarm_max` less 5 % of its size, at least one step of the channel's resolution | The alarm goes off once the value is back at this or under. Needs `alarm_max`. |
 | `alarm_min` | number | no | none | An alarm at this value or below. Either bound, or both. |
 | `alarm_min_off` | number, over `alarm_min` | no | `alarm_min` plus 5 % of its size, at least one step of the channel's resolution | The alarm goes off once the value is back at this or above. Needs `alarm_min`. |
-| `drift_percent` | number, above 0 | no | none | A drift alarm: the channel this far from its `setpoint`, in percent of the specified value, or further… Needs a `setpoint`, and the three keys below. |
+| `drift_percent` | number, above 0 | no | none | A drift alarm: the channel this far from its `setpoint`, in percent of the target value, or further… Needs a `setpoint`, and the three keys below. |
 | `drift_hold_ms` | integer, 0 or more | with `drift_percent` | — | …for this many milliseconds without a break. |
 | `drift_off_percent` | number, above 0, under `drift_percent` | with `drift_percent` | — | The alarm goes off once the drift is back at this share or under. |
-| `drift_min_setpoint` | number, 0 or more | with `drift_percent` | — | While the specified value is nearer 0 than this, either side, the drift alarm says nothing. In the channel's unit. |
+| `drift_min_setpoint` | number, 0 or more | with `drift_percent` | — | While the target value is nearer 0 than this, either side, the drift alarm says nothing. In the channel's unit. |
 | `alarm_priority` | integer, 1 or more | no | none | The alarm's priority, 1 first. Needs an alarm on the channel. See [Alarms](#alarms). |
 
 - The row must scale linearly: a number. An enumeration, or a single point measured on a car with no
