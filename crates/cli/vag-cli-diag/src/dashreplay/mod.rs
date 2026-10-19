@@ -127,7 +127,7 @@ pub fn write_log(mut replay: Replay, out: &mut impl Write) -> Result<()> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use vag_dash_render::alarm::{Alarm, ChannelId, Direction, PageId, Rule};
+	use vag_dash_render::alarm::{Alarm, Bound, ChannelId, PageId, Rule};
 	use vag_dash_render::plan::{Channel, Page, Plan};
 
 	const fn channel(did: u16, label: &'static str) -> Channel {
@@ -163,14 +163,12 @@ mod tests {
 			volts: true,
 		},
 	];
-	static WATCHED: [ChannelId; 1] = [ChannelId(1)];
-	static RULES: [Alarm<'static>; 1] = [Alarm {
-		channels: &WATCHED,
+	static RULES: [Alarm; 1] = [Alarm {
+		channel: ChannelId(1),
 		page: PageId(1),
-		rule: Rule::Threshold {
-			trip: 10.0,
-			release: 8.0,
-			direction: Direction::Above,
+		rule: Rule::Bounds {
+			max: Some(Bound { at: 10.0, off: 8.0 }),
+			min: None,
 		},
 	}];
 	static PLAN: Plan = Plan {
@@ -199,7 +197,7 @@ mod tests {
 		assert_eq!(
 			text,
 			"     0.00 s  start on page 1 \"MAIN\"\n\
-			 \x20    1.00 s  alarm #1 took the screen — page 2 \"HIGH\", B (01:1002) = 12 (trips at ≥ 10, releases below 8)\n\
+			 \x20    1.00 s  alarm #1 took the screen — page 2 \"HIGH\", B (01:1002) = 12 (on at ≥ 10, off at ≤ 8)\n\
 			 \x20    1.20 s  press — silences alarm #1\n\
 			 \x20    1.20 s  alarm #1 silenced — back to page 1 \"MAIN\"\n"
 		);

@@ -1,6 +1,6 @@
 # `dash.toml` — reference
 
-`dash.toml` says what the dash board reads and shows: channels, pages, alarms, the cruise lever,
+`dash.toml` says what the dash board reads and shows: channels and their alarms, pages, the cruise lever,
 the stopwatch and buttons on the board's pins. One file per car, written by hand:
 
 ```
@@ -80,12 +80,18 @@ ref = "01:IDE00025"                # coolant temperature, by channel id
 label = "ОЖ"                       # the name on the panel
 decimals = 0
 hz = 10                            # readings a second while its page is up
+alarm_max = 105                    # an alarm at 105 or above, on every page
+alarm_max_off = 100                # off again at 100 or under
 
 [[channel]]
 ref = "01:IDE00191"                # boost pressure, actual
 setpoint = "01:IDE00190"           # boost pressure, target value: same unit; no [[channel]] needed
 decimals = 2
 hz = 10
+drift_percent = 10                 # an alarm 10 % or more from the specified value…
+drift_hold_ms = 1000               # …for a second
+drift_off_percent = 6              # off again at 6 % or under
+drift_min_setpoint = 0.5           # nothing said while the specified value is under 0.5
 
 [[channel]]
 ref = "02:IDE00075"                # vehicle speed in km/h, the stopwatch's: on no page, read fast
@@ -96,8 +102,8 @@ ref = "01:IDE00018"                # terminal 15 voltage, the strip's: on no pag
 
 [[page]]
 kind = "values"
-title = "MAIN"                     # in the strip; alarms name the page by this
-cells = ["01:IDE00025", "01:IDE00191"]
+title = "MAIN"                     # in the strip
+cells = ["01:IDE00025", "01:IDE00191"]   # the first values page with them: their alarms raise it
 
 [[page]]
 kind = "chart"
@@ -109,22 +115,6 @@ volts = false                      # no voltage in this page's strip
 
 [strip]
 volts = "01:IDE00018"              # the voltage in the strip over every page
-
-[[alarm]]                          # no `kind`: a threshold rule
-channels = ["01:IDE00025"]
-page = "MAIN"
-direction = "above"
-trip = 105
-release = 100
-
-[[alarm]]
-kind = "drift"
-channels = ["01:IDE00191"]         # each needs a `setpoint`
-page = "MAIN"
-percent = 10
-release_percent = 6
-hold_ms = 1000
-min_setpoint = 0.5
 
 [stalk]
 read = "70C:1105"
@@ -158,13 +148,13 @@ a near key when there is one, and the keys that table takes. So is an optional k
 type: `decimals = "2"` is refused, never read as absent.
 
 - Top-level keys go above the first section. TOML gives a key to the section header above it.
-- A key of the other `kind` is refused: `min` on a values page, `trip` on a drift rule.
+- A key of the other `kind` is refused: `min` on a values page, `cells` on a chart.
 - Strings are trimmed at both ends.
-- Keywords are lowercase: `kind = "Values"` and `direction = "Above"` are refused.
+- Keywords are lowercase: `kind = "Values"` is refused.
 
 Check the build's output after every edit. It prints one line per channel (with its rate) and per
-target value, then one for the stopwatch, the lever and each button, then one per alarm. Notes
-come in between, such as nothing turning the page.
+target value, then one for the stopwatch, the lever and each button, then one per alarm, then
+the bus line (see [Alarms](#alarms)). Notes come in between, such as nothing turning the page.
 
 ### Top level
 
@@ -187,8 +177,16 @@ One per value the board reads.
 | `label` | string | no | `names.csv` in `language`, then the project's wording | The name on the panel. Ten characters fit a page of four cells; longer collides with the next cell. |
 | `decimals` | integer, 0 to 3 | no | from the scaling: 0 for a step of 1 or more, one place per decade under 1, at most 3 | Places after the point. |
 | `hz` | number, above 0, at most 100 | no | 2 | Readings a second while a page showing it is up. |
-| `setpoint` | string: a channel on the same unit | no | none | The channel's target value, as its unit sets it. The panel draws the distance from target under the number; a `drift` alarm watches it. |
+| `setpoint` | string: a channel on the same unit | no | none | The channel's target value, as its unit sets it. The panel draws the distance from target under the number; a drift alarm watches it. |
 | `zero_at_rest` | `true` or `false` | no | `false` | Shows 0 while the car stands (the stopwatch's `speed` reads 0). For an acceleration sensor, which reads the road's slope as acceleration at a standstill. Needs a `[stopwatch]`. Alarms and charts still see the value as read. |
+| `alarm_max` | number | no | none | An alarm at this value or above. See [Alarms](#alarms). |
+| `alarm_max_off` | number, under `alarm_max` | no | `alarm_max` less 5 % of its size, at least one display step | The alarm goes off once the value is back at this or under. Needs `alarm_max`. |
+| `alarm_min` | number | no | none | An alarm at this value or below. Either bound, or both. |
+| `alarm_min_off` | number, over `alarm_min` | no | `alarm_min` plus 5 % of its size, at least one display step | The alarm goes off once the value is back at this or above. Needs `alarm_min`. |
+| `drift_percent` | number, above 0 | no | none | A drift alarm: the channel this far from its `setpoint`, in percent of the specified value, or further… Needs a `setpoint`, and the three keys below. |
+| `drift_hold_ms` | integer, 0 or more | with `drift_percent` | — | …for this many milliseconds without a break. |
+| `drift_off_percent` | number, above 0, under `drift_percent` | with `drift_percent` | — | The alarm goes off once the drift is back at this share or under. |
+| `drift_min_setpoint` | number, 0 or more | with `drift_percent` | — | While the specified value is nearer 0 than this, either side, the drift alarm says nothing. In the channel's unit. |
 
 - The row must scale linearly: a number. An enumeration, or a single point measured on a car with no
   slope, is refused.
@@ -199,11 +197,54 @@ One per value the board reads.
 
 - On the same control unit as the channel.
 - It needs no `[[channel]]` of its own. The build adds it, read at the channel's `hz`.
-- Without a `[[channel]]` of its own it is never shown: no page, alarm or stopwatch may name it.
+- Without a `[[channel]]` of its own it is never shown: no page, strip or stopwatch may name it.
   Declare it under `[[channel]]` to show it.
 - If it has a `[[channel]]` of its own, that one's `hz` must equal the channel's.
 - Same unit of measure as the channel.
 - It cannot be the channel itself, and cannot have a `setpoint` of its own.
+
+### Alarms
+
+An alarm is keys of the channel it watches: `alarm_max`, `alarm_min` and the `drift_*` keys
+above. Example: an alarm at 125 or above, off at 120; and at 40 or below, off at 45.
+
+```toml
+[[channel]]
+ref = "01:IDE00196"
+alarm_max = 125
+alarm_max_off = 120
+alarm_min = 40
+alarm_min_off = 45
+```
+
+- **The page.** An alarm raises the **first values page that shows the channel**, with the
+  channel's cell inverted. A channel with an alarm must be a cell of a values page: a chart has
+  no cell to invert.
+- **Priority** is the order of the `[[channel]]`s, first highest; a channel's bounds before its
+  drift. With alarms out on two pages, the higher one's page is shown.
+- **Several on one page:** every channel out on the page shown is inverted, each blinking while
+  it is out and steady once it is back. One press silences all of them.
+- **Off values.** `alarm_max_off` is under `alarm_max`; `alarm_min_off` is over `alarm_min`. With
+  both bounds, `alarm_min_off` must be under `alarm_max_off`. Left out, an off value is 5 % of
+  the bound inside it, and never less than one step of the channel's `decimals` (`1` for 0
+  decimals, `0.1` for 1). The build's line for the alarm says which off values are defaults.
+- Every number must fit a 32-bit float. They are compared as the board holds them.
+- **The bus budget.** The board reads every alarm's channel at its `hz` on every page, and its
+  `setpoint` with it. Together with the lever, the cruise status and the channels of the pages
+  not on screen (once a second each), that may come to at most **75 reads a second**. A plan over
+  it is refused, with each channel's share. The build's `bus:` line says how much a plan uses.
+
+**Replacing `[[alarm]]`.** `[[alarm]]` tables are refused. The refusal lists the keys to add to
+each channel, taken from the file's own rules:
+
+| `[[alarm]]` | on each channel in its `channels` |
+|---|---|
+| `direction = "above"`, `trip = A`, `release = B` | `alarm_max = A`, `alarm_max_off = B` |
+| `direction = "below"`, `trip = A`, `release = B` | `alarm_min = A`, `alarm_min_off = B` |
+| `kind = "drift"`, `percent`, `release_percent`, `hold_ms`, `min_setpoint` | `drift_percent`, `drift_off_percent`, `drift_hold_ms`, `drift_min_setpoint`, the same numbers |
+| `page` | nothing: the alarm raises the first values page with the channel |
+
+Order the `[[channel]]`s by the old rules' order to keep their priority.
 
 ### `[[page]]`
 
@@ -214,7 +255,7 @@ Pages come in the file's order. 1 to 8 of them. `kind` picks the page.
 | key | type | required | default | what it does |
 |---|---|---|---|---|
 | `kind` | `"values"` | yes | — | |
-| `title` | string | no | `""` | Drawn in the strip over the page. The name an `[[alarm]]` raises the page by. |
+| `title` | string | no | `""` | Drawn in the strip over the page. |
 | `cells` | list of channels | yes | — | 1 to 4 channels, one column each. Each must be under `[[channel]]`, in either spelling. |
 | `volts` | `true` or `false` | no | `true` | Whether the strip shows the voltage on this page. Needs a `[strip]`. |
 
@@ -250,40 +291,6 @@ middle. The page is drawn in the rows under it.
 - A page with no `title` and no voltage has no strip: it uses the whole panel.
 - The voltage is read at the channel's `hz` while its page is on screen, like a cell.
 - The build lists the pages that show it, and says so when the channel's unit is not `V`.
-
-### `[[alarm]]`
-
-A rule that takes the screen when a value goes wrong. 0 to 4 rules. The file's order is their
-priority, first highest. Two kinds.
-
-**Threshold** — `kind` left out, or `"threshold"`.
-
-| key | type | required | default | what it does |
-|---|---|---|---|---|
-| `kind` | `"threshold"` | no | `"threshold"` | |
-| `channels` | list of channels | yes | — | 1 or more, each under `[[channel]]`, all shown on `page`. |
-| `page` | string | yes | — | The `title` of one values page. |
-| `direction` | `"above"` or `"below"` | yes | — | Which way is wrong. |
-| `trip` | number | yes | — | Fires at this value or past it. |
-| `release` | number | yes | — | Clears once strictly back past this. Must be on the far side of `trip`: below it for `"above"`, above it for `"below"`. |
-
-**Drift** — distance from the value the unit asked for.
-
-| key | type | required | default | what it does |
-|---|---|---|---|---|
-| `kind` | `"drift"` | yes | — | |
-| `channels` | list of channels | yes | — | As above, and each must have a `setpoint`. |
-| `page` | string | yes | — | As above. |
-| `percent` | number, above 0 | yes | — | Fires when the channel is this far from its specified value, in percent of the specified value, or further… |
-| `hold_ms` | integer, 0 or more | yes | — | …for this many milliseconds without a break. |
-| `release_percent` | number, above 0, under `percent` | yes | — | Clears under this share. |
-| `min_setpoint` | number, 0 or more | yes | — | While the specified value is nearer 0 than this, either side, the rule says nothing. In the channel's unit. |
-
-- Any watched channel past `trip` (or `percent`) fires the rule. All of them must be back past
-  `release` (or under `release_percent`) to clear it.
-- Every number must fit a 32-bit float. They are compared as the board holds them.
-- A key of the other kind (`trip` on a drift rule, `percent` on a threshold rule) is refused.
-- Each rule's channels are read at their `hz` on every page, not only on theirs.
 
 ### `[stalk]`
 
@@ -425,8 +432,8 @@ Two spellings, both `<unit>:<row>`:
   `<unit>:<DID>@<bit>`. It also takes a pair as the Key column shows it, `01:IDE00191/IDE00190`: both rows.
 - Which variant of the unit the car has is not written here. It comes from the car's record of its units.
 - One row is one channel however it is spelled. `01:IDE00191` and `01:202A` are the same row:
-  declaring both is refused, and a page, an alarm, a `setpoint` or `speed` may use either
-  spelling for a row declared under the other.
+  declaring both is refused, and a page, a `setpoint` or `speed` may use either spelling for a
+  row declared under the other.
 
 ## How to find names for your car
 
@@ -449,7 +456,7 @@ Two spellings, both `<unit>:<row>`:
 | `[[page]]` | 1 to 8 |
 | cells on a values page | 1 to 4 |
 | chart pages per channel | 1 |
-| `[[alarm]]` | 0 to 4 |
+| alarms | any number, within the bus budget: 75 reads a second on every page |
 | `hz` | above 0, at most 100; 2 when absent |
 | `hz` of the stopwatch's `speed` | 7.5 or more; 50 recommended |
 | `decimals` | 0 to 3 |
@@ -469,8 +476,9 @@ build prints it after `dash plan for VIN <VIN>:`.
 |---|---|
 | `dash.toml: …` with a line and column | A TOML syntax error. Fix it there. |
 | `line N: [[channel]] 2: unknown key "hzz" — did you mean "hz"? [[channel]] takes …` | Fix the spelling. The message lists the keys that table takes. |
-| `line N: unknown section [[alarms]] — did you mean [[alarm]]? The top level takes …` | Fix the section's name. |
-| `line N: [[page]] 1: "min" is a key of a chart page (kind = "chart"), and this is a values page` | Remove the key, or change `kind`. The same for an `[[alarm]]`'s two kinds. |
+| `line N: unknown section [[pages]] — did you mean [[page]]? The top level takes …` | Fix the section's name. |
+| `line N: [[page]] 1: "min" is a key of a chart page (kind = "chart"), and this is a values page` | Remove the key, or change `kind`. |
+| `line N: [[alarm]] is gone: an alarm is now keys of the [[channel]] it watches. … add to each [[channel]]: …` | Delete the `[[alarm]]` tables and add the keys it lists to those channels. See [Alarms](#alarms). |
 | `line N: [stopwatch]: "language" is a top-level key: write it above the first section` | Move it above the first section. |
 | `line N: [[page]] 1: "hz" is a key of [[channel]]` | Move it under that section. |
 | `line N: [[channel]] 1: label must be a string, not an integer` | Write the type this reference gives. The same for every optional key but `hz` and `setpoint`, whose refusals are under **Channels**. |
@@ -483,7 +491,6 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `the channels of N control units … have not been read from the VCDS installation (…)` | Only the units the configuration uses count. Run `vagcan dev dash build <VIN>` once: it reads them from the installation, offline, then builds. If the refusal goes on to say the installation `is not on this machine any more`, or names the project's own note of it, re-run `vagcan setup <VCDS installation>` first. If `dev dash build` is what just ran, the lines above it say what stopped the read. |
 | `the channels of N control units … (…), which the plan does not use` | Not a refusal: a note among the build's lines, and the build goes on. Those units' channels are read by the next `watch`, `measure` or `units --identify` with the car, or by `vagcan dev dash build <VIN>`; when the note says the installation is gone, re-run `vagcan setup <VCDS installation>` if you want them. |
 | `no [[channel]]` / `no [[page]]` | Add one. A single `[channel]` or `[page]` with one pair of brackets counts as none. |
-| `alarm must be written as [[alarm]] tables` | Two pairs of brackets. |
 | `stalk must be one [stalk] table` / `stopwatch must be one [stopwatch] table` | One pair of brackets. |
 | `<key> is missing or not a string` | Add the key, quoted. |
 
@@ -551,25 +558,27 @@ build prints it after `dash plan for VIN <VIN>:`.
 
 **Alarms**
 
+The first group comes with a line and the channel's place, `line N: [[channel]] n: …`; the rest
+name the channel, `X: …`.
+
 | refusal | what to do |
 |---|---|
-| `N [[alarm]] rules, and the board holds at most 4` | Remove rules. |
-| `alarm #n has no channels list` / `watches no channels` / `a channel is not a string` | Add `channels`, a list of quoted channels. |
-| `alarm #n: X is not in the [[channel]] list` | Declare it under `[[channel]]`. |
-| `alarm #n: X is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it` | Declare it under `[[channel]]`. |
-| `alarm #n: kind "x" is not "threshold" or "drift"` | Lowercase `threshold` or `drift`. |
-| `alarm #n: direction "x" is not "below" or "above"` | Lowercase `below` or `above`. |
-| `alarm #n needs <key>, a finite number` | Add it, a number that fits a 32-bit float. |
-| `alarm #n: no values page is titled "T" — an alarm raises a values page, never a chart` | Give a values page that `title`. |
-| `alarm #n: N values pages are titled "T"` | Give them different titles. |
-| `alarm #n: page "T" does not show X` | Put X on that page. |
-| `alarm #n: release A is not above trip B` / `not below trip B` | Move `release` to the far side of `trip`. |
-| `alarm #n: percent 0 is not above zero` (or `release_percent`) | Above 0. |
-| `alarm #n: release_percent V is too small for the board, which would hold it as 0` (or `percent`) | A larger share. |
-| `alarm #n: release_percent A is not under percent B` | Lower `release_percent`. |
-| `alarm #n needs hold_ms, whole milliseconds the drift has to hold` | An integer, `1000` not `1000.0`. |
-| `alarm #n: min_setpoint V is below zero` | 0 or more. |
-| `alarm #n: X has no setpoint` | Give X a `setpoint`, or use a threshold rule. |
+| `alarm_max must be a number, not a string` (or any alarm key) | Write it unquoted. |
+| `alarm_max V is not a number the board's 32-bit float holds` (or any alarm key) | A smaller number. |
+| `alarm_max_off needs alarm_max` (or `alarm_min_off`) | Add the bound, or remove the off value. |
+| `alarm_max_off A is not under alarm_max B` | Write `alarm_max_off` under `alarm_max`. |
+| `alarm_min_off A is not over alarm_min B` | Write `alarm_min_off` over `alarm_min`. |
+| `a drift alarm takes all four of drift_percent, drift_off_percent, drift_hold_ms, drift_min_setpoint — missing …` | Add the missing keys. |
+| `drift_percent 0 is not above zero` (or `drift_off_percent`) | Above 0. |
+| `drift_off_percent V is too small for the board, which would hold it as 0` (or `drift_percent`) | A larger share. |
+| `drift_off_percent A is not under drift_percent B` | Lower `drift_off_percent`. |
+| `drift_hold_ms must be whole milliseconds, 0 or more` | An integer, `1000` not `1000.0`. |
+| `drift_min_setpoint V is below zero` | 0 or more. |
+| `X: alarm_max needs a values page that shows the channel` (or `alarm_min`, `drift_percent`) | Put X on a values page. |
+| `X: alarm_min_off A is not under alarm_max_off B — no value would be off for both` | Move the two off values apart. `(its default)` marks one the build derived: write it. |
+| `X: alarm_max_off A (its default) is alarm_max B on the board` (or `alarm_min_off`) | Write the off value. |
+| `X: drift_percent needs a setpoint` | Give X a `setpoint`, or remove the `drift_*` keys. |
+| `the board would read N identifiers a second on every page, over its bus budget of 75 — alarms …; the lever …; …` | Lower the `hz` of an alarm's channel, or take an alarm off one. The message lists each channel's share. |
 
 **`[stalk]`**
 
@@ -627,13 +636,14 @@ build prints it after `dash plan for VIN <VIN>:`.
 
 - A channel on the page on screen: at its `hz`.
 - A channel only on other pages, charts included: once a second, or at its `hz` if slower.
-- A channel an alarm watches: at its `hz`, whatever page is up.
+- A channel with an alarm: at its `hz`, whatever page is up.
 - A target value (`setpoint`): with its channel.
 - `[strip]`'s `volts`: as a cell of every page whose strip shows it.
 - Any other channel on no page: not read, except the stopwatch's `speed` while the stopwatch is
   on.
 - All channels together: at most 100 requests a second. Asked for more, the board reads them
-  more slowly than their `hz`. The build does not check it.
+  more slowly than their `hz`. The build checks only what is read on every page: at most 75 a
+  second ([Alarms](#alarms)).
 - At start-up the board checks each unit's part number (`F187`) against the one the dash was built
   for. A unit that answers another number is not read: after replacing a unit, run `vagcan units --identify` and rebuild.
 
@@ -643,7 +653,8 @@ build prints it after `dash plan for VIN <VIN>:`.
   buttons do nothing.
 - With no `[stalk]` and no `next` or `previous` `[[button]]`, the board shows its active page.
   Only `dashsim` or `dashcfg`'s `set page` changes it. The build says so.
-- With no `[stalk]` and no `[[button]]`, only `dashsim` silences an alarm (**Alarms**, below).
+- With no `[stalk]` and no `[[button]]`, only `dashsim` silences an alarm (**Alarms on the
+  board**, below).
   The build says so.
 - With the stopwatch on, `next` and `previous` do nothing, from any of them. `stopwatch` leaves
   it; so does the board turning adapter (`vagcan --slcan`), and the lever (**The stopwatch**,
@@ -690,14 +701,14 @@ build prints it after `dash plan for VIN <VIN>:`.
 - With a `[stalk]`, the lever unreadable for over 3 s closes it too: no answer, a stale cruise
   status, a reading no state claims, its unit silent. A shorter gap leaves it and a run alone.
 
-**Alarms**
+**Alarms on the board**
 
-- A rule watches its channels whatever is on screen, the stopwatch included.
-- When one goes wrong, the rule's page comes up with that cell blinking, 0.4 s on and 0.4 s off,
-  while the value is out.
-- After the value clears, the page stays 2.5 s with the cell steadily inverted. Then the screen
-  goes back to where it was.
-- A press — a `[[button]]`, the lever or `dashsim` — silences that episode until the value
-  clears.
-- Unsilenced, it lasts until its channel answers in range again. A channel that stops
-  answering keeps it on the glass.
+- A channel with an alarm is watched whatever is on screen, the stopwatch included.
+- When it crosses, the first values page with it comes up, its cell blinking 0.4 s on and 0.4 s
+  off while the value is out. Another channel out on that page blinks too.
+- Once the value is back at its off value, the page stays 2.5 s with the cell steadily inverted.
+  Then the screen goes back to where it was.
+- A press — a `[[button]]`, the lever or `dashsim` — silences every alarm on the screen until
+  its value is back at its off value. An alarm out on another page then takes the screen.
+- Unsilenced, it lasts until its value is back at its off value. A channel that stops answering
+  keeps it on the glass.

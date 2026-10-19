@@ -166,10 +166,10 @@ fn replayed(plan: &Plan, index: u16) -> bool {
 		})
 	};
 	let watched = plan.alarms.iter().any(|alarm| {
-		alarm.channels.contains(&index)
+		alarm.channel == index
 			|| match &alarm.rule {
-				AlarmRule::Threshold { .. } => false,
-				AlarmRule::Drift { specified, .. } => specified.contains(&index),
+				AlarmRule::Bounds { .. } => false,
+				AlarmRule::Drift { specified, .. } => *specified == index,
 			}
 	});
 	let explains = plan

@@ -27,15 +27,15 @@
 //! glass shows the adapter's counters, so a press there has no alarm to silence
 //! and turns the page as it always has.
 
-use crate::alarm::{Alarm, Alarms, ChannelId, Highlight, PageId, Press, Shown};
+use crate::alarm::{Alarm, Alarms, ChannelId, Highlight, Inverted, PageId, Press, Shown, Slot};
 use crate::control::Command;
 use crate::pages;
 
 /// What one frame did to the glass that is worth one line in the log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change {
-	/// Rule `rule` — its place in the plan — took the glass, from the driver's
-	/// page or from another rule.
+	/// An alarm's page took the glass, from the driver's page or from another alarm's: `rule`
+	/// is the rule that leads on it, by its place in the plan.
 	Took { rule: usize },
 	/// The alarm's hold ran out, and the glass is back on the driver's page.
 	Over,
@@ -49,16 +49,16 @@ pub enum Change {
 pub struct Glass {
 	/// The page to draw: an index into the plan's pages, which are the board's.
 	pub page: u8,
-	/// The channel the alarm on the glass points at — what the log names. Whether its
-	/// cell is inverted on this frame is [`Glass::inverted`].
+	/// The channel the leading alarm on the glass points at — what the log names. Other
+	/// channels out on the same page are marked too ([`Glass::inverted`]).
 	pub offending: Option<ChannelId>,
-	/// How the offending cell is drawn: blinking from the takeover while the rule fires,
-	/// steady through the hold after the release. `Some` exactly when `offending` is.
+	/// How the leading cell is drawn: blinking while its rule fires, steady through the hold
+	/// once its value is back. `Some` exactly when `offending` is.
 	pub highlight: Option<Highlight>,
-	/// The channel whose cell is drawn inverted **on this frame**: the offending one
-	/// on the inverted half of a blink ([`BLINK_MS`](crate::alarm::BLINK_MS)) and all
-	/// through the hold, otherwise none.
-	pub inverted: Option<ChannelId>,
+	/// The channels whose cells are drawn inverted **on this frame**: every one an alarm on the
+	/// glass points at, on the inverted half of its blink
+	/// ([`BLINK_MS`](crate::alarm::BLINK_MS)) and all through its hold.
+	pub inverted: Inverted,
 	/// The page differs from the one the last frame drew — the first frame, a
 	/// page turn, a takeover, a hand-back, the first frame after the adapter
 	/// screen. The channels read in the foreground follow the page on the glass,
@@ -96,16 +96,17 @@ pub enum Outcome {
 
 /// The plan's alarms and what the glass showed last.
 ///
-/// `N` is the plan's number of rules, fixed when the image is built.
-pub struct Screen<'a, const N: usize> {
-	alarms: Alarms<'a, N>,
+/// `S` holds the alarms' state, one [`Slot`] per rule: an array sized by the plan when the
+/// image is built, or a `Vec` on a laptop.
+pub struct Screen<'a, S> {
+	alarms: Alarms<'a, S>,
 	/// The last frame was the adapter's, not a page.
 	adapter: bool,
 	/// The page the last page frame drew: `None` before the first and after the
 	/// adapter screen.
 	drawn: Option<u8>,
-	/// The rule whose alarm the last frame showed.
-	rule: Option<usize>,
+	/// The alarm page the last frame showed.
+	alarm_page: Option<PageId>,
 	/// A command silenced an alarm since the last frame.
 	silenced: bool,
 	/// The plan has a `[stopwatch]`: [`Command::Stopwatch`] has a page to open.
@@ -116,21 +117,20 @@ pub struct Screen<'a, const N: usize> {
 	turns: u16,
 }
 
-impl<'a, const N: usize> Screen<'a, N> {
-	/// The plan's rules, all `N` of them, in priority order, and whether the plan has a
+impl<'a, S: AsRef<[Slot]> + AsMut<[Slot]>> Screen<'a, S> {
+	/// The plan's rules in priority order, one [`Slot`] for each, and whether the plan has a
 	/// `[stopwatch]`.
 	///
 	/// # Panics
 	///
-	/// When `rules` is not `N` long: `N` is sized from the same plan, so a
+	/// When `slots` is not as long as `rules`: both are sized from the same plan, so a
 	/// mismatch is an image built wrong, not a car behaving oddly.
-	pub fn new(rules: &'a [Alarm<'a>], stopwatch: bool) -> Self {
-		assert_eq!(rules.len(), N, "the screen is sized for the plan's alarms");
+	pub fn new(rules: &'a [Alarm], slots: S, stopwatch: bool) -> Self {
 		Screen {
-			alarms: Alarms::new(core::array::from_fn(|i| rules[i])),
+			alarms: Alarms::new(rules, slots),
 			adapter: false,
 			drawn: None,
-			rule: None,
+			alarm_page: None,
 			silenced: false,
 			planned_stopwatch: stopwatch,
 			stopwatch: false,
@@ -148,6 +148,7 @@ impl<'a, const N: usize> Screen<'a, N> {
 			.poll_with(PageId(u16::from(cursor)), |channel: ChannelId| value_of(channel.0), now_ms)
 			.shown;
 		let rule = self.alarms.showing();
+		let alarm_page = self.alarms.page();
 
 		// With no alarm up the shown page is the cursor, which is the caller's to
 		// keep in range; an alarm's page is the plan's, and is checked here.
@@ -156,21 +157,21 @@ impl<'a, const N: usize> Screen<'a, N> {
 			_ => (cursor, Shown::page(PageId(u16::from(cursor))), Some(shown.page)),
 		};
 
-		let change = match (self.rule, rule) {
-			(before, Some(now)) if before != Some(now) => Some(Change::Took { rule: now }),
-			(Some(_), None) if self.silenced => Some(Change::Silenced),
-			(Some(_), None) => Some(Change::Over),
+		let change = match (self.alarm_page, alarm_page, rule) {
+			(before, Some(now), Some(rule)) if before != Some(now) => Some(Change::Took { rule }),
+			(Some(_), None, _) if self.silenced => Some(Change::Silenced),
+			(Some(_), None, _) => Some(Change::Over),
 			_ => None,
 		};
-		self.rule = rule;
+		self.alarm_page = alarm_page;
 		self.silenced = false;
 
 		let page_changed = self.drawn != Some(page);
 		self.drawn = Some(page);
 		Glass {
 			page,
-			offending: shown.offending,
-			highlight: shown.highlight,
+			offending: shown.offending(),
+			highlight: shown.highlight(),
 			inverted: shown.inverted(now_ms),
 			page_changed,
 			missed,
@@ -198,7 +199,8 @@ impl<'a, const N: usize> Screen<'a, N> {
 	/// 1. **The adapter screen:** [`Command::Next`] and [`Command::Previous`] move the cursor,
 	///    wrapping; nothing is polled there, so there is no alarm to silence.
 	///    [`Command::Stopwatch`] is ignored: the adapter screen has no stopwatch.
-	/// 2. **An alarm owns the glass:** any command silences it, and does nothing else.
+	/// 2. **An alarm owns the glass:** any command silences every alarm on it, and does nothing
+	///    else.
 	/// 3. **The stopwatch is up:** [`Command::Next`] and [`Command::Previous`] are ignored, so an
 	///    accidental page turn does not end a run; [`Command::Stopwatch`] leaves it, back to the
 	///    page it came from.
@@ -291,31 +293,34 @@ fn page(cursor: &mut u8, to: u8) -> Outcome {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::alarm::{BLINK_MS, Direction, HOLD_MS, Rule};
+	use crate::alarm::{BLINK_MS, Bound, HOLD_MS, Rule};
 	use crate::plan::{Channel, Page, Plan};
 
-	/// Pages: 0 and 1 are the driver's, 2 explains `HIGH`, 3 explains `LOW`.
+	/// Pages: 0 and 1 are the driver's, 2 shows channels 4 and 5, 3 shows channel 6.
 	const PAGES: u8 = 4;
-	static HIGH_CHANNELS: [ChannelId; 2] = [ChannelId(4), ChannelId(5)];
-	static LOW_CHANNELS: [ChannelId; 1] = [ChannelId(6)];
-	/// Neutral numbers: a rule that fires high and one that fires low.
-	static RULES: [Alarm<'static>; 2] = [
+	/// Neutral numbers: two channels with an upper bound on page 2, one with a lower bound on
+	/// page 3 — rules 0, 1 and 2.
+	const HIGH: Rule = Rule::Bounds {
+		max: Some(Bound { at: 10.0, off: 8.0 }),
+		min: None,
+	};
+	static RULES: [Alarm; 3] = [
 		Alarm {
-			channels: &HIGH_CHANNELS,
+			channel: ChannelId(4),
 			page: PageId(2),
-			rule: Rule::Threshold {
-				trip: 10.0,
-				release: 8.0,
-				direction: Direction::Above,
-			},
+			rule: HIGH,
 		},
 		Alarm {
-			channels: &LOW_CHANNELS,
+			channel: ChannelId(5),
+			page: PageId(2),
+			rule: HIGH,
+		},
+		Alarm {
+			channel: ChannelId(6),
 			page: PageId(3),
-			rule: Rule::Threshold {
-				trip: 0.0,
-				release: 1.0,
-				direction: Direction::Below,
+			rule: Rule::Bounds {
+				max: None,
+				min: Some(Bound { at: 0.0, off: 1.0 }),
 			},
 		},
 	];
@@ -337,8 +342,10 @@ mod tests {
 		}
 	}
 
-	fn screen() -> Screen<'static, 2> {
-		Screen::new(&RULES, true)
+	type Fixture = Screen<'static, [Slot; 3]>;
+
+	fn screen() -> Fixture {
+		Screen::new(&RULES, [Slot::CLEAR; 3], true)
 	}
 
 	#[test]
@@ -353,7 +360,7 @@ mod tests {
 		assert_eq!(took.page, 2, "the page that explains it");
 		assert_eq!(took.offending, Some(ChannelId(5)), "the cell to invert, by plan index");
 		assert!(took.page_changed, "a takeover moves what the bus reads in the foreground");
-		assert_eq!(took.change, Some(Change::Took { rule: 0 }));
+		assert_eq!(took.change, Some(Change::Took { rule: 1 }));
 		let still = screen.frame(cursor, PAGES, 300, Car::calm().with(5, Some(12.0)).value_of());
 		assert!(!still.page_changed && still.change.is_none());
 		// Back inside, the hold runs out and the glass returns to the cursor.
@@ -505,7 +512,7 @@ mod tests {
 		let second = screen.frame(cursor, PAGES, 200, both.value_of());
 		assert_eq!(
 			(second.page, second.change),
-			(3, Some(Change::Took { rule: 1 })),
+			(3, Some(Change::Took { rule: 2 })),
 			"the one behind it is a takeover of its own"
 		);
 		assert!(second.page_changed);
@@ -568,16 +575,37 @@ mod tests {
 		screen.adapter();
 		let back = screen.frame(0, PAGES, 10_800, out.value_of());
 		assert_eq!(back.change, None, "the same episode, not a new takeover");
-		assert_eq!(back.inverted, Some(ChannelId(5)));
+		assert!(back.inverted.contains(ChannelId(5)));
 		assert_eq!(blinks(&mut screen, out, [11_000, 11_200, 11_400], 5), [true, false, false]);
 	}
 
 	/// Which frames of `times` draw `channel`'s cell inverted, with `car` as the store.
-	fn blinks(screen: &mut Screen<'static, 2>, car: Car, times: impl IntoIterator<Item = u64>, channel: u16) -> std::vec::Vec<bool> {
+	fn blinks(screen: &mut Fixture, car: Car, times: impl IntoIterator<Item = u64>, channel: u16) -> std::vec::Vec<bool> {
 		times
 			.into_iter()
-			.map(|t| screen.frame(0, PAGES, t, car.value_of()).inverted == Some(ChannelId(channel)))
+			.map(|t| screen.frame(0, PAGES, t, car.value_of()).inverted.contains(ChannelId(channel)))
 			.collect()
+	}
+
+	#[test]
+	fn two_channels_out_on_one_page_take_it_once_both_blink_and_one_press_silences_both() {
+		let mut screen = screen();
+		let mut cursor = 0;
+		let one = Car::calm().with(5, Some(12.0));
+		let took = screen.frame(cursor, PAGES, 0, one.value_of());
+		assert_eq!((took.page, took.change), (2, Some(Change::Took { rule: 1 })));
+		// The page's other channel goes out a frame later: its cell joins, the glass stays.
+		let two = one.with(4, Some(11.0));
+		let both = screen.frame(cursor, PAGES, 200, two.value_of());
+		assert_eq!((both.page, both.change, both.page_changed), (2, None, false));
+		assert_eq!(both.offending, Some(ChannelId(4)), "the higher rule leads");
+		assert!(both.inverted.contains(ChannelId(4)), "its first frame is inverted");
+		assert!(both.inverted.contains(ChannelId(5)), "the other is still on its first half");
+		// One press: both cells are what the driver sees, and both are silenced.
+		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::Silenced);
+		let silenced = screen.frame(cursor, PAGES, 400, two.value_of());
+		assert_eq!((silenced.page, silenced.change), (0, Some(Change::Silenced)));
+		assert!(silenced.inverted.is_empty());
 	}
 
 	#[test]
@@ -605,7 +633,8 @@ mod tests {
 		assert!(hold.iter().all(|&inverted| inverted), "{hold:?}");
 		// And handed back: nothing inverted, nothing pointed at.
 		let back = screen.frame(0, PAGES, 2_400 + HOLD_MS, Car::calm().value_of());
-		assert_eq!((back.page, back.offending, back.highlight, back.inverted), (0, None, None, None));
+		assert_eq!((back.page, back.offending, back.highlight), (0, None, None));
+		assert!(back.inverted.is_empty());
 	}
 
 	#[test]
@@ -617,7 +646,7 @@ mod tests {
 		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::Silenced);
 		for t in (200..=2_000).step_by(200) {
 			let glass = screen.frame(cursor, PAGES, t, out.value_of());
-			assert_eq!((glass.offending, glass.highlight, glass.inverted), (None, None, None), "t={t}");
+			assert_eq!((glass.offending, glass.highlight, glass.inverted), (None, None, Inverted::NONE), "t={t}");
 		}
 	}
 
@@ -626,19 +655,20 @@ mod tests {
 		let mut screen = screen();
 		let mut cursor = 0;
 		let both = Car::calm().with(4, Some(20.0)).with(6, Some(-5.0));
-		assert_eq!(screen.frame(cursor, PAGES, 0, both.value_of()).inverted, Some(ChannelId(4)));
+		assert!(screen.frame(cursor, PAGES, 0, both.value_of()).inverted.contains(ChannelId(4)));
 		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::Silenced);
 		// The second rule has been out since 0, behind the first. It takes the glass at
 		// 600 ms — the plain half of a blink counted from when it fired — and its own cell is
 		// inverted on that first frame: the phase starts when it takes the glass.
 		let glass = screen.frame(cursor, PAGES, 600, both.value_of());
-		assert_eq!((glass.page, glass.offending, glass.inverted), (3, Some(ChannelId(6)), Some(ChannelId(6))));
+		assert_eq!((glass.page, glass.offending), (3, Some(ChannelId(6))));
+		assert!(glass.inverted.contains(ChannelId(6)));
 		assert!(matches!(glass.highlight, Some(Highlight::Blinking { .. })));
 		assert_eq!(blinks(&mut screen, both, (800..=1_600).step_by(200), 6), [true, false, false, true, true]);
 		assert!(
 			(0..=1_400)
 				.step_by(200)
-				.all(|t| screen.frame(cursor, PAGES, t + 1_800, both.value_of()).inverted != Some(ChannelId(4))),
+				.all(|t| !screen.frame(cursor, PAGES, t + 1_800, both.value_of()).inverted.contains(ChannelId(4))),
 			"the silenced rule's cell is not inverted meanwhile"
 		);
 	}
@@ -649,12 +679,12 @@ mod tests {
 		// the only news, and it is inverted at once whatever the clock.
 		let mut screen = screen();
 		for t in [0, 200, 400] {
-			assert_eq!(screen.frame(2, PAGES, t, Car::calm().value_of()).inverted, None);
+			assert!(screen.frame(2, PAGES, t, Car::calm().value_of()).inverted.is_empty());
 		}
 		let took = screen.frame(2, PAGES, 500, Car::calm().with(5, Some(12.0)).value_of());
 		assert_eq!((took.page, took.page_changed), (2, false));
-		assert_eq!(took.change, Some(Change::Took { rule: 0 }));
-		assert_eq!(took.inverted, Some(ChannelId(5)));
+		assert_eq!(took.change, Some(Change::Took { rule: 1 }));
+		assert!(took.inverted.contains(ChannelId(5)));
 	}
 
 	#[test]
@@ -723,10 +753,11 @@ mod tests {
 		assert!(plain != alarmed, "the inverted half is a different picture");
 
 		let on = screen.frame(0, PAGES, 0, out.value_of());
-		assert!(draw(out, on.inverted) == alarmed, "the inverted half");
+		assert!(draw(out, on.inverted.iter().next()) == alarmed, "the inverted half");
 		let off = screen.frame(0, PAGES, BLINK_MS, out.value_of());
 		assert_eq!(off.page, 2, "still the alarm's page");
-		assert!(draw(out, off.inverted) == plain, "the plain half is the plain page, pixel for pixel");
+		assert!(off.inverted.is_empty());
+		assert!(draw(out, None) == plain, "the plain half is the plain page, pixel for pixel");
 	}
 
 	#[test]
@@ -784,7 +815,7 @@ mod tests {
 		screen.command(Command::Stopwatch, &mut cursor, PAGES);
 		let out = Car::calm().with(6, Some(-1.0));
 		let took = screen.frame(cursor, PAGES, 200, out.value_of());
-		assert_eq!((took.page, took.change), (3, Some(Change::Took { rule: 1 })));
+		assert_eq!((took.page, took.change), (3, Some(Change::Took { rule: 2 })));
 		assert!(screen.stopwatch() && !screen.stopwatch_on_glass(), "the alarm's page is drawn");
 		assert!(screen.alarm_showing());
 		// A press silences the alarm, and the stopwatch is on the glass again.
@@ -829,7 +860,7 @@ mod tests {
 		let mut cursor = 0;
 		// As the firmware runs it: the stopwatch follows the mode's turns before every
 		// sample; the speed is fed regardless.
-		let step = |screen: &mut Screen<'static, 2>, watch: &mut Stopwatch<'_>, kmh: f32, now_ms: u64| {
+		let step = |screen: &mut Fixture, watch: &mut Stopwatch<'_>, kmh: f32, now_ms: u64| {
 			watch.follow(screen.stopwatch_turns());
 			watch.sample(Some(kmh), now_ms)
 		};
@@ -900,7 +931,7 @@ mod tests {
 			(Where::Page, Stopwatch, StopwatchOn, 1, true),
 		];
 		for (at, command, outcome, cursor_after, stopwatch_after) in cases {
-			let mut screen = Screen::<'static, 2>::new(&RULES, !matches!(at, Where::NoStopwatchInPlan));
+			let mut screen = Screen::new(&RULES, [Slot::CLEAR; 3], !matches!(at, Where::NoStopwatchInPlan));
 			let mut cursor = 1;
 			let car = match at {
 				Where::Alarm => Car::calm().with(4, Some(11.0)),
@@ -972,7 +1003,7 @@ mod tests {
 		}
 
 		struct Board {
-			screen: Screen<'static, 0>,
+			screen: Screen<'static, [Slot; 0]>,
 			stalk: Stalk,
 			closer: Closer,
 			watch: Stopwatch<'static>,
@@ -984,7 +1015,7 @@ mod tests {
 			/// A board whose plan has a `[stopwatch]`, and a `[stalk]` when `stalk`.
 			fn new(stalk: bool) -> Self {
 				Board {
-					screen: Screen::new(&[], true),
+					screen: Screen::new(&[], [], true),
 					stalk: Stalk::new(STATES),
 					closer: Closer::new(stalk.then_some(STATES)),
 					watch: Stopwatch::new(&MARKS, 1.0),
@@ -1226,7 +1257,7 @@ mod tests {
 
 	#[test]
 	fn a_plan_without_alarms_only_turns_pages() {
-		let mut screen: Screen<'static, 0> = Screen::new(&[], false);
+		let mut screen: Screen<'static, [Slot; 0]> = Screen::new(&[], [], false);
 		let mut cursor = 0;
 		let glass = screen.frame(cursor, 2, 0, |_| Some(1e9));
 		assert_eq!((glass.page, glass.offending, glass.missed, glass.change), (0, None, None, None));

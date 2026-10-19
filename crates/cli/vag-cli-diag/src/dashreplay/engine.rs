@@ -15,7 +15,7 @@
 
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::DrawTarget;
-use vag_dash_render::alarm::{Alarm, BLINK_MS, ChannelId, Direction, MAX_ALARMS, Rule};
+use vag_dash_render::alarm::{BLINK_MS, ChannelId, Rule, Slot as AlarmSlot};
 use vag_dash_render::button::{Button, Press as ButtonPress};
 use vag_dash_render::control::{self, Command};
 use vag_dash_render::history::History;
@@ -106,53 +106,6 @@ struct Slot {
 	fresh_for: u64,
 }
 
-/// The board's [`Screen`] for however many rules the plan carries: its size is a type
-/// parameter on the board, fixed when the image is built, and a number read from a file
-/// here.
-enum Screens {
-	R0(Screen<'static, 0>),
-	R1(Screen<'static, 1>),
-	R2(Screen<'static, 2>),
-	R3(Screen<'static, 3>),
-	R4(Screen<'static, 4>),
-}
-
-// One arm per rule count the board can hold: a board that holds more needs one more arm.
-const _: () = assert!(MAX_ALARMS == 4);
-
-macro_rules! each_screen {
-	($screens:expr, $screen:ident => $body:expr) => {
-		match $screens {
-			Screens::R0($screen) => $body,
-			Screens::R1($screen) => $body,
-			Screens::R2($screen) => $body,
-			Screens::R3($screen) => $body,
-			Screens::R4($screen) => $body,
-		}
-	};
-}
-
-impl Screens {
-	fn new(rules: &'static [Alarm<'static>], stopwatch: bool) -> Option<Screens> {
-		Some(match rules.len() {
-			0 => Screens::R0(Screen::new(rules, stopwatch)),
-			1 => Screens::R1(Screen::new(rules, stopwatch)),
-			2 => Screens::R2(Screen::new(rules, stopwatch)),
-			3 => Screens::R3(Screen::new(rules, stopwatch)),
-			4 => Screens::R4(Screen::new(rules, stopwatch)),
-			_ => return None,
-		})
-	}
-
-	fn frame(&mut self, cursor: u8, pages: u8, now_ms: u64, value_of: impl Fn(u16) -> Option<f32>) -> Glass {
-		each_screen!(self, screen => screen.frame(cursor, pages, now_ms, value_of))
-	}
-
-	fn command(&mut self, command: Command, cursor: &mut u8, pages: u8) -> Outcome {
-		each_screen!(self, screen => screen.command(command, cursor, pages))
-	}
-}
-
 /// The panel, run over one recording.
 pub struct Replay {
 	plan: &'static Plan,
@@ -165,7 +118,9 @@ pub struct Replay {
 	refused: Vec<(u64, Refusal)>,
 	last_frame: u64,
 	pressed: usize,
-	screen: Screens,
+	/// The board's [`Screen`], its alarms' state sized by the plan as the board's is: an array
+	/// there, fixed when the image is built; a `Vec` here.
+	screen: Screen<'static, Vec<AlarmSlot>>,
 	cursor: u8,
 	subs: Vec<Option<Sub>>,
 	slots: Vec<Slot>,
@@ -183,11 +138,9 @@ pub struct Replay {
 
 impl Replay {
 	/// `series` is one entry per plan channel; the frames run from `start_ms` to `end_ms` of
-	/// the recording. `Err` for a plan with more rules than the board holds — the generator
-	/// refuses one.
+	/// the recording. `Err` when `series` is not one per channel.
 	pub fn new(plan: &'static Plan, series: Vec<Option<Series>>, mut presses: Vec<u64>, start_ms: u64, end_ms: u64) -> Result<Replay, String> {
-		let screen = Screens::new(plan.alarms, plan.stopwatch.is_some())
-			.ok_or_else(|| format!("{} alarm rules, and the board holds at most {MAX_ALARMS}", plan.alarms.len()))?;
+		let screen = Screen::new(plan.alarms, vec![AlarmSlot::CLEAR; plan.alarms.len()], plan.stopwatch.is_some());
 		if series.len() != plan.channels.len() {
 			return Err(format!("{} series for {} plan channels", series.len(), plan.channels.len()));
 		}
@@ -339,8 +292,7 @@ impl Replay {
 	fn specified_of(&self, rule: usize, channel: u16) -> Option<u16> {
 		let alarm = self.plan.alarms.get(rule)?;
 		let Rule::Drift { specified, .. } = alarm.rule else { return None };
-		let i = alarm.channels.iter().position(|c| *c == ChannelId(channel))?;
-		specified.get(i).map(|c| c.0)
+		(alarm.channel == ChannelId(channel)).then_some(specified.0)
 	}
 
 	/// The bus: subscriptions for the page on the glass through [`Plan::rates`], and every
@@ -416,7 +368,7 @@ impl Replay {
 				None => Cell::new("?", None, "", 0),
 			};
 			// Blinking while out, steady in the hold: `Glass::inverted` is this frame's half.
-			if glass.inverted == Some(ChannelId(index)) {
+			if glass.inverted.contains(ChannelId(index)) {
 				cell.alarmed()
 			} else {
 				cell
@@ -566,18 +518,20 @@ fn rule_name(rule: Option<usize>) -> String {
 	}
 }
 
-fn rule_text(rule: &Rule<'_>) -> String {
+/// A rule as the log says it, in `dash.toml`'s words: where it is on, where it goes off.
+fn rule_text(rule: &Rule) -> String {
 	match *rule {
-		Rule::Threshold { trip, release, direction } => match direction {
-			Direction::Below => format!("trips at ≤ {trip}, releases above {release}"),
-			Direction::Above => format!("trips at ≥ {trip}, releases below {release}"),
-		},
+		Rule::Bounds { max, min } => {
+			let max = max.map(|b| format!("on at ≥ {}, off at ≤ {}", b.at, b.off));
+			let min = min.map(|b| format!("on at ≤ {}, off at ≥ {}", b.at, b.off));
+			max.into_iter().chain(min).collect::<Vec<_>>().join("; ")
+		}
 		Rule::Drift {
 			percent,
-			release_percent,
+			off_percent,
 			hold_ms,
 			..
-		} => format!("trips {percent} % off for {hold_ms} ms, releases under {release_percent} %"),
+		} => format!("on at {percent} % from what was asked for {hold_ms} ms, off at ≤ {off_percent} %"),
 	}
 }
 
@@ -585,7 +539,7 @@ fn rule_text(rule: &Rule<'_>) -> String {
 mod tests {
 	use super::*;
 	use crate::dashreplay::glass::Canvas;
-	use vag_dash_render::alarm::{HOLD_MS, PageId};
+	use vag_dash_render::alarm::{Alarm, Bound, HOLD_MS, PageId};
 	use vag_dash_render::plan::{Channel, StripPlan, Unit};
 	use vag_dash_render::{Strip, Volts};
 
@@ -611,8 +565,7 @@ mod tests {
 	}
 
 	/// Neutral numbers throughout. Page 1 is the driver's with channels 0 and 1; page 2 shows
-	/// channels 2 and 3 and is what the one rule raises: channel 2 or 3 at or below -2 trips,
-	/// above -1.5 releases.
+	/// channels 2 and 3 and is what their alarms raise: at or below -2 on, at or above -1.5 off.
 	static CHANNELS: [Channel; 4] = [channel(0x1001, "A"), channel(0x1002, "B"), channel(0x1003, "C"), channel(0x1004, "D")];
 	static PAGES: [Page; 2] = [
 		Page::Values {
@@ -626,16 +579,22 @@ mod tests {
 			volts: true,
 		},
 	];
-	static WATCHED: [ChannelId; 2] = [ChannelId(2), ChannelId(3)];
-	static RULES: [Alarm<'static>; 1] = [Alarm {
-		channels: &WATCHED,
-		page: PageId(1),
-		rule: Rule::Threshold {
-			trip: -2.0,
-			release: -1.5,
-			direction: Direction::Below,
+	const LOW: Rule = Rule::Bounds {
+		max: None,
+		min: Some(Bound { at: -2.0, off: -1.5 }),
+	};
+	static RULES: [Alarm; 2] = [
+		Alarm {
+			channel: ChannelId(2),
+			page: PageId(1),
+			rule: LOW,
 		},
-	}];
+		Alarm {
+			channel: ChannelId(3),
+			page: PageId(1),
+			rule: LOW,
+		},
+	];
 	static UNITS: [Unit; 1] = [Unit {
 		request: 0x7E0,
 		response: 0x7E8,
@@ -749,8 +708,7 @@ mod tests {
 	fn a_channel_the_recording_does_not_carry_never_trips() {
 		let events = run(replay(None, &[], 5_000));
 		assert_eq!(events, [(0, Event::Start { page: 0 })]);
-		// And a channel that stops answering is no evidence either way: out, then silent — with
-		// its sibling silent too, since a sibling answering inside would release the rule.
+		// And a channel that stops answering is no evidence either way: out, then silent.
 		let quiet: Series = vec![(1_000, Some(-3.0))];
 		let calm = every_100ms(30_000, |_| 0.0);
 		let replay = Replay::new(&PLAN, vec![calm.clone(), calm, Some(quiet), None], vec![], 0, 30_000).unwrap();
@@ -854,7 +812,7 @@ mod tests {
 			lines,
 			[
 				"     0.00 s  start on page 1 \"MAIN\"",
-				"     1.00 s  alarm #1 took the screen — page 2 \"WATCH\", C (01:1003) = -3.0 (trips at ≤ -2, releases above -1.5)",
+				"     1.00 s  alarm #1 took the screen — page 2 \"WATCH\", C (01:1003) = -3.0 (on at ≤ -2, off at ≥ -1.5)",
 				"     5.60 s  alarm #1 over, the hold ran out — back to page 1 \"MAIN\"",
 			]
 		);
@@ -983,7 +941,7 @@ mod tests {
 		let mut replay = replay(excursion, &[], 7_000);
 		let mut inverted = Vec::new();
 		while let Some(tick) = replay.step() {
-			inverted.push((tick.t_ms, tick.glass.inverted == Some(ChannelId(2))));
+			inverted.push((tick.t_ms, tick.glass.inverted.contains(ChannelId(2))));
 		}
 		let out: Vec<bool> = inverted.iter().filter(|(t, _)| (1_000..3_000).contains(t)).map(|&(_, i)| i).collect();
 		// Frames at 1.0, 1.2 … 2.8 s, 400 ms halves counted from the takeover: two frames a half.
@@ -996,10 +954,33 @@ mod tests {
 		assert!(inverted.iter().filter(|(t, _)| *t >= back).all(|&(_, i)| !i), "{inverted:?}");
 	}
 
+	/// The plan says how many rules there are; nothing caps them. Both cells of the alarm page
+	/// out at once are both inverted, and the log names the leading one.
 	#[test]
-	fn a_plan_with_more_rules_than_the_board_holds_is_refused() {
-		static FIVE: [Alarm<'static>; 5] = [RULES[0], RULES[0], RULES[0], RULES[0], RULES[0]];
-		static TOO_MANY: Plan = Plan { alarms: &FIVE, ..PLAN };
-		assert!(Replay::new(&TOO_MANY, vec![None; 4], vec![], 0, 1_000).is_err());
+	fn any_number_of_rules_runs_and_two_out_on_one_page_are_both_inverted() {
+		static SIX: [Alarm; 6] = [RULES[0], RULES[1], RULES[0], RULES[1], RULES[0], RULES[1]];
+		static MANY: Plan = Plan { alarms: &SIX, ..PLAN };
+		let out = every_100ms(3_000, |t| if t >= 1_000 { -3.0 } else { 0.0 });
+		let calm = every_100ms(3_000, |_| 0.0);
+		let mut replay = Replay::new(&MANY, vec![calm.clone(), calm, out.clone(), out], vec![], 0, 3_000).unwrap();
+		let mut ticks = Vec::new();
+		while let Some(tick) = replay.step() {
+			ticks.push(tick);
+		}
+		let took = ticks.iter().find(|t| t.t_ms == 1_000).unwrap();
+		assert!(took.glass.inverted.contains(ChannelId(2)) && took.glass.inverted.contains(ChannelId(3)));
+		assert!(
+			took.events.iter().any(|e| matches!(
+				e,
+				Event::Took {
+					rule: 0,
+					page: 1,
+					channel: Some(2),
+					..
+				}
+			)),
+			"{:?}",
+			took.events
+		);
 	}
 }

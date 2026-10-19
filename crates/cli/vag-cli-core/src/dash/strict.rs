@@ -2,8 +2,8 @@
 //! build reads has the type it asks for.
 //!
 //! The parser used to look up the keys it knew and never walk a table, so a typo was dropped
-//! without a word: `hzz = 50` read as the default rate, a misspelled `[[alarm]]` built a plan
-//! with no alarms, and `decimals = "2"` acted as if absent (found writing
+//! without a word: `hzz = 50` read as the default rate, a misspelled section built a plan
+//! without it, and `decimals = "2"` acted as if absent (found writing
 //! `docs/dash/dash-toml.md`, 2026-09-27). The owner writes this file by hand.
 //!
 //! The key lists below are the whole vocabulary. `docs/dash/dash-toml.md` lists the same keys
@@ -36,7 +36,22 @@ pub(super) const CHANNEL: Keys = Keys {
 	section: "[[channel]]",
 	name: "[[channel]]",
 	kind: None,
-	keys: &["ref", "label", "decimals", "hz", "setpoint", "zero_at_rest"],
+	keys: &[
+		"ref",
+		"label",
+		"decimals",
+		"hz",
+		"setpoint",
+		"zero_at_rest",
+		"alarm_max",
+		"alarm_max_off",
+		"alarm_min",
+		"alarm_min_off",
+		"drift_percent",
+		"drift_hold_ms",
+		"drift_off_percent",
+		"drift_min_setpoint",
+	],
 };
 
 pub(super) const VALUES: Keys = Keys {
@@ -51,20 +66,6 @@ pub(super) const CHART: Keys = Keys {
 	name: "a chart page",
 	kind: Some("chart"),
 	keys: &["kind", "title", "cell", "min", "max", "volts"],
-};
-
-pub(super) const THRESHOLD: Keys = Keys {
-	section: "[[alarm]]",
-	name: "a threshold rule",
-	kind: Some("threshold"),
-	keys: &["kind", "channels", "page", "direction", "trip", "release"],
-};
-
-pub(super) const DRIFT: Keys = Keys {
-	section: "[[alarm]]",
-	name: "a drift rule",
-	kind: Some("drift"),
-	keys: &["kind", "channels", "page", "percent", "hold_ms", "release_percent", "min_setpoint"],
 };
 
 /// The keys of a `[[button]]` table; `parse_buttons` in `dash.rs` reads their values.
@@ -107,10 +108,10 @@ pub(super) const STRIP: Keys = Keys {
 };
 
 /// Every section the file may hold, as the file writes it, in the reference's order.
-const SECTIONS: [&str; 7] = ["[[channel]]", "[[page]]", "[strip]", "[[alarm]]", "[[button]]", "[stalk]", "[stopwatch]"];
+const SECTIONS: [&str; 6] = ["[[channel]]", "[[page]]", "[strip]", "[[button]]", "[stalk]", "[stopwatch]"];
 
 /// Every table, for a refusal that finds one table's key in another.
-const TABLES: [&Keys; 10] = [&TOP, &CHANNEL, &VALUES, &CHART, &STRIP, &THRESHOLD, &DRIFT, &BUTTON, &STALK, &STOPWATCH];
+const TABLES: [&Keys; 8] = [&TOP, &CHANNEL, &VALUES, &CHART, &STRIP, &BUTTON, &STALK, &STOPWATCH];
 
 /// One table of the file, read strictly, and where it is — for a refusal to point at.
 pub(super) struct Reader<'a> {
@@ -194,7 +195,7 @@ fn unknown(key: &str, item: &Item, keys: &Keys) -> String {
 	let top = keys.section.is_empty();
 	// Only the top level holds sections — `foo.bar = 1` is a dotted key, not one — and anywhere
 	// else a table is a key like any other. A section is never a key in the wrong place:
-	// `[[channels]]` is a typo, not `channels` of an `[[alarm]]`.
+	// `[[channels]]` is a typo, not a key of some table.
 	match item {
 		Item::ArrayOfTables(_) if top => return typo("section", &format!("[[{key}]]"), key, keys),
 		Item::Table(table) if top && !table.is_dotted() => return typo("section", &format!("[{key}]"), key, keys),
@@ -303,7 +304,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::dash::{AlarmRuleInput, PageInput, parse_input};
+	use crate::dash::{PageInput, parse_input};
 
 	/// Every table the file has, every key of each, each once: the file the refusals are
 	/// written against. Parsed only, so no name in it has to resolve.
@@ -316,6 +317,14 @@ label = "One"
 decimals = 1
 hz = 10
 setpoint = "01:IDE00002"
+alarm_max = 5
+alarm_max_off = 4
+alarm_min = -5
+alarm_min_off = -4
+drift_percent = 10
+drift_off_percent = 6
+drift_hold_ms = 1000
+drift_min_setpoint = 0.5
 
 [[page]]
 kind = "values"
@@ -333,22 +342,6 @@ volts = false
 
 [strip]
 volts = "01:IDE00001"
-
-[[alarm]]
-channels = ["01:IDE00001"]
-page = "A"
-direction = "above"
-trip = 5
-release = 4
-
-[[alarm]]
-kind = "drift"
-channels = ["01:IDE00001"]
-page = "A"
-percent = 10
-release_percent = 6
-hold_ms = 1000
-min_setpoint = 0.5
 
 [stalk]
 read = "75A:4C21"
@@ -403,7 +396,9 @@ marks = [60, 100]
 	#[test]
 	fn the_base_file_parses() {
 		let input = parse_input(BASE).unwrap();
-		assert_eq!((input.channels.len(), input.pages.len(), input.alarms.len()), (1, 2, 2));
+		assert_eq!((input.channels.len(), input.pages.len()), (1, 2));
+		let channel = &input.channels[0];
+		assert!(channel.alarm_max.is_some() && channel.alarm_min.is_some() && channel.drift.is_some());
 		assert!(input.stalk.is_some() && input.stopwatch.is_some() && input.strip.is_some());
 	}
 
@@ -412,25 +407,24 @@ marks = [60, 100]
 		let (text, line) = with("ref = \"01:IDE00001\"", "hzz = 50");
 		assert_eq!(
 			refused(&text),
-			format!(
-				"dash.toml: line {line}: [[channel]] 1: unknown key \"hzz\" — did you mean \"hz\"? [[channel]] takes ref, label, decimals, hz, setpoint, zero_at_rest"
-			)
+			format!("dash.toml: line {line}: [[channel]] 1: unknown key \"hzz\" — did you mean \"hz\"? [[channel]] takes {CHANNEL_KEYS}")
 		);
 	}
 
+	/// What a refusal in a `[[channel]]` lists as its keys.
+	const CHANNEL_KEYS: &str = "ref, label, decimals, hz, setpoint, zero_at_rest, alarm_max, alarm_max_off, alarm_min, alarm_min_off, \
+		drift_percent, drift_hold_ms, drift_off_percent, drift_min_setpoint";
+
 	#[test]
 	fn an_unknown_key_is_refused_in_every_table() {
+		let channel = format!("[[channel]] takes {CHANNEL_KEYS}");
 		for (under, place, takes) in [
 			(
 				"vin = \"TESTVIN0000000001\"",
 				"",
-				"The top level takes vin, language, [[channel]], [[page]], [strip], [[alarm]], [[button]], [stalk], [stopwatch]",
+				"The top level takes vin, language, [[channel]], [[page]], [strip], [[button]], [stalk], [stopwatch]",
 			),
-			(
-				"ref = \"01:IDE00001\"",
-				"[[channel]] 1: ",
-				"[[channel]] takes ref, label, decimals, hz, setpoint, zero_at_rest",
-			),
+			("ref = \"01:IDE00001\"", "[[channel]] 1: ", channel.as_str()),
 			("title = \"A\"", "[[page]] 1: ", "A values page takes kind, title, cells, volts"),
 			(
 				"cell = \"01:IDE00001\"",
@@ -438,16 +432,6 @@ marks = [60, 100]
 				"A chart page takes kind, title, cell, min, max, volts",
 			),
 			("volts = \"01:IDE00001\"", "[strip]: ", "[strip] takes volts"),
-			(
-				"direction = \"above\"",
-				"[[alarm]] 1: ",
-				"A threshold rule takes kind, channels, page, direction, trip, release",
-			),
-			(
-				"kind = \"drift\"",
-				"[[alarm]] 2: ",
-				"A drift rule takes kind, channels, page, percent, hold_ms, release_percent, min_setpoint",
-			),
 			(
 				"read = \"75A:4C21\"",
 				"[stalk]: ",
@@ -471,12 +455,12 @@ marks = [60, 100]
 
 	#[test]
 	fn a_misspelled_section_is_refused_rather_than_read_as_absent() {
-		// A misspelled `[[alarm]]` used to build a plan with no alarms.
-		let (text, line) = replacing("[[alarm]]", "[[alarms]]");
+		// A misspelled section used to build a plan without it.
+		let (text, line) = replacing("[[page]]", "[[pages]]");
 		let why = refused(&text);
 		assert!(
 			why.starts_with(&format!(
-				"dash.toml: line {line}: unknown section [[alarms]] — did you mean [[alarm]]? The top level takes vin,"
+				"dash.toml: line {line}: unknown section [[pages]] — did you mean [[page]]? The top level takes vin,"
 			)),
 			"{why}"
 		);
@@ -521,21 +505,6 @@ marks = [60, 100]
 				"cells = [\"01:IDE00001\"]",
 				"[[page]] 2: \"cells\" is a key of a values page (kind = \"values\"), and this is a chart page. A chart page takes kind, title, cell, min, max, volts",
 			),
-			(
-				"kind = \"drift\"",
-				"trip = 1",
-				"[[alarm]] 2: \"trip\" is a key of a threshold rule (kind = \"threshold\"), and this is a drift rule. A drift rule takes",
-			),
-			(
-				"direction = \"above\"",
-				"percent = 10",
-				"[[alarm]] 1: \"percent\" is a key of a drift rule (kind = \"drift\"), and this is a threshold rule. A threshold rule takes",
-			),
-			(
-				"direction = \"above\"",
-				"hold_ms = 1000",
-				"[[alarm]] 1: \"hold_ms\" is a key of a drift rule (kind = \"drift\")",
-			),
 		] {
 			let (text, at) = with(under, line);
 			let why = refused(&text);
@@ -558,7 +527,11 @@ marks = [60, 100]
 		assert!(why.contains("[[page]] 1: \"hz\" is a key of [[channel]]. A values page takes"), "{why}");
 		let (text, _) = with("ref = \"01:IDE00001\"", "kind = \"values\"");
 		let why = refused(&text);
-		assert!(why.contains("[[channel]] 1: \"kind\" is a key of [[page]] and [[alarm]]."), "{why}");
+		assert!(why.contains("[[channel]] 1: \"kind\" is a key of [[page]]."), "{why}");
+		// An alarm key belongs to the channel it watches.
+		let (text, _) = with("title = \"A\"", "alarm_max = 10");
+		let why = refused(&text);
+		assert!(why.contains("[[page]] 1: \"alarm_max\" is a key of [[channel]]."), "{why}");
 	}
 
 	#[test]
@@ -605,12 +578,6 @@ marks = [60, 100]
 			let (text, line) = replacing(from, to);
 			assert_eq!(refused(&text), format!("dash.toml: line {line}: {says}"), "{to}");
 		}
-		// An alarm whose `kind` is not a string used to be a threshold rule.
-		let (text, line) = with("[[alarm]]", "kind = 5");
-		assert_eq!(
-			refused(&text),
-			format!("dash.toml: line {line}: [[alarm]] 1: kind must be a string, \"threshold\" or \"drift\", not an integer")
-		);
 	}
 
 	#[test]
@@ -649,16 +616,13 @@ marks = [60, 100]
 			refused(&text),
 			"dash.toml: 01:IDE00001: hz 1e-50 is too small for the board, which would hold it as 0"
 		);
-		let (text, _) = replacing("release_percent = 6", "release_percent = 1e-50");
+		let (text, line) = replacing("drift_off_percent = 6", "drift_off_percent = 1e-50");
 		assert_eq!(
 			refused(&text),
-			"dash.toml: alarm #2: release_percent 1e-50 is too small for the board, which would hold it as 0"
+			format!("dash.toml: line {line}: [[channel]] 1: drift_off_percent 1e-50 is too small for the board, which would hold it as 0")
 		);
-		let (text, _) = replacing("release_percent = 6", "release_percent = 1e-30");
-		assert!(matches!(
-			parse_input(&text).unwrap().alarms[1].rule,
-			AlarmRuleInput::Drift { release_percent, .. } if release_percent == 1e-30
-		));
+		let (text, _) = replacing("drift_off_percent = 6", "drift_off_percent = 1e-30");
+		assert!(parse_input(&text).unwrap().channels[0].drift.is_some_and(|d| d.off_percent == 1e-30));
 	}
 
 	/// A `[[button]]` takes `pin` and `action`, and a typo in one is refused like any other key.
@@ -686,7 +650,10 @@ marks = [60, 100]
 			.expect("the example is a fenced toml block")
 			.0;
 		let input = parse_input(example).unwrap_or_else(|e| panic!("{e}\n{example}"));
-		assert_eq!((input.channels.len(), input.pages.len(), input.alarms.len()), (4, 2, 2));
+		assert_eq!((input.channels.len(), input.pages.len()), (4, 2));
+		let alarmed = input.channels.iter().filter(|c| c.alarm_max.is_some() || c.alarm_min.is_some()).count();
+		let drifting = input.channels.iter().filter(|c| c.drift.is_some()).count();
+		assert_eq!((alarmed, drifting), (1, 1), "the example has both kinds of alarm");
 		assert!(input.stalk.is_some() && input.stopwatch.is_some() && input.strip.is_some());
 		assert_eq!(input.language, Some(crate::config::Language::Ru));
 	}
@@ -724,7 +691,6 @@ marks = [60, 100]
 			("[[channel]]", vec![&CHANNEL]),
 			("[[page]]", vec![&VALUES, &CHART]),
 			("[strip]", vec![&STRIP]),
-			("[[alarm]]", vec![&THRESHOLD, &DRIFT]),
 			("[stalk]", vec![&STALK]),
 			("[stopwatch]", vec![&STOPWATCH]),
 			("[[button]]", vec![&BUTTON]),

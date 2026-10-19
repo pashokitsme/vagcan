@@ -24,10 +24,11 @@
 //!   bridge. The planner then sends nothing (its subscriptions stay), framed requests
 //!   over either carrier are refused, and the panel shows the adapter's counters. It
 //!   ends on `C`, or when the host's start-of-frame packets stop (the cable pulled).
-//! * **Alarms** (`todo/dash/04`): the plan's `[[alarm]]` rules are read at full rate on
-//!   every page; past a threshold the rule's page takes the glass with the offending
-//!   cell blinking inverted (steady through the hold after the release), and any press
-//!   silences the episode
+//! * **Alarms** (`todo/dash/04`): every channel with an alarm in `dash.toml`
+//!   (`alarm_max`, `alarm_min`, `drift_*`) is read at its rate on every page; past its
+//!   bound the first values page showing it takes the glass with its cell blinking
+//!   inverted (steady through the hold once the value is back), every other channel out on
+//!   that page with it, and any press silences what is on the glass
 //!   ([`vag_dash_render::screen`]). The adapter screen runs none.
 //! * **Input** (`todo/dash/19`, "Input backends"): the plan's `[[button]]`s on GPIO 3, 4 and
 //!   5, the cruise lever and `dashsim`'s presses each turn a press into a [`Command`]; every
@@ -116,7 +117,7 @@ use vag_dash_fw::ssd1322::{self, Shown, Ssd1322};
 use vag_dash_fw::store::{Error as StoreError, Store};
 use vag_dash_fw::ui::{Button, DEBOUNCE_MS, Press, Visibility};
 use vag_dash_fw::usb;
-use vag_dash_render::alarm::{self, ChannelId};
+use vag_dash_render::alarm::{self, ChannelId, Slot as AlarmSlot};
 use vag_dash_render::control::{self, Command, PinButton};
 use vag_dash_render::pages::Mismatch;
 use vag_dash_render::plan::{Mode as ReadMode, PartAnswer, PartCheck, Timing};
@@ -578,7 +579,7 @@ static PINS: StaticCell<[Option<PinInput>; BUTTON_COUNT]> = StaticCell::new();
 /// commanded by `control_task`. The page cursor is not in it — that stays
 /// `Config::active_page`, passed in each time. A **blocking** mutex, held for one call and
 /// never across an `.await`.
-type ScreenCell = BlockingMutex<CriticalSectionRawMutex, RefCell<Screen<'static, ALARM_COUNT>>>;
+type ScreenCell = BlockingMutex<CriticalSectionRawMutex, RefCell<Screen<'static, [AlarmSlot; ALARM_COUNT]>>>;
 
 static SCREEN: StaticCell<ScreenCell> = StaticCell::new();
 
@@ -688,7 +689,11 @@ async fn main(spawner: Spawner) {
 	// configuration should say so at boot, not when somebody connects.
 	let settings: &'static Shared = SETTINGS.init(Mutex::new(open_settings()));
 	let bus: &'static Bus = BUS.init(BlockingMutex::new(RefCell::new(Planner::new(Budget::board()))));
-	let screen: &'static ScreenCell = SCREEN.init(BlockingMutex::new(RefCell::new(Screen::new(PLAN.alarms, PLAN.stopwatch.is_some()))));
+	let screen: &'static ScreenCell = SCREEN.init(BlockingMutex::new(RefCell::new(Screen::new(
+		PLAN.alarms,
+		[AlarmSlot::CLEAR; ALARM_COUNT],
+		PLAN.stopwatch.is_some(),
+	))));
 	// With no `[stopwatch]` in the plan the machine is never fed: no press reaches the page.
 	let stopwatch: &'static StopwatchCell = STOPWATCH.init(BlockingMutex::new(RefCell::new(match PLAN.stopwatch {
 		Some(plan) => Stopwatch::new(plan.marks, plan.km_h_per_unit),
@@ -3033,9 +3038,9 @@ async fn panel_task(
 			histories[chart.slot].push(chart.channel, value_of(chart.channel));
 		}
 		// A cell the plan cannot name draws as a question mark rather than
-		// vanishing: a missing column hides the fault, a wrong one shows it. The
-		// alarm's offending channel is drawn inverted — blinking while it is out, steady
-		// in the hold — so the page says which one.
+		// vanishing: a missing column hides the fault, a wrong one shows it. Every channel
+		// an alarm on the glass points at is drawn inverted — blinking while it is out,
+		// steady in the hold — so the page says which ones.
 		let cell_of = |index: u16| {
 			let cell = match PLAN.channel(index) {
 				Some(channel) => {
@@ -3058,7 +3063,7 @@ async fn panel_task(
 				}
 				None => Cell::new("?", None, "", 0),
 			};
-			if glass.inverted == Some(ChannelId(index)) {
+			if glass.inverted.contains(ChannelId(index)) {
 				cell.alarmed()
 			} else {
 				cell

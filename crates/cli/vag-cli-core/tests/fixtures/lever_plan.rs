@@ -28,7 +28,7 @@ static PAGES: [Page; 2] = [
 	Page::Chart { title: "Speed", channel: 1, min: 0.0, max: 250.0, volts: false },
 ];
 
-static ALARMS: [Alarm<'static>; 0] = [
+static ALARMS: [Alarm; 0] = [
 ];
 
 static STALK_ROCKER: [Band; 8] = [
