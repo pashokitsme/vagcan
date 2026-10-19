@@ -9,12 +9,41 @@
 use anyhow::{Result, bail};
 use btleplug::api::{CharPropFlags, Characteristic, Peripheral as _, WriteType};
 use btleplug::platform::Peripheral;
+use clap::Parser;
 use futures::StreamExt;
 use std::time::Duration;
 use vag_dash_ble::{Lines, flush, open_nus, scan, stdin_lines};
 
 const DEFAULT_NAME: &str = "vagcan-dash";
 const SCAN_SECS: u64 = 4;
+
+/// The arguments. Parsed before anything touches Bluetooth, so `--help` answers from any
+/// terminal: a BLE call from one macOS does not allow gets the process killed without a word.
+#[derive(Parser, Debug)]
+#[command(
+	name = "dashcfg",
+	version,
+	about = "Set the dash board's brightness and page over Bluetooth, and save them on the board.",
+	after_help = COMMANDS
+)]
+struct Cli {
+	/// The board's Bluetooth name.
+	#[arg(default_value = DEFAULT_NAME)]
+	name: String,
+}
+
+/// What can be typed once connected; the board's own `help` lists the same words.
+const COMMANDS: &str = "\
+Once connected, type:
+  state               the board's state
+  get                 the settings and every page
+  set brightness N    how bright the screen is, 0-255
+  set page N          the page shown, counting from 0
+  save                keep the settings on the board
+  load                go back to what the board has saved
+  defaults            the default settings, kept only after 'save'
+  erase               delete the saved settings; the board starts on defaults
+  q                   quit";
 
 /// What the device told us about itself. Parsed from the one line it pushes on
 /// every change, so the client never has to poll to stay right.
@@ -144,7 +173,7 @@ impl DashState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-	let name = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_NAME.into());
+	let Cli { name } = Cli::parse();
 	let mut lines = stdin_lines();
 	let adapter = vag_dash_ble::adapter().await?;
 
@@ -288,7 +317,44 @@ impl LineBuffer {
 }
 #[cfg(test)]
 mod tests {
-	use super::LineBuffer;
+	use super::{Cli, DEFAULT_NAME, LineBuffer};
+	use clap::Parser;
+	use clap::error::ErrorKind;
+
+	fn name(args: &[&str]) -> String {
+		Cli::try_parse_from(std::iter::once("dashcfg").chain(args.iter().copied())).unwrap().name
+	}
+
+	/// Every way `dashcfg` was started before it had a parser: bare, for the board named
+	/// `vagcan-dash`, and with a board's name (`research/dash/can-bring-up.md`).
+	#[test]
+	fn the_board_is_the_default_name_or_the_one_given() {
+		assert_eq!(name(&[]), DEFAULT_NAME);
+		assert_eq!(name(&["vagcan-dash"]), "vagcan-dash");
+		assert_eq!(name(&["garage dash"]), "garage dash");
+	}
+
+	/// `--help` was taken for a board's name and started a scan, which macOS kills from a
+	/// terminal it does not allow Bluetooth: exit 134 and not a byte said.
+	#[test]
+	fn help_and_version_are_answers_not_board_names() {
+		for flag in ["--help", "-h"] {
+			let err = Cli::try_parse_from(["dashcfg", flag]).unwrap_err();
+			assert_eq!(err.kind(), ErrorKind::DisplayHelp, "{flag}");
+			let text = err.to_string();
+			assert!(text.contains("Usage: dashcfg [NAME]"), "{text}");
+			assert!(text.contains("set brightness N"), "{text}");
+		}
+		assert_eq!(
+			Cli::try_parse_from(["dashcfg", "--version"]).unwrap_err().kind(),
+			ErrorKind::DisplayVersion
+		);
+		assert_eq!(
+			Cli::try_parse_from(["dashcfg", "--bogus"]).unwrap_err().kind(),
+			ErrorKind::UnknownArgument
+		);
+		assert_eq!(Cli::try_parse_from(["dashcfg", "a", "b"]).unwrap_err().kind(), ErrorKind::UnknownArgument);
+	}
 
 	/// The board ends every text reply with `\n` and cuts it at the notification size,
 	/// 20 bytes before the MTU exchange: a line is only a line once its end has come.
