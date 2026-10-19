@@ -289,7 +289,7 @@ Pages come in the file's order. 1 to 8 of them. `kind` picks the page.
 ### `[strip]`
 
 A line across the top of each page: the battery voltage on the left, the page's `title` in the
-middle. The page is drawn in the rows under it.
+middle, the link icons and the fault badge on the right. The page is drawn in the rows under it.
 
 | key | type | required | default | what it does |
 |---|---|---|---|---|
@@ -297,7 +297,9 @@ middle. The page is drawn in the rows under it.
 
 - Without `[strip]`, no page shows a voltage, and a page's `volts` is refused.
 - A page whose cells, or chart, show the `volts` channel already has no voltage in its strip.
-- A page with no `title` and no voltage has no strip: it uses the whole panel.
+- Every page has the strip, the stopwatch's too. With no `title` and no voltage it shows only
+  the icons and the badge.
+- The page under the strip is the same whatever is connected or counted.
 - The voltage is read at the channel's `hz` while its page is on screen, like a cell.
 - The build lists the pages that show it, and says so when the channel's unit is not `V`.
 
@@ -470,7 +472,8 @@ Two spellings, both `<unit>:<row>`:
 | `hz` | above 0, at most 100; 2 when absent |
 | `hz` of the stopwatch's `speed` | 7.5 or more; 50 recommended |
 | `decimals` | 0 to 3 |
-| `label` | ten characters on a page of four cells; nine in the last cell while a host is connected |
+| `label` | ten characters on a page of four cells |
+| `title` | 34 characters with the voltage, both hosts connected and a two-digit fault count |
 | stopwatch `marks` | 1 to 3, whole km/h from 1 to 65535 |
 | `[[button]]` | 0 to 3, on GPIO 3, 4 and 5, one per pin |
 | chart `min`/`max`, alarm numbers, `km_h_per_unit` | within a 32-bit float |

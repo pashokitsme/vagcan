@@ -30,7 +30,7 @@ use embedded_graphics::text::Text;
 use u8g2_fonts::FontRenderer;
 use u8g2_fonts::types::{FontColor, HorizontalAlignment, VerticalPosition};
 
-use crate::frame::{Board, Cell, Deviation, Faults, Frame, Links, Rates, Strip, Volts};
+use crate::frame::{Board, Cell, Deviation, Faults, Frame, Rates, Strip, Volts};
 use crate::theme::{Numerals, Theme};
 
 /// Breathing room each side of a cell's contents.
@@ -78,9 +78,6 @@ pub struct Report {
 	/// panel simply had no degree sign on it. Text that vanishes is worse than
 	/// text that overruns, because nothing on the screen says it happened.
 	pub glyph_missing: bool,
-	/// Something in the rightmost cell stands beside the link icons and had no room left of
-	/// them, even slid to the cell's left edge: drawn anyway, and it runs into them.
-	pub icon_overlap: bool,
 }
 
 /// A stack buffer for one formatted string.
@@ -226,22 +223,24 @@ where
 	}
 }
 
-/// Draw one frame with nothing connected and no rates measured. Returns what did not fit.
+/// Draw one frame alone on the whole target: no strip, nothing of the board's, no rates on the
+/// adapter screen. The layout as it is designed, for pictures and tests; the board draws
+/// [`draw_page`]. Returns what did not fit.
 pub fn draw<D>(frame: &Frame<'_>, theme: &Theme, target: &mut D) -> Report
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
-	draw_with(frame, &Board::default(), theme, target)
+	draw_frame(frame, None, theme, target, true)
 }
 
-/// Draw one frame with what the board says about itself: the link icons and the fault badge
-/// on the values and chart pages, the bus rates on the adapter screen. Returns what did not
-/// fit.
+/// [`draw_page`] with no title and no voltage: a values or chart frame under a strip that holds
+/// only what the board says about itself — the stopwatch page is drawn so — or the adapter
+/// screen with the bus rates. Returns what did not fit.
 pub fn draw_with<D>(frame: &Frame<'_>, board: &Board, theme: &Theme, target: &mut D) -> Report
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
-	draw_frame(frame, board, theme, target, true)
+	draw_page(frame, &Strip::NONE, board, theme, target)
 }
 
 /// Rows the status strip takes at the top of the panel: the label face's line and a dark row
@@ -251,11 +250,16 @@ pub const STRIP_ROWS: u32 = 9;
 /// The strip's voltage stands this far in from the left edge.
 const STRIP_LEFT: i32 = 1;
 
-/// Draw one plan page: its [`Strip`] across the top and the frame in the rows under it, with
-/// what the board says about itself as [`draw_with`] draws it — the link icons and the fault
-/// badge land in the page's own corners, under the strip. A strip with nothing to show
-/// ([`Strip::is_empty`]) is no strip, and this is [`draw_with`] on the whole panel. So is the
-/// adapter screen, which is no plan page.
+/// Draw one page as the board shows it: the [`Strip`] across the top — the voltage at the left,
+/// the title in the middle, the link runes and the fault badge at the right end — and the frame
+/// in the rows under it, on the panel's whole width.
+///
+/// Every values and chart page has the strip, whatever there is to fill it (2026-10-19): a
+/// page with no title and no voltage still has the board's runes and badge to show, and they
+/// come and go — a host connects, the fault count arrives ten seconds after boot. Drawn in the
+/// strip they change the strip and nothing under it, so a page's geometry is the page's alone.
+/// The adapter screen, which is no plan page, has no strip: it is drawn on the whole panel with
+/// the bus rates, and no runes or badge — its `SLCAN` says the host is on the cable.
 ///
 /// With a title in the strip, a chart's header drops its label — the title says it — and
 /// keeps its range and seconds.
@@ -263,8 +267,8 @@ pub fn draw_page<D>(frame: &Frame<'_>, strip: &Strip<'_>, board: &Board, theme: 
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
-	if strip.is_empty() || matches!(frame, Frame::Adapter(_)) {
-		return draw_with(frame, board, theme, target);
+	if let Frame::Adapter(_) = frame {
+		return draw_frame(frame, board.rates, theme, target, true);
 	}
 	let area = target.bounding_box();
 	// The renderer reads its height from the target, so the page under the strip is the page
@@ -273,8 +277,8 @@ where
 		area.top_left + Point::new(0, STRIP_ROWS as i32),
 		Size::new(area.size.width, area.size.height.saturating_sub(STRIP_ROWS)),
 	);
-	let mut report = draw_frame(frame, board, theme, &mut target.cropped(&below), strip.title.is_empty());
-	draw_strip(strip, theme, target, &mut report);
+	let mut report = draw_frame(frame, None, theme, &mut target.cropped(&below), strip.title.is_empty());
+	draw_strip(strip, board, theme, target, &mut report);
 	report
 }
 
@@ -290,13 +294,14 @@ fn volts_text(volts: Option<f32>) -> Buf {
 }
 
 /// The strip: the voltage left-aligned at [`STRIP_LEFT`], the title centred on the panel, both
-/// in the label face from the top row. A title that runs into the voltage or off the panel is
+/// in the label face from the top row, and the right end ([`corner`]). A title that runs into
+/// the voltage, or into the right end as this frame has it — the badge's ground included — is
 /// reported and drawn anyway, as a label that overruns its column is.
-fn draw_strip<D>(strip: &Strip<'_>, theme: &Theme, target: &mut D, report: &mut Report)
+fn draw_strip<D>(strip: &Strip<'_>, board: &Board, theme: &Theme, target: &mut D, report: &mut Report)
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
-	let width = target.bounding_box().size.width as i32;
+	let width = target.bounding_box().size.width;
 	let ink = FontColor::Transparent(BinaryColor::On);
 	// One past the voltage's last lit column: the title has to start past it.
 	let mut taken = 0;
@@ -310,20 +315,29 @@ where
 			Err(_) => report.glyph_missing = true,
 		}
 	}
+	let corner = corner(board, theme, width, report);
+	draw_corner(&corner, theme, target, report);
 	if strip.title.is_empty() {
 		return;
 	}
+	// The title's last lit column has a dark one after it before the right end, as its first
+	// has one after the voltage; with nothing at the right end, the panel's edge is the limit.
+	let limit = corner.left.map_or(width as i32, |left| left - 1);
+	// A title too long for the room it has is cut there, never drawn over the voltage or the
+	// right end: a host connecting narrows the room, and the board's own state stays readable
+	// whatever the title (review, 2026-10-19). The overrun is reported either way.
+	let room = Rectangle::new(Point::new(taken + 1, 0), Size::new((limit - taken - 1).max(0) as u32, STRIP_ROWS));
 	match theme.label.render_aligned(
 		strip.title,
-		Point::new(width / 2, 0),
+		Point::new(width as i32 / 2, 0),
 		VerticalPosition::Top,
 		HorizontalAlignment::Center,
 		ink,
-		target,
+		&mut target.clipped(&room),
 	) {
 		Ok(ink_box) => {
 			if let Some(b) = ink_box
-				&& (b.top_left.x <= taken || b.top_left.x + b.size.width as i32 > width)
+				&& (b.top_left.x <= taken || b.top_left.x + b.size.width as i32 > limit)
 			{
 				report.label_overrun = true;
 			}
@@ -332,158 +346,194 @@ where
 	}
 }
 
-/// [`draw_with`], and whether a chart's header carries the channel's label: not under a strip
-/// that carries the page's title.
-fn draw_frame<D>(frame: &Frame<'_>, board: &Board, theme: &Theme, target: &mut D, chart_label: bool) -> Report
+/// The frame on whatever target [`draw`] or [`draw_page`] gives it: the bus rates for the
+/// adapter screen, and whether a chart's header carries the channel's label — not under a
+/// strip that carries the page's title.
+fn draw_frame<D>(frame: &Frame<'_>, rates: Option<Rates>, theme: &Theme, target: &mut D, chart_label: bool) -> Report
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
-	let mut report = match frame {
-		Frame::Values { cells } => values(cells, board.links, theme, target),
+	match frame {
+		Frame::Values { cells } => values(cells, theme, target),
 		Frame::Chart {
 			cell,
 			min,
 			max,
 			samples,
 			seconds_per_sample,
-		} => chart(cell, *min, *max, samples, *seconds_per_sample, chart_label, board.links, theme, target),
-		// The host's screen: no link icons there, and no badge either.
-		Frame::Adapter(state) => return adapter(state, board.rates, target),
-	};
-	// Last, over whatever the page put in the corner, in the colours of the column under it.
-	draw_badge(board.faults, right_column_ground(frame), theme, target, &mut report);
-	report
-}
-
-/// The ground of the panel's rightmost column, where the link icons and the fault badge stand:
-/// lit under an alarmed rightmost cell — on the frames it is drawn inverted, so it blinks with
-/// the cell — and dark on every other page, a chart's included. The icons and the badge take
-/// their colours from it (owner, 2026-09-27, for the badge).
-fn right_column_ground(frame: &Frame<'_>) -> BinaryColor {
-	match frame {
-		Frame::Values { cells } if cells.last().is_some_and(|c| c.alarm) => BinaryColor::On,
-		_ => BinaryColor::Off,
+		} => chart(cell, *min, *max, samples, *seconds_per_sample, chart_label, theme, target),
+		Frame::Adapter(state) => adapter(state, rates, target),
 	}
 }
 
-// --- the fault badge --------------------------------------------------------------------
+// --- the strip's right end ----------------------------------------------------------------
 
-/// The warning triangle, row by row: a filled triangle with the `!` cut out of it, seven
-/// pixels a side — the icon column's width ([`ICON`]), so it stands on the same axis as the
-/// link icons above it. Drawn from primitives, as the icons are: no face here has one.
-pub const TRIANGLE: [&str; 7] = ["...#...", "..###..", "..#.#..", ".##.##.", ".#####.", "###.###", "#######"];
+/// The warning triangle, row by row: a filled triangle with the `!` cut out of it — the stroke,
+/// a row of ink, the dot — six rows tall and seven wide. Six rows are the label face's digits,
+/// so it stands on the strip's line with the count beside it. Drawn from rows, as the runes
+/// are: no face here has one.
+pub const TRIANGLE: [&str; 6] = ["...#...", "..#.#..", "..#.#..", ".#####.", ".##.##.", "#######"];
 
-/// Where the fault badge goes and what it clears: the triangle at the bottom of the link
-/// icons' column, [`ICON_TOP`] up from the bottom edge and [`ICON_RIGHT`] in, the count
-/// over it right-aligned to the column, [`ICON_GAP`] rows apart — with a [`BADGE_MARGIN`]
-/// of ground round both. A count that failed ([`Faults::Failed`]) has `?` where the number
-/// goes, laid out as one digit. `None` when there is nothing to show: no count, or a count
-/// of zero. Laid out for the board's 64-row panel, as the icons are.
-///
-/// Up to 99 the box stays inside the column and its clearance, clear of a chart's trace. A
-/// longer count grows left: three digits cover the trace's last column at most, and each
-/// digit past that four more. Not clipped — a count with a digit cut off is another number.
-pub fn badge_box(faults: Option<Faults>, theme: &Theme, size: Size) -> Option<Rectangle> {
-	badge_layout(faults, theme, size, &mut Report::default()).map(|badge| badge.ground)
+/// The USB plug, row by row: two pins, the body, the neck and the cable, in eight rows — the
+/// strip's whole line: the row over the digits, the digits' six, and the row a descender takes.
+pub const USB_RUNE: [&str; 8] = [".#.#.", ".#.#.", "#####", "#####", "#####", "#####", ".###.", "..#.."];
+
+/// The Bluetooth rune: the stem, and the two arrowheads crossing it on the stem, in the plug's
+/// eight rows. Five columns is the narrowest it keeps its arrowheads clear of the stem's tails,
+/// and an even height is what puts the crossing on the stem.
+pub const BLE_RUNE: [&str; 8] = ["..#..", "#.##.", ".##.#", "..##.", "..##.", ".##.#", "#.##.", "..#.."];
+
+/// A rune's columns.
+const RUNE_W: i32 = 5;
+
+/// Dark columns right of the right end: the voltage's margin at the left edge, mirrored.
+const STRIP_RIGHT: i32 = STRIP_LEFT;
+
+/// Dark columns between the plug and the Bluetooth rune.
+const RUNE_GAP: i32 = 3;
+
+/// Dark columns between the badge and the runes: wider than between two runes, so the badge
+/// reads as a thing of its own and not as a third link.
+const BADGE_GAP: i32 = 6;
+
+/// Dark columns between the triangle and the count's first character.
+const COUNT_GAP: i32 = 2;
+
+/// Ground round the badge's ink — lit when a code is failing now — above, below and left of it;
+/// on the right the count's last character cell has a blank column of its own.
+const BADGE_MARGIN: i32 = 1;
+
+/// Where the strip's right end puts its parts, laid out from the panel's right edge leftwards:
+/// the Bluetooth rune, the plug left of it, and the fault badge — the triangle and the count —
+/// left of those. A part with nothing to show takes no room and the rest close up to the edge,
+/// as the link icons closed up in the column they had. The page under the strip never moves
+/// for any of it.
+struct Corner {
+	usb: Option<Point>,
+	ble: Option<Point>,
+	badge: Option<Badge>,
+	/// The right end's first column: the badge's ground's — the same whether or not a code is
+	/// failing now — else the leftmost rune's. `None` when there is nothing to show.
+	left: Option<i32>,
 }
 
-/// Ground cleared round the badge's ink, so the badge reads the same over any page.
-const BADGE_MARGIN: u32 = 1;
-
-/// Where the badge's three parts land.
+/// Where the badge's parts land.
 struct Badge {
 	/// The triangle's top-left pixel.
 	triangle: Point,
-	/// The count, as text, and where to anchor its top.
+	/// The count, as text, and where to anchor its top: on the strip's line, as the voltage is.
 	count: Buf,
 	count_origin: Point,
-	/// The triangle's and the count's ink and their margin, clipped to the panel: painted
-	/// with the ground first, so what the page drew under it does not show through.
+	/// The triangle and the count's character cells, and [`BADGE_MARGIN`] round them: the strip's
+	/// first eight rows, as tall as a rune, so the strip's last row stays dark. Laid out by the
+	/// cells and not by the ink, so `?` and every one-digit count take the same box. Lit, under
+	/// dark ink, when a code is failing now.
 	ground: Rectangle,
+	inverted: bool,
 }
 
-fn badge_layout(faults: Option<Faults>, theme: &Theme, size: Size, report: &mut Report) -> Option<Badge> {
-	let mut count = Buf::new();
-	match faults? {
-		Faults::Counted { stored: 0, .. } => return None,
-		Faults::Counted { stored, .. } => {
-			let _ = write!(count, "{stored}");
-		}
-		// No number to give: the count failed.
-		Faults::Failed => {
-			let _ = count.write_str("?");
+/// The strip's right end for what the board says, on a panel `width` columns wide. The badge
+/// is the count of the board's stored fault codes: none for no count or a count of zero, `?`
+/// for the number when the count failed, laid out as one digit and never inverted.
+fn corner(board: &Board, theme: &Theme, width: u32, report: &mut Report) -> Corner {
+	// One past the column the next part, leftwards, ends on.
+	let mut end = width as i32 - STRIP_RIGHT;
+	let mut left = None;
+	let mut runes = [None, None];
+	for (slot, present) in [(1, board.links.ble), (0, board.links.usb)] {
+		if present {
+			if left.is_some() {
+				end -= RUNE_GAP;
+			}
+			end -= RUNE_W;
+			// From the strip's top row: a rune is the line's height.
+			runes[slot] = Some(Point::new(end, 0));
+			left = Some(end);
 		}
 	}
-	let left = icon_column(size.width);
-	let triangle = Point::new(left, size.height as i32 - ICON_TOP as i32 - TRIANGLE.len() as i32);
-	let triangle_box = Rectangle::new(triangle, Size::new(ICON.width, TRIANGLE.len() as u32));
-	// The count's ink ends at the column's right edge and ICON_GAP rows over the triangle;
-	// a longer count grows to the left.
-	let right = left + ICON.width as i32 - 1;
-	let bottom = triangle.y - ICON_GAP as i32 - 1;
-	let (count_origin, count_box) = match lit_box(&theme.unit, count.as_str()) {
-		Some(ink) => {
-			let far = ink.top_left + ink.size - Size::new(1, 1);
-			let origin = Point::new(right - far.x, bottom - far.y);
-			(origin, Some(Rectangle::new(origin + ink.top_left, ink.size)))
+	if left.is_some() {
+		end -= BADGE_GAP;
+	}
+	let badge = badge(board.faults, theme, end, report);
+	if let Some(badge) = &badge {
+		left = Some(badge.ground.top_left.x);
+	}
+	Corner {
+		usb: runes[0],
+		ble: runes[1],
+		badge,
+		left,
+	}
+}
+
+/// The badge with its ground ending one column before `end`; a longer count grows left.
+fn badge(faults: Option<Faults>, theme: &Theme, end: i32, report: &mut Report) -> Option<Badge> {
+	let mut count = Buf::new();
+	let inverted = match faults? {
+		Faults::Counted { stored: 0, .. } => return None,
+		Faults::Counted { stored, failing_now } => {
+			let _ = write!(count, "{stored}");
+			failing_now
 		}
-		None => {
-			report.glyph_missing = true;
-			(Point::new(left, bottom), None)
+		// No number to give: the count failed, and nothing says a code fails now.
+		Faults::Failed => {
+			let _ = count.write_str("?");
+			false
 		}
 	};
-	let ink = count_box.map_or(triangle_box, |count| envelope(triangle_box, count));
-	let margin = BADGE_MARGIN as i32;
-	let ground = Rectangle::new(
-		ink.top_left - Point::new(margin, margin),
-		ink.size + Size::new(2 * BADGE_MARGIN, 2 * BADGE_MARGIN),
+	// The count's character cells end at `end`; the last cell's blank column is the ground's
+	// right margin.
+	let advance = match theme.label.get_rendered_dimensions(count.as_str(), Point::zero(), VerticalPosition::Top) {
+		Ok(dims) => dims.advance.x,
+		Err(_) => {
+			report.glyph_missing = true;
+			0
+		}
+	};
+	let count_origin = Point::new(end - advance, 0);
+	// The digits' rows: the triangle stands on them, and the ground is a row over and under.
+	let digits = lit_box(&theme.label, "0").unwrap_or(Rectangle::new(Point::new(0, 1), Size::new(0, TRIANGLE.len() as u32)));
+	let triangle = Point::new(count_origin.x - COUNT_GAP - TRIANGLE[0].len() as i32, digits.top_left.y);
+	let line = Rectangle::new(Point::new(i32::MIN / 2, 0), Size::new(u32::MAX / 2, STRIP_ROWS - 1));
+	let ground = Rectangle::with_corners(
+		triangle - Point::new(BADGE_MARGIN, BADGE_MARGIN),
+		Point::new(end - 1, triangle.y + TRIANGLE.len() as i32 - 1 + BADGE_MARGIN),
 	)
-	.intersection(&Rectangle::new(Point::zero(), size));
+	.intersection(&line);
 	Some(Badge {
 		triangle,
 		count,
 		count_origin,
 		ground,
+		inverted,
 	})
 }
 
-/// The smallest rectangle holding both.
-fn envelope(a: Rectangle, b: Rectangle) -> Rectangle {
-	let far = |r: Rectangle| r.top_left + r.size - Size::new(1, 1);
-	Rectangle::with_corners(a.top_left.component_min(b.top_left), far(a).component_max(far(b)))
-}
-
-/// The badge over whatever the page drew: its ground, then the triangle and the count in
-/// the ink. The ground is the column's own (`column`), so on a dark page the badge is lit ink
-/// on dark and on an alarmed rightmost cell dark ink on its lit ground, as the link icons are
-/// (owner, 2026-09-27). A code failing now swaps the two — the whole badge inverted against
-/// the column, as an alarm inverts its whole cell, and steady. A count that failed is never
-/// inverted.
-fn draw_badge<D>(faults: Option<Faults>, column: BinaryColor, theme: &Theme, target: &mut D, report: &mut Report)
+/// The right end on the strip's dark ground: the runes lit, and the badge lit — or, for a code
+/// failing now, the whole badge inverted: dark ink on its lit ground, steady.
+fn draw_corner<D>(corner: &Corner, theme: &Theme, target: &mut D, report: &mut Report)
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
-	let size = target.bounding_box().size;
-	let Some(badge) = badge_layout(faults, theme, size, report) else {
+	let lit = BinaryColor::On;
+	if let Some(at) = corner.usb {
+		draw_rows(&USB_RUNE, at, lit, target);
+	}
+	if let Some(at) = corner.ble {
+		draw_rows(&BLE_RUNE, at, lit, target);
+	}
+	let Some(badge) = &corner.badge else {
 		return;
 	};
-	let inverted = matches!(faults, Some(Faults::Counted { failing_now: true, .. }));
-	let (ground, ink) = if inverted {
-		(column.invert(), column)
+	let ink = if badge.inverted {
+		let _ = target.fill_solid(&badge.ground, lit);
+		BinaryColor::Off
 	} else {
-		(column, column.invert())
+		lit
 	};
-	let _ = target.fill_solid(&badge.ground, ground);
-	let pixels = TRIANGLE.iter().enumerate().flat_map(|(dy, row)| {
-		row
-			.bytes()
-			.enumerate()
-			.filter(|(_, c)| *c == b'#')
-			.map(move |(dx, _)| Pixel(badge.triangle + Point::new(dx as i32, dy as i32), ink))
-	});
-	let _ = target.draw_iter(pixels);
+	draw_rows(&TRIANGLE, badge.triangle, ink, target);
 	if theme
-		.unit
+		.label
 		.render(
 			badge.count.as_str(),
 			badge.count_origin,
@@ -497,92 +547,19 @@ where
 	}
 }
 
-// --- the link icons ---------------------------------------------------------------------
-
-/// One link icon's cell, in pixels.
-///
-/// Drawn from primitives, not from a font: no face here has either symbol. Five columns
-/// is the narrowest a Bluetooth rune keeps its two arrowheads apart and nine rows is what
-/// its diagonals need at that width; the cell adds a clear column each side, and the USB
-/// plug is drawn to the same cell so the pair reads as a pair.
-pub const ICON: Size = Size::new(7, 9);
-
-/// Dark rows between two icons, one under the other: as many as above them.
-const ICON_GAP: u32 = 2;
-
-/// Dark rows above the icons: an icon touching the edge of the glass reads as cut off
-/// (owner, on the first preview).
-const ICON_TOP: u32 = 2;
-
-/// Dark columns right of the icons. Wider than [`ICON_TOP`] because columns read closer
-/// than rows on this panel (owner, on the second preview).
-const ICON_RIGHT: u32 = 4;
-
-/// Dark columns between the icons and the label or chart header they narrow.
-const ICON_CLEARANCE: i32 = 4;
-
-/// Where the link icons go: a column in the top-right corner, [`ICON_TOP`] down and
-/// [`ICON_RIGHT`] in, USB above BLE. `None` when nothing is connected — then nothing is
-/// drawn. Laid out for the board's 64-row panel: on 32 rows the second icon stands in the
-/// number band, and nothing reports it (no caller draws icons there).
-///
-/// A column and not a row (owner, 2026-09-14): the room it takes from the rightmost label is
-/// one icon wide whether one host is connected or two, so what fits there does not depend on
-/// how many hosts there are — and that label is whatever the plan puts last.
-pub fn icon_box(links: Links, width: u32) -> Option<Rectangle> {
-	let n = u32::from(links.usb) + u32::from(links.ble);
-	if n == 0 {
-		return None;
-	}
-	let h = n * ICON.height + (n - 1) * ICON_GAP;
-	Some(Rectangle::new(Point::new(icon_column(width), ICON_TOP as i32), Size::new(ICON.width, h)))
-}
-
-/// The icons' left edge, connected or not.
-fn icon_column(width: u32) -> i32 {
-	width as i32 - (ICON_RIGHT + ICON.width) as i32
-}
-
-fn draw_icons<D>(links: Links, width: u32, ink: BinaryColor, target: &mut D)
+/// A picture given row by row, `#` for ink, with its top-left pixel at `at`.
+fn draw_rows<D>(rows: &[&str], at: Point, ink: BinaryColor, target: &mut D)
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
-	let Some(area) = icon_box(links, width) else {
-		return;
-	};
-	let mut at = area.top_left;
-	if links.usb {
-		usb_icon(at, ink, target);
-		at.y += (ICON.height + ICON_GAP) as i32;
-	}
-	if links.ble {
-		ble_icon(at, ink, target);
-	}
-}
-
-/// A plug: two pins, the body, the cable.
-fn usb_icon<D>(at: Point, ink: BinaryColor, target: &mut D)
-where
-	D: DrawTarget<Color = BinaryColor>,
-{
-	let stroke = PrimitiveStyle::with_stroke(ink, 1);
-	for (a, b) in [((2, 0), (2, 1)), ((4, 0), (4, 1)), ((2, 6), (4, 6)), ((3, 7), (3, 8))] {
-		let _ = Line::new(at + Point::from(a), at + Point::from(b)).into_styled(stroke).draw(target);
-	}
-	let _ = Rectangle::new(at + Point::new(1, 2), Size::new(5, 4))
-		.into_styled(PrimitiveStyle::with_fill(ink))
-		.draw(target);
-}
-
-/// The Bluetooth rune: the stem, and the two arrowheads crossing it.
-fn ble_icon<D>(at: Point, ink: BinaryColor, target: &mut D)
-where
-	D: DrawTarget<Color = BinaryColor>,
-{
-	let stroke = PrimitiveStyle::with_stroke(ink, 1);
-	for (a, b) in [((3, 0), (3, 8)), ((3, 0), (5, 2)), ((5, 2), (1, 6)), ((1, 2), (5, 6)), ((5, 6), (3, 8))] {
-		let _ = Line::new(at + Point::from(a), at + Point::from(b)).into_styled(stroke).draw(target);
-	}
+	let pixels = rows.iter().enumerate().flat_map(|(dy, row)| {
+		row
+			.bytes()
+			.enumerate()
+			.filter(|(_, c)| *c == b'#')
+			.map(move |(dx, _)| Pixel(at + Point::new(dx as i32, dy as i32), ink))
+	});
+	let _ = target.draw_iter(pixels);
 }
 
 // --- the adapter screen -----------------------------------------------------------------
@@ -775,8 +752,14 @@ fn line_box(font: &FontRenderer) -> (i32, i32) {
 		.map_or((0, 0), |b| (b.top_left.y, b.size.height as i32))
 }
 
-/// The layout, measured: `SLCAN` in the top-left corner, as far in from its edges as the link
-/// icons are from theirs ([`ICON_TOP`], [`ICON_RIGHT`]); under it three centred lines —
+/// Dark rows above `SLCAN`, and dark columns left of it: the margins the link icons had in the
+/// pages' corner when the title was set (owner, 2026-09-14 — flush with the corner it did not
+/// match them). Wider across than down, because columns read closer than rows on this panel.
+const ADAPTER_TOP: i32 = 2;
+const ADAPTER_LEFT: i32 = 4;
+
+/// The layout, measured: `SLCAN` in the top-left corner, [`ADAPTER_TOP`] and [`ADAPTER_LEFT`]
+/// in from its edges; under it three centred lines —
 /// the speeds, the bit rate and mode, the counters — as a block centred in the rows under
 /// the title, starting no closer to it than [`LINE_GAP`]. A line wider than the panel is
 /// reported and drawn centred anyway; a line below the floor is reported and not drawn.
@@ -790,11 +773,10 @@ fn adapter_layout(fonts: &AdapterFonts, text: &AdapterText, size: Size, report: 
 		fits
 	};
 
-	// Its ink, not its anchor, sits at the margin: the owner's, 2026-09-14 — flush with the corner
-	// it did not match the icons.
+	// Its ink, not its anchor, sits at the margin.
 	let title_ink = ink_at_origin(&fonts.title, ADAPTER_TITLE, report).unwrap_or_default();
 	let title_h = title_ink.size.height as i32;
-	let (title_x, title_y) = (ICON_RIGHT as i32, ICON_TOP as i32);
+	let (title_x, title_y) = (ADAPTER_LEFT, ADAPTER_TOP);
 	let title = if fits(title_y, title_h, report) {
 		place(&fonts.title, ADAPTER_TITLE, title_x, title_y, title_ink.top_left.y, report)
 	} else {
@@ -904,7 +886,7 @@ where
 
 // --- the values page --------------------------------------------------------------------
 
-fn values<D>(cells: &[Cell<'_>], links: Links, theme: &Theme, target: &mut D) -> Report
+fn values<D>(cells: &[Cell<'_>], theme: &Theme, target: &mut D) -> Report
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
@@ -920,31 +902,8 @@ where
 	// reads as a missing fifth column.
 	let cell_w = width / cells.len() as u32;
 	let inner = cell_w.saturating_sub(PAD * 2);
-	let icons = icon_box(links, width);
 
-	let mut layout = row_layout(cells, theme, inner, height, &mut report);
-	// The icons stand in the rightmost cell's top-right corner. One stands beside the label
-	// alone, which is narrowed for it; a second reaches the number's rows, and under the status
-	// strip the number stands higher still (review, 2026-10-19: `6500` ran 11 rows into the BLE
-	// rune). Where they stand beside the number, the row is laid out again with the rightmost
-	// number's room ending before them — the row takes one face, so the whole row comes down a
-	// step — and taken only if the number then fits there. Four characters do not, at any step
-	// of the ladder in a quarter of the panel: that number stays where it was, and
-	// `Report::icon_overlap` says it collides (`Room::centre`).
-	if let Some(icons) = icons
-		&& layout.tiered
-		&& beside(icons, layout.band.0, layout.band.1)
-	{
-		let left = ((cells.len() as u32 - 1) * cell_w + PAD) as i32;
-		let room = (icons.top_left.x - ICON_CLEARANCE - left).max(0) as u32;
-		let last = number(&cells[cells.len() - 1]);
-		let mut narrowed = Report::default();
-		let again = row_layout_in(cells, theme, inner, room, height, &mut narrowed);
-		if measure(&theme.numerals[layout.step], last.as_str()) > room && measure(&theme.numerals[again.step], last.as_str()) <= room {
-			report = narrowed;
-			layout = again;
-		}
-	}
+	let layout = row_layout(cells, theme, inner, height, &mut report);
 	if layout.step > 0 {
 		report.value_shrunk = true;
 	}
@@ -968,33 +927,11 @@ where
 		};
 
 		let centre = x as i32 + w as i32 / 2;
-		// The label's room is its column less the padding — and in the rightmost column,
-		// less the icons and the padding before them.
-		let left = x as i32 + PAD as i32;
-		let mut right = (x + w) as i32 - PAD as i32;
-		if i + 1 == cells.len()
-			&& let Some(icons) = icons
-		{
-			right = right.min(icons.top_left.x - ICON_CLEARANCE);
-		}
-		draw_label(
-			cell.label,
-			centre,
-			(left, right),
-			layout.label_top,
-			&theme.label,
-			ink,
-			target,
-			&mut report,
-		);
-		// The rightmost cell's lines stay left of the icons where they stand beside them.
-		let beside = if i + 1 == cells.len() { icons } else { None };
-		let room = Room { left, icons: beside };
-		draw_value(cell, centre, inner, height, theme, ink, &layout, room, target, &mut report);
+		// The label's room is its column less the padding.
+		let span = (x as i32 + PAD as i32, (x + w) as i32 - PAD as i32);
+		draw_label(cell.label, centre, span, layout.label_top, &theme.label, ink, target, &mut report);
+		draw_value(cell, centre, inner, height, theme, ink, &layout, target, &mut report);
 	}
-	// Last, over the rightmost column's ground: dark on an alarmed one, or they vanish.
-	let ink = right_column_ground(&Frame::Values { cells }).invert();
-	draw_icons(links, width, ink, target);
 	report
 }
 
@@ -1040,19 +977,12 @@ struct RowLayout {
 /// means anything, so the eye reads the odd cell as the important one — exactly
 /// backwards on a panel whose whole job is to make the important cell obvious.
 fn row_layout(cells: &[Cell<'_>], theme: &Theme, inner: u32, height: u32, report: &mut Report) -> RowLayout {
-	row_layout_in(cells, theme, inner, inner, height, report)
-}
-
-/// [`row_layout`], with the rightmost cell's number given `last_inner` columns rather than
-/// `inner`: what the link icons leave it where they stand beside it.
-fn row_layout_in(cells: &[Cell<'_>], theme: &Theme, inner: u32, last_inner: u32, height: u32, report: &mut Report) -> RowLayout {
 	// First ask what the numbers alone need. Stacking the unit takes it out of
 	// the width competition entirely, so this is also the best face available
 	// if the three tiers turn out to fit.
 	let mut stacked_step = 0usize;
-	for (i, cell) in cells.iter().enumerate() {
-		let room = if i + 1 == cells.len() { last_inner } else { inner };
-		let (s, _, _) = fit(&theme.numerals, number(cell).as_str(), 0, room);
+	for cell in cells {
+		let (s, _, _) = fit(&theme.numerals, number(cell).as_str(), 0, inner);
 		stacked_step = stacked_step.max(s);
 	}
 
@@ -1174,8 +1104,7 @@ fn unit_width(cell: &Cell<'_>, theme: &Theme, report: &mut Report) -> u32 {
 
 /// A label centred on `centre` inside its room, `span` = (first column, one past the last).
 ///
-/// A label that fits is moved only as far as it must to stay inside — a short one stays over
-/// its number, a long one in a narrowed column slides left. One that does not fit is
+/// A label that fits is moved only as far as it must to stay inside. One that does not fit is
 /// reported and drawn centred on its room anyway: it will collide, and the report says so.
 #[allow(clippy::too_many_arguments)]
 fn draw_label<D>(label: &str, centre: i32, span: (i32, i32), top: i32, font: &FontRenderer, ink: BinaryColor, target: &mut D, report: &mut Report)
@@ -1218,45 +1147,6 @@ where
 	}
 }
 
-/// Whether ink on rows `top..=bottom` stands beside the icons' box.
-fn beside(icons: Rectangle, top: i32, bottom: i32) -> bool {
-	top < icons.top_left.y + icons.size.height as i32 && bottom >= icons.top_left.y
-}
-
-/// What a cell's lines may not cross: its left edge, and — in the rightmost cell — the link
-/// icons, where they stand.
-#[derive(Debug, Clone, Copy)]
-struct Room {
-	/// The first column a line may use: the cell's, less its padding.
-	left: i32,
-	/// The icons' box, in the rightmost cell while a host is connected.
-	icons: Option<Rectangle>,
-}
-
-impl Room {
-	/// The centre for a line `w` wide wanted at `centre`, whose ink spans rows `top..=bottom`.
-	///
-	/// A line beside the icons ends [`ICON_CLEARANCE`] left of them, slid only as far as it
-	/// must — the rule a label in the narrowed column follows (`draw_label`). A line with no
-	/// room left of them even at the cell's left edge is not moved: it stays over its label and
-	/// under its neighbours' level, runs into the icons, and [`Report::icon_overlap`] says so.
-	/// Half a slide would still collide and no longer line up.
-	fn centre(&self, centre: i32, w: i32, top: i32, bottom: i32, report: &mut Report) -> i32 {
-		let Some(icons) = self.icons else {
-			return centre;
-		};
-		let right = icons.top_left.x - ICON_CLEARANCE;
-		if !beside(icons, top, bottom) || centre - w / 2 + w <= right {
-			return centre;
-		}
-		if right - w < self.left {
-			report.icon_overlap = true;
-			return centre;
-		}
-		right - w + w / 2
-	}
-}
-
 #[allow(clippy::too_many_arguments)]
 fn draw_value<D>(
 	cell: &Cell<'_>,
@@ -1266,7 +1156,6 @@ fn draw_value<D>(
 	theme: &Theme,
 	ink: BinaryColor,
 	layout: &RowLayout,
-	room: Room,
 	target: &mut D,
 	report: &mut Report,
 ) where
@@ -1287,23 +1176,18 @@ fn draw_value<D>(
 		let value_h = numeral_height(numerals, text);
 		let (top, bottom) = layout.band;
 		let baseline = top + (bottom - top - value_h as i32) / 2 + value_h as i32;
-		let at = room.centre(centre, value_w as i32, baseline - value_h as i32, baseline, report);
-		draw_numerals(numerals, text, Point::new(at - value_w as i32 / 2, baseline), ink, target);
+		draw_numerals(numerals, text, Point::new(centre - value_w as i32 / 2, baseline), ink, target);
 		if let (Some(baseline), Some(text)) = (layout.dev_baseline, difference(cell)) {
-			let (w, h) = (difference_width(theme, &text) as i32, text_height(&theme.label, "0") as i32);
-			let at = room.centre(centre, w, baseline - h, baseline, report);
-			draw_difference(&text, at, baseline, theme, ink, target, report);
+			draw_difference(&text, centre, baseline, theme, ink, target, report);
 		}
 		if layout.with_unit && !cell.unit.is_empty() {
 			// Unit last, on the floor, centred under the number. It is the
 			// smallest thing on the panel and the one you look at least.
-			let (w, h) = (text_width(&theme.unit, cell.unit) as i32, text_height(&theme.unit, cell.unit) as i32);
-			let at = room.centre(centre, w, layout.unit_baseline - h, layout.unit_baseline, report);
 			if theme
 				.unit
 				.render_aligned(
 					cell.unit,
-					Point::new(at, layout.unit_baseline),
+					Point::new(centre, layout.unit_baseline),
 					VerticalPosition::Baseline,
 					HorizontalAlignment::Center,
 					FontColor::Transparent(ink),
@@ -1417,9 +1301,9 @@ where
 	}
 }
 
-/// The chart's header rows: the header text, and the first link icon beside it. The trace
-/// starts under them.
-const HEADER_ROWS: i32 = (ICON_TOP + ICON.height) as i32 + 1;
+/// The chart's header rows: a line of the label face and a dark row under it, as the strip's
+/// are. The trace starts under them.
+const HEADER_ROWS: i32 = STRIP_ROWS as i32;
 
 /// How many columns the trace will take: one sample is one column, and there
 /// are only so many columns.
@@ -1449,17 +1333,7 @@ fn chart_header(cell: &Cell<'_>, min: f32, max: f32, drawn: usize, seconds_per_s
 }
 
 #[allow(clippy::too_many_arguments)]
-fn chart<D>(
-	cell: &Cell<'_>,
-	min: f32,
-	max: f32,
-	samples: &[f32],
-	seconds_per_sample: f32,
-	label: bool,
-	links: Links,
-	theme: &Theme,
-	target: &mut D,
-) -> Report
+fn chart<D>(cell: &Cell<'_>, min: f32, max: f32, samples: &[f32], seconds_per_sample: f32, label: bool, theme: &Theme, target: &mut D) -> Report
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
@@ -1509,10 +1383,9 @@ where
 	let column_w = value_w.max(dev_w) as i32;
 	let plot_x = column_w + 4;
 	let plot_bottom = height as i32 - 1;
-	// The trace ends before the icons' column **whether or not a host is connected**: the icons
-	// stand one under the other, so a second one is beside the trace's top rows, and a plot
-	// that widened when the last host left would change how many seconds the chart holds.
-	let plot_w = icon_column(width) - ICON_CLEARANCE - plot_x;
+	// To the panel's edge: the link runes and the fault badge are in the strip, so nothing of
+	// the board's stands beside the trace and its width — the seconds it holds — is the page's.
+	let plot_w = width as i32 - plot_x;
 	// The geometry is settled before the header is written, because the header
 	// counts what the trace draws and the trace is only as wide as the plot.
 	let drawn = drawn_columns(samples.len(), plot_w);
@@ -1525,16 +1398,13 @@ where
 		FontColor::Transparent(ink),
 		target,
 	) {
-		// The header's room is the width less the icons and the padding before them.
 		Ok(dim) => {
-			let room = icon_box(links, width).map_or(width as i32, |icons| icons.top_left.x - ICON_CLEARANCE);
-			if dim.bounding_box.is_some_and(|b| b.top_left.x + b.size.width as i32 > room) {
+			if dim.bounding_box.is_some_and(|b| b.top_left.x + b.size.width as i32 > width as i32) {
 				report.label_overrun = true;
 			}
 		}
 		Err(_) => report.glyph_missing = true,
 	}
-	draw_icons(links, width, ink, target);
 
 	// Centred in the band under the header, for the same reason as the values
 	// page: the number is what the eye came for, and on the floor it reads as an
@@ -1582,6 +1452,7 @@ where
 mod tests {
 	use super::*;
 	use crate::PANEL;
+	use crate::frame::Links;
 	use embedded_graphics_simulator::SimulatorDisplay;
 
 	fn panel() -> SimulatorDisplay<BinaryColor> {
@@ -1640,7 +1511,7 @@ mod tests {
 			Cell::new("ЦИЛ 4", Some(-13.8), "", 1),
 		];
 		let mut display = panel();
-		let report = values(&cells, Links::NONE, &Theme::bold_mono(), &mut display);
+		let report = values(&cells, &Theme::bold_mono(), &mut display);
 		assert!(report.value_overrun, "{report:?}");
 		// Drawn anyway. A cell that rendered nothing would look like a channel
 		// that did not answer, and those two must never be confusable.
@@ -1689,7 +1560,7 @@ mod tests {
 		assert!(layout.with_unit, "a stacked unit is never dropped for width");
 
 		let mut display: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(Size::new(256, 64));
-		let report = values(&cells, Links::NONE, &theme, &mut display);
+		let report = values(&cells, &theme, &mut display);
 		assert!(!report.unit_dropped, "{report:?}");
 		assert!(!report.value_overrun, "{report:?}");
 
@@ -1727,7 +1598,7 @@ mod tests {
 		// the screen says it happened.
 		let cells = [Cell::new("ТЕСТ", Some(1.0), "\u{2192}", 0)];
 		let mut display = panel();
-		let report = values(&cells, Links::NONE, &Theme::bold_mono(), &mut display);
+		let report = values(&cells, &Theme::bold_mono(), &mut display);
 		assert!(report.glyph_missing, "{report:?}");
 	}
 
@@ -1742,7 +1613,7 @@ mod tests {
 			Cell::new("ЦИЛ 4", Some(0.0), "", 1),
 		];
 		let mut display = panel();
-		values(&cells, Links::NONE, &Theme::bold_mono(), &mut display);
+		values(&cells, &Theme::bold_mono(), &mut display);
 		// The top-left corner of the alarmed column is lit ground; the same corner
 		// of its neighbours is not.
 		assert!(lit(&display, 65, 0), "the alarmed cell's ground is lit");
@@ -1855,7 +1726,7 @@ mod tests {
 			Cell::new("МАСЛО", Some(93.0), "", 0),
 		];
 		let mut display = panel();
-		let report = values(&cells, Links::NONE, &Theme::bold_mono(), &mut display);
+		let report = values(&cells, &Theme::bold_mono(), &mut display);
 		assert!(report.label_overrun, "{report:?}");
 	}
 
@@ -1909,7 +1780,7 @@ mod tests {
 			}
 
 			let mut display = tall();
-			let report = values(&cells, Links::NONE, &theme, &mut display);
+			let report = values(&cells, &theme, &mut display);
 			assert_eq!(report, Report::default(), "{deviation:?}: {report:?}");
 			// The bottom line is drawn, which it is not when it is pushed past the floor.
 			assert!(
@@ -1938,8 +1809,8 @@ mod tests {
 			Cell::new("ОЖ", Some(93.0), "°C", 0).with_deviation(Deviation::None),
 		];
 		let (mut a, mut b) = (tall(), tall());
-		let one = values(&plain, Links::NONE, &Theme::bold_mono(), &mut a);
-		let two = values(&marked, Links::NONE, &Theme::bold_mono(), &mut b);
+		let one = values(&plain, &Theme::bold_mono(), &mut a);
+		let two = values(&marked, &Theme::bold_mono(), &mut b);
 		assert_eq!(one, two);
 		assert!(a.bounding_box().points().all(|p| a.get_pixel(p) == b.get_pixel(p)));
 	}
@@ -1948,7 +1819,7 @@ mod tests {
 	fn a_deviation_is_drawn_between_the_number_and_the_unit() {
 		let cells = [drifting("НАДДУВ", 1.92, "bar", 2, Deviation::Value(0.07))];
 		let mut display = tall();
-		let report = values(&cells, Links::NONE, &Theme::bold_mono(), &mut display);
+		let report = values(&cells, &Theme::bold_mono(), &mut display);
 		assert_eq!(report, Report::default(), "{report:?}");
 
 		let theme = Theme::bold_mono();
@@ -1969,8 +1840,8 @@ mod tests {
 		let unknown = [drifting("НАДДУВ", 1.92, "bar", 2, Deviation::Unknown)];
 		let answered = [drifting("НАДДУВ", 1.92, "bar", 2, Deviation::Value(0.07))];
 		let (mut a, mut b) = (tall(), tall());
-		values(&unknown, Links::NONE, &Theme::bold_mono(), &mut a);
-		values(&answered, Links::NONE, &Theme::bold_mono(), &mut b);
+		values(&unknown, &Theme::bold_mono(), &mut a);
+		values(&answered, &Theme::bold_mono(), &mut b);
 		let layout = row_layout(&unknown, &Theme::bold_mono(), TALL.width - 2 * PAD, TALL.height, &mut Report::default());
 		let baseline = layout.dev_baseline.expect("the line is kept whether or not it answered");
 		assert!((layout.band.1..=baseline).any(|y| lit_row(&a, y)), "a dash is drawn");
@@ -2059,10 +1930,11 @@ mod tests {
 		);
 	}
 
-	// --- the link icons ---------------------------------------------------------------
+	// --- the board's panel ------------------------------------------------------------
 
 	/// The panel the board has.
 	const TALL: Size = Size::new(256, 64);
+	const TALL_BOX: Rectangle = Rectangle::new(Point::zero(), TALL);
 
 	fn tall() -> SimulatorDisplay<BinaryColor> {
 		SimulatorDisplay::new(TALL)
@@ -2071,211 +1943,6 @@ mod tests {
 	const USB: Links = Links { usb: true, ble: false };
 	const BLE: Links = Links { usb: false, ble: true };
 	const BOTH: Links = Links { usb: true, ble: true };
-
-	fn lit_in(display: &SimulatorDisplay<BinaryColor>, area: Rectangle) -> bool {
-		area.points().any(|p| display.get_pixel(p) == BinaryColor::On)
-	}
-
-	/// Inside the icon box, `display` is pixel for pixel the icons drawn alone.
-	fn icon_box_holds_only_the_icons(display: &SimulatorDisplay<BinaryColor>, links: Links) -> bool {
-		let mut alone = tall();
-		draw_icons(links, TALL.width, BinaryColor::On, &mut alone);
-		icon_box(links, TALL.width)
-			.unwrap()
-			.points()
-			.all(|p| display.get_pixel(p) == alone.get_pixel(p))
-	}
-
-	/// A real plan's page: labels as long as the plan's, two kinds of unit.
-	fn temps<'a>(last: &'a str) -> [Cell<'a>; 4] {
-		[
-			Cell::new("ОЖ", Some(93.0), "°C", 0),
-			Cell::new("НАДДУВ", Some(1.82), "bar", 2),
-			Cell::new("МАСЛО", Some(104.0), "°C", 0),
-			Cell::new(last, Some(78.0), "°C", 0),
-		]
-	}
-
-	#[test]
-	fn the_icons_stand_in_a_column_two_pixels_down_four_in_and_two_apart() {
-		assert_eq!(icon_box(Links::NONE, 256), None, "nothing connected, nothing drawn");
-		assert_eq!(icon_box(USB, 256), Some(Rectangle::new(Point::new(245, 2), ICON)));
-		assert_eq!(icon_box(BLE, 256), Some(Rectangle::new(Point::new(245, 2), ICON)));
-		assert_eq!(icon_box(BOTH, 256), Some(Rectangle::new(Point::new(245, 2), Size::new(7, 20))));
-	}
-
-	#[test]
-	fn each_icon_draws_inside_its_own_cell_and_nowhere_else() {
-		let mut none = tall();
-		draw_icons(Links::NONE, TALL.width, BinaryColor::On, &mut none);
-		assert!(!lit_in(&none, none.bounding_box()), "no link, no pixel");
-
-		// Every lit pixel is inside the icon box, so the two dark rows above it and the two
-		// dark columns right of it are checked by the loop below.
-		let right = Rectangle::new(Point::new(245, 2), ICON);
-		for links in [USB, BLE, BOTH] {
-			let mut display = tall();
-			draw_icons(links, TALL.width, BinaryColor::On, &mut display);
-			let area = icon_box(links, TALL.width).unwrap();
-			for p in display.bounding_box().points() {
-				assert!(
-					display.get_pixel(p) == BinaryColor::Off || area.contains(p),
-					"{links:?}: {p:?} lit outside {area:?}"
-				);
-			}
-			assert!(lit_in(&display, right), "{links:?}: the corner cell has its icon");
-			if links == BOTH {
-				assert!(lit_in(&display, Rectangle::new(Point::new(245, 13), ICON)), "and the one under it");
-				assert!(!lit_in(&display, Rectangle::new(Point::new(245, 11), Size::new(7, 2))), "the gap is dark");
-			}
-		}
-
-		let (mut usb, mut ble) = (tall(), tall());
-		draw_icons(USB, TALL.width, BinaryColor::On, &mut usb);
-		draw_icons(BLE, TALL.width, BinaryColor::On, &mut ble);
-		assert!(right.points().any(|p| usb.get_pixel(p) != ble.get_pixel(p)), "two different pictures");
-	}
-
-	#[test]
-	fn a_label_never_lights_a_pixel_inside_the_icon_box() {
-		for links in [USB, BLE, BOTH] {
-			let mut display = tall();
-			let report = values(&temps("КОРОБКА"), links, &Theme::bold_mono(), &mut display);
-			assert!(!report.label_overrun && !report.glyph_missing, "{links:?}: {report:?}");
-			assert!(icon_box_holds_only_the_icons(&display, links), "{links:?}");
-			// `КОРОБКА` is 34 px and the room beside the icons 46: it fits, and the clearance
-			// before the icons stays dark.
-			let area = icon_box(links, TALL.width).unwrap();
-			let clearance = Rectangle::new(
-				Point::new(area.top_left.x - ICON_CLEARANCE, 0),
-				Size::new(ICON_CLEARANCE as u32, ICON_TOP + ICON.height),
-			);
-			assert!(!lit_in(&display, clearance), "{links:?}: the clearance before the icons is dark");
-		}
-	}
-
-	#[test]
-	fn a_short_rightmost_label_stays_over_its_number_beside_the_icons() {
-		let cells = temps("ОЖ");
-		let (mut plain, mut linked) = (tall(), tall());
-		values(&cells, Links::NONE, &Theme::bold_mono(), &mut plain);
-		values(&cells, BOTH, &Theme::bold_mono(), &mut linked);
-		let label_row = Rectangle::new(Point::new(192, 0), Size::new(40, 8));
-		assert!(
-			label_row.points().all(|p| plain.get_pixel(p) == linked.get_pixel(p)),
-			"a label with room to spare does not move"
-		);
-	}
-
-	#[test]
-	fn a_second_host_takes_no_more_room_from_the_rightmost_label() {
-		for last in ["ОЖ", "НАДДУВ", "КОРОБКА", "ТЕМП.МАСЛА"] {
-			let cells = temps(last);
-			let (mut one, mut two) = (tall(), tall());
-			let alone = values(&cells, USB, &Theme::bold_mono(), &mut one);
-			let beside = values(&cells, BOTH, &Theme::bold_mono(), &mut two);
-			assert_eq!(alone.label_overrun, beside.label_overrun, "{last}");
-			let labels = Rectangle::new(Point::new(0, 0), Size::new(241, ICON_TOP + ICON.height));
-			assert!(
-				labels.points().all(|p| one.get_pixel(p) == two.get_pixel(p)),
-				"{last}: the label row did not move"
-			);
-		}
-	}
-
-	#[test]
-	fn a_value_never_lights_a_pixel_beside_the_icons() {
-		for n in 1..=4 {
-			for (value, decimals) in [(78.0, 0), (1234.0, 0), (12345.0, 0), (104.5, 1), (-40.5, 1)] {
-				let cells: std::vec::Vec<Cell<'_>> = (0..n).map(|_| Cell::new("ОЖ", Some(value), "°C", decimals)).collect();
-				let mut display = tall();
-				values(&cells, BOTH, &Theme::bold_mono(), &mut display);
-				let mut alone = tall();
-				draw_icons(BOTH, TALL.width, BinaryColor::On, &mut alone);
-				let area = icon_box(BOTH, TALL.width).unwrap();
-				let around = Rectangle::new(
-					area.top_left - Point::new(ICON_CLEARANCE, 0),
-					area.size + Size::new(ICON_CLEARANCE as u32, ICON_GAP),
-				);
-				assert!(
-					around.points().all(|p| display.get_pixel(p) == alone.get_pixel(p)),
-					"{n} cells of {value}: a value reached the icons"
-				);
-			}
-		}
-	}
-
-	#[test]
-	fn a_rightmost_label_that_fits_only_without_the_icons_is_reported_with_them() {
-		let cells = temps("ТЕМП.МАСЛА");
-		let mut display = tall();
-		let alone = values(&cells, Links::NONE, &Theme::bold_mono(), &mut display);
-		assert!(!alone.label_overrun, "it fits its column: {alone:?}");
-		let mut display = tall();
-		let beside = values(&cells, BOTH, &Theme::bold_mono(), &mut display);
-		assert!(beside.label_overrun, "it does not fit beside the icons: {beside:?}");
-	}
-
-	#[test]
-	fn an_alarmed_rightmost_column_draws_its_icons_dark() {
-		let cells = [Cell::new("ОЖ", Some(93.0), "°C", 0), Cell::new("КОРОБКА", Some(78.0), "°C", 0).alarmed()];
-		let mut display = tall();
-		values(&cells, USB, &Theme::bold_mono(), &mut display);
-		assert!(lit(&display, 245, 5), "the ground beside the plug is lit");
-		assert!(!lit(&display, 247, 5), "the plug's body is dark on it");
-	}
-
-	#[test]
-	fn a_chart_header_gives_way_to_the_icons_and_the_trace_ends_before_their_column() {
-		// Pinned at the top of the scale, so the trace runs along the highest row it can.
-		let samples = [2.5f32; 240];
-		fn pinned<'a>(label: &'a str, samples: &'a [f32]) -> Frame<'a> {
-			Frame::Chart {
-				cell: Cell::new(label, Some(2.5), "bar", 2),
-				min: 0.0,
-				max: 2.5,
-				samples,
-				seconds_per_sample: 0.2,
-			}
-		}
-		let chart = |label: &'static str| pinned(label, &samples);
-		let board = Board {
-			links: BOTH,
-			..Board::default()
-		};
-		let mut display = tall();
-		let report = draw_with(&chart("НАДДУВ"), &board, &Theme::bold_mono(), &mut display);
-		assert!(!report.label_overrun, "{report:?}");
-		assert!(icon_box_holds_only_the_icons(&display, BOTH));
-		let end = icon_column(TALL.width) - ICON_CLEARANCE;
-		assert!(lit(&display, end - 1, HEADER_ROWS), "the trace runs along its top row to the clearance");
-		assert!(
-			(end..TALL.width as i32)
-				.all(|x| (HEADER_ROWS..TALL.height as i32).all(|y| !lit(&display, x, y) || icon_box(BOTH, TALL.width).unwrap().contains(Point::new(x, y)))),
-			"nothing of the trace in the clearance or the icons' column"
-		);
-		let mut plain = tall();
-		draw(&chart("НАДДУВ"), &Theme::bold_mono(), &mut plain);
-		let under = Rectangle::new(Point::new(0, HEADER_ROWS), Size::new(end as u32, TALL.height - HEADER_ROWS as u32));
-		assert!(
-			under.points().all(|p| plain.get_pixel(p) == display.get_pixel(p)),
-			"the trace is the same picture with no host connected"
-		);
-
-		// Lengthen the label a letter at a time: the icons never let a longer header through,
-		// and some length fits the whole width but not the width less the icons.
-		let mut collided = false;
-		for n in 1..40 {
-			let long: std::string::String = core::iter::repeat_n('Ж', n).collect();
-			let alone = draw(&pinned(&long, &samples), &Theme::bold_mono(), &mut tall()).label_overrun;
-			let beside = draw_with(&pinned(&long, &samples), &board, &Theme::bold_mono(), &mut tall()).label_overrun;
-			assert!(!alone || beside, "{n} letters: the icons only take room away");
-			collided |= beside && !alone;
-		}
-		assert!(collided, "some header fits the panel but not beside the icons");
-	}
-
-	// --- the fault badge -------------------------------------------------------------
 
 	const NINE: Option<Faults> = Some(Faults::Counted {
 		stored: 9,
@@ -2288,25 +1955,23 @@ mod tests {
 	/// The count failed: no list from the gateway, or one the board refused.
 	const FAILED: Option<Faults> = Some(Faults::Failed);
 
-	/// `frame` drawn on the board's panel with these links and this count.
-	fn with_badge(frame: &Frame<'_>, links: Links, faults: Option<Faults>) -> (SimulatorDisplay<BinaryColor>, Report) {
-		let mut display = tall();
-		let board = Board {
-			links,
-			faults,
-			..Board::default()
-		};
-		let report = draw_with(frame, &board, &Theme::bold_mono(), &mut display);
-		(display, report)
-	}
-
-	fn the_badge(faults: Option<Faults>) -> Rectangle {
-		badge_box(faults, &Theme::bold_mono(), TALL).expect("a count to show")
+	fn lit_in(display: &SimulatorDisplay<BinaryColor>, area: Rectangle) -> bool {
+		area.points().any(|p| display.get_pixel(p) == BinaryColor::On)
 	}
 
 	/// Every pixel outside `area` is the same in both.
 	fn same_outside(a: &SimulatorDisplay<BinaryColor>, b: &SimulatorDisplay<BinaryColor>, area: Rectangle) -> bool {
 		a.bounding_box().points().all(|p| area.contains(p) || a.get_pixel(p) == b.get_pixel(p))
+	}
+
+	/// A real plan's page: labels as long as the plan's, two kinds of unit.
+	fn temps<'a>(last: &'a str) -> [Cell<'a>; 4] {
+		[
+			Cell::new("ОЖ", Some(93.0), "°C", 0),
+			Cell::new("НАДДУВ", Some(1.82), "bar", 2),
+			Cell::new("МАСЛО", Some(104.0), "°C", 0),
+			Cell::new(last, Some(78.0), "°C", 0),
+		]
 	}
 
 	/// A chart pinned at the top of its scale, so the trace runs along its highest row.
@@ -2320,61 +1985,118 @@ mod tests {
 		}
 	}
 
-	#[test]
-	fn a_fault_count_is_a_triangle_under_its_number_at_the_foot_of_the_icon_column() {
-		let cells = temps("ОЖ");
-		let page = Frame::Values { cells: &cells };
-		let (display, report) = with_badge(&page, Links::NONE, NINE);
-		assert!(!report.glyph_missing, "{report:?}");
+	/// A drive page: four cells, the last with a specified value, so its number stands high.
+	fn drive(last: Cell<'_>) -> [Cell<'_>; 4] {
+		[
+			Cell::new("СКОРОСТЬ", Some(87.0), "km/h", 0),
+			Cell::new("ОБОРОТЫ", Some(2840.0), "", 0),
+			Cell::new("НАДДУВ", Some(1.42), "bar", 2).with_deviation(Deviation::Value(-0.06)),
+			last,
+		]
+	}
 
-		// The triangle: in the icon column, ICON_TOP up from the floor, pixel for pixel.
-		let left = icon_column(TALL.width);
-		let top = TALL.height as i32 - ICON_TOP as i32 - TRIANGLE.len() as i32;
-		assert_eq!((left, top), (245, 55));
-		for (dy, row) in TRIANGLE.iter().enumerate() {
-			for (dx, c) in row.chars().enumerate() {
-				assert_eq!(
-					lit(&display, left + dx as i32, top + dy as i32),
-					c == '#',
-					"triangle row {dy} column {dx}"
-				);
-			}
-		}
-		// The count over it, ICON_GAP rows up, its ink ending at the column's right edge.
-		let number = Rectangle::new(Point::new(left, 0), Size::new(ICON.width, (top - ICON_GAP as i32) as u32));
-		assert!(lit_in(&display, number), "the count is drawn over the triangle");
-		let right = left + ICON.width as i32 - 1;
-		assert!((0..top).any(|y| lit(&display, right, y)), "right-aligned to the column");
-		assert!(
-			!lit_in(
-				&display,
-				Rectangle::new(Point::new(left, top - ICON_GAP as i32), Size::new(ICON.width, ICON_GAP))
-			),
-			"the gap is dark"
-		);
+	// --- the status strip -------------------------------------------------------------
 
-		// The box is the ink and its margin, inside the panel's four-pixel right edge.
-		let area = the_badge(NINE);
-		assert_eq!(
-			area.top_left.x + area.size.width as i32,
-			TALL.width as i32 - ICON_RIGHT as i32 + BADGE_MARGIN as i32
-		);
-		assert_eq!(
-			area.top_left.y + area.size.height as i32,
-			TALL.height as i32 - ICON_TOP as i32 + BADGE_MARGIN as i32
-		);
+	/// The page under the strip: the panel less the strip's rows.
+	const UNDER: Size = Size::new(256, 64 - STRIP_ROWS);
 
-		// And nothing outside its box moved.
-		let (plain, _) = with_badge(&page, Links::NONE, None);
-		assert!(same_outside(&display, &plain, area));
+	fn board(links: Links, faults: Option<Faults>) -> Board {
+		Board { links, rates: None, faults }
+	}
+
+	/// Every combination of what the board can say: the links, and the fault count's kinds.
+	fn boards() -> std::vec::Vec<Board> {
+		let counts = [
+			None,
+			NINE,
+			NINE_FAILING,
+			FAILED,
+			Some(Faults::Counted {
+				stored: 99,
+				failing_now: true,
+			}),
+		];
+		[Links::NONE, USB, BLE, BOTH]
+			.into_iter()
+			.flat_map(|links| counts.map(|faults| board(links, faults)))
+			.collect()
+	}
+
+	/// `page` drawn with `strip` on the board's panel, and the report.
+	fn paged(frame: &Frame<'_>, strip: &Strip<'_>, board: &Board) -> (SimulatorDisplay<BinaryColor>, Report) {
+		let mut display = tall();
+		let report = draw_page(frame, strip, board, &Theme::bold_mono(), &mut display);
+		(display, report)
+	}
+
+	/// Rows `STRIP_ROWS..` of `display` are, pixel for pixel, `under` — the page drawn alone on a
+	/// panel as tall as what the strip leaves.
+	fn page_under_strip_is(display: &SimulatorDisplay<BinaryColor>, under: &SimulatorDisplay<BinaryColor>) -> bool {
+		Rectangle::new(Point::zero(), UNDER)
+			.points()
+			.all(|p| under.get_pixel(p) == display.get_pixel(p + Point::new(0, STRIP_ROWS as i32)))
+	}
+
+	fn strip_rows() -> Rectangle {
+		Rectangle::new(Point::zero(), Size::new(TALL.width, STRIP_ROWS))
+	}
+
+	/// The strip's right end on the board's panel.
+	fn right_end(board: &Board) -> Corner {
+		corner(board, &Theme::bold_mono(), TALL.width, &mut Report::default())
+	}
+
+	/// Whether `display` holds `rows` at `at`, pixel for pixel: `#` in `ink`, the rest not.
+	fn holds(display: &SimulatorDisplay<BinaryColor>, rows: &[&str], at: Point, ink: BinaryColor) -> bool {
+		rows.iter().enumerate().all(|(dy, row)| {
+			row.bytes().enumerate().all(|(dx, c)| {
+				let colour = display.get_pixel(at + Point::new(dx as i32, dy as i32));
+				(colour == ink) == (c == b'#')
+			})
+		})
+	}
+
+	/// The panel's last column with ink on the strip's rows, and its first.
+	fn strip_ink_span(display: &SimulatorDisplay<BinaryColor>, from_x: i32) -> Option<(i32, i32)> {
+		let xs: std::vec::Vec<i32> = strip_rows()
+			.points()
+			.filter(|p| p.x >= from_x && display.get_pixel(*p) == BinaryColor::On)
+			.map(|p| p.x)
+			.collect();
+		Some((*xs.iter().min()?, *xs.iter().max()?))
 	}
 
 	#[test]
-	fn no_count_and_a_count_of_zero_draw_nothing() {
-		let cells = temps("ОЖ");
-		let page = Frame::Values { cells: &cells };
-		let (plain, page_report) = with_badge(&page, Links::NONE, None);
+	fn the_strip_writes_volts_with_one_decimal_and_a_dash_for_no_answer() {
+		assert_eq!(volts_text(Some(14.24)).as_str(), "14.2V");
+		assert_eq!(volts_text(Some(12.0)).as_str(), "12.0V");
+		assert_eq!(volts_text(None).as_str(), "--V", "no answer is a dash, as in a cell, never 0.0V");
+	}
+
+	/// The runes and the triangle are drawn from rows, and stay inside the strip's line: the
+	/// strip's last row is dark under them. The triangle is the digits' height, so the count
+	/// stands beside it on the line the voltage is written on.
+	#[test]
+	fn the_runes_and_the_badge_fit_the_strips_line() {
+		for rows in [&USB_RUNE[..], &BLE_RUNE[..], &TRIANGLE[..]] {
+			assert!(rows.len() < STRIP_ROWS as usize, "{rows:?}");
+		}
+		for rows in [&USB_RUNE[..], &BLE_RUNE[..]] {
+			assert!(rows.iter().all(|row| row.len() == RUNE_W as usize), "{rows:?}");
+		}
+		let digit = lit_box(&Theme::bold_mono().label, "0").expect("the label face has digits");
+		assert_eq!(digit.size.height as usize, TRIANGLE.len(), "the triangle is the digits' height");
+		let (mut usb, mut ble) = (tall(), tall());
+		draw_rows(&USB_RUNE, Point::zero(), BinaryColor::On, &mut usb);
+		draw_rows(&BLE_RUNE, Point::zero(), BinaryColor::On, &mut ble);
+		assert_ne!(usb, ble, "two different pictures");
+	}
+
+	/// Nothing to show: no runes, no badge, and nothing at the right end.
+	#[test]
+	fn with_nothing_connected_and_no_count_the_right_end_is_dark() {
 		for faults in [
+			None,
 			Some(Faults::Counted {
 				stored: 0,
 				failing_now: false,
@@ -2384,169 +2106,180 @@ mod tests {
 				failing_now: true,
 			}),
 		] {
-			assert_eq!(badge_box(faults, &Theme::bold_mono(), TALL), None, "{faults:?}");
-			let (display, report) = with_badge(&page, Links::NONE, faults);
-			assert_eq!(display, plain, "{faults:?}: hidden at zero");
-			assert_eq!(report, page_report, "{faults:?}: and nothing to say about it");
+			let quiet = board(Links::NONE, faults);
+			let end = right_end(&quiet);
+			assert!(end.usb.is_none() && end.ble.is_none() && end.badge.is_none(), "{faults:?}");
+			assert_eq!(end.left, None, "{faults:?}: hidden at zero");
+			let cells = temps("ВПУСК");
+			let (display, _) = paged(&Frame::Values { cells: &cells }, &Strip::NONE, &quiet);
+			assert!(!lit_in(&display, strip_rows()), "{faults:?}: an empty strip is dark");
 		}
-		assert_eq!(badge_box(None, &Theme::bold_mono(), TALL), None);
+	}
+
+	/// From the right edge, a column in as the voltage is from the left: the Bluetooth rune, the
+	/// plug left of it, then the badge — the triangle and the count — left of the runes. A part
+	/// with nothing to show takes no room; the rest close up to the edge.
+	#[test]
+	fn the_right_end_holds_the_runes_at_the_edge_and_the_badge_left_of_them() {
+		let edge = TALL.width as i32 - STRIP_RIGHT;
+		let ble_at = Point::new(edge - RUNE_W, 0);
+		let usb_beside = Point::new(ble_at.x - RUNE_GAP - RUNE_W, 0);
+		let cells = temps("ВПУСК");
+		let page = Frame::Values { cells: &cells };
+		for (links, usb, ble) in [
+			(USB, Some(Point::new(edge - RUNE_W, 0)), None),
+			(BLE, None, Some(ble_at)),
+			(BOTH, Some(usb_beside), Some(ble_at)),
+		] {
+			for faults in [None, NINE, NINE_FAILING, FAILED] {
+				let said = board(links, faults);
+				let end = right_end(&said);
+				assert_eq!((end.usb, end.ble), (usb, ble), "{links:?} {faults:?}");
+				let (display, report) = paged(&page, &Strip::NONE, &said);
+				assert!(!report.glyph_missing, "{report:?}");
+				if let Some(at) = usb {
+					assert!(holds(&display, &USB_RUNE, at, BinaryColor::On), "{links:?} {faults:?}: the plug");
+				}
+				if let Some(at) = ble {
+					assert!(holds(&display, &BLE_RUNE, at, BinaryColor::On), "{links:?} {faults:?}: the rune");
+				}
+				let runes_left = usb.or(ble).unwrap().x;
+				match &end.badge {
+					None => assert_eq!(end.left, Some(runes_left)),
+					Some(badge) => {
+						assert_eq!(end.left, Some(badge.ground.top_left.x));
+						// The badge's ground ends BADGE_GAP dark columns before the runes.
+						let ground_end = badge.ground.top_left.x + badge.ground.size.width as i32;
+						assert_eq!(ground_end, runes_left - BADGE_GAP, "{links:?} {faults:?}");
+						let gap = Rectangle::new(Point::new(ground_end, 0), Size::new(BADGE_GAP as u32, STRIP_ROWS));
+						assert!(!lit_in(&display, gap), "{links:?} {faults:?}: the gap before the runes is dark");
+					}
+				}
+				// Nothing of the strip's on its last row, nor left of the right end.
+				let last = Rectangle::new(Point::new(0, STRIP_ROWS as i32 - 1), Size::new(TALL.width, 1));
+				assert!(!lit_in(&display, last), "{links:?} {faults:?}: the strip's last row is dark");
+				let before = Rectangle::new(Point::zero(), Size::new(end.left.unwrap() as u32, STRIP_ROWS));
+				assert!(!lit_in(&display, before), "{links:?} {faults:?}: nothing left of the right end");
+				let (_, right) = strip_ink_span(&display, 0).unwrap();
+				assert!(right < edge, "{links:?} {faults:?}: a dark column at the panel's edge");
+			}
+		}
+	}
+
+	/// The badge alone stands where the runes would: its ground ends a column in from the edge.
+	#[test]
+	fn with_no_host_the_badge_takes_the_corner() {
+		let edge = TALL.width as i32 - STRIP_RIGHT;
+		for faults in [NINE, NINE_FAILING, FAILED] {
+			let said = board(Links::NONE, faults);
+			let badge = right_end(&said).badge.expect("a count to show");
+			assert_eq!(badge.ground.top_left.x + badge.ground.size.width as i32, edge, "{faults:?}");
+			let (display, _) = paged(&Frame::Values { cells: &temps("ОЖ") }, &Strip::NONE, &said);
+			let (left, right) = strip_ink_span(&display, 0).expect("the badge is drawn");
+			assert!(right < edge, "{faults:?}: {right}");
+			let lead = if badge.inverted { badge.ground.top_left.x } else { badge.triangle.x };
+			assert_eq!(left, lead, "{faults:?}: the triangle first");
+			let ink = if badge.inverted { BinaryColor::Off } else { BinaryColor::On };
+			assert!(holds(&display, &TRIANGLE, badge.triangle, ink), "{faults:?}");
+		}
+	}
+
+	/// The count is the label face's digits, on the voltage's line, after the triangle.
+	#[test]
+	fn the_count_stands_beside_the_triangle_on_the_strips_line() {
+		let theme = Theme::bold_mono();
+		let said = board(Links::NONE, NINE);
+		let badge = right_end(&said).badge.unwrap();
+		assert_eq!(badge.count.as_str(), "9");
+		let (display, _) = paged(&Frame::Values { cells: &[] }, &Strip::NONE, &said);
+		let mut nine = tall();
+		theme
+			.label
+			.render(
+				"9",
+				badge.count_origin,
+				VerticalPosition::Top,
+				FontColor::Transparent(BinaryColor::On),
+				&mut nine,
+			)
+			.unwrap();
+		let mut alone = tall();
+		draw_rows(&TRIANGLE, badge.triangle, BinaryColor::On, &mut alone);
+		assert!(
+			TALL_BOX
+				.points()
+				.all(|p| display.get_pixel(p) == (nine.get_pixel(p).is_on() || alone.get_pixel(p).is_on()).into())
+		);
+		let digit = lit_box(&theme.label, "9").unwrap();
+		let count_left = badge.count_origin.x + digit.top_left.x;
+		assert_eq!(
+			count_left,
+			badge.triangle.x + TRIANGLE[0].len() as i32 + COUNT_GAP,
+			"COUNT_GAP after the triangle"
+		);
+		assert_eq!(badge.count_origin.y + digit.top_left.y, badge.triangle.y, "on one line");
+		// The voltage's digits stand on the same rows.
+		let mut volts = tall();
+		let strip = Strip {
+			title: "",
+			volts: Volts::Shown(Some(19.9)),
+		};
+		draw_page(&Frame::Values { cells: &[] }, &strip, &Board::default(), &theme, &mut volts);
+		let rows = |d: &SimulatorDisplay<BinaryColor>, x0: i32, x1: i32| {
+			let ys: std::vec::Vec<i32> = strip_rows()
+				.points()
+				.filter(|p| (x0..x1).contains(&p.x) && d.get_pixel(*p).is_on())
+				.map(|p| p.y)
+				.collect();
+			(*ys.iter().min().unwrap(), *ys.iter().max().unwrap())
+		};
+		assert_eq!(
+			rows(&volts, 0, 20),
+			rows(&display, count_left, TALL.width as i32),
+			"the count and `19.9` share their rows"
+		);
 	}
 
 	#[test]
 	fn a_code_failing_now_inverts_the_badge_and_nothing_else() {
 		let cells = temps("ОЖ");
 		let page = Frame::Values { cells: &cells };
-		let (normal, _) = with_badge(&page, Links::NONE, NINE);
-		let (inverted, _) = with_badge(&page, Links::NONE, NINE_FAILING);
-		let area = the_badge(NINE_FAILING);
-		assert_eq!(area, the_badge(NINE), "the same box either way");
-		assert!(
-			area.points().all(|p| inverted.get_pixel(p) != normal.get_pixel(p)),
-			"every pixel of the box swaps"
-		);
-		assert!(same_outside(&inverted, &normal, area));
+		for links in [Links::NONE, BOTH] {
+			let (normal, _) = paged(&page, &Strip::NONE, &board(links, NINE));
+			let (inverted, report) = paged(&page, &Strip::NONE, &board(links, NINE_FAILING));
+			assert!(!report.glyph_missing);
+			let ground = right_end(&board(links, NINE_FAILING)).badge.unwrap().ground;
+			assert_eq!(ground, right_end(&board(links, NINE)).badge.unwrap().ground, "the same box either way");
+			assert!(
+				ground.points().all(|p| inverted.get_pixel(p) != normal.get_pixel(p)),
+				"{links:?}: every pixel of the box swaps"
+			);
+			assert!(same_outside(&inverted, &normal, ground), "{links:?}");
+			// Inside the strip's line, and a pixel of lit ground round the ink at the sides.
+			assert_eq!(ground.top_left.y, 0);
+			assert_eq!(ground.top_left.y + ground.size.height as i32, STRIP_ROWS as i32 - 1);
+		}
 	}
 
+	/// Owner, 2026-09-27: the gateway gave no list, or the board refused it — the triangle with
+	/// `?` for the number, in the box a one-digit count has, and never inverted.
 	#[test]
-	fn a_count_that_failed_is_a_question_mark_over_the_triangle_laid_out_as_one_digit() {
-		// Owner, 2026-09-27: the gateway gave no list, or the board refused it — the triangle
-		// with `?` for the number, in the box a one-digit count has.
+	fn a_count_that_failed_is_a_question_mark_laid_out_as_one_digit() {
 		let cells = temps("ОЖ");
 		let page = Frame::Values { cells: &cells };
-		let (failed, report) = with_badge(&page, Links::NONE, FAILED);
-		assert!(!report.glyph_missing, "{report:?}: the unit face has a `?`");
-		let area = the_badge(FAILED);
-		assert_eq!(area, the_badge(NINE), "the box of a one-digit count");
-
-		// The triangle is a count's, pixel for pixel.
-		let (nine, _) = with_badge(&page, Links::NONE, NINE);
-		let left = icon_column(TALL.width);
-		let top = TALL.height as i32 - ICON_TOP as i32 - TRIANGLE.len() as i32;
-		let triangle = Rectangle::new(Point::new(left, top), Size::new(ICON.width, TRIANGLE.len() as u32));
-		assert!(triangle.points().all(|p| failed.get_pixel(p) == nine.get_pixel(p)));
-
-		// Over it, the unit face's `?` where a digit stands, and nothing else.
-		let theme = Theme::bold_mono();
-		let badge = badge_layout(FAILED, &theme, TALL, &mut Report::default()).expect("a badge");
-		assert_eq!(badge.count.as_str(), "?");
-		let mut glyph = tall();
-		theme
-			.unit
-			.render(
-				"?",
-				badge.count_origin,
-				VerticalPosition::Top,
-				FontColor::Transparent(BinaryColor::On),
-				&mut glyph,
-			)
-			.expect("the face has a `?`");
-		let over = Rectangle::new(area.top_left, Size::new(area.size.width, (top - area.top_left.y) as u32));
-		assert!(lit_in(&failed, over), "the `?` is drawn");
-		assert!(
-			over.points().all(|p| failed.get_pixel(p) == glyph.get_pixel(p)),
-			"the `?` and dark ground over the triangle"
-		);
-		assert!(over.points().any(|p| failed.get_pixel(p) != nine.get_pixel(p)), "not a digit");
-
-		// Not inverted: nothing says a code fails now. And nothing outside its box moved.
-		assert!(!lit(&failed, area.top_left.x, area.top_left.y), "dark ground");
-		let (plain, _) = with_badge(&page, Links::NONE, None);
-		assert!(same_outside(&failed, &plain, area));
-	}
-
-	#[test]
-	fn on_a_dark_ground_the_badge_is_the_same_picture_over_any_page() {
-		// Alone on a dark panel: no cells, no icons, nothing but the badge.
-		let (alone, _) = with_badge(&Frame::Values { cells: &[] }, Links::NONE, NINE);
-		let area = the_badge(NINE);
-		assert!(same_outside(&alone, &tall(), area), "nothing drawn outside the box");
-
-		// Over pages whose rightmost column is dark ground — an alarm in another column
-		// included — the corner reads the same.
-		let first_alarmed = [Cell::new("ОЖ", Some(93.0), "°C", 0).alarmed(), Cell::new("КОРОБКА", Some(78.0), "°C", 0)];
-		let samples = [2.5f32; 240];
-		let chart = pinned_chart(&samples);
-		let cells = temps("ОЖ");
-		// The stopwatch page with three marks and the widest time on show (`todo/dash/19`).
-		let marks = [60u16, 100, 150];
-		let labels = crate::stopwatch::Labels::new(&marks);
-		let words = crate::stopwatch::Words::of("ru");
-		let watch = crate::stopwatch::Stopwatch::new(&marks, 0.01);
-		let saved = [(60u16, 5.43f32), (100, 9.87), (150, 18.4)];
-		let (row, count) = crate::stopwatch::cells(&watch, Some(0.0), &saved, &words, &labels);
-		for (name, page) in [
-			("alarm elsewhere", Frame::Values { cells: &first_alarmed }),
-			("values", Frame::Values { cells: &cells }),
-			("chart", chart),
-			("stopwatch", Frame::Values { cells: &row[..count] }),
-		] {
-			for faults in [NINE, NINE_FAILING, FAILED] {
-				let (display, _) = with_badge(&page, Links::NONE, faults);
-				let (alone, _) = with_badge(&Frame::Values { cells: &[] }, Links::NONE, faults);
-				assert!(
-					area.points().all(|p| display.get_pixel(p) == alone.get_pixel(p)),
-					"{name} {faults:?}: the corner is the badge"
-				);
-			}
+		for links in [Links::NONE, BOTH] {
+			let failed = right_end(&board(links, FAILED)).badge.unwrap();
+			let nine = right_end(&board(links, NINE)).badge.unwrap();
+			assert_eq!(failed.count.as_str(), "?");
+			assert!(!failed.inverted);
+			assert_eq!(failed.ground, nine.ground, "{links:?}: the box of a one-digit count");
+			assert_eq!(failed.triangle, nine.triangle);
+			let (display, report) = paged(&page, &Strip::NONE, &board(links, FAILED));
+			assert!(!report.glyph_missing, "{report:?}: the label face has a `?`");
+			let (digit, _) = paged(&page, &Strip::NONE, &board(links, NINE));
+			assert!(failed.ground.points().any(|p| display.get_pixel(p) != digit.get_pixel(p)), "not a digit");
+			assert!(holds(&display, &TRIANGLE, failed.triangle, BinaryColor::On), "the triangle, lit on dark");
 		}
-	}
-
-	#[test]
-	fn over_an_alarmed_rightmost_cell_the_badge_takes_the_cells_colours() {
-		// Owner, 2026-09-27: the badge follows the cell under it, as the link icons do. On the lit
-		// ground of an alarmed rightmost cell a count is dark glyphs on that ground, and a code
-		// failing now a dark box with lit glyphs — every pixel of the box the opposite of what
-		// it is on a dark page. It blinks with the cell: a frame the cell is not inverted draws
-		// it as on a dark page.
-		let alarmed = [Cell::new("ОЖ", Some(93.0), "°C", 0), Cell::new("КОРОБКА", Some(128.0), "°C", 0).alarmed()];
-		let steady = [Cell::new("ОЖ", Some(93.0), "°C", 0), Cell::new("КОРОБКА", Some(128.0), "°C", 0)];
-		let (page, _) = with_badge(&Frame::Values { cells: &alarmed }, Links::NONE, None);
-		for faults in [NINE, NINE_FAILING, FAILED] {
-			let area = the_badge(faults);
-			assert!(lit_in(&page, area), "{faults:?}: the cell's ground is lit where the badge goes");
-			let (alone, _) = with_badge(&Frame::Values { cells: &[] }, Links::NONE, faults);
-			let (display, report) = with_badge(&Frame::Values { cells: &alarmed }, Links::NONE, faults);
-			assert!(!report.glyph_missing, "{faults:?}");
-			assert!(
-				area.points().all(|p| display.get_pixel(p) != alone.get_pixel(p)),
-				"{faults:?}: every pixel of the box inverted against the dark page's badge"
-			);
-			assert!(same_outside(&display, &page, area), "{faults:?}: nothing outside the box moved");
-			// The frame the cell blinks off: the dark page's badge.
-			let (off, _) = with_badge(&Frame::Values { cells: &steady }, Links::NONE, faults);
-			assert!(area.points().all(|p| off.get_pixel(p) == alone.get_pixel(p)), "{faults:?}");
-		}
-		// Not failing: no box — the ground is the cell's own lit ground.
-		let (display, _) = with_badge(&Frame::Values { cells: &alarmed }, Links::NONE, NINE);
-		let area = the_badge(NINE);
-		assert!(lit(&display, area.top_left.x, area.top_left.y), "lit ground");
-		// Failing now: a dark box.
-		let (display, _) = with_badge(&Frame::Values { cells: &alarmed }, Links::NONE, NINE_FAILING);
-		assert!(!lit(&display, area.top_left.x, area.top_left.y), "dark box");
-	}
-
-	#[test]
-	fn the_badge_and_the_link_icons_keep_their_own_ends_of_the_column() {
-		let cells = temps("КОРОБКА");
-		let (display, _) = with_badge(&Frame::Values { cells: &cells }, BOTH, NINE_FAILING);
-		assert!(icon_box_holds_only_the_icons(&display, BOTH), "the icons are untouched");
-		let icons = icon_box(BOTH, TALL.width).unwrap();
-		let area = the_badge(NINE_FAILING);
-		let icons_end = icons.top_left.y + icons.size.height as i32;
-		assert!(area.top_left.y >= icons_end + ICON_GAP as i32, "{area:?} under {icons:?}");
-	}
-
-	#[test]
-	fn a_chart_keeps_its_trace_and_the_badge_stands_where_the_trace_never_goes() {
-		let samples = [2.5f32; 240];
-		let (display, _) = with_badge(&pinned_chart(&samples), BOTH, NINE);
-		let (plain, _) = with_badge(&pinned_chart(&samples), BOTH, None);
-		let area = the_badge(NINE);
-		assert!(
-			area.top_left.x >= icon_column(TALL.width) - ICON_CLEARANCE,
-			"{area:?} is right of the trace's end"
-		);
-		assert!(same_outside(&display, &plain, area));
 	}
 
 	#[test]
@@ -2555,56 +2288,318 @@ mod tests {
 			stored: 1234,
 			failing_now: false,
 		});
-		let (short, long) = (the_badge(NINE), the_badge(wide));
-		assert_eq!(short.top_left.x + short.size.width as i32, long.top_left.x + long.size.width as i32);
-		assert_eq!(short.top_left.y + short.size.height as i32, long.top_left.y + long.size.height as i32);
-		assert!(long.size.width > short.size.width);
-		let (display, report) = with_badge(&Frame::Values { cells: &[] }, Links::NONE, wide);
-		assert!(!report.glyph_missing);
+		for links in [Links::NONE, BLE] {
+			let short = right_end(&board(links, NINE)).badge.unwrap().ground;
+			let long = right_end(&board(links, wide)).badge.unwrap().ground;
+			assert_eq!(short.top_left.x + short.size.width as i32, long.top_left.x + long.size.width as i32);
+			assert_eq!(short.size.height, long.size.height);
+			assert!(long.size.width > short.size.width);
+			let (display, report) = paged(&Frame::Values { cells: &[] }, &Strip::NONE, &board(links, wide));
+			assert!(!report.glyph_missing);
+			assert_eq!(
+				strip_ink_span(&display, 0).unwrap().0,
+				long.top_left.x + BADGE_MARGIN,
+				"the triangle leads"
+			);
+		}
+	}
+
+	/// The point of the strip's right end: what the board says changes the strip, never the page
+	/// under it — a values page with a four-character number in its last cell, an alarmed one, a
+	/// chart and the stopwatch, with every link and count there is.
+	#[test]
+	fn the_page_under_the_strip_is_the_same_whatever_the_board_says() {
+		let samples = [2.5f32; 256];
+		let wide = drive(Cell::new("ОБОРОТЫ", Some(6500.0), "", 0).with_deviation(Deviation::Value(-120.0)));
+		let long = temps("ТЕМП.МАСЛА");
+		let alarmed = [Cell::new("ОЖ", Some(93.0), "°C", 0), Cell::new("КОРОБКА", Some(128.0), "°C", 0).alarmed()];
+		let marks = [60u16, 100, 150];
+		let labels = crate::stopwatch::Labels::new(&marks);
+		let words = crate::stopwatch::Words::of("ru");
+		let watch = crate::stopwatch::Stopwatch::new(&marks, 0.01);
+		let saved = [(60u16, 5.43f32), (100, 9.87), (150, 18.4)];
+		let (row, count) = crate::stopwatch::cells(&watch, Some(0.0), &saved, &words, &labels);
+		let titled = Strip {
+			title: "ЕДЕМ",
+			volts: Volts::Shown(Some(13.9)),
+		};
+		for (name, page, strip) in [
+			("6500", Frame::Values { cells: &wide }, titled),
+			("a long last label", Frame::Values { cells: &long }, Strip::NONE),
+			("alarm", Frame::Values { cells: &alarmed }, titled),
+			("chart", pinned_chart(&samples), titled),
+			("stopwatch", Frame::Values { cells: &row[..count] }, Strip::NONE),
+		] {
+			let mut under: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(UNDER);
+			let alone = draw_frame(&page, None, &Theme::bold_mono(), &mut under, strip.title.is_empty());
+			assert!(!alone.label_overrun && !alone.value_overrun && !alone.glyph_missing, "{name}: {alone:?}");
+			for said in boards() {
+				let (display, report) = paged(&page, &strip, &said);
+				assert!(page_under_strip_is(&display, &under), "{name}, {said:?}: the page moved");
+				assert_eq!(report, alone, "{name}, {said:?}: nothing to report beyond the page's own");
+			}
+		}
+	}
+
+	/// The chart under the strip has nothing of the board's beside it: its trace runs to the
+	/// panel's edge, and the seconds its header counts are the page's.
+	#[test]
+	fn a_chart_under_the_strip_runs_its_trace_to_the_panels_edge() {
+		let samples = [2.5f32; 256];
+		let titled = Strip {
+			title: "НАДДУВ",
+			volts: Volts::Hidden,
+		};
+		let (display, report) = paged(&pinned_chart(&samples), &titled, &board(BOTH, NINE));
+		assert_eq!(report, Report::default(), "{report:?}");
+		let top = STRIP_ROWS as i32 + HEADER_ROWS;
+		assert!(lit(&display, TALL.width as i32 - 1, top), "the trace's top row reaches the last column");
+	}
+
+	#[test]
+	fn a_values_page_under_the_strip_is_the_page_on_the_rows_under_it() {
+		let cells = temps("ВПУСК");
+		let page = Frame::Values { cells: &cells };
+		let strip = Strip {
+			title: "ТЕМПЕРАТУРЫ",
+			volts: Volts::Shown(Some(14.2)),
+		};
+		let said = board(BLE, NINE);
+		let (display, report) = paged(&page, &strip, &said);
+		let mut under: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(UNDER);
+		let alone = draw(&page, &Theme::bold_mono(), &mut under);
+		assert_eq!(report, alone, "the strip itself fits: nothing to report beyond the page's own");
+		let whole = draw(&page, &Theme::bold_mono(), &mut tall());
+		assert_eq!(alone, whole, "and the page fits its 55 rows as it fits 64: {alone:?}");
+		assert!(page_under_strip_is(&display, &under), "the page, moved down by the strip");
+
+		// The strip: the voltage at the left, the title in the middle, nothing on its last row
+		// — no rule under it.
+		let ink: std::vec::Vec<Point> = strip_rows().points().filter(|p| display.get_pixel(*p) == BinaryColor::On).collect();
 		assert!(
-			lit_in(&display, Rectangle::new(long.top_left, Size::new(4, long.size.height))),
-			"the thousands are drawn"
+			ink.iter().all(|p| p.y < STRIP_ROWS as i32 - 1),
+			"a dark row between the strip and the page"
+		);
+		let volts: std::vec::Vec<i32> = ink.iter().filter(|p| p.x < 64).map(|p| p.x).collect();
+		// Anchored a column in; a `1` has a blank column of its own before its stroke.
+		let first = *volts.iter().min().expect("the voltage is drawn");
+		assert!((STRIP_LEFT..=STRIP_LEFT + 1).contains(&first), "the voltage starts at the left: {first}");
+		let end = right_end(&said).left.unwrap();
+		let title: std::vec::Vec<i32> = ink.iter().filter(|p| p.x >= 64 && p.x < end).map(|p| p.x).collect();
+		let (left, right) = (*title.iter().min().unwrap(), *title.iter().max().unwrap());
+		assert!(
+			((left + right) / 2 - TALL.width as i32 / 2).abs() <= 2,
+			"the title is centred on the panel, whatever is at the right end: {left}..{right}"
 		);
 	}
 
+	/// A page with no title and no voltage has the strip all the same: the page under it does
+	/// not move when something comes to show in it.
 	#[test]
-	fn up_to_ninety_nine_the_badge_stays_clear_of_the_trace_and_three_digits_take_its_last_column() {
-		// The trace's last column is the one before the clearance; the badge's ground is the
-		// ink and a pixel round it, and the count grows left.
-		let last_trace_column = icon_column(TALL.width) - ICON_CLEARANCE - 1;
-		let left = |stored: u32| the_badge(Some(Faults::Counted { stored, failing_now: false })).top_left.x;
-		for stored in 1..=99 {
-			assert!(left(stored) > last_trace_column, "{stored}: the badge reaches the trace");
-		}
-		// Three digits are 11 columns of ink where the column is 7: the widest reach one
-		// column into the trace (`todo/dash/20` says so), and no three-digit count reaches
-		// further. A hundred stored codes is not a car anyone has seen; the reference car
-		// has nine.
-		let widest = (100..=999).map(left).min().unwrap();
-		assert_eq!(widest, last_trace_column, "three digits cover the trace's last column and no more");
-		let samples = [0.0f32; 240];
-		let hundred = Some(Faults::Counted {
-			stored: 188,
-			failing_now: false,
-		});
-		let (display, _) = with_badge(&pinned_chart(&samples), Links::NONE, hundred);
-		let (plain, _) = with_badge(&pinned_chart(&samples), Links::NONE, None);
-		assert!(same_outside(&display, &plain, the_badge(hundred)), "the rest of the chart is untouched");
+	fn a_page_with_no_title_and_no_voltage_still_has_the_strip() {
+		let cells = temps("ВПУСК");
+		let page = Frame::Values { cells: &cells };
+		let (quiet, _) = paged(&page, &Strip::NONE, &Board::default());
+		let mut under: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(UNDER);
+		draw(&page, &Theme::bold_mono(), &mut under);
+		assert!(page_under_strip_is(&quiet, &under), "the page under an empty strip");
+		assert!(!lit_in(&quiet, strip_rows()), "and the strip dark");
+		let mut with = tall();
+		draw_with(&page, &board(BOTH, NINE), &Theme::bold_mono(), &mut with);
+		assert!(page_under_strip_is(&with, &under), "`draw_with` is that page");
+		assert!(lit_in(&with, strip_rows()), "with the runes and the badge in its strip");
 	}
 
 	#[test]
-	fn the_adapter_screen_draws_no_badge() {
-		let state = Adapter {
-			kbit: Some(500),
-			listen_only: false,
-			rx: 1,
-			tx: 2,
-			errors: 0,
+	fn the_strip_draws_only_what_it_has() {
+		let cells = temps("ВПУСК");
+		let page = Frame::Values { cells: &cells };
+		let title_only = Strip {
+			title: "ТЕМП",
+			volts: Volts::Hidden,
 		};
-		let (without, _) = with_badge(&Frame::Adapter(state), Links::NONE, None);
-		for faults in [NINE_FAILING, FAILED] {
-			let (with, _) = with_badge(&Frame::Adapter(state), Links::NONE, faults);
-			assert_eq!(with, without, "{faults:?}");
+		let (display, _) = paged(&page, &title_only, &Board::default());
+		let left = Rectangle::new(Point::zero(), Size::new(64, STRIP_ROWS));
+		assert!(!lit_in(&display, left), "no voltage on a page that hides it");
+		assert!(lit_in(&display, strip_rows()), "the title is there");
+
+		let volts_only = Strip {
+			title: "",
+			volts: Volts::Shown(None),
+		};
+		let (display, report) = paged(&page, &volts_only, &Board::default());
+		assert!(!report.glyph_missing, "{report:?}");
+		let right = Rectangle::new(Point::new(64, 0), Size::new(TALL.width - 64, STRIP_ROWS));
+		assert!(lit_in(&display, left), "`--V`");
+		assert!(!lit_in(&display, right), "and no title");
+	}
+
+	/// The strip's own colours whatever the page does: an alarmed cell under it inverts its
+	/// column of the page, and the runes and the badge stay lit on the strip's dark ground.
+	#[test]
+	fn an_alarmed_cell_leaves_the_strip_alone() {
+		let alarmed = [Cell::new("ОЖ", Some(93.0), "°C", 0), Cell::new("КОРОБКА", Some(128.0), "°C", 0).alarmed()];
+		let steady = [Cell::new("ОЖ", Some(93.0), "°C", 0), Cell::new("КОРОБКА", Some(128.0), "°C", 0)];
+		for said in boards() {
+			let (on, _) = paged(&Frame::Values { cells: &alarmed }, &Strip::NONE, &said);
+			let (off, _) = paged(&Frame::Values { cells: &steady }, &Strip::NONE, &said);
+			assert!(strip_rows().points().all(|p| on.get_pixel(p) == off.get_pixel(p)), "{said:?}");
+			assert!(lit(&on, TALL.width as i32 - 1, STRIP_ROWS as i32), "{said:?}: the cell's ground is lit");
+		}
+	}
+
+	#[test]
+	fn under_a_title_a_charts_header_drops_its_label_and_keeps_its_range_and_seconds() {
+		let samples = [1.5f32; 120];
+		let chart = pinned_chart(&samples);
+		let titled = Strip {
+			title: "НАДДУВ",
+			volts: Volts::Shown(Some(14.2)),
+		};
+		let said = board(BLE, NINE);
+		let (display, report) = paged(&chart, &titled, &said);
+		assert_eq!(report, Report::default(), "{report:?}");
+		// `Д` reaches under the line, and still stays off the strip's last row.
+		let last = Rectangle::new(Point::new(0, STRIP_ROWS as i32 - 1), Size::new(TALL.width, 1));
+		assert!(!lit_in(&display, last), "a dark row between the strip and the chart");
+		let theme = Theme::bold_mono();
+		let mut without: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(UNDER);
+		draw_frame(&chart, None, &theme, &mut without, false);
+		assert!(page_under_strip_is(&display, &without), "the chart without its label");
+		let mut with: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(UNDER);
+		draw(&chart, &theme, &mut with);
+		assert!(!page_under_strip_is(&display, &with), "which is not the chart with it");
+		// The range and the seconds moved to the left edge: the header's row has ink from there.
+		let header = Rectangle::new(Point::new(0, STRIP_ROWS as i32), Size::new(8, 8));
+		assert!(lit_in(&display, header), "the range starts the header");
+
+		// A strip with the voltage alone keeps the chart's label: nothing else says what it is.
+		let volts_only = Strip {
+			title: "",
+			volts: Volts::Shown(Some(14.2)),
+		};
+		let (display, _) = paged(&chart, &volts_only, &said);
+		assert!(page_under_strip_is(&display, &with), "the chart as it is, under the strip");
+	}
+
+	#[test]
+	fn a_title_that_runs_into_the_voltage_is_reported() {
+		let cells = temps("ВПУСК");
+		let page = Frame::Values { cells: &cells };
+		let long = Strip {
+			title: "ОЧЕНЬ ДЛИННЫЙ ЗАГОЛОВОК СТРАНИЦЫ НА ВЕСЬ ЭКРАН",
+			volts: Volts::Shown(Some(14.2)),
+		};
+		let (_, report) = paged(&page, &long, &Board::default());
+		assert!(report.label_overrun, "{report:?}");
+		assert!(!report.glyph_missing, "Cyrillic is in the label face: {report:?}");
+	}
+
+	/// The title is checked against the right end as this frame draws it: what the board shows
+	/// only takes room away, and a title one letter too long for it is reported. One dark column
+	/// between the title and the right end is enough, as between the voltage and the title.
+	#[test]
+	fn a_title_that_runs_into_the_right_end_is_reported() {
+		let cells = temps("ВПУСК");
+		let page = Frame::Values { cells: &cells };
+		let overruns = |n: usize, said: &Board| {
+			let title: std::string::String = core::iter::repeat_n('Ж', n).collect();
+			let strip = Strip {
+				title: &title,
+				volts: Volts::Hidden,
+			};
+			let (display, report) = paged(&page, &strip, said);
+			(report.label_overrun, display)
+		};
+		let mut collided = false;
+		for n in 1..60 {
+			let (alone, _) = overruns(n, &Board::default());
+			for said in boards() {
+				let (beside, display) = overruns(n, &said);
+				assert!(!alone || beside, "{n} letters, {said:?}: the right end only takes room away");
+				collided |= beside && !alone;
+				if !beside && let Some(left) = right_end(&said).left {
+					// It fits: a dark column at least before the right end.
+					let gap = Rectangle::new(Point::new(left - 1, 0), Size::new(1, STRIP_ROWS));
+					assert!(!lit_in(&display, gap), "{n} letters, {said:?}: the column before the right end");
+				}
+			}
+		}
+		assert!(collided, "some title fits the strip but not beside the right end");
+	}
+
+	/// What `docs/dash/dash-toml.md`'s limits say: a title of 34 characters fits the strip with
+	/// the voltage, both hosts and a two-digit count failing now; 35 do not. The face is fixed
+	/// pitch, so any 34 letters are as wide as these.
+	#[test]
+	fn a_title_of_thirty_four_characters_fits_beside_the_widest_right_end_of_two_digits() {
+		let cells = temps("ВПУСК");
+		let page = Frame::Values { cells: &cells };
+		let widest = board(
+			BOTH,
+			Some(Faults::Counted {
+				stored: 99,
+				failing_now: true,
+			}),
+		);
+		let fits = |n: usize| {
+			let title: std::string::String = core::iter::repeat_n('Ж', n).collect();
+			let strip = Strip {
+				title: &title,
+				volts: Volts::Shown(Some(14.2)),
+			};
+			!paged(&page, &strip, &widest).1.label_overrun
+		};
+		assert!(fits(34));
+		assert!(!fits(35));
+	}
+
+	/// A title that fits with nothing connected and overruns once both hosts and a count arrive
+	/// is cut at the right end: the runes and the badge are the same pixels as under no title.
+	#[test]
+	fn a_title_too_long_is_cut_before_the_right_end_never_drawn_over_it() {
+		let cells = temps("ВПУСК");
+		let page = Frame::Values { cells: &cells };
+		let widest = board(
+			BOTH,
+			Some(Faults::Counted {
+				stored: 99,
+				failing_now: true,
+			}),
+		);
+		let title: std::string::String = core::iter::repeat_n('W', 40).collect();
+		let long = Strip {
+			title: &title,
+			volts: Volts::Shown(Some(14.2)),
+		};
+		let none = Strip { title: "", ..long };
+		let (with_title, report) = paged(&page, &long, &widest);
+		let (without, _) = paged(&page, &none, &widest);
+		assert!(report.label_overrun);
+		// The right end's first lit column, as drawn under no title.
+		let left = (0..256)
+			.find(|&x| x > 128 && (0..STRIP_ROWS as i32).any(|y| lit(&without, x, y)))
+			.expect("the right end draws");
+		for x in left..256 {
+			for y in 0..STRIP_ROWS as i32 {
+				assert_eq!(lit(&with_title, x, y), lit(&without, x, y), "({x}, {y})");
+			}
+		}
+	}
+
+	#[test]
+	fn the_adapter_screen_draws_no_strip_no_runes_and_no_badge() {
+		let state = adapter_state(Some(500), false);
+		let frame = Frame::Adapter(state);
+		let strip = Strip {
+			title: "Т",
+			volts: Volts::Shown(Some(14.2)),
+		};
+		let mut plain = tall();
+		draw(&frame, &Theme::bold_mono(), &mut plain);
+		for said in boards() {
+			let (display, _) = paged(&frame, &strip, &said);
+			assert_eq!(display, plain, "{said:?}");
 		}
 	}
 
@@ -2722,9 +2717,9 @@ mod tests {
 		}
 		lit_only_inside(&display, &boxes);
 
-		// `SLCAN` in the corner, at the icons' margins; the rest centred, in order down the panel.
+		// `SLCAN` in the corner, at its margins; the rest centred, in order down the panel.
 		let title = layout.title.unwrap().ink;
-		assert_eq!(title.top_left, Point::new(ICON_RIGHT as i32, ICON_TOP as i32));
+		assert_eq!(title.top_left, Point::new(ADAPTER_LEFT, ADAPTER_TOP));
 		let (up, _, _, rx) = layout.speed.unwrap();
 		let (rate, counters) = (layout.rate.unwrap().ink, layout.counters.unwrap().ink);
 		let centred = |left: i32, right: i32| (left - (TALL.width as i32 - right)).abs() <= 1;
@@ -2760,317 +2755,5 @@ mod tests {
 		assert!(layout.title.is_some() && layout.speed.is_some(), "the title and the speeds fit");
 		assert!(layout.counters.is_none(), "the counters do not, and are not drawn");
 		lit_only_inside(&display, &layout.boxes().collect::<std::vec::Vec<_>>());
-	}
-
-	// --- the status strip -------------------------------------------------------------
-
-	/// The page under the strip: the panel less the strip's rows.
-	const UNDER: Size = Size::new(256, 64 - STRIP_ROWS);
-
-	fn strip_board() -> Board {
-		Board {
-			links: BLE,
-			rates: None,
-			faults: NINE,
-		}
-	}
-
-	/// `page` drawn with `strip` on the board's panel, and the report.
-	fn paged(frame: &Frame<'_>, strip: &Strip<'_>, board: &Board) -> (SimulatorDisplay<BinaryColor>, Report) {
-		let mut display = tall();
-		let report = draw_page(frame, strip, board, &Theme::bold_mono(), &mut display);
-		(display, report)
-	}
-
-	/// Rows `STRIP_ROWS..` of `display` are, pixel for pixel, `under` — the page drawn alone on a
-	/// panel as tall as what the strip leaves.
-	fn page_under_strip_is(display: &SimulatorDisplay<BinaryColor>, under: &SimulatorDisplay<BinaryColor>) -> bool {
-		Rectangle::new(Point::zero(), UNDER)
-			.points()
-			.all(|p| under.get_pixel(p) == display.get_pixel(p + Point::new(0, STRIP_ROWS as i32)))
-	}
-
-	fn strip_rows() -> Rectangle {
-		Rectangle::new(Point::zero(), Size::new(TALL.width, STRIP_ROWS))
-	}
-
-	#[test]
-	fn the_strip_writes_volts_with_one_decimal_and_a_dash_for_no_answer() {
-		assert_eq!(volts_text(Some(14.24)).as_str(), "14.2V");
-		assert_eq!(volts_text(Some(12.0)).as_str(), "12.0V");
-		assert_eq!(volts_text(None).as_str(), "--V", "no answer is a dash, as in a cell, never 0.0V");
-	}
-
-	#[test]
-	fn a_strip_with_nothing_to_show_is_no_strip_and_the_page_keeps_the_whole_panel() {
-		let cells = temps("ВПУСК");
-		let page = Frame::Values { cells: &cells };
-		let (display, report) = paged(&page, &Strip::NONE, &strip_board());
-		let (plain, plain_report) = with_badge(&page, BLE, NINE);
-		assert_eq!(report, plain_report);
-		assert!(
-			TALL_BOX.points().all(|p| display.get_pixel(p) == plain.get_pixel(p)),
-			"the page as drawn without a strip"
-		);
-		assert!(Strip::NONE.is_empty() && Strip::default().is_empty());
-	}
-
-	const TALL_BOX: Rectangle = Rectangle::new(Point::zero(), TALL);
-
-	#[test]
-	fn a_values_page_under_the_strip_is_the_page_on_the_rows_under_it_icons_and_badge_included() {
-		let cells = temps("ВПУСК");
-		let page = Frame::Values { cells: &cells };
-		let strip = Strip {
-			title: "ТЕМПЕРАТУРЫ",
-			volts: Volts::Shown(Some(14.2)),
-		};
-		let (display, report) = paged(&page, &strip, &strip_board());
-		let mut under: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(UNDER);
-		let alone = draw_with(&page, &strip_board(), &Theme::bold_mono(), &mut under);
-		assert_eq!(report, alone, "the strip itself fits: nothing to report beyond the page's own");
-		let mut full = tall();
-		let whole = draw_with(&page, &strip_board(), &Theme::bold_mono(), &mut full);
-		assert_eq!(alone, whole, "and the page fits its 55 rows as it fits 64: {alone:?}");
-		assert!(
-			page_under_strip_is(&display, &under),
-			"the page, its icons and its badge, moved down by the strip"
-		);
-		// The badge still stands on the floor of the panel, the icons under the strip.
-		let badge = badge_box(NINE, &Theme::bold_mono(), UNDER).unwrap();
-		assert_eq!(badge.top_left.y + badge.size.height as i32 + STRIP_ROWS as i32, TALL.height as i32 - 1);
-		let icons = icon_box(BLE, TALL.width).unwrap();
-		assert!(lit_in(&display, icons.translate(Point::new(0, STRIP_ROWS as i32))));
-
-		// The strip: the voltage at the left, the title in the middle, nothing on its last row
-		// — no rule under it.
-		let ink: std::vec::Vec<Point> = strip_rows().points().filter(|p| display.get_pixel(*p) == BinaryColor::On).collect();
-		assert!(
-			ink.iter().all(|p| p.y < STRIP_ROWS as i32 - 1),
-			"a dark row between the strip and the page"
-		);
-		let volts: std::vec::Vec<i32> = ink.iter().filter(|p| p.x < 64).map(|p| p.x).collect();
-		// Anchored a column in; a `1` has a blank column of its own before its stroke.
-		let first = *volts.iter().min().expect("the voltage is drawn");
-		assert!((STRIP_LEFT..=STRIP_LEFT + 1).contains(&first), "the voltage starts at the left: {first}");
-		let title: std::vec::Vec<i32> = ink.iter().filter(|p| p.x >= 64).map(|p| p.x).collect();
-		let (left, right) = (*title.iter().min().unwrap(), *title.iter().max().unwrap());
-		assert!(
-			((left + right) / 2 - TALL.width as i32 / 2).abs() <= 2,
-			"the title is centred: {left}..{right}"
-		);
-	}
-
-	#[test]
-	fn the_strip_draws_only_what_it_has() {
-		let cells = temps("ВПУСК");
-		let page = Frame::Values { cells: &cells };
-		let title_only = Strip {
-			title: "ТЕМП",
-			volts: Volts::Hidden,
-		};
-		let (display, _) = paged(&page, &title_only, &Board::default());
-		let left = Rectangle::new(Point::zero(), Size::new(64, STRIP_ROWS));
-		assert!(!lit_in(&display, left), "no voltage on a page that hides it");
-		assert!(lit_in(&display, strip_rows()), "the title is there");
-
-		let volts_only = Strip {
-			title: "",
-			volts: Volts::Shown(None),
-		};
-		let (display, report) = paged(&page, &volts_only, &Board::default());
-		assert!(!report.glyph_missing, "{report:?}");
-		let right = Rectangle::new(Point::new(64, 0), Size::new(TALL.width - 64, STRIP_ROWS));
-		assert!(lit_in(&display, left), "`--V`");
-		assert!(!lit_in(&display, right), "and no title");
-	}
-
-	#[test]
-	fn under_a_title_a_charts_header_drops_its_label_and_keeps_its_range_and_seconds() {
-		let samples = [1.5f32; 120];
-		let chart = pinned_chart(&samples);
-		let titled = Strip {
-			title: "НАДДУВ",
-			volts: Volts::Shown(Some(14.2)),
-		};
-		let (display, report) = paged(&chart, &titled, &strip_board());
-		assert_eq!(report, Report::default(), "{report:?}");
-		// `Д` reaches under the line, and still stays off the strip's last row.
-		let last = Rectangle::new(Point::new(0, STRIP_ROWS as i32 - 1), Size::new(TALL.width, 1));
-		assert!(!lit_in(&display, last), "a dark row between the strip and the chart");
-		let theme = Theme::bold_mono();
-		let mut without: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(UNDER);
-		draw_frame(&chart, &strip_board(), &theme, &mut without, false);
-		assert!(page_under_strip_is(&display, &without), "the chart without its label");
-		let mut with: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(UNDER);
-		draw_with(&chart, &strip_board(), &theme, &mut with);
-		assert!(!page_under_strip_is(&display, &with), "which is not the chart with it");
-		// The range and the seconds moved to the left edge: the header's row has ink from there.
-		let header = Rectangle::new(Point::new(0, STRIP_ROWS as i32), Size::new(8, 8));
-		assert!(lit_in(&display, header), "the range starts the header");
-
-		// A strip with the voltage alone keeps the chart's label: nothing else says what it is.
-		let volts_only = Strip {
-			title: "",
-			volts: Volts::Shown(Some(14.2)),
-		};
-		let (display, _) = paged(&chart, &volts_only, &strip_board());
-		assert!(page_under_strip_is(&display, &with), "the chart as it is, under the strip");
-	}
-
-	/// A drive page: four cells, the last with a specified value, so its number stands high.
-	fn drive(last: Cell<'_>) -> [Cell<'_>; 4] {
-		[
-			Cell::new("СКОРОСТЬ", Some(87.0), "km/h", 0),
-			Cell::new("ОБОРОТЫ", Some(2840.0), "", 0),
-			Cell::new("НАДДУВ", Some(1.42), "bar", 2).with_deviation(Deviation::Value(-0.06)),
-			last,
-		]
-	}
-
-	/// The icons' column under the strip, with the clearance left of it, and the two icons drawn
-	/// alone where the page puts them.
-	fn icon_column_under_the_strip() -> (Rectangle, SimulatorDisplay<BinaryColor>) {
-		let down = Point::new(0, STRIP_ROWS as i32);
-		let icons = icon_box(BOTH, TALL.width).unwrap().translate(down);
-		let column = Rectangle::new(
-			icons.top_left - Point::new(ICON_CLEARANCE, 0),
-			icons.size + Size::new(ICON_CLEARANCE as u32, 0),
-		);
-		let mut alone = tall();
-		draw_icons(BOTH, TALL.width, BinaryColor::On, &mut alone.translated(down));
-		(column, alone)
-	}
-
-	/// Whether `display` holds nothing but the icons in their column and its clearance.
-	fn clear_of_icons(display: &SimulatorDisplay<BinaryColor>) -> bool {
-		let (column, alone) = icon_column_under_the_strip();
-		column.points().all(|p| display.get_pixel(p) == alone.get_pixel(p))
-	}
-
-	const DRIVE_STRIP: Strip<'static> = Strip {
-		title: "ЕДЕМ",
-		volts: Volts::Shown(Some(13.9)),
-	};
-
-	const BOTH_LINKS: Board = Board {
-		links: BOTH,
-		rates: None,
-		faults: None,
-	};
-
-	/// Review, 2026-10-19: under the strip, with a host on the cable and one over BLE, the
-	/// rightmost number ran into the second icon. A number that fits left of them goes there:
-	/// slid at the row's face, or with the row a step down when only that makes it fit.
-	#[test]
-	fn under_the_strip_two_icons_keep_a_number_that_fits_left_of_them_clear() {
-		// Slid: the row's face is the four-digit cells', and `128` fits beside the icons at it.
-		let slid = drive(Cell::new("СКОРОСТЬ", Some(128.0), "km/h", 0).with_deviation(Deviation::Value(-2.0)));
-		let (display, report) = paged(&Frame::Values { cells: &slid }, &DRIVE_STRIP, &BOTH_LINKS);
-		assert!(!report.icon_overlap, "{report:?}");
-		assert!(clear_of_icons(&display), "slid left of the icons");
-
-		// A step down: two-digit cells take the largest face, where `128` does not fit beside
-		// the icons; the row comes down one step and it does.
-		let short = [
-			Cell::new("ОЖ", Some(93.0), "°C", 0),
-			Cell::new("МАСЛО", Some(99.0), "°C", 0),
-			Cell::new("ВПУСК", Some(34.0), "°C", 0),
-			Cell::new("СКОРОСТЬ", Some(128.0), "km/h", 0).with_deviation(Deviation::Value(-2.0)),
-		];
-		let page = Frame::Values { cells: &short };
-		let (display, report) = paged(&page, &DRIVE_STRIP, &BOTH_LINKS);
-		assert!(!report.icon_overlap, "{report:?}");
-		assert!(clear_of_icons(&display), "a step down, left of the icons");
-		let (_, alone) = paged(&page, &DRIVE_STRIP, &Board::default());
-		assert!(!alone.value_shrunk && report.value_shrunk, "the row came down for the icons: {report:?}");
-	}
-
-	/// Four characters fit nowhere left of two icons — not at any step of the ladder in a
-	/// quarter of the panel. The number stays where the row puts it and the report says it
-	/// collides: the DRIVE page's `-3.4`, `6500` and `1.85`, each with its difference.
-	#[test]
-	fn under_the_strip_a_number_that_cannot_clear_two_icons_is_reported_and_not_moved() {
-		for last in [
-			Cell::new("УСКОРЕНИЕ", Some(-3.4), "m/s2", 1).with_deviation(Deviation::Value(-0.2)),
-			Cell::new("ОБОРОТЫ", Some(6500.0), "", 0).with_deviation(Deviation::Value(-120.0)),
-			Cell::new("НАДДУВ", Some(1.85), "bar", 2).with_deviation(Deviation::Value(-0.06)),
-		] {
-			let label = last.label;
-			let cells = drive(last);
-			let page = Frame::Values { cells: &cells };
-			let (with, report) = paged(&page, &DRIVE_STRIP, &BOTH_LINKS);
-			assert!(report.icon_overlap, "{label}: {report:?}");
-			// The number did not move: in its band, outside the icons, the page is the page with
-			// no host. (The label above it is narrowed for the icons, as it always was.)
-			let (without, _) = paged(&page, &DRIVE_STRIP, &Board::default());
-			let layout = row_layout(&cells, &Theme::bold_mono(), INNER, UNDER.height, &mut Report::default());
-			let down = STRIP_ROWS as i32;
-			let band = Rectangle::new(
-				Point::new(0, layout.band.0 + down),
-				Size::new(TALL.width, (layout.band.1 - layout.band.0) as u32),
-			);
-			let icons = icon_box(BOTH, TALL.width).unwrap().translate(Point::new(0, down));
-			assert!(
-				band
-					.points()
-					.filter(|p| !icons.contains(*p))
-					.all(|p| with.get_pixel(p) == without.get_pixel(p)),
-				"{label}: not slid half way"
-			);
-		}
-	}
-
-	/// One icon stands beside the label alone, which is narrowed already: nothing moves.
-	#[test]
-	fn under_the_strip_one_icon_moves_nothing() {
-		let cells = drive(Cell::new("ОБОРОТЫ", Some(6500.0), "", 0).with_deviation(Deviation::Value(-120.0)));
-		let strip = Strip {
-			title: "ЕДЕМ",
-			volts: Volts::Shown(Some(13.9)),
-		};
-		let page = Frame::Values { cells: &cells };
-		let ble = Board {
-			links: BLE,
-			..Board::default()
-		};
-		let (with, report) = paged(&page, &strip, &ble);
-		let (without, _) = paged(&page, &strip, &Board::default());
-		assert!(!report.icon_overlap, "{report:?}");
-		let icons = icon_box(BLE, TALL.width).unwrap().translate(Point::new(0, STRIP_ROWS as i32));
-		assert!(
-			TALL_BOX
-				.points()
-				.filter(|p| !icons.contains(*p))
-				.all(|p| with.get_pixel(p) == without.get_pixel(p)),
-			"outside the icon, the page is the page with no host"
-		);
-	}
-
-	#[test]
-	fn a_title_that_runs_into_the_voltage_is_reported() {
-		let cells = temps("ВПУСК");
-		let page = Frame::Values { cells: &cells };
-		let long = Strip {
-			title: "ОЧЕНЬ ДЛИННЫЙ ЗАГОЛОВОК СТРАНИЦЫ НА ВЕСЬ ЭКРАН",
-			volts: Volts::Shown(Some(14.2)),
-		};
-		let (_, report) = paged(&page, &long, &Board::default());
-		assert!(report.label_overrun, "{report:?}");
-		assert!(!report.glyph_missing, "Cyrillic is in the label face: {report:?}");
-	}
-
-	#[test]
-	fn the_adapter_screen_draws_no_strip() {
-		let state = adapter_state(Some(500), false);
-		let frame = Frame::Adapter(state);
-		let strip = Strip {
-			title: "Т",
-			volts: Volts::Shown(Some(14.2)),
-		};
-		let (display, _) = paged(&frame, &strip, &Board::default());
-		let mut plain = tall();
-		draw_with(&frame, &Board::default(), &Theme::bold_mono(), &mut plain);
-		assert!(TALL_BOX.points().all(|p| display.get_pixel(p) == plain.get_pixel(p)));
 	}
 }

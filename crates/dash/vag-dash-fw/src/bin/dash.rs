@@ -43,8 +43,8 @@
 //!   has answered, the bus task reads the gateway's list of units and each unit's stored codes
 //!   through the planner, in the background, never while the board's stopwatch is up or a host
 //!   holds its timing channel, each exchange ending 2 s from its start, the send included
-//!   ([`vag_dash_fw::faults`]). The panel draws the count as a triangle in the bottom-right
-//!   corner, `?` when there is no count; `state` says `faults=`.
+//!   ([`vag_dash_fw::faults`]). The panel draws the count beside a triangle at the status
+//!   strip's right end, `?` when there is no count; `state` says `faults=`.
 //!
 //! There is no Battery Service (0x180F). Phones show its level as the device's
 //! battery, and this board has no battery and no reading of the rail (the
@@ -604,7 +604,7 @@ fn set_visibility(v: Visibility) {
 	VISIBILITY.store(v as u8, Ordering::Relaxed);
 }
 
-/// Which hosts the board is serving, for the icons in the panel's corner: a host on the
+/// Which hosts the board is serving, for the icons at the status strip's right end: a host on the
 /// cable that said Hello ([`USB_LINKED`]), and a BLE central connected
 /// ([`Visibility::Connected`]), `dashcfg` included.
 fn links() -> vag_dash_render::Links {
@@ -2258,7 +2258,7 @@ impl PanelReads {
 			// `STOPWATCH_PAGE` is past every page: no cells, and the mode brings the speed.
 			let mut shown: Vec<u16> = PLAN.pages.get(usize::from(glass)).map_or(&[][..], pages::cells).to_vec();
 			// The voltage the page's strip shows is read as one of its cells; the stopwatch's page
-			// is no plan page and has no strip.
+			// is no plan page and shows no voltage.
 			shown.extend(PLAN.strip_volts(usize::from(glass)));
 			// Every page's cells, charts included: a chart samples its channel
 			// every frame whether or not it is shown — and the strip's voltage, where a page shows it.
@@ -2793,7 +2793,7 @@ impl Oled {
 
 /// Draws the current page and leaves its pixels for the USB port.
 ///
-/// This is the real renderer on real pixels: `vag_dash_render::draw` into a 256×64
+/// This is the real renderer on real pixels: `vag_dash_render::draw_page` into a 256×64
 /// framebuffer. What the laptop shows is not an impression of the panel, it is
 /// the panel.
 ///
@@ -3053,6 +3053,7 @@ async fn panel_task(
 					.stopwatch
 					.and_then(|plan| value_of(plan.speed).map(|value| value * plan.km_h_per_unit));
 				let (cells, count) = stopwatch::cells(&watch, speed, &saved, &words, &labels);
+				// Under a strip with no title or voltage, which holds the link icons and the badge.
 				draw_with(&Frame::Values { cells: &cells[..count] }, &board, &theme, framebuffer)
 			}
 			Page::Values { cells: indices, .. } => {

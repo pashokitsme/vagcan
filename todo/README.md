@@ -73,7 +73,7 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 | M3 (whole-car measurement coverage by survey) off the list (2026-09-10) | — |
 | The scheduler is subscriptions with drop semantics, one layer on the board and the laptop; rates only from `hz` in `dash.toml` (2026-09-14) — except the lever's and the stopwatch's, fixed in code by what a press and a launch need (2026-09-26) | `dash/14` §2, `dash/19` |
 | BLE with no pairing and no button, and only when asked (`--device ble`, no automatic scan); `watch` and `measure` over BLE (2026-09-14) | `dash/16` |
-| Link icons in a column at the right edge; the chart ends before it, connected or not; no icons on the adapter screen so far (2026-09-14) | `PR #3` |
+| Link icons and the fault badge at the status strip's right end, on every values and chart page and the stopwatch's; the page under the strip never changes with them; none on the adapter screen (2026-10-19; a column over the page at the right edge from 2026-09-14) | `PR #3`, `feat/dash-icons-in-strip` |
 | BLE on the rev v0.4 board is not pursued; the board is a spare, run without BLE (2026-09-22) | `research/dash/ble-controller-hang.md` |
 | `measure` over BLE at 34–38 speed reads a second, under the cable's 45–48, is accepted (2026-09-22) | `research/dash/can-bring-up.md` §9.15 |
 | The bench board's transceiver stays on 5 V: its 3V3 trace is broken, and the board is expendable (2026-09-22). The risk is `RXD` at 5 V into `GPIO1`, not the car's bus; if the board acts up in the car, unplug it | `research/dash/can-bring-up.md` §9.12 |
@@ -177,7 +177,7 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 | [`dash/18-setpoints-and-drift.md`](dash/18-setpoints-and-drift.md) | specified vs actual channels, and the drift alarm — merged (PR #4, 2026-09-15); the owner's `dash.toml` pairs boost; car pending |
 | [`dash/19-stalk-and-stopwatch.md`](dash/19-stalk-and-stopwatch.md) | the lever and `[[button]]` pins as input, the stopwatch page — merged (PR #12, 2026-09-27); on the car 2026-09-30 the lever pages and the stopwatch and LIMIT work; items 4–6 and the pin buttons open |
 | [`dash/22-oled.md`](dash/22-oled.md) | the SSD1322 on the board — merged (PR #21, 2026-09-30), draws on the bench and in the car; GPIO8/20/21 the standard (2026-10-03); which way up is open |
-| [`dash/20-fault-count.md`](dash/20-fault-count.md) | the car's stored codes counted once after boot, a triangle and the count in the corner, `?` when there is no count — built 2026-09-27; needs the car |
+| [`dash/20-fault-count.md`](dash/20-fault-count.md) | the car's stored codes counted once after boot, a triangle and the count at the status strip's right end, `?` when there is no count — built 2026-09-27; needs the car |
 | [`dash/21-runs-in-flash.md`](dash/21-runs-in-flash.md) | stopwatch runs in flash, read over BLE, saved on LIMIT; recorded 2026-09-27, open questions for the owner |
 | [`dash/24-bus-time-check.md`](dash/24-bus-time-check.md) | the plan's bus share from the planner simulated offline and an exchange time measured on the car — recorded 2026-10-19 |
 | [`dash/25-one-core-for-board-and-replay.md`](dash/25-one-core-for-board-and-replay.md) | the frame loop, staleness and panel geometry in one crate for the board and the replay — recorded 2026-10-19 |

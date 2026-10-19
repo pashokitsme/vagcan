@@ -1180,7 +1180,8 @@ mod tests {
 	/// whole glass, so the two never share it.
 	#[test]
 	fn the_phase_cell_is_drawn_inverted_while_armed_and_in_no_other_phase() {
-		use crate::{Board, Frame, Links, PANEL, Theme, draw_with};
+		use crate::render::STRIP_ROWS;
+		use crate::{Board, Frame, Theme, draw_with};
 		use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 		use embedded_graphics_simulator::SimulatorDisplay;
 		let unmeasured = Stopwatch::new(&MARKS, 0.0);
@@ -1216,22 +1217,20 @@ mod tests {
 			let mut wanted = std::vec![false; count];
 			wanted[0] = phase == Phase::Armed;
 			assert_eq!(inverted, wanted, "{word}: the phase's cell alone, and only armed");
-			// On the glass: the phase column's ground is lit, the next one's is not.
-			let mut panel = SimulatorDisplay::<BinaryColor>::new(PANEL);
+			// On the board's glass, under the strip: the phase column's ground is lit, the next
+			// one's is not.
+			let size = Size::new(256, 64);
+			let mut panel = SimulatorDisplay::<BinaryColor>::new(size);
 			draw_with(
 				&Frame::Values { cells: &row[..count] },
-				&Board {
-					links: Links::NONE,
-					rates: None,
-					faults: None,
-				},
+				&Board::default(),
 				&Theme::bold_mono(),
 				&mut panel,
 			);
-			let lit = |x: i32| panel.get_pixel(Point::new(x, 0)) == BinaryColor::On;
+			let lit = |x: i32| panel.get_pixel(Point::new(x, STRIP_ROWS as i32)) == BinaryColor::On;
 			assert_eq!(lit(0), phase == Phase::Armed, "{word}: the phase column's ground");
 			if count > 1 {
-				assert!(!lit(PANEL.width as i32 / count as i32), "{word}: the first mark's is not lit");
+				assert!(!lit(size.width as i32 / count as i32), "{word}: the first mark's is not lit");
 			}
 		}
 	}
@@ -1239,14 +1238,29 @@ mod tests {
 	#[test]
 	fn the_page_fits_the_panel_in_both_languages_with_its_widest_numbers() {
 		use crate::render::Report;
-		use crate::{Board, Frame, Links, PANEL, Theme, draw_with};
+		use crate::{Board, Cell, Faults, Frame, Links, PANEL, Theme, draw, draw_with};
 		use embedded_graphics::{geometry::Size, pixelcolor::BinaryColor};
 		use embedded_graphics_simulator::SimulatorDisplay;
 		static THREE: [u16; 3] = [100, 200, 300];
 		static TWO: [u16; 2] = [100, 200];
-		// The glass the layout was drawn against, and the board's own: twice as tall, with the
-		// USB and BLE icons in its corner beside the last cell.
-		let panels = [(PANEL, Links::NONE), (Size::new(256, 64), Links { usb: true, ble: true })];
+		// The glass the layout was drawn against, alone; and the board's own, twice as tall, under
+		// the strip with both hosts and a two-digit count in it.
+		let busy = Board {
+			links: Links { usb: true, ble: true },
+			rates: None,
+			faults: Some(Faults::Counted {
+				stored: 99,
+				failing_now: true,
+			}),
+		};
+		let panels = [(PANEL, None), (Size::new(256, 64), Some(busy))];
+		let on = |size: Size, board: Option<Board>, cells: &[Cell<'_>]| {
+			let mut panel = SimulatorDisplay::<BinaryColor>::new(size);
+			match board {
+				None => draw(&Frame::Values { cells }, &Theme::bold_mono(), &mut panel),
+				Some(board) => draw_with(&Frame::Values { cells }, &board, &Theme::bold_mono(), &mut panel),
+			}
+		};
 		// The widest time each number of places shows; then times at a rounding edge, which print
 		// a digit wider (`10.00`, `100.0`) unless the places are chosen on the rounded value.
 		let widest = [9.99, 88.88, 188.8];
@@ -1255,7 +1269,7 @@ mod tests {
 		for marks in [&THREE[..], &TWO[..]] {
 			let labels = Labels::new(marks);
 			let watch = Stopwatch::new(marks, FACTOR);
-			for (size, links) in panels {
+			for (size, board) in panels {
 				for language in ["en", "ru"] {
 					let words = Words::of(language);
 					for word in [words.idle, words.armed, words.running, words.done, words.aborted] {
@@ -1265,17 +1279,7 @@ mod tests {
 							row[0].label = word;
 							// As the page draws it: armed, inverted.
 							row[0].alarm = word == words.armed;
-							let mut panel = SimulatorDisplay::<BinaryColor>::new(size);
-							draw_with(
-								&Frame::Values { cells: &row[..count] },
-								&Board {
-									links,
-									rates: None,
-									faults: None,
-								},
-								&Theme::bold_mono(),
-								&mut panel,
-							)
+							on(size, board, &row[..count])
 						};
 						let what = std::format!("{} marks, {size:?}, {language} {word}", marks.len());
 						let widest = draw(&widest);
@@ -1294,31 +1298,11 @@ mod tests {
 				let words = Words::of("en");
 				let unmeasured = Stopwatch::new(marks, 0.0);
 				let (row, count) = cells(&unmeasured, None, &[], &words, &labels);
-				let mut panel = SimulatorDisplay::<BinaryColor>::new(size);
-				let report = draw_with(
-					&Frame::Values { cells: &row[..count] },
-					&Board {
-						links,
-						rates: None,
-						faults: None,
-					},
-					&Theme::bold_mono(),
-					&mut panel,
-				);
+				let report = on(size, board, &row[..count]);
 				assert!(!report.label_overrun && !report.glyph_missing, "{size:?}: {report:?}");
 				let words = Words::of("ru");
 				let (row, count) = cells(&unmeasured, None, &[], &words, &labels);
-				let mut panel = SimulatorDisplay::<BinaryColor>::new(size);
-				let report = draw_with(
-					&Frame::Values { cells: &row[..count] },
-					&Board {
-						links,
-						rates: None,
-						faults: None,
-					},
-					&Theme::bold_mono(),
-					&mut panel,
-				);
+				let report = on(size, board, &row[..count]);
 				assert!(!report.label_overrun && !report.glyph_missing, "{size:?}: {report:?}");
 			}
 		}
