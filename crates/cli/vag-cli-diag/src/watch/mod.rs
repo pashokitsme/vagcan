@@ -924,6 +924,11 @@ fn waited_on(heard: &std::collections::BTreeMap<(u16, u16), Heard>, now: f64, pe
 		.map(|((request, _), _)| *request)
 }
 
+/// What `watch --replay` says with no terminal to draw on. A replay has no
+/// plain-console form (`--for` reads a car); the recording is a CSV already.
+const REPLAY_NEEDS_A_TERMINAL: &str = "`watch --replay` needs an interactive terminal: it draws a full-screen view.\n\
+                                       The recording itself is CSV and opens in any spreadsheet.";
+
 /// How much one press moves the poll rate.
 const RATE_STEP: f64 = 0.5;
 
@@ -1914,7 +1919,9 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, vin: Option<&st
 	let screen = term::full_screen()
 		.with_mouse()
 		.enter()
-		.map_err(|e| anyhow::anyhow!("`watch` needs an interactive terminal (it draws a full-screen view): {e}"))?;
+		// The errno crossterm fails with ("Device not configured") says nothing a
+		// reader can use; that there is no terminal is the whole answer.
+		.map_err(|_| anyhow::anyhow!("{REPLAY_NEEDS_A_TERMINAL}"))?;
 	let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
 	let mut app = App::new(channels);
@@ -2589,11 +2596,11 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 
 	// A full-screen view needs a terminal; without one crossterm fails with a
 	// bare errno that says nothing about why.
-	let screen = term::full_screen().with_mouse().enter().map_err(|e| {
+	let screen = term::full_screen().with_mouse().enter().map_err(|_| {
 		anyhow::anyhow!(
 			"`watch` needs an interactive terminal (it draws a full-screen view). \
              Without one, use `--for SECONDS`, which polls the same channels and \
-             writes CSV: {e}"
+             writes CSV."
 		)
 	})?;
 	let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
