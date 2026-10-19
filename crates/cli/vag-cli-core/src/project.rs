@@ -1,12 +1,11 @@
 //! `~/.vagcan/data/<id>/` — one platform's data, whatever it was learned from.
 //!
-//! There used to be one `data/extracted/`, because there was one source: a VCDS
-//! installation. There are two now — a VCDS installation and an extracted
-//! ODIS-Service project — and they describe the same car from different
-//! directions, so the split that matters is no longer *which parser produced
-//! this* but *which car is this about*. A project is that: a directory holding
-//! everything known about one car, into which a second source is **added**
-//! rather than swapped (design §5).
+//! There are two sources — a VCDS installation and an extracted ODIS-Service
+//! project — and they describe the same car from different directions, so the
+//! split that matters is not *which parser produced this* but *which car is
+//! this about*. A project is that: a directory holding everything known about
+//! one car, into which a second source is **added** rather than swapped
+//! (design §5).
 //!
 //! ```text
 //! ~/.vagcan/
@@ -24,9 +23,7 @@
 //!                           builds ship a same-named .rod with different content
 //!       measurements/       proven-on-car rows, one file per part number
 //!       sources.json        where this project's data came from
-//!     extracted/            the layout from before projects existed — siblings of
-//!     measured/             the projects now, and told apart from them by name
-//!   config.json             which project a bare command means
+//!   config.toml             which project a bare command means
 //! ```
 //!
 //! **A project is a platform, not a car** (spec §4.1). `SK37X` is VW's own
@@ -38,8 +35,7 @@
 //! **`measurements/` is the one directory here that nothing can recreate.** Every
 //! other file is extracted from somebody else's — a re-parse reproduces it. Those
 //! rows were proven by driving a car (`.archive/research/labels/rod-labels.md` §4.0c), and
-//! that is why the migration in [`crate::datadir`] copies before it removes and
-//! why nothing in this module ever deletes a project.
+//! that is why nothing in this module ever deletes a project.
 //!
 //! **Nothing here invents a name for a car.** An ODIS project names itself and
 //! [`vag_data_labels::odis::Project::id`] reads it; a VCDS-only project is named by the
@@ -54,16 +50,6 @@ use anyhow::{Context, Result, bail};
 
 /// The most a project name may be. A directory name, not a sentence.
 const MAX_ID: usize = 64;
-
-/// The two names the pre-project layout used, which a project may not take.
-///
-/// `~/.vagcan/data/` holds both layouts now (spec §6): `extracted` and
-/// `measured` are the old directories and anything else under it is a project.
-/// VW's own names cannot collide with these — they are `SK37X`, `AU21X` and the
-/// like — so refusing them costs a user nothing, and it stops a project from
-/// being mistaken for the layout it replaced. Compared case-insensitively,
-/// because the filesystem this runs on is.
-const RESERVED: [&str; 2] = ["extracted", "measured"];
 
 /// The environment variable that names the project for one run (D6).
 pub const PROJECT_ENV: &str = "VAGCAN_PROJECT";
@@ -495,13 +481,6 @@ pub fn folder_name(id: &str) -> Result<String> {
 	if id == "." || id == ".." {
 		bail!("{id:?} already names a folder — the one above, or the one it is in");
 	}
-	if RESERVED.iter().any(|reserved| id.eq_ignore_ascii_case(reserved)) {
-		bail!(
-			"{id:?} is what vagcan called part of its layout before it kept one directory per car, \
-			 and that directory still sits beside the projects in ~/.vagcan/data/. Pick another name — \
-			 VW's own are like `SK37X`."
-		);
-	}
 	if id.chars().count() > MAX_ID {
 		bail!(
 			"{id:?} is {} characters, and {MAX_ID} is the most a project name may be",
@@ -572,34 +551,27 @@ mod tests {
 	}
 
 	#[test]
-	fn the_layout_this_replaced_cannot_be_taken_as_a_project_name() {
-		// Spec §6. `data/` holds both layouts now, so `extracted` and `measured`
-		// are siblings of the projects rather than the whole of it. A project
-		// under either name would be mistaken for the layout it replaced — and
-		// worse, `list` would offer it and `migrate` would still be walking it.
-		for taken in ["extracted", "measured", "Extracted", "MEASURED"] {
-			assert!(folder_name(taken).is_err(), "{taken:?} was accepted");
+	fn every_directory_under_data_is_a_project_whatever_it_is_called() {
+		// `extracted` and `measured` were the layout before projects existed,
+		// and that layout is gone (2026-10-20). Nothing reserves the two names
+		// any more and nothing walks them: a directory under `data/` is a
+		// project, and a file there is nothing at all.
+		for name in ["extracted", "measured", "Extracted", "MEASURED", "SK37X"] {
+			assert_eq!(folder_name(name).unwrap(), name);
 		}
-		// It costs a user nothing: VW's own names cannot collide with them.
-		for vw in ["SK37X", "AU21X", "VW37X"] {
-			assert!(folder_name(vw).is_ok(), "{vw:?} was refused");
-		}
-	}
-
-	#[test]
-	fn the_old_layout_is_never_listed_as_a_project_it_sits_beside() {
-		// The consequence of the two living in one directory: `list` reads
-		// `data/`, and without the reserved names it would report the migration
-		// source as a car to choose between.
 		let here = temp();
-		for name in ["extracted", "measured"] {
-			std::fs::create_dir_all(here.path().join(name)).unwrap();
-		}
+		std::fs::create_dir_all(here.path().join("extracted")).unwrap();
+		std::fs::write(here.path().join("extracted").join("names.json"), b"{}").unwrap();
+		std::fs::write(here.path().join("measured"), b"not a directory").unwrap();
+		assert_eq!(list_in(here.path()), ["extracted"]);
+		// One project is not a choice, so a bare command lands on it, and a flag
+		// names it like any other.
+		assert_eq!(current_in(here.path(), None, None, None, None).unwrap().id, "extracted");
+		assert_eq!(current_in(here.path(), Some("extracted"), None, None, None).unwrap().id, "extracted");
+		// A second project beside it makes two, and a bare command asks.
 		open_or_create_in(here.path(), "SK37X").unwrap();
-		assert_eq!(list_in(here.path()), ["SK37X"]);
-		// And with the old layout still there, one project is still one project
-		// — so a bare command resolves without asking.
-		assert_eq!(current_in(here.path(), None, None, None, None).unwrap().id, "SK37X");
+		assert_eq!(list_in(here.path()), ["SK37X", "extracted"]);
+		assert!(current_in(here.path(), None, None, None, None).is_err());
 	}
 
 	#[test]

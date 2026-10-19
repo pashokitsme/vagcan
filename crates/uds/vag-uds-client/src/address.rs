@@ -198,9 +198,10 @@ const BUILT_IN_SHORT_NUMBERS: &[(u8, u16)] = &[(0x01, 0x7E0), (0x02, 0x7E1), (0x
 /// Under the tool's own directory, not the working one. It used to be looked
 /// for in the checkout and every parent of it, which meant the same command
 /// behaved differently depending on where the shell was standing, and put a
-/// file describing somebody's car inside a repository.
+/// file describing somebody's car inside a repository. At the top of it, beside
+/// `names.csv`, and not under `data/`: every directory there is a project.
 #[cfg(feature = "std")]
-pub const OVERRIDE_PATH: &str = ".vagcan/data/measured/unit-numbers.json";
+pub const OVERRIDE_PATH: &str = ".vagcan/unit-numbers.json";
 
 /// Read the override file, when the user has written one.
 ///
@@ -237,7 +238,7 @@ fn override_pairings() -> Vec<UnitNumber> {
 		// A malformed override is worth saying out loud: silently falling
 		// back would leave the user's own pairings quietly ignored.
 		Err(e) => {
-			eprintln!("{OVERRIDE_PATH} is not readable ({e}) — using built-ins");
+			eprintln!("~/{OVERRIDE_PATH} is not readable ({e}) — using built-ins");
 			Vec::new()
 		}
 	}
@@ -342,7 +343,7 @@ pub fn parse(text: &str) -> Result<UnitAddress, String> {
 		format!(
 			"control unit {number:02X}{named} has no known request id — give the id instead, \
              e.g. 713 (`vagcan units` lists what this car has), or add the pairing to \
-             {OVERRIDE_PATH}"
+             ~/{OVERRIDE_PATH}"
 		)
 	})?;
 	// The id comes from data now, so it gets the same check a user-typed id

@@ -1055,7 +1055,7 @@ mod tests {
 			&[("IDE00116", "Transmission input speed")],
 		);
 		// A store with the same identifier proven on a car.
-		let dir = here.path().join("measured");
+		let dir = here.path().join("measurements");
 		std::fs::create_dir_all(&dir).unwrap();
 		let catalog = vag_data_labels::catalog::MeasurementCatalog::new(vec![proven(0x380A, "Input shaft speed")]);
 		std::fs::write(dir.join("0CW300041G.json"), serde_json::to_string(&catalog).unwrap()).unwrap();
