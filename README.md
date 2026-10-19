@@ -394,6 +394,7 @@ Everything is in `~/.vagcan/`. Nothing is written to the checkout.
   dash/<VIN>/           the dash for one car
     dash.toml             pages and channels, written by hand
     plan.json, plan.rs    the dash configuration the firmware is built from, written by vagcan dev dash build
+    editor/               what vagcan dev dash edit serves; its next run rebuilds it
 ```
 
 - **Safe to delete:** `rod/` and everything in `data/<project id>/` except `measurements/`. `vagcan setup` rebuilds them.

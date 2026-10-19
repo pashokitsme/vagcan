@@ -14,14 +14,17 @@ editor — PR #24 merged 2026-10-19** (`e855a3b`). Since the 2026-09-30 status (
 PR #22 (cleanup), the justfile and CI on its recipes (`648d637`, `fc13720`), PR #23 (`70d26e6`:
 the stopwatch's speed shown rounded down; `zero_at_rest` for the ESC's acceleration), PR #24.
 `cargo test --workspace` 2,120 passed on PR #24's branch; firmware static RAM unchanged by
-#24 (140,996 B with BLE, 131,536 B without).
+#24 (140,996 B with BLE, 131,536 B without). Merged after it: #29 (`f8b7536`, the first-run
+path), #26 (`409ace9`, thresholds on the channel), #27 (`210048d`, the settings record names
+its plan), #28 (`31eb581`, the icons in the strip), #30 (`b06d00e`, the plan's joins),
+2026-10-19; #31 (`451e3b5`, `vagcan dev dash edit`), #32 (`a4c7600`, the pre-project data layout
+dropped), #33 (`1069daf`, the bus-time estimate), #34 (`0ad5502`, `vag-dash-core`), 2026-10-20.
 
 - **The strip** (PR #24): the battery voltage at the left, the page's `title` in the middle,
   no rule; `[strip] volts = "<channel>"`, a page's `volts = false`; the voltage hides on a page
-  that shows its channel; with a title, a chart's header drops its label. Two link icons under
-  the strip run into a four-character rightmost number: flagged (`Report::icon_overlap`), not
-  fixed — moving the icons into the strip's free right end is the owner's call. Watts beside
-  the voltage are [`dash/23`](dash/23-power-consumption.md), not started.
+  that shows its channel; with a title, a chart's header drops its label. The link icons and
+  the fault badge are at the strip's right end since PR #28, and the page under the strip keeps
+  its width. Watts beside the voltage are [`dash/23`](dash/23-power-consumption.md), not started.
 - **The owner's layout** (2026-10-19), from [`research/dash/layout-editor/`](../research/dash/layout-editor/README.md)
   (the real renderer in WebAssembly, every channel `dash::build` resolves — 6,583 on the car;
   since 2026-10-19 the command `vagcan dev dash edit <VIN>`):
@@ -31,15 +34,14 @@ the stopwatch's speed shown rounded down; `zero_at_rest` for the ESC's accelerat
   `~/.vagcan/dash/XW8AD4NE9JH008917/dash.toml`, the file before it beside it
   (`.before-layout-2026-10-19`); master's `dev dash build` takes it: 23 channels, 4 units,
   6 pages.
-- **Thresholds on the channel** — branch `feat/dash-thresholds` (`010adb6` on `e855a3b`, not a
-  PR yet, in review 2026-10-19): `alarm_max`/`alarm_min` with `alarm_max_off`/`alarm_min_off`
-  and `drift_*` keys on `[[channel]]`, an explicit `alarm_priority`; `[[alarm]]` refused with
+- **Thresholds on the channel** — PR #26 (`409ace9`, merged 2026-10-19): `alarm_max`/`alarm_min`
+  with `alarm_max_off`/`alarm_min_off` and `drift_*` keys on `[[channel]]`, an explicit `alarm_priority`; `[[alarm]]` refused with
   its rewrite; `MAX_ALARMS` gone, and no count or budget refuses a plan: the build estimates bus
-  time, below (the review of 2026-10-19 showed a reads-a-second budget is the wrong unit). After it merges, the
-  owner's file moves to the new keys, plus oil 115/110 and the gearbox's control module
+  time, below (the review of 2026-10-19 showed a reads-a-second budget is the wrong unit). The
+  owner's file is on the new keys, with oil 115/110 and the gearbox's control module
   120/110 ([`research/dash/alarm-thresholds.md`](../research/dash/alarm-thresholds.md), 2026-10-19:
   the Škoda manual's 80–110 °C oil; SSP 390's 139 °C torque cut on the 0AM, inferred for the 0CW).
-- **Bus time** — branch `feat/dash-bus-time` (2026-10-20, not merged;
+- **Bus time** — PR #33 (`1069daf`, merged 2026-10-20;
   [`dash/24`](../.archive/tasks/done/dash/24-bus-time-check.md)): the build runs the board's
   planner over the plan offline, each page on the glass with cruise off and on and a stopwatch
   run, at 34 ms an exchange (the car's 10 Hz BLE `watch` of 2026-09-26, an upper bound), and
@@ -82,7 +84,7 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 | M3 (whole-car measurement coverage by survey) off the list (2026-09-10) | — |
 | The scheduler is subscriptions with drop semantics, one layer on the board and the laptop; rates only from `hz` in `dash.toml` (2026-09-14) — except the lever's and the stopwatch's, fixed in code by what a press and a launch need (2026-09-26) | `dash/14` §2, `dash/19` |
 | BLE with no pairing and no button, and only when asked (`--device ble`, no automatic scan); `watch` and `measure` over BLE (2026-09-14) | `dash/16` |
-| Link icons and the fault badge at the status strip's right end, on every values and chart page and the stopwatch's; the page under the strip never changes with them; none on the adapter screen (2026-10-19; a column over the page at the right edge from 2026-09-14) | `PR #3`, `feat/dash-icons-in-strip` |
+| Link icons and the fault badge at the status strip's right end, on every values and chart page and the stopwatch's; the page under the strip never changes with them; none on the adapter screen (2026-10-19; a column over the page at the right edge from 2026-09-14) | `PR #3`, PR #28 |
 | BLE on the rev v0.4 board is not pursued; the board is a spare, run without BLE (2026-09-22) | `research/dash/ble-controller-hang.md` |
 | `measure` over BLE at 34–38 speed reads a second, under the cable's 45–48, is accepted (2026-09-22) | `research/dash/can-bring-up.md` §9.15 |
 | The bench board's transceiver stays on 5 V: its 3V3 trace is broken, and the board is expendable (2026-09-22). The risk is `RXD` at 5 V into `GPIO1`, not the car's bus; if the board acts up in the car, unplug it | `research/dash/can-bring-up.md` §9.12 |
@@ -102,7 +104,7 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 | Scan clock `B3 F1`; burn-in shift set aside, burn-in will not come quickly (owner, 2026-09-30) | `dash/22` |
 | `oledtest`'s clock sweep and the `oledpins` multimeter probe removed from PR #21 before the merge (owner, 2026-09-30); `oledtest`'s test picture stays | `dash/22` |
 | A status strip on every page: the voltage at the left, the page's title in the middle, no rule; the voltage per page, never twice on one page (owner, 2026-10-19) | PR #24 |
-| An alarm is a channel's threshold — a max and/or a min, each with the value it goes off at — and no cap on how many; what limits them is bus time, measured, not a count ([`dash/24`](../.archive/tasks/done/dash/24-bus-time-check.md)); priority explicit, `alarm_priority` (owner, 2026-10-19) | `feat/dash-thresholds` |
+| An alarm is a channel's threshold — a max and/or a min, each with the value it goes off at — and no cap on how many; what limits them is bus time, measured, not a count ([`dash/24`](../.archive/tasks/done/dash/24-bus-time-check.md)); priority explicit, `alarm_priority` (owner, 2026-10-19) | PR #26 |
 | Oil alarm 115/110, the gearbox's control module 120/110, as researched (owner, 2026-10-19) | `research/dash/alarm-thresholds.md` |
 | The enclosure off the README roadmap (owner, 2026-10-19); the CAD work goes on in `~/CAD` | `dash/15` |
 
@@ -110,83 +112,77 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 
 **Without the car**
 
-1. **Thresholds on the channel** — `feat/dash-thresholds`: the review, the PR, the merge; then
-   the owner's `dash.toml` onto the new keys (backup beside it), with oil 115/110 and the
-   gearbox's control module 120/110 ([`research/dash/alarm-thresholds.md`](../research/dash/alarm-thresholds.md)).
-2. **The plan's id instead of a copy of its pages** — `feat/dash-plan-id` (in work, 2026-10-19):
-   the board's flash record holds brightness, the page and the last run with the plan's id, so a
-   `dash.toml` change no longer resets them; the id in the board's hello and `state`.
-3. **The link icons and the fault badge in the strip** — `feat/dash-icons-in-strip` (in work,
-   2026-10-19, owner's go): the page under the strip keeps its width whatever is connected.
-   Then flash the board with `master` — PR #23, PR #24 and the owner's new pages are not on it.
-4. **The housing** — [`dash/15`](dash/15-enclosure.md): print the 2026-10-03 changes (the
+1. **Flash the board with `master`** — the thresholds (#26), the plan's id in the settings
+   record (#27), the icons in the strip (#28), the board's exchange count (#33), the one core
+   (#34), PR #23, PR #24 and the owner's new pages are not on the board in the car.
+2. **The housing** — [`dash/15`](dash/15-enclosure.md): print the 2026-10-03 changes (the
    socket's rim, the ESP's clip, the face's teeth).
-5. **Runs in flash** — [`dash/21`](dash/21-runs-in-flash.md): how many runs, and when LIMIT
+3. **Runs in flash** — [`dash/21`](dash/21-runs-in-flash.md): how many runs, and when LIMIT
    writes; the owner set both aside on 2026-09-27.
-6. **`measure view`'s speed** — [`measure/03`](measure/03-speed-series-unit.md): the saved speed
+4. **`measure view`'s speed** — [`measure/03`](measure/03-speed-series-unit.md): the saved speed
    series is m/s drawn as km/h, so the chart is 3.6 times low and a rolling mark is never drawn —
    visible on the owner's own 2026-09-26 session. Then [`measure/02`](measure/02-cross-check-tracks.md)
    (every unit's cross-check speed in one track) and [`measure/01`](measure/01-pedal-at-rest.md)
    (the pedal at rest; the owner's call).
-7. **The VCDS follow-ups** — [`label-lookup/04`](label-lookup/04-vcds-follow-ups.md): three for
+5. **The VCDS follow-ups** — [`label-lookup/04`](label-lookup/04-vcds-follow-ups.md): three for
    the owner to decide (the gateway's reads, a plain list's first row, a witness), then the
    platform file's choice and the Russian fallback.
-8. **Guard `sensors --ecu <unit>`** — it reads 32 standard OBD-II identifiers from any unit with
+6. **Guard `sensors --unit <unit>`** — it reads 32 standard OBD-II identifiers from any unit with
    no moving-car check (found in review, 2026-09-28; it predates that change). A command that
    resembles a sweep and is unguarded gets the guard (`CLAUDE.md`, Safety).
-9. **Which way up the glass hangs** — [`dash/22`](dash/22-oled.md): `turned`, with the housing.
-9a. **The review's architecture** (2026-10-19):
-   [`dash/24`](../.archive/tasks/done/dash/24-bus-time-check.md), the bus-time estimate, is built
-   on `feat/dash-bus-time` (its constant waits for the board's `exch=` on the car). `dash/25` (one
-   core for the board and the replay: `vag-dash-core` owns the value store, the frame, the
-   framebuffer and the board's pure modules, their host tests its own; the renderer's `PANEL` is
-   the glass) is built on `refactor/dash-core` (2026-10-20), archived in
+7. **Which way up the glass hangs** — [`dash/22`](dash/22-oled.md): `turned`, with the housing.
+7a. **The review's architecture** (2026-10-19):
+   [`dash/24`](../.archive/tasks/done/dash/24-bus-time-check.md), the bus-time estimate, merged
+   as PR #33 (its constant waits for the board's `exch=` on the car). `dash/25` (one core for
+   the board and the replay: `vag-dash-core` owns the value store, the frame, the framebuffer
+   and the board's pure modules, their host tests its own; the renderer's `PANEL` is the glass)
+   merged as PR #34 (2026-10-20), archived in
    [`.archive/tasks/done/dash/`](../.archive/tasks/done/dash/25-one-core-for-board-and-replay.md).
    `dash/27` (the board indexes the plan's joins, one way to say the pages changed, an alarm on a
    chart-only channel, one rate cap of 50 Hz) and `dash/26` ("the car stands" as one fact of
-   the plan) are built on `refactor/dash-plan-joins` (2026-10-19), archived in
+   the plan) merged as PR #30 (2026-10-19), archived in
    [`.archive/tasks/done/dash/`](../.archive/tasks/done/dash/27-plan-joins-and-signals.md); the plan
    id moves for every plan with it.
 
 **With the car**
 
-10. **The strip, the new pages and PR #23 on the glass** — after 2: the voltage, the titles,
+8. **The strip, the new pages and PR #23 on the glass** — after 1: the voltage, the titles,
     the stopwatch's rounding and the acceleration's zero at rest.
-11. **The ESC's acceleration** — [`dash/17`](dash/17-bench-ble-usb.md) §4: a dash on the glass
+9. **The ESC's acceleration** — [`dash/17`](dash/17-bench-ble-usb.md) §4: a dash on the glass
     the whole drive (2026-09-30); `zero_at_rest` (PR #23) does not touch that. The board's
     console on the car (USB plugged in before OBD power) says whether `713` is polled and what
     `1822` answers; then `vagcan watch --did 713:1822` parked.
-11a. **Where "the car stands" comes from** — [`dash/26`](../.archive/tasks/done/dash/26-car-standing.md)
+9a. **Where "the car stands" comes from** — [`dash/26`](../.archive/tasks/done/dash/26-car-standing.md)
     (built: one fact of the plan, today the stopwatch's speed at 0):
     `vagcan watch --did 70A:25E0,01:414B` stopping and moving off (the parking aid's standstill
     state, the engine's stop counter), against the gearbox's speed at 0 — whether either is worth
     a `[standstill]` source.
-12. **The gearbox's clutch temperatures** — `vagcan watch --did 02:102A,102B,102C` at idle,
+10. **The gearbox's clutch temperatures** — `vagcan watch --did 02:102A,102B,102C` at idle,
     then after a few launches: whether they answer (outside the August survey's pages) and move;
     if so, on a page with 250/200 ([`research/dash/alarm-thresholds.md`](../research/dash/alarm-thresholds.md)).
-13. **The rest of `dash/19` on the car** — [`dash/19`](dash/19-stalk-and-stopwatch.md) "On the car"
+11. **The rest of `dash/19` on the car** — [`dash/19`](dash/19-stalk-and-stopwatch.md) "On the car"
     items 4–6: `+` and `−` never open the stopwatch or turn the page back; a 0–100 beside
     `vagcan measure --ble` started first; the run saved before `GO` surviving a power cycle.
     Pin buttons on the bench first.
-14. **Alarms on a drive** — `dash/04`: the retard at −6.0 and the blink, the misfire window; a
+12. **Alarms on a drive** — `dash/04`: the retard at −6.0 and the blink, the misfire window; a
     `watch --out` recording with `200A`–`200D` for the replay.
-15. **The rest of `dash/17` §4** — through the board over the cable (USB before OBD power), the
+13. **The rest of `dash/17` §4** — through the board over the cable (USB before OBD power), the
     moving-car guard (`bleuds`), the CANable on car traffic, the ESC's wheel speeds; §2 item 8.
-16. **Freeze frames** — the layouts (`MCD_DB_ENV_DATA_DESC`) for `faults --details`; `faults`
+14. **Freeze frames** — the layouts (`MCD_DB_ENV_DATA_DESC`) for `faults --details`; `faults`
     with ODIS text only is done (owner, 2026-10-19).
-17. **Questions only the car answers** — `dash/06`.
-18. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
+15. **Questions only the car answers** — `dash/06`.
+16. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.
-19. **`watch` and `measure` across all fifteen units** — measured against the file, not
+17. **`watch` and `measure` across all fifteen units** — measured against the file, not
     the car.
-20. **Consumption** — `vagcan watch --did 710:2A09,2A1C`, engine off and running, for the signs
+18. **Consumption** — `vagcan watch --did 710:2A09,2A1C`, engine off and running, for the signs
     and the factors [`dash/23`](dash/23-power-consumption.md) needs before watts go in the strip.
 
 ## Task files
 
 | file | state |
 |---|---|
-| [`dash/04-alarms.md`](dash/04-alarms.md) | alarms as keys of a channel (max, min, off values, drift, `alarm_priority`), `[[alarm]]` and the cap of four removed — `feat/dash-thresholds`, 2026-10-19; the owner's `dash.toml` to be rewritten; car pending |
+| [`dash/04-alarms.md`](dash/04-alarms.md) | alarms as keys of a channel (max, min, off values, drift, `alarm_priority`), `[[alarm]]` and the cap of four removed — merged (PR #26, 2026-10-19); the owner's `dash.toml` is on the new keys; car pending |
 | [`dash/06-car-and-bench.md`](dash/06-car-and-bench.md) | open questions for the car |
 | [`dash/13-screens.md`](dash/13-screens.md) | channel menu for pages |
 | [`dash/14-one-bus-three-clients.md`](dash/14-one-bus-three-clients.md) | design; §7 is the dash work order; §6a has the lever probe (2026-09-26) |
@@ -205,8 +201,8 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 
 Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, moved there on
 2026-09-15 — its car check is `dash/17` §4; `label-lookup/02` and `03`, merged as PRs #15 and
-#18, moved there on 2026-09-28; `dash/26` and `dash/27`, built on `refactor/dash-plan-joins`,
-moved there on 2026-10-19 — `dash/26`'s car check is Next item 11a); superseded designs in
+#18, moved there on 2026-09-28; `dash/26` and `dash/27`, merged as PR #30, moved there on
+2026-10-19 — `dash/26`'s car check is Next item 9a); superseded designs in
 `.archive/specs/`.
 
 ## Command names in older documents

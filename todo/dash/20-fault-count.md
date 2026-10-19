@@ -67,8 +67,9 @@ record of what the owner decided for it.
   `safety::require_stationary`); its default run reads every unit in the session it is in. The
   board never sends `10`, so **no unit is affected**, and `19` does not change how a unit
   behaves: the count may run while the car moves.
-- `walk_order` is now one function in `vag-uds-client`, used by `faults`, `dev survey` and the
-  board, so the three walk the units in one order. The board then skips a listed id that shares
+- `walk_order` is now one function in `vag-uds-client`, used by `faults`, the units `watch`,
+  `measure` and `units --identify` record (`units::to_identify`) and the board, so all of them
+  walk the units in one order. The board then skips a listed id that shares
   a CAN id with a unit already walked (below), which the laptop asks.
 
 **Differences from the laptop**, on purpose: no `F197`/`02BD`/`F19E`/extended data (the badge
@@ -86,12 +87,12 @@ this at every boot with nobody watching:
   `0x700..=0x7BF`), whatever the answer's length. A whole 4095-byte answer decoded would be
   32,736 ids, over 130 KB of heap on a 72 KB board — a panic, and a reset loop since it reruns
   every boot. Bits past the block are counted (`Tally::past_block`, logged), never
-  decoded. `vagcan units`, `faults` and `dev survey` decode the whole answer; the reference
+  decoded. `vagcan units` and `faults` decode the whole answer; the reference
   car's is 32 bytes with nothing past byte 24.
 - **A walk of more than 64 units is refused** (`faultcount::MAX_UNITS`, the BLE guard's
   `guard::MAX_UNITS` itself — answer 2; `Outcome::TooMany`): a `?` badge, a log line. A car
   lists 15–20 (the reference car: 15, 18 with the three); past 64 it is a sweep of the block
-  with nobody watching, which `CLAUDE.md` guards as it guards `survey`.
+  with nobody watching, which `CLAUDE.md` guards as it guards any sweep.
 - **A listed id that shares an id with a unit already walked is skipped and named**
   (`Why::SharedId`): an id that is another walked unit's answer id, whose own answer id is
   another walked unit's request id, or which answers on the id another walked unit answers

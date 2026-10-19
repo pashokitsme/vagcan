@@ -285,8 +285,8 @@ and wrote an unconverted answer as bare hex, which cannot be told from a number.
 (2026-09-26, after four review rounds on salvaging it): no salvage. A converted column holding
 any cell that is not a number on the plan's scaling, a `0x…` cell or empty is dropped whole,
 with a note saying it is another scaling or an old recording's bare hex. Columns are matched
-by name against the plan's survey; a unit `watch` identified live that the survey lacks could
-share a name, and the replay says it matched by name.
+by name against the units of the car's record; a unit `watch` identified live that the record
+lacks could share a name, and the replay says it matched by name.
 
 Left: record a drive with the retard channels (`watch --out` with `200A`–`200D` selected, on
 the car, with this build) and replay it; the misfire rule's two numbers, from the car. The recorded drives in

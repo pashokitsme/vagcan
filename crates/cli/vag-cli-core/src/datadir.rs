@@ -30,7 +30,8 @@ pub const CAR_FILE: &str = "car.json";
 ///   data/
 ///     SK37X/                          one directory per *platform* — `crate::project`
 ///       cache.sqlite                    the label and ODIS rows, queryable
-///       names.json                      text id -> name
+///       names.json                      text id -> name, from a VCDS installation
+///       names-odis.json                 text id -> name, from an ODIS project
 ///       odx-ids.json                    text id -> the IDE/MAS id that text names
 ///       rod-keys.json                   recovered .rod section keys
 ///       registry.json                   which VCDS installation the channels were read
@@ -48,6 +49,11 @@ pub const CAR_FILE: &str = "car.json";
 ///                                     and `units --identify`
 ///       car.json                      mass, tyre, measured road load
 ///       measures/2026-08-04-1241.json one saved session per file
+///   dash/
+///     XW8AD4NE9JH008917/              one car's dash — [`dash_dir`]
+///       dash.toml                     its pages and channels, written by hand
+///       plan.json, plan.rs            what `vagcan dev dash build` writes from it
+///       editor/                       what `vagcan dev dash edit` serves — [`dash_editor_dir`]
 /// ```
 ///
 /// **`data/` and `cars/` are keyed differently on purpose.** A project is keyed

@@ -61,7 +61,7 @@ on a frame to any other id, so every unit a command addresses must be listed).
 7. `vagcan --slcan dev sniff --device B` with `C` transmitting → whole frames, no text lines (§9.4 again; the ring is 512 lines, so the rate may be lower).
 8. Mode 2, channel open, busy bus, pull USB → within ~0.2 s `mode=panel`, BLE not refused.
 9. Ctrl-C a `vagcan --slcan dev sniff --device B`, and a `vagcan --slcan info --device B` → `mode=panel` right after each.
-10. `vagcan dev survey --device B` → refused before opening; `vagcan dev sniff --device B` → says it needs `--slcan`.
+10. `vagcan units --identify 01 --device B` → refused before opening; `vagcan dev sniff --device B` → says it needs `--slcan`.
 11. `kill -STOP` a `vagcan watch --device B` 3 s, `kill -CONT` → its link ends with "lost data"; a new command works. During `--slcan dev sniff`, `kill -STOP` → `mode=panel` after ~1 s.
 12. `vagcan watch --device B` mid-run, start `vagcan --slcan dev sniff --device B` with `C` sniffing `--active` → no error frames at the switch, `F` flags clear.
 13. A USB host flooding 4095-byte requests while `vagcan info --device ble` runs → no panic, `heap:` flat, the USB host slows.

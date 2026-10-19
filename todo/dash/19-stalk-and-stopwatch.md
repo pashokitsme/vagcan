@@ -95,8 +95,7 @@ marks = [60, 100]            # km/h, at most 3
 
 | what | message |
 |---|---|
-| the unit of `read` or `cruise` not in the survey | `unit 70C is not in the survey — …` |
-| `read` or `cruise` the survey asked for and the car did not answer | `…: the survey asked the unit for this identifier and it did not answer` |
+| the unit of `read` or `cruise` not in the car's record | `unit 70C is not in the car's record of its units — …` |
 | a field `read` does not have | `rocker: 16:1105 has no field named "…" — its fields are …` |
 | a field name `read` gives twice | `rocker: 16:1105 has 2 fields named "…"` |
 | a field that is a quantity | `rocker: "…" is a quantity, not a list of states` |
@@ -118,8 +117,8 @@ marks = [60, 100]            # km/h, at most 3
 | `km_h_per_unit` above 0 but too small for an `f32` | at parse: `km_h_per_unit … is too small for the board, which would hold it as 0 — not measured` |
 
 A build message starts with `[stalk]` or `[stopwatch]`, one at parse with `dash.toml: [stalk]` or
-`dash.toml: [stopwatch]`; the unit-not-in-survey, not-answered and ambiguous rows are the
-build's general messages and carry neither.
+`dash.toml: [stopwatch]`; the unit-not-in-the-record and ambiguous rows are the build's general
+messages and carry neither.
 
 The lever's three fields join the plan as channels of their own, raw (×1 +0), on no page.
 `plan.json` keeps each state's name beside its interval for a person; `plan.rs` carries the

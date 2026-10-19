@@ -130,8 +130,8 @@ they never see frames. Sharing is by construction, flow control is on the bus's 
 and the allowlist is checked where the bus is.
 
 What it costs: a link protocol (§4) and one transport impl on the host — a few hundred
-lines, tested against a mock like `vag-uds-capture`. What it cannot do: `dev sniff` and
-`dev survey`'s raw-frame view, which read *frames*. Those get a `frame` message on the same
+lines, tested against a mock like `vag-uds-capture`. What it cannot do: `dev sniff`, which reads
+*frames*. Those get a `frame` message on the same
 link (§4) — mirrored, listen-only — and the exclusive slcan mode of option A stays for
 transmitting raw frames from a bench.
 
@@ -373,6 +373,6 @@ BLE, not by Bluetooth SPP the C3 does not have). `13-screens.md` is the menu §5
 
 - ~~The speed channel for the stopwatch~~ — decided 2026-09-13: `380B`; changed 2026-09-27 to the
   gearbox's vehicle speed `IDE00075` (§6).
-- ~~Whether `dev survey` (a sweep) may run through the board~~ — decided 2026-09-14: **no**.
-  Through the board, `dev survey` and `units --identify <unit>` are refused before anything is
-  opened; a sweep runs over the exclusive slcan mode, from a bench, with the guard the host has.
+- ~~Whether a sweep may run through the board~~ — decided 2026-09-14: **no**.
+  Through the board, `units --identify <unit>` is refused before anything is opened (`dev survey`
+  was too, until it was removed on 2026-09-28); a sweep runs over the exclusive slcan mode, from a bench, with the guard the host has.
