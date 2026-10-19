@@ -1,12 +1,13 @@
-//! Render the panel to PNG, at 256×32, with no display attached.
+//! Render the panel to PNG, at the glass's 256×64, with no display attached.
 //!
 //! This is how the layout stops being a claim. `embedded-graphics-simulator`
 //! with `default-features = false` needs no SDL and opens no window, so the same
 //! drawing code that will run on the OLED writes files anybody can look at —
 //! and, later, files CI can diff.
 //!
-//! Usage: `cargo run -p vag-dash-render --example panel -- <output directory>`, and `--tall`
-//! for the board's 256×64 (the status strip's pictures, 10 to 22, are laid out for it).
+//! Usage: `cargo run -p vag-dash-render --example panel -- <output directory>`, and `--short`
+//! for a 256×32 panel, where the renderer puts the unit beside the number (the status strip's
+//! pictures, 10 to 22, are laid out for the glass).
 //!
 //! The values are stand-ins with the right shape, not readings from the car.
 //! Every channel named here is one the catalog declares for the reference car
@@ -23,17 +24,16 @@ fn main() {
 	let dir = std::env::args().nth(1).unwrap_or_else(|| ".".into());
 	std::fs::create_dir_all(&dir).unwrap();
 
-	// A blue-on-black OLED, scaled up so a 256×32 strip is legible on a laptop.
+	// A blue-on-black OLED, scaled up so the panel is legible on a laptop.
 	// The scale is a viewing convenience only — every pixel below is a pixel on
 	// the panel.
 	let settings = OutputSettingsBuilder::new().scale(3).theme(BinaryColorTheme::OledBlue).build();
 
-	// A second pass at 256x64, the size the 3.12" SSD1322 actually comes in.
-	// Nothing in the renderer is told about it — the layout reads its height from
-	// the target — so this shows what the extra rows give for free, and what they
-	// do not.
-	let tall = std::env::args().any(|a| a == "--tall");
-	let size = if tall { Size::new(PANEL.width, 64) } else { PANEL };
+	// `--short`: a pass at 256×32, the first target and not a real part. Nothing in the
+	// renderer is told about it — the layout reads its height from the target — so this shows
+	// what 32 rows lose against the glass.
+	let short = std::env::args().any(|a| a == "--short");
+	let size = if short { Size::new(PANEL.width, 32) } else { PANEL };
 
 	let shot = |name: &str, frame: &Frame<'_>, theme: &Theme| {
 		let mut display = SimulatorDisplay::<BinaryColor>::new(size);

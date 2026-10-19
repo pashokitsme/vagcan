@@ -990,7 +990,19 @@ fn row_layout(cells: &[Cell<'_>], theme: &Theme, inner: u32, height: u32, report
 	let unit_h = cells
 		.iter()
 		.filter(|c| !c.unit.is_empty())
-		.map(|c| text_height(&theme.unit, c.unit))
+		.map(|c| {
+			// A unit the face cannot draw measures nothing and leaves the row without a unit line;
+			// said here, or the stacked arrangement would drop it with only `unit_dropped` to show
+			// for it — the beside-the-number one says it in `unit_width`.
+			if theme
+				.unit
+				.get_rendered_dimensions(c.unit, Point::zero(), VerticalPosition::Baseline)
+				.is_err()
+			{
+				report.glyph_missing = true;
+			}
+			text_height(&theme.unit, c.unit)
+		})
 		.max()
 		.unwrap_or(0);
 	// A fourth line, of the small face, when any cell in the row has a specified value. The
@@ -1468,9 +1480,15 @@ mod tests {
 	use crate::frame::Links;
 	use embedded_graphics_simulator::SimulatorDisplay;
 
+	/// The glass the board has.
 	fn panel() -> SimulatorDisplay<BinaryColor> {
 		SimulatorDisplay::new(PANEL)
 	}
+
+	/// A 32-row panel. No board has one — the glass is [`PANEL`] — but the renderer measures
+	/// its target, and 32 rows is where three tiers stop fitting and the unit goes beside the
+	/// number: what any glass too short for three gets. Only the tests of that fallback use it.
+	const SHORT: Size = Size::new(256, 32);
 
 	/// A four-column page: 256 ÷ 4, less the padding each side.
 	const INNER: u32 = 64 - PAD * 2;
@@ -1568,11 +1586,11 @@ mod tests {
 			Cell::new("НАДДУВ", Some(1.82), "bar", 2),
 		];
 		let mut report = Report::default();
-		let layout = row_layout(&cells, &theme, INNER, 64, &mut report);
+		let layout = row_layout(&cells, &theme, INNER, PANEL.height, &mut report);
 		assert!(layout.tiered, "three tiers fit in 64 rows");
 		assert!(layout.with_unit, "a stacked unit is never dropped for width");
 
-		let mut display: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(Size::new(256, 64));
+		let mut display: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(PANEL);
 		let report = values(&cells, &theme, &mut display);
 		assert!(!report.unit_dropped, "{report:?}");
 		assert!(!report.value_overrun, "{report:?}");
@@ -1599,7 +1617,7 @@ mod tests {
 			Cell::new("ВПУСК", Some(46.0), "°C", 0),
 		];
 		let mut report = Report::default();
-		let layout = row_layout(&cells, &theme, INNER, PANEL.height, &mut report);
+		let layout = row_layout(&cells, &theme, INNER, SHORT.height, &mut report);
 		assert!(!layout.tiered, "three tiers do not fit in 32 rows");
 	}
 
@@ -1787,7 +1805,7 @@ mod tests {
 		// Drawn on a blank panel: the plus is a cross of two strokes, the minus one bar, both
 		// inside a box of `size` sitting on the baseline.
 		for negative in [false, true] {
-			let mut display = tall();
+			let mut display = panel();
 			let baseline = 40;
 			draw_sign(negative, 10, baseline, size, BinaryColor::On, &mut display);
 			let lit: std::vec::Vec<Point> = display
@@ -1820,13 +1838,13 @@ mod tests {
 			let cells = [Cell::new("", Some(1.92), "bar", 2).with_deviation(deviation)];
 			let theme = Theme::bold_mono();
 			let mut report = Report::default();
-			let layout = row_layout(&cells, &theme, TALL.width - 2 * PAD, TALL.height, &mut report);
-			assert!(layout.unit_baseline < TALL.height as i32, "{deviation:?}: {layout:?}");
+			let layout = row_layout(&cells, &theme, PANEL.width - 2 * PAD, PANEL.height, &mut report);
+			assert!(layout.unit_baseline < PANEL.height as i32, "{deviation:?}: {layout:?}");
 			if let Some(baseline) = layout.dev_baseline {
 				assert!(baseline < layout.unit_baseline, "{layout:?}");
 			}
 
-			let mut display = tall();
+			let mut display = panel();
 			let report = values(&cells, &theme, &mut display);
 			assert_eq!(report, Report::default(), "{deviation:?}: {report:?}");
 			// The bottom line is drawn, which it is not when it is pushed past the floor.
@@ -1845,7 +1863,7 @@ mod tests {
 	}
 
 	fn lit_row(display: &SimulatorDisplay<BinaryColor>, y: i32) -> bool {
-		(0..TALL.width as i32).any(|x| lit(display, x, y))
+		(0..PANEL.width as i32).any(|x| lit(display, x, y))
 	}
 
 	#[test]
@@ -1855,7 +1873,7 @@ mod tests {
 			Cell::new("НАДДУВ", Some(1.82), "bar", 2).with_deviation(Deviation::None),
 			Cell::new("ОЖ", Some(93.0), "°C", 0).with_deviation(Deviation::None),
 		];
-		let (mut a, mut b) = (tall(), tall());
+		let (mut a, mut b) = (panel(), panel());
 		let one = values(&plain, &Theme::bold_mono(), &mut a);
 		let two = values(&marked, &Theme::bold_mono(), &mut b);
 		assert_eq!(one, two);
@@ -1865,19 +1883,19 @@ mod tests {
 	#[test]
 	fn a_deviation_is_drawn_between_the_number_and_the_unit() {
 		let cells = [drifting("НАДДУВ", 1.92, "bar", 2, Deviation::Value(0.07))];
-		let mut display = tall();
+		let mut display = panel();
 		let report = values(&cells, &Theme::bold_mono(), &mut display);
 		assert_eq!(report, Report::default(), "{report:?}");
 
 		let theme = Theme::bold_mono();
-		let layout = row_layout(&cells, &theme, TALL.width - 2 * PAD, TALL.height, &mut Report::default());
+		let layout = row_layout(&cells, &theme, PANEL.width - 2 * PAD, PANEL.height, &mut Report::default());
 		// The ink of a line ends a row above its baseline, so the line is looked for in the
 		// band between the number's floor and it.
 		let baseline = layout.dev_baseline.expect("the row keeps a line for the deviation");
 		assert!((layout.band.1..=baseline).any(|y| lit_row(&display, y)), "the deviation line is drawn");
-		assert!(baseline < TALL.height as i32 - 1, "above the unit");
+		assert!(baseline < PANEL.height as i32 - 1, "above the unit");
 		assert!(
-			(baseline + 1..TALL.height as i32).any(|y| lit_row(&display, y)),
+			(baseline + 1..PANEL.height as i32).any(|y| lit_row(&display, y)),
 			"the unit is still under it"
 		);
 	}
@@ -1886,10 +1904,10 @@ mod tests {
 	fn an_unanswered_specified_value_draws_a_dash_and_keeps_the_line() {
 		let unknown = [drifting("НАДДУВ", 1.92, "bar", 2, Deviation::Unknown)];
 		let answered = [drifting("НАДДУВ", 1.92, "bar", 2, Deviation::Value(0.07))];
-		let (mut a, mut b) = (tall(), tall());
+		let (mut a, mut b) = (panel(), panel());
 		values(&unknown, &Theme::bold_mono(), &mut a);
 		values(&answered, &Theme::bold_mono(), &mut b);
-		let layout = row_layout(&unknown, &Theme::bold_mono(), TALL.width - 2 * PAD, TALL.height, &mut Report::default());
+		let layout = row_layout(&unknown, &Theme::bold_mono(), PANEL.width - 2 * PAD, PANEL.height, &mut Report::default());
 		let baseline = layout.dev_baseline.expect("the line is kept whether or not it answered");
 		assert!((layout.band.1..=baseline).any(|y| lit_row(&a, y)), "a dash is drawn");
 		assert!(
@@ -1903,10 +1921,10 @@ mod tests {
 		let theme = Theme::bold_mono();
 		let cells: std::vec::Vec<Cell<'_>> = (0..4).map(|_| drifting("НАДДУВ", 1.92, "bar", 2, Deviation::Value(-0.07))).collect();
 		let plain: std::vec::Vec<Cell<'_>> = (0..4).map(|_| Cell::new("НАДДУВ", Some(1.92), "bar", 2)).collect();
-		let inner = TALL.width / 4 - 2 * PAD;
+		let inner = PANEL.width / 4 - 2 * PAD;
 		let mut report = Report::default();
-		let with = row_layout(&cells, &theme, inner, TALL.height, &mut report);
-		let without = row_layout(&plain, &theme, inner, TALL.height, &mut Report::default());
+		let with = row_layout(&cells, &theme, inner, PANEL.height, &mut report);
+		let without = row_layout(&plain, &theme, inner, PANEL.height, &mut Report::default());
 		assert_eq!(with.step, without.step, "the 64-row panel holds four lines at the same face");
 		assert!(!report.deviation_dropped, "{report:?}");
 	}
@@ -1931,7 +1949,7 @@ mod tests {
 			samples: &samples,
 			seconds_per_sample: 0.2,
 		};
-		let mut display = tall();
+		let mut display = panel();
 		let report = draw(&frame, &Theme::bold_mono(), &mut display);
 		assert_eq!(report, Report::default(), "{report:?}");
 
@@ -1956,21 +1974,21 @@ mod tests {
 			samples,
 			seconds_per_sample: 0.2,
 		};
-		let mut display = tall();
+		let mut display = panel();
 		let report = draw(&frame(&SAMPLES), &Theme::bold_mono(), &mut display);
 		assert!(!report.value_overrun, "{report:?}");
 
 		let theme = Theme::bold_mono();
 		let cell = of(9.0);
-		let (_, value_w, _) = fit(&theme.numerals, number(&cell).as_str(), 0, TALL.width / 3);
+		let (_, value_w, _) = fit(&theme.numerals, number(&cell).as_str(), 0, PANEL.width / 3);
 		let dev_w = difference_width(&theme, &difference(&cell).unwrap());
 		assert!(dev_w > value_w, "the difference is the wider of the two: {dev_w} against {value_w}");
 
 		// Nothing of the trace in the column: with no samples at all the same rows hold the
 		// same pixels.
-		let mut empty = tall();
+		let mut empty = panel();
 		draw(&frame(&[]), &theme, &mut empty);
-		let column = Rectangle::new(Point::new(0, HEADER_ROWS), Size::new(dev_w, TALL.height - HEADER_ROWS as u32));
+		let column = Rectangle::new(Point::new(0, HEADER_ROWS), Size::new(dev_w, PANEL.height - HEADER_ROWS as u32));
 		assert!(
 			column.points().all(|p| empty.get_pixel(p) == display.get_pixel(p)),
 			"the trace stays out of the number's column"
@@ -1979,13 +1997,8 @@ mod tests {
 
 	// --- the board's panel ------------------------------------------------------------
 
-	/// The panel the board has.
-	const TALL: Size = Size::new(256, 64);
-	const TALL_BOX: Rectangle = Rectangle::new(Point::zero(), TALL);
-
-	fn tall() -> SimulatorDisplay<BinaryColor> {
-		SimulatorDisplay::new(TALL)
-	}
+	/// The whole glass.
+	const PANEL_BOX: Rectangle = Rectangle::new(Point::zero(), PANEL);
 
 	const USB: Links = Links { usb: true, ble: false };
 	const BLE: Links = Links { usb: false, ble: true };
@@ -2045,7 +2058,7 @@ mod tests {
 	// --- the status strip -------------------------------------------------------------
 
 	/// The page under the strip: the panel less the strip's rows.
-	const UNDER: Size = Size::new(256, 64 - STRIP_ROWS);
+	const UNDER: Size = Size::new(PANEL.width, PANEL.height - STRIP_ROWS);
 
 	fn board(links: Links, faults: Option<Faults>) -> Board {
 		Board { links, rates: None, faults }
@@ -2071,7 +2084,7 @@ mod tests {
 
 	/// `page` drawn with `strip` on the board's panel, and the report.
 	fn paged(frame: &Frame<'_>, strip: &Strip<'_>, board: &Board) -> (SimulatorDisplay<BinaryColor>, Report) {
-		let mut display = tall();
+		let mut display = panel();
 		let report = draw_page(frame, strip, board, &Theme::bold_mono(), &mut display);
 		(display, report)
 	}
@@ -2085,12 +2098,12 @@ mod tests {
 	}
 
 	fn strip_rows() -> Rectangle {
-		Rectangle::new(Point::zero(), Size::new(TALL.width, STRIP_ROWS))
+		Rectangle::new(Point::zero(), Size::new(PANEL.width, STRIP_ROWS))
 	}
 
 	/// The strip's right end on the board's panel.
 	fn right_end(board: &Board) -> Corner {
-		corner(board, &Theme::bold_mono(), TALL.width, &mut Report::default())
+		corner(board, &Theme::bold_mono(), PANEL.width, &mut Report::default())
 	}
 
 	/// Whether `display` holds `rows` at `at`, pixel for pixel: `#` in `ink`, the rest not.
@@ -2133,7 +2146,7 @@ mod tests {
 		}
 		let digit = lit_box(&Theme::bold_mono().label, "0").expect("the label face has digits");
 		assert_eq!(digit.size.height as usize, TRIANGLE.len(), "the triangle is the digits' height");
-		let (mut usb, mut ble) = (tall(), tall());
+		let (mut usb, mut ble) = (panel(), panel());
 		draw_rows(&USB_RUNE, Point::zero(), BinaryColor::On, &mut usb);
 		draw_rows(&BLE_RUNE, Point::zero(), BinaryColor::On, &mut ble);
 		assert_ne!(usb, ble, "two different pictures");
@@ -2168,7 +2181,7 @@ mod tests {
 	/// with nothing to show takes no room; the rest close up to the edge.
 	#[test]
 	fn the_right_end_holds_the_runes_at_the_edge_and_the_badge_left_of_them() {
-		let edge = TALL.width as i32 - STRIP_RIGHT;
+		let edge = PANEL.width as i32 - STRIP_RIGHT;
 		let ble_at = Point::new(edge - RUNE_W, 0);
 		let usb_beside = Point::new(ble_at.x - RUNE_GAP - RUNE_W, 0);
 		let cells = temps("ВПУСК");
@@ -2203,7 +2216,7 @@ mod tests {
 					}
 				}
 				// Nothing of the strip's on its last row, nor left of the right end.
-				let last = Rectangle::new(Point::new(0, STRIP_ROWS as i32 - 1), Size::new(TALL.width, 1));
+				let last = Rectangle::new(Point::new(0, STRIP_ROWS as i32 - 1), Size::new(PANEL.width, 1));
 				assert!(!lit_in(&display, last), "{links:?} {faults:?}: the strip's last row is dark");
 				let before = Rectangle::new(Point::zero(), Size::new(end.left.unwrap() as u32, STRIP_ROWS));
 				assert!(!lit_in(&display, before), "{links:?} {faults:?}: nothing left of the right end");
@@ -2216,7 +2229,7 @@ mod tests {
 	/// The badge alone stands where the runes would: its ground ends a column in from the edge.
 	#[test]
 	fn with_no_host_the_badge_takes_the_corner() {
-		let edge = TALL.width as i32 - STRIP_RIGHT;
+		let edge = PANEL.width as i32 - STRIP_RIGHT;
 		for faults in [NINE, NINE_FAILING, FAILED] {
 			let said = board(Links::NONE, faults);
 			let badge = right_end(&said).badge.expect("a count to show");
@@ -2239,7 +2252,7 @@ mod tests {
 		let badge = right_end(&said).badge.unwrap();
 		assert_eq!(badge.count.as_str(), "9");
 		let (display, _) = paged(&Frame::Values { cells: &[] }, &Strip::NONE, &said);
-		let mut nine = tall();
+		let mut nine = panel();
 		theme
 			.label
 			.render(
@@ -2250,10 +2263,10 @@ mod tests {
 				&mut nine,
 			)
 			.unwrap();
-		let mut alone = tall();
+		let mut alone = panel();
 		draw_rows(&TRIANGLE, badge.triangle, BinaryColor::On, &mut alone);
 		assert!(
-			TALL_BOX
+			PANEL_BOX
 				.points()
 				.all(|p| display.get_pixel(p) == (nine.get_pixel(p).is_on() || alone.get_pixel(p).is_on()).into())
 		);
@@ -2266,7 +2279,7 @@ mod tests {
 		);
 		assert_eq!(badge.count_origin.y + digit.top_left.y, badge.triangle.y, "on one line");
 		// The voltage's digits stand on the same rows.
-		let mut volts = tall();
+		let mut volts = panel();
 		let strip = Strip {
 			title: "",
 			volts: Volts::Shown(Some(19.9)),
@@ -2282,7 +2295,7 @@ mod tests {
 		};
 		assert_eq!(
 			rows(&volts, 0, 20),
-			rows(&display, count_left, TALL.width as i32),
+			rows(&display, count_left, PANEL.width as i32),
 			"the count and `19.9` share their rows"
 		);
 	}
@@ -2400,7 +2413,7 @@ mod tests {
 		let (display, report) = paged(&pinned_chart(&samples), &titled, &board(BOTH, NINE));
 		assert_eq!(report, Report::default(), "{report:?}");
 		let top = STRIP_ROWS as i32 + HEADER_ROWS;
-		assert!(lit(&display, TALL.width as i32 - 1, top), "the trace's top row reaches the last column");
+		assert!(lit(&display, PANEL.width as i32 - 1, top), "the trace's top row reaches the last column");
 	}
 
 	#[test]
@@ -2416,7 +2429,7 @@ mod tests {
 		let mut under: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(UNDER);
 		let alone = draw(&page, &Theme::bold_mono(), &mut under);
 		assert_eq!(report, alone, "the strip itself fits: nothing to report beyond the page's own");
-		let whole = draw(&page, &Theme::bold_mono(), &mut tall());
+		let whole = draw(&page, &Theme::bold_mono(), &mut panel());
 		assert_eq!(alone, whole, "and the page fits its 55 rows as it fits 64: {alone:?}");
 		assert!(page_under_strip_is(&display, &under), "the page, moved down by the strip");
 
@@ -2435,7 +2448,7 @@ mod tests {
 		let title: std::vec::Vec<i32> = ink.iter().filter(|p| p.x >= 64 && p.x < end).map(|p| p.x).collect();
 		let (left, right) = (*title.iter().min().unwrap(), *title.iter().max().unwrap());
 		assert!(
-			((left + right) / 2 - TALL.width as i32 / 2).abs() <= 2,
+			((left + right) / 2 - PANEL.width as i32 / 2).abs() <= 2,
 			"the title is centred on the panel, whatever is at the right end: {left}..{right}"
 		);
 	}
@@ -2451,7 +2464,7 @@ mod tests {
 		draw(&page, &Theme::bold_mono(), &mut under);
 		assert!(page_under_strip_is(&quiet, &under), "the page under an empty strip");
 		assert!(!lit_in(&quiet, strip_rows()), "and the strip dark");
-		let mut with = tall();
+		let mut with = panel();
 		draw_with(&page, &board(BOTH, NINE), &Theme::bold_mono(), &mut with);
 		assert!(page_under_strip_is(&with, &under), "`draw_with` is that page");
 		assert!(lit_in(&with, strip_rows()), "with the runes and the badge in its strip");
@@ -2476,7 +2489,7 @@ mod tests {
 		};
 		let (display, report) = paged(&page, &volts_only, &Board::default());
 		assert!(!report.glyph_missing, "{report:?}");
-		let right = Rectangle::new(Point::new(64, 0), Size::new(TALL.width - 64, STRIP_ROWS));
+		let right = Rectangle::new(Point::new(64, 0), Size::new(PANEL.width - 64, STRIP_ROWS));
 		assert!(lit_in(&display, left), "`--V`");
 		assert!(!lit_in(&display, right), "and no title");
 	}
@@ -2491,7 +2504,7 @@ mod tests {
 			let (on, _) = paged(&Frame::Values { cells: &alarmed }, &Strip::NONE, &said);
 			let (off, _) = paged(&Frame::Values { cells: &steady }, &Strip::NONE, &said);
 			assert!(strip_rows().points().all(|p| on.get_pixel(p) == off.get_pixel(p)), "{said:?}");
-			assert!(lit(&on, TALL.width as i32 - 1, STRIP_ROWS as i32), "{said:?}: the cell's ground is lit");
+			assert!(lit(&on, PANEL.width as i32 - 1, STRIP_ROWS as i32), "{said:?}: the cell's ground is lit");
 		}
 	}
 
@@ -2507,7 +2520,7 @@ mod tests {
 		let (display, report) = paged(&chart, &titled, &said);
 		assert_eq!(report, Report::default(), "{report:?}");
 		// `Д` reaches under the line, and still stays off the strip's last row.
-		let last = Rectangle::new(Point::new(0, STRIP_ROWS as i32 - 1), Size::new(TALL.width, 1));
+		let last = Rectangle::new(Point::new(0, STRIP_ROWS as i32 - 1), Size::new(PANEL.width, 1));
 		assert!(!lit_in(&display, last), "a dark row between the strip and the chart");
 		let theme = Theme::bold_mono();
 		let mut without: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(UNDER);
@@ -2642,7 +2655,7 @@ mod tests {
 			title: "Т",
 			volts: Volts::Shown(Some(14.2)),
 		};
-		let mut plain = tall();
+		let mut plain = panel();
 		draw(&frame, &Theme::bold_mono(), &mut plain);
 		for said in boards() {
 			let (display, _) = paged(&frame, &strip, &said);
@@ -2750,12 +2763,12 @@ mod tests {
 			tx_bps: 1_000_000,
 			rx_bps: 1_000_000,
 		});
-		let (display, report, layout) = adapter_on(TALL, state, rates);
+		let (display, report, layout) = adapter_on(PANEL, state, rates);
 		assert_eq!(report, Report::default(), "nothing overran and no glyph was missing");
 
 		let boxes: std::vec::Vec<Rectangle> = layout.boxes().collect();
 		assert_eq!(boxes.len(), 7, "every piece was placed: {layout:?}");
-		let panel = Rectangle::new(Point::zero(), TALL);
+		let panel = Rectangle::new(Point::zero(), PANEL);
 		for (i, a) in boxes.iter().enumerate() {
 			assert_eq!(panel.intersection(a), *a, "{a:?} is inside the panel");
 			for b in &boxes[i + 1..] {
@@ -2769,7 +2782,7 @@ mod tests {
 		assert_eq!(title.top_left, Point::new(ADAPTER_LEFT, ADAPTER_TOP));
 		let (up, _, _, rx) = layout.speed.unwrap();
 		let (rate, counters) = (layout.rate.unwrap().ink, layout.counters.unwrap().ink);
-		let centred = |left: i32, right: i32| (left - (TALL.width as i32 - right)).abs() <= 1;
+		let centred = |left: i32, right: i32| (left - (PANEL.width as i32 - right)).abs() <= 1;
 		assert!(centred(up.top_left.x, rx.ink.top_left.x + rx.ink.size.width as i32), "{up:?} {rx:?}");
 		for line in [rate, counters] {
 			assert!(centred(line.top_left.x, line.top_left.x + line.size.width as i32), "{line:?}");
@@ -2786,17 +2799,17 @@ mod tests {
 			tx: u32::MAX,
 			errors: u32::MAX,
 		};
-		let (_, report, layout) = adapter_on(TALL, state, None);
+		let (_, report, layout) = adapter_on(PANEL, state, None);
 		assert!(report.label_overrun, "{report:?}");
 		assert!(
-			layout.counters.is_some_and(|c| c.ink.size.width > TALL.width),
+			layout.counters.is_some_and(|c| c.ink.size.width > PANEL.width),
 			"it is the counters, drawn anyway"
 		);
 	}
 
 	#[test]
 	fn on_a_short_panel_what_does_not_fit_the_height_is_reported_not_drawn_over() {
-		let (display, report, layout) = adapter_on(PANEL, adapter_state(Some(500), false), None);
+		let (display, report, layout) = adapter_on(SHORT, adapter_state(Some(500), false), None);
 		assert!(report.label_overrun, "the lower lines have no room on 32 pixels: {report:?}");
 		assert!(!report.glyph_missing, "{report:?}");
 		assert!(layout.title.is_some() && layout.speed.is_some(), "the title and the speeds fit");

@@ -1222,7 +1222,7 @@ mod tests {
 			assert_eq!(inverted, wanted, "{word}: the phase's cell alone, and only armed");
 			// On the board's glass, under the strip: the phase column's ground is lit, the next
 			// one's is not.
-			let size = Size::new(256, 64);
+			let size = crate::PANEL;
 			let mut panel = SimulatorDisplay::<BinaryColor>::new(size);
 			draw_with(
 				&Frame::Values { cells: &row[..count] },
@@ -1246,8 +1246,8 @@ mod tests {
 		use embedded_graphics_simulator::SimulatorDisplay;
 		static THREE: [u16; 3] = [100, 200, 300];
 		static TWO: [u16; 2] = [100, 200];
-		// The glass the layout was drawn against, alone; and the board's own, twice as tall, under
-		// the strip with both hosts and a two-digit count in it.
+		// The glass, with nothing over the page; and under the strip with both hosts and a
+		// two-digit count in it.
 		let busy = Board {
 			links: Links { usb: true, ble: true },
 			rates: None,
@@ -1256,7 +1256,7 @@ mod tests {
 				failing_now: true,
 			}),
 		};
-		let panels = [(PANEL, None), (Size::new(256, 64), Some(busy))];
+		let panels = [(PANEL, None), (PANEL, Some(busy))];
 		let on = |size: Size, board: Option<Board>, cells: &[Cell<'_>]| {
 			let mut panel = SimulatorDisplay::<BinaryColor>::new(size);
 			match board {
