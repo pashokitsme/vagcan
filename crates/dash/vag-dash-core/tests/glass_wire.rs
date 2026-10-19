@@ -1,18 +1,16 @@
 //! The glass's driver on the host: what goes down the wire to the SSD1322, byte by byte, and
 //! which rows a frame sends.
 //!
-//! `crates/dash/vag-dash-fw/src/ssd1322.rs` compiled as it is — the firmware cannot be built
-//! for the host — over a bus and three pins that write into one shared log. The link is
+//! [`vag_dash_core::ssd1322`], the firmware's own, over a bus and three pins that write into one
+//! shared log. The link is
 //! write-only on the board too, so this log is the only place the wire can be read at all.
-
-#[path = "../../../../crates/dash/vag-dash-fw/src/ssd1322.rs"]
-mod ssd1322;
 
 use std::cell::RefCell;
 use std::convert::Infallible;
 use std::rc::Rc;
 
-use ssd1322::{CLOCK_HZ, FULL, HEIGHT, ROW_BITS, ROW_BYTES, Shown, Ssd1322, widen};
+use vag_dash_core::panel::HEIGHT;
+use vag_dash_core::ssd1322::{CLOCK_HZ, FULL, ROW_BITS, ROW_BYTES, Shown, Ssd1322, widen};
 
 /// One thing seen on the wire, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,7 +141,8 @@ fn bytes(seen: &[Seen]) -> Vec<(u8, bool)> {
 }
 
 fn run<F: Future>(future: F) -> F::Output {
-	tokio::runtime::Builder::new_current_thread().build().expect("a runtime").block_on(future)
+	// The bus, the pins and the delay never wait: any executor runs the driver.
+	futures::executor::block_on(future)
 }
 
 #[test]

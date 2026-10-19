@@ -227,7 +227,7 @@ fn a_busy_raw_exchange_backs_the_unit_off_unless_a_run_is_timing_it_and_it_is_th
 /// unit absent and dropped its subscriptions, a run's speed with them. No run times this unit, so
 /// it is backed off as silence is (review rounds 3 and 5; a timed unit's pass is
 /// `a_busy_raw_exchange_backs_the_unit_off_unless_a_run_is_timing_it_and_it_is_the_first` and
-/// `research/dash/host/tests/stopwatch_silence.rs`).
+/// `crates/dash/vag-dash-core/tests/stopwatch_silence.rs`).
 #[test]
 fn a_read_a_busy_unit_did_not_answer_in_time_is_a_missed_sample_from_a_unit_that_is_there() {
 	for asked_for_time in [false, true] {

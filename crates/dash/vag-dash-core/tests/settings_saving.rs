@@ -1,11 +1,7 @@
 //! What the board's settings in RAM are against flash, and when a run the stopwatch kept is
-//! written: `crates/dash/vag-dash-fw/src/saving.rs` compiled as it is — the firmware cannot be
-//! built for the host.
+//! written: [`vag_dash_core::saving`], the firmware's own.
 
-#[path = "../../../../crates/dash/vag-dash-fw/src/saving.rs"]
-mod saving;
-
-use saving::{Flash, RunWrite, Saving};
+use vag_dash_core::saving::{Flash, RunWrite, Saving};
 
 #[test]
 fn a_run_kept_with_nothing_else_unsaved_writes_the_whole_configuration() {

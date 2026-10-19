@@ -1,12 +1,11 @@
 //! The settings record as flash holds it, and every version of it the board has written.
 //!
 //! Pure on purpose: serde, `heapless`, `postcard` and one of the renderer's bounds, nothing of
-//! the plan and nothing of the chip. The firmware cannot be built for the host, so this is the
-//! one part of the settings a host test can reach — `research/dash/host/tests/settings_schema.rs`
-//! compiles this file as it is, loads byte images of every version through [`decode`], picks
+//! the plan and nothing of the chip, so the record is the one part of the settings a host test
+//! can reach — this crate's `tests/settings_schema.rs` loads byte images of every version through [`decode`], picks
 //! the newest of two slots through [`held`], a newer image's record among them, and fits a
 //! record to a plan through [`fit`]. The plan's own id and page count are handed in;
-//! [`crate::config`] is where they come from.
+//! `vag-dash-fw`'s `config` is where they come from.
 //!
 //! A version is kept readable, never discarded: a board in a car holds the owner's settings,
 //! and a new image that forgot them would be a regression nobody asked for. Each version is
@@ -40,6 +39,19 @@ pub struct Config {
 	/// The id of the plan this was saved against (`vag_cli_core::dash::plan_id`): `None` for
 	/// a record from before records named one. What it says is [`fit`]'s to judge.
 	pub plan: Option<u64>,
+}
+
+impl Config {
+	/// What a device with nothing stored runs on: half brightness, the plan's first page, no
+	/// run, and the plan `plan`.
+	pub fn defaults(plan: u64) -> Config {
+		Config {
+			brightness: 128,
+			active_page: 0,
+			last_run: heapless::Vec::new(),
+			plan: Some(plan),
+		}
+	}
 }
 
 /// The pages and cells versions 1 and 2 were bounded by — eight of each, then. Frozen here:

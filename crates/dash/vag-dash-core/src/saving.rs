@@ -1,9 +1,8 @@
 //! What the settings in RAM are against what flash holds, and what a run the stopwatch kept
 //! at speed does at the next standstill (`todo/dash/19`).
 //!
-//! Pure on purpose, like [`crate::schema`]: the firmware cannot be built for the host, so the
-//! decisions live here, where `research/dash/host/tests/settings_saving.rs` compiles this file
-//! as it is. The firmware holds one [`Saving`] beside its configuration and does what it says.
+//! Pure on purpose, like [`crate::schema`]: the decisions live here, where this crate's
+//! `tests/settings_saving.rs` runs them on the host. The firmware holds one [`Saving`] beside its configuration and does what it says.
 
 /// The settings in RAM against flash: what `state` reports as `unsaved=` and `run_pending=`,
 /// and `get` in words ([`Saving::said`]).

@@ -14,9 +14,10 @@ use crossterm::queue;
 use crossterm::style::Print;
 use crossterm::terminal::{self, Clear, ClearType};
 
-use super::engine::{HEIGHT, Replay, WIDTH};
+use super::engine::Replay;
 use super::glass::{Canvas, braille, half_blocks};
 use crate::ui::term;
+use vag_dash_core::panel::{HEIGHT, WIDTH};
 
 /// Play `replay` to the end or until the person leaves, and return every line of the log —
 /// `notes` first — for the caller to print once the screen is gone.

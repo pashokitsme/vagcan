@@ -13,16 +13,14 @@
 //! missing panel cannot be told from a present one.
 //!
 //! Nothing here names the chip's HAL: the bus, the pins and the delay are `embedded-hal`
-//! traits, which is what lets `research/dash/host` compile this file for the laptop and
-//! read what goes down the wire.
+//! traits, which is what lets this crate's tests (`tests/glass_wire.rs`) build it for the
+//! laptop and read what goes down the wire.
 
 use embedded_hal::digital::OutputPin;
 use embedded_hal_async::delay::DelayNs;
 use embedded_hal_async::spi::SpiBus;
 
-/// The glass, in pixels.
-pub const WIDTH: usize = 256;
-pub const HEIGHT: usize = 64;
+use crate::panel::{HEIGHT, WIDTH};
 /// One row as the framebuffer holds it: a bit a pixel, most significant bit leftmost.
 pub const ROW_BITS: usize = WIDTH / 8;
 /// One row on the wire: four bits a pixel, the left pixel in the high half.

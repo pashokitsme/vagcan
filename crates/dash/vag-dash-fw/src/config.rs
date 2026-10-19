@@ -10,25 +10,15 @@ use crate::plan::{PAGE_COUNT, PLAN_ID};
 // The record itself — its fields, its versions, how flash bytes become one, how a record
 // saved against another plan becomes this one's — is `schema`'s, where a host test can reach
 // it. What this plan makes of it is here.
-pub use crate::schema::{Config, Fitted, SCHEMA_VERSION, SavedAgainst};
+pub use vag_dash_core::schema::{Config, Fitted, SCHEMA_VERSION, SavedAgainst};
 
-impl Default for Config {
-	/// What a device with nothing stored runs on: half brightness, the plan's first page, no
-	/// run, and this plan.
-	fn default() -> Self {
-		Self {
-			brightness: 128,
-			active_page: 0,
-			last_run: heapless::Vec::new(),
-			plan: Some(PLAN_ID),
-		}
-	}
+/// What a device with nothing stored runs on, on this image's plan ([`Config::defaults`]).
+pub fn defaults() -> Config {
+	Config::defaults(PLAN_ID)
 }
 
-impl Config {
-	/// A stored record on this image's plan ([`crate::schema::fit`]): kept whatever plan it
-	/// was saved against, its page the first where this plan has no such page.
-	pub fn fit(self) -> Fitted {
-		crate::schema::fit(self, PLAN_ID, usize::from(PAGE_COUNT))
-	}
+/// A stored record on this image's plan ([`vag_dash_core::schema::fit`]): kept whatever plan it
+/// was saved against, its page the first where this plan has no such page.
+pub fn fit(stored: Config) -> Fitted {
+	vag_dash_core::schema::fit(stored, PLAN_ID, usize::from(PAGE_COUNT))
 }

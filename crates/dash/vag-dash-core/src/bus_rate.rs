@@ -8,8 +8,7 @@
 //! ([`StateKeys`]): exchanges a second, and how long an answered one took, request out to
 //! answer in — the per-exchange time of this car's units, from a drive.
 //!
-//! Pure, like [`crate::exchange`]: `research/dash/host/tests/bus_rate.rs` compiles this file as
-//! it is. Small on purpose: a few counters, [`UNITS`] of them by unit.
+//! Pure, like [`crate::exchange`]: this crate's `tests/bus_rate.rs` runs it on the host. Small on purpose: a few counters, [`UNITS`] of them by unit.
 
 use core::fmt;
 

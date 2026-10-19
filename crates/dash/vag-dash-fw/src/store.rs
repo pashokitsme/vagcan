@@ -21,10 +21,10 @@
 //! nothing checks it.
 
 use crate::config::{Config, SCHEMA_VERSION};
-use crate::schema::{self, Held, Slot};
 use embedded_storage::{ReadStorage, Storage};
 use esp_bootloader_esp_idf::partitions;
 use esp_storage::FlashStorage;
+use vag_dash_core::schema::{self, Held, Slot};
 
 /// The label in `partitions.csv`. Matching by label rather than by subtype
 /// because subtypes are a small set and several partitions can share

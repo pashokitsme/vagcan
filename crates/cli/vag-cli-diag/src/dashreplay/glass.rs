@@ -1,9 +1,9 @@
 //! The panel in memory, and as text a terminal can show.
 //!
-//! The board draws into its own framebuffer (`vag-dash-fw`'s `panel.rs`), which is not a
-//! workspace crate and cannot be built for the host; `dashsim`'s canvas is research
-//! tooling outside the workspace too. So the laptop keeps its own: one bit per pixel,
-//! which is what the renderer draws — `BinaryColor`, lit or not.
+//! The board's framebuffer (`vag_dash_core::panel::Framebuffer`) is the glass's size and no
+//! other, and the text views here are tested on panels of any size; so the laptop keeps a
+//! canvas of its own in the framebuffer's layout: one bit per pixel, which is what the
+//! renderer draws — `BinaryColor`, lit or not.
 //!
 //! As text, two pixel rows per character: `▀` the upper lit, `▄` the lower, `█` both.
 //! Where the terminal is narrower than the panel, braille — two columns and four rows of

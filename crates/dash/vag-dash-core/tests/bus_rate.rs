@@ -1,13 +1,9 @@
-//! The board's count of its own exchanges: a window of [`bus_rate::WINDOW_MS`], what it says on
+//! The board's count of its own exchanges: a window of [`WINDOW_MS`], what it says on
 //! the console and in the `state` line.
 //!
-//! `crates/dash/vag-dash-fw/src/bus_rate.rs` compiled as it is — the firmware cannot be built
-//! for the host.
+//! [`vag_dash_core::bus_rate`], the firmware's own.
 
-#[path = "../../../../crates/dash/vag-dash-fw/src/bus_rate.rs"]
-mod bus_rate;
-
-use bus_rate::{BusRate, ConsoleLine, STATE_LONGEST, StateKeys, UNITS, WINDOW_MS};
+use vag_dash_core::bus_rate::{BusRate, ConsoleLine, STATE_LONGEST, StateKeys, UNITS, WINDOW_MS};
 
 /// A bus that is never idle: an exchange every 34 ms, `answer_ms` of it waiting for the answer.
 fn saturated(rate: &mut BusRate, from_ms: u64, to_ms: u64, units: &[u16]) {

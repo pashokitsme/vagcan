@@ -467,7 +467,7 @@ mod tests {
 		assert_eq!(state.generation, Some(5));
 	}
 
-	/// `exch=` and `exch_ms=` (`vag_dash_fw::bus_rate`): the bus's rate, `-` before the board's
+	/// `exch=` and `exch_ms=` (`vag_dash_core::bus_rate`): the bus's rate, `-` before the board's
 	/// first window closes, no line from an image that does not count.
 	#[test]
 	fn the_state_says_the_buss_own_rate() {

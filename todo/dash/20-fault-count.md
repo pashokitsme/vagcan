@@ -187,13 +187,13 @@ below are the layout it had over the page until then.
 
 ## Phase 2 — the firmware (built 2026-09-27, with the owner's answers)
 
-`vag_dash_fw::faults` (`crates/dash/vag-dash-fw/src/faults.rs`) is the board's shell round
-`faultcount`, pure like `saving.rs`: `research/dash/host/tests/fault_count.rs` compiles it as it
-is and drives it through a real `Planner::new(Budget::board())` against a fake car. `dash.rs`
+`vag_dash_core::faults` (`crates/dash/vag-dash-core/src/faults.rs`) is the board's shell round
+`faultcount`, pure like `saving.rs`: `crates/dash/vag-dash-core/tests/fault_count.rs`
+drives it through a real `Planner::new(Budget::board())` against a fake car. `dash.rs`
 holds one `Count` (a `StaticCell` in `can_task`, in `.bss`, not the arena), gives it a turn
 (`PanelReads::count_step`) as the last thing before `planner.due()`, and offers it every
-`Delivery::Raw` in `PanelReads::take`. An exchange's waits are `vag_dash_fw::exchange::Waits`
-(`research/dash/host/tests/exchange_waits.rs`), for every exchange of the board.
+`Delivery::Raw` in `PanelReads::take`. An exchange's waits are `vag_dash_core::exchange::Waits`
+(`crates/dash/vag-dash-core/tests/exchange_waits.rs`), for every exchange of the board.
 
 - **Start:** once `ms() ≥ START_MS` (10 000) **and** a plan unit has answered its part check
   (`Check::Matched` or `Mismatch` now — a unit that answers is a bus that is on;
@@ -374,7 +374,7 @@ each a BLE round trip.
   out is read through the shell's rule, the rest at its rate (round 3).
 - `remote` (1): a busy unit is no answer to a host, its subscription reads no answer, and it is
   asked as often as a silent one.
-- `research/dash/host/tests/stopwatch_silence.rs` (1, round 4): one busy speed read beside a
+- `crates/dash/vag-dash-core/tests/stopwatch_silence.rs` (1, round 4): one busy speed read beside a
   silent page unit read every 1050–1240 ms leaves the longest gap between two speed answers
   under `SILENCE_MS` (1050 ms; 1600 ms when the first `Busy` backed off). The speed is the
   run's timing channel, so its unit gets the free first `Busy`.
@@ -398,14 +398,14 @@ each a BLE round trip.
 - `plan` (1): a unit busy on `F187` (`21`, or `Miss::Busy`) is asked again, not a mismatch.
 - `stopwatch` (1): after a turn of the mode it arms only on a standstill seen since — what "no
   run arms while a count exchange is out" rests on.
-- `research/dash/host/tests/exchange_waits.rs` (8): its own answer ends the wait; a late answer
+- `crates/dash/vag-dash-core/tests/exchange_waits.rs` (8): its own answer ends the wait; a late answer
   to another request is dropped and the wait goes on within its time, and then nothing is busy,
   not silent; another identifier's or sub-function's answer is a stray too, and an answer that
   starts with any identifier the request asked is its own; a suppressed request
   waits for its own refusal only; `78`s waited out as before with no deadline of its own, and
   busy after them; the count's exchange ends 2 s after it began, `78`s included, as busy; a unit
   silent from the start of it is silent; a send that used the whole deadline leaves no wait.
-- `research/dash/host/tests/fault_count.rs` (22), through the board's planner: nothing before
+- `crates/dash/vag-dash-core/tests/fault_count.rs` (22), through the board's planner: nothing before
   10 s or before a plan unit answers, then the gateway; a plan with no units starts at 10 s; the
   start waits for the stopwatch, said once; a whole count reads `22 2A26` once and `19 02 08` a unit, each
   exchange with the 2 s deadline, finds 3 stored / 1 failing now, and says each line word for

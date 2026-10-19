@@ -13,8 +13,9 @@ use embedded_graphics::prelude::*;
 use serde::Deserialize;
 use vag_dash_render::{Board, Cell, Deviation, Faults, Frame, Links, Strip, Theme, Volts, draw_page};
 
-const W: u32 = 256;
-const H: u32 = 64;
+/// The glass, as the renderer's tests lay pages out on it.
+const W: u32 = vag_dash_render::PANEL.width;
+const H: u32 = vag_dash_render::PANEL.height;
 
 /// The panel, one bit a pixel.
 struct Bits([u8; (W * H / 8) as usize]);

@@ -2,9 +2,8 @@
 //! for the next answer PDU, what each PDU on the unit's answer id is to this request, and how
 //! the exchange ends without an answer.
 //!
-//! Pure, like [`crate::saving`]: the firmware cannot be built for the host, so the rules live
-//! here, where `research/dash/host/tests/exchange_waits.rs` compiles this file as it is.
-//! Times are milliseconds from the exchange's start, before its send.
+//! Pure, like [`crate::saving`]: the rules live here, where this crate's
+//! `tests/exchange_waits.rs` runs them on the host. Times are milliseconds from the exchange's start, before its send.
 //!
 //! * **The first answer** within [`Timeouts::answer_ms`] of the send, or
 //!   [`Timeouts::suppressed_ms`] for a request that suppressed its positive response.

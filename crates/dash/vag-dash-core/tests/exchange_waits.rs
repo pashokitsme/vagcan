@@ -1,13 +1,9 @@
 //! One exchange's waits on the board: how long it waits for an answer, what each PDU on the
 //! unit's answer id is to it, and how it ends without one.
 //!
-//! `crates/dash/vag-dash-fw/src/exchange.rs` compiled as it is — the firmware cannot be built
-//! for the host. Times are milliseconds from the exchange's start, as `transact` reads them.
+//! [`vag_dash_core::exchange`], the firmware's own. Times are milliseconds from the exchange's start, as `transact` reads them.
 
-#[path = "../../../../crates/dash/vag-dash-fw/src/exchange.rs"]
-mod exchange;
-
-use exchange::{Ended, Heard, Timeouts, Waits};
+use vag_dash_core::exchange::{self, Ended, Heard, Timeouts, Waits};
 
 /// The board's: `RESPONSE_TIMEOUT`, `SUPPRESSED_WAIT`, `PENDING_WAIT` (P2*), `PENDING_DEADLINE`.
 const BOARD: Timeouts = Timeouts {

@@ -335,7 +335,7 @@ cruise off.
   A `[stalk]` with no `[stopwatch]` is noted too: `measure` then only silences an alarm.
 
 **Firmware.** Every producer offers `(Source, Command)` to one `embassy_sync` channel
-(`vag_dash_fw::input::CommandQueue`, 4 deep). Nothing waits: a command that finds it full is
+(`vag_dash_core::input::CommandQueue`, 4 deep). Nothing waits: a command that finds it full is
 dropped and logged (`GPIO3: next dropped — 4 commands are already waiting`) — full means the
 consumer is stuck behind a flash write, and a page turn landing seconds late is worse than one
 lost. One `control_task` applies them: the settings lock, `active_page`, the log line, the state
@@ -400,13 +400,13 @@ plan the pin table adds ~300 B of statics.
   `state_of`, `rates_in`, `buttons_fit`.
 - `vag-cli-core/src/dash.rs` — `[stalk]` / `[stopwatch]` / `[[button]]` parsed, resolved,
   refused, written.
-- `vag-dash-fw/src/input.rs` — the command queue (host test:
-  `research/dash/host/tests/input_queue.rs`); `bin/dash.rs` — `input_task` (pins, `dashsim`),
+- `vag-dash-core/src/input.rs` — the command queue (host test:
+  `crates/dash/vag-dash-core/tests/input_queue.rs`); `bin/dash.rs` — `input_task` (pins, `dashsim`),
   `control_task` (the one consumer).
 - `vag-dash-fw/src/bin/dash.rs` — the lever fed per answer in the bus task, the stopwatch in a
   static, the page drawn, the silence checked and the run kept and stored at a standstill by the
   panel task; `src/schema.rs` — the settings
-  record and its versions (host test: `research/dash/host/tests/settings_schema.rs`).
+  record and its versions (host test: `crates/dash/vag-dash-core/tests/settings_schema.rs`).
 - `vagcan dev recording dash` says it replays neither the lever, the `[[button]]`s nor the
   stopwatch. `dashsim` shows whatever frame the board sends, the stopwatch's included; it has no
   lever key.

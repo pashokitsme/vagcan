@@ -1,42 +1,34 @@
 //! The board's panel loop, run over a recording instead of a bus.
 //!
 //! What decides the glass is the board's own code: [`Screen`] (the page cursor, the alarms
-//! and the commands the board's inputs give), [`Plan::rates`] (what the bus reads, and how often, for the page on
-//! the glass) and [`Page::reads`] (what a page reads). What this module adds is
-//! the part of `vag-dash-fw`'s `bin/dash.rs` that is not a library — the frame loop, the value
-//! store with its staleness rule, and the cell composition in `panel_task` — mirrored here
-//! because the firmware cannot be built for the host. Where a constant is the board's, it
-//! says where it lives.
+//! and the commands the board's inputs give), [`Plan::rates`] (what the bus reads, and how
+//! often, for the page on the glass), [`Page::reads`] (what a page reads), and
+//! `vag-dash-core` — the value store and its staleness ([`values`]) and the frame itself
+//! ([`Frames`]: the screen's answer, the charts' samples, the page composed), which the
+//! board's panel task runs as it is. What this module adds is the bus: a read is made when
+//! the board's schedule would make it, at the rate [`Plan::rates`] gives, and takes what the
+//! recording holds at that moment.
 //!
 //! **Nothing reads a clock.** Every time is the recording's own, in milliseconds of its
-//! `t_s`: the frame loop ticks every [`FRAME_MS`] of recording time, a read happens when the
-//! board's schedule would make it, and it takes what the recording holds at that moment.
-//! Pacing a terminal is the caller's business, not this module's.
+//! `t_s`: the frame loop ticks every [`FRAME_MS`] of recording time. Pacing a terminal is the
+//! caller's business, not this module's.
 
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::DrawTarget;
-use vag_dash_render::alarm::{BLINK_MS, ChannelId, Rule, Slot as AlarmSlot};
+use vag_dash_core::frames::{FRAME_MS, Frames};
+use vag_dash_core::panel::WIDTH;
+use vag_dash_core::values::{self, Slot, fresh_for_ms};
+use vag_dash_render::alarm::{ChannelId, Rule, Slot as AlarmSlot};
 use vag_dash_render::button::{Button, Press as ButtonPress};
 use vag_dash_render::control::{self, Command};
 use vag_dash_render::history::History;
-use vag_dash_render::plan::{MAX_VALUE_CELLS, Page, Plan};
+use vag_dash_render::plan::{Page, Plan};
 use vag_dash_render::screen::{Change, Glass, Outcome, Screen};
-use vag_dash_render::{Board, Cell, Deviation, Frame, Links, Theme, draw_page};
+use vag_dash_render::{Board, Links, Theme};
 
 /// What a `--press` asks for: `dashsim`'s short press, as the board's input task turns it into
 /// a command.
 const PRESS: Option<Command> = control::remote(ButtonPress::Short);
-
-/// Milliseconds between two panel frames — `FRAME_MS` in `vag-dash-fw`'s `bin/dash.rs`.
-pub const FRAME_MS: u64 = 200;
-// The offending cell blinks in BLINK_MS halves: frames at most BLINK_MS / 2 apart, so every half gets a frame.
-const _: () = assert!(FRAME_MS * 2 <= BLINK_MS, "the panel must frame at least twice per half blink");
-/// How old a value may be and still be shown — `STALE` in `vag-dash-fw`'s `bin/dash.rs`.
-/// Counted from when the recording heard it.
-pub const STALE_MS: u64 = 5_000;
-/// The board's framebuffer — `WIDTH` and `HEIGHT` in `vag-dash-fw`'s `panel.rs`.
-pub const WIDTH: usize = 256;
-pub const HEIGHT: usize = 64;
 
 /// One plan channel's readings, oldest first: the recording time in milliseconds, and the
 /// value — `None` where the unit answered with something that does not decode.
@@ -95,14 +87,6 @@ struct Sub {
 	next_ms: u64,
 }
 
-/// One slot of the board's value store.
-#[derive(Debug, Clone, Copy, Default)]
-struct Slot {
-	value: Option<f32>,
-	at: Option<u64>,
-	fresh_for: u64,
-}
-
 /// The panel, run over one recording.
 pub struct Replay {
 	/// Its pages are the board's: its settings keep which one is up, not a list of their own.
@@ -119,15 +103,16 @@ pub struct Replay {
 	screen: Screen<'static, Vec<AlarmSlot>>,
 	cursor: u8,
 	subs: Vec<Option<Sub>>,
+	/// The board's value store, a slot per plan channel, in microseconds of the recording.
 	slots: Vec<Slot>,
-	histories: Vec<History<WIDTH>>,
+	/// The board's frame loop, its chart histories a `Vec` here.
+	frames: Frames<Vec<History<WIDTH>>>,
 	/// The page the last frame drew — what the bus reads in the foreground.
 	drawn: Option<u8>,
 	/// The rule that leads on the glass after the last frame — what a press silences and what
 	/// the log names, read off the screen each frame: a higher rule joining the page already up
 	/// leads from then on without a takeover of its own.
 	rule: Option<usize>,
-	missed_said: Option<u16>,
 	start: u64,
 	now: u64,
 	end: u64,
@@ -174,11 +159,10 @@ impl Replay {
 			screen,
 			cursor: 0,
 			subs: vec![None; plan.channels.len()],
-			slots: vec![Slot::default(); plan.channels.len()],
-			histories: (0..plan.chart_count()).map(|_| History::new()).collect(),
+			slots: vec![Slot::EMPTY; plan.channels.len()],
+			frames: Frames::new(plan, (0..plan.chart_count()).map(|_| History::new()).collect()),
 			drawn: None,
 			rule: None,
-			missed_said: None,
 			start: start_ms,
 			now: start_ms,
 			end: end_ms,
@@ -211,7 +195,6 @@ impl Replay {
 		}
 		let t = self.now;
 		self.now += FRAME_MS;
-		// The generator refuses more than `MAX_PAGES`, so the count fits.
 		let pages = self.plan.pages.len() as u8;
 		let mut events = Vec::new();
 		if self.last.is_none() {
@@ -234,9 +217,9 @@ impl Replay {
 
 		self.read(t);
 
+		let glass = self.frames.glass(&mut self.screen, self.cursor, &self.slots, t * 1000);
 		let slots = &self.slots;
 		let value_of = |i: u16| current(slots, i, t);
-		let glass = self.screen.frame(self.cursor, pages, t, value_of);
 		let before = self.rule;
 		match glass.change {
 			Some(Change::Took { rule }) => {
@@ -267,21 +250,14 @@ impl Replay {
 			None => {}
 		}
 		self.rule = self.screen.alarm_leader();
-		let missed = glass.missed.map(|page| page.0);
-		if missed != self.missed_said {
-			self.missed_said = missed;
-			if let Some(page) = missed {
-				events.push(Event::Missed {
-					rule: self.rule,
-					page,
-					shown: glass.page,
-				});
-			}
-		}
-
-		// Every chart samples its channel every frame, shown or not.
-		for chart in self.plan.charts() {
-			self.histories[chart.slot].push(chart.channel, current(&self.slots, chart.channel, t));
+		// Every chart samples its channel every frame, shown or not; a miss is said once.
+		let missed = self.frames.step(&glass, &self.slots, t * 1000).and_then(|step| step.missed);
+		if let Some(page) = missed {
+			events.push(Event::Missed {
+				rule: self.rule,
+				page,
+				shown: glass.page,
+			});
 		}
 		self.drawn = Some(glass.page);
 		self.last = Some((t, glass));
@@ -327,51 +303,19 @@ impl Replay {
 			let period = u64::from(sub.period_ms.max(1));
 			let at = sub.next_ms + (t - sub.next_ms) / period * period;
 			sub.next_ms = at + period;
-			// `fresh_for` in the board's bus task: three periods of a slow channel, else STALE.
-			let fresh_for = (period * 3).max(STALE_MS);
 			// Stamped with when the recording heard it, not when this read happened: a value
 			// heard long ago does not start a fresh `fresh_for` by being read again.
 			let (heard, value) = self.series[i].as_ref().and_then(|series| answer(series, at)).unwrap_or((at, None));
-			self.slots[i] = Slot {
-				value,
-				at: Some(heard),
-				fresh_for,
-			};
+			self.slots[i] = Slot::heard(value, heard * 1000, fresh_for_ms(sub.period_ms));
 		}
 	}
 
 	/// Draw the last frame as the board's panel task draws it.
 	pub fn draw<D: DrawTarget<Color = BinaryColor>>(&self, target: &mut D) {
 		let Some((t, glass)) = self.last else { return };
-		let Some(page) = self.plan.pages.get(usize::from(glass.page)) else {
+		// Nothing gives a `Stopwatch` command here, so the stopwatch is never on the glass.
+		let Some(picture) = self.frames.picture(&glass, &self.slots, t * 1000, None) else {
 			return;
-		};
-		let value_of = |i: u16| current(&self.slots, i, t);
-		// Whether the car stands, once for the frame (`Plan::stands`, as the board decides it).
-		let stands = self.plan.stands(value_of);
-		let cell_of = |index: u16| {
-			let cell = match self.plan.channel(index) {
-				Some(channel) => {
-					let deviation = match channel.setpoint {
-						None => Deviation::None,
-						Some(specified) => match (value_of(index), value_of(specified)) {
-							(Some(actual), Some(wanted)) => Deviation::Value(actual - wanted),
-							_ => Deviation::Unknown,
-						},
-					};
-					// As the board shows it: the stopwatch's speed rounded down, a `zero_at_rest`
-					// channel 0 at a standstill (`Plan::shown`).
-					let shown = self.plan.shown(index, value_of(index), stands);
-					Cell::new(channel.label, shown, channel.unit_text, channel.decimals).with_deviation(deviation)
-				}
-				None => Cell::new("?", None, "", 0),
-			};
-			// Blinking while out, steady in the hold: `Glass::inverted` is this frame's half.
-			if glass.inverted.contains(ChannelId(index)) {
-				cell.alarmed()
-			} else {
-				cell
-			}
 		};
 		// Links: nothing is connected to a board in a recording, and it holds no fault count.
 		let board = Board {
@@ -379,26 +323,7 @@ impl Replay {
 			rates: None,
 			faults: None,
 		};
-		let theme = Theme::bold_mono();
-		// The page's title and voltage over it, as the board draws them (`Plan::strip`).
-		let strip = self.plan.strip(usize::from(glass.page), value_of);
-		match *page {
-			Page::Values { cells, .. } => {
-				let cells: Vec<Cell<'_>> = cells.iter().take(MAX_VALUE_CELLS).map(|&index| cell_of(index)).collect();
-				draw_page(&Frame::Values { cells: &cells }, &strip, &board, &theme, target);
-			}
-			// Its range and its history's slot are the page's, as the generator joined them.
-			Page::Chart { channel, slot, min, max, .. } => {
-				let frame = Frame::Chart {
-					cell: cell_of(channel),
-					min,
-					max,
-					samples: self.histories[usize::from(slot)].samples(),
-					seconds_per_sample: FRAME_MS as f32 / 1000.0,
-				};
-				draw_page(&frame, &strip, &board, &theme, target);
-			}
-		}
+		picture.draw(&board, &Theme::bold_mono(), target);
 	}
 
 	/// One event as a line of the log, at `t_ms` of the recording.
@@ -482,14 +407,9 @@ pub fn address_name(unit: u16, did: u16, bit_offset: u32) -> String {
 	}
 }
 
-/// The value in the board's store, unless it is older than it may be.
-fn current(slots: &[Slot], index: u16, t: u64) -> Option<f32> {
-	let slot = slots.get(usize::from(index))?;
-	let at = slot.at?;
-	if t.saturating_sub(at) > slot.fresh_for {
-		return None;
-	}
-	slot.value
+/// The value in the board's store at `t_ms` of the recording, unless it is older than it may be.
+fn current(slots: &[Slot], index: u16, t_ms: u64) -> Option<f32> {
+	values::current(slots, index, t_ms * 1000)
 }
 
 /// What a read at `at` gets: the recording's last reading by then and when it was heard —
@@ -533,9 +453,10 @@ fn rule_text(rule: &Rule) -> String {
 mod tests {
 	use super::*;
 	use crate::dashreplay::glass::Canvas;
+	use vag_dash_core::panel::HEIGHT;
 	use vag_dash_render::alarm::{Alarm, Bound, HOLD_MS, PageId};
 	use vag_dash_render::plan::{Channel, Standstill, StopwatchPlan, Unit};
-	use vag_dash_render::{Strip, Volts};
+	use vag_dash_render::{Cell, Frame, Strip, Volts, draw_page};
 
 	const fn channel(did: u16, label: &'static str) -> Channel {
 		Channel {
@@ -975,7 +896,7 @@ mod tests {
 				cell: if inverted { cell.alarmed() } else { cell },
 				min: -5.0,
 				max: 5.0,
-				samples: replay.histories[0].samples(),
+				samples: replay.frames.histories()[0].samples(),
 				seconds_per_sample: FRAME_MS as f32 / 1000.0,
 			};
 			let board = Board {
@@ -1068,6 +989,24 @@ mod tests {
 		assert_eq!(text(&panel_at(1_400)), text(&composed(false)), "the plain half is the plain page");
 		// And the inversion is really there: the two halves are not the same picture.
 		assert_ne!(text(&composed(true)), text(&composed(false)));
+	}
+
+	/// The replay's frame drawn into the board's own framebuffer is the laptop's canvas bit for
+	/// bit, and its `FRAME` line is what `dashsim` would be sent.
+	#[test]
+	fn the_replay_draws_into_the_boards_framebuffer_as_on_the_laptops_canvas() {
+		use vag_dash_core::panel::Framebuffer;
+		let excursion = every_100ms(1_800, |t| if t >= 1_000 { -3.0 } else { 0.0 });
+		let mut replay = replay(excursion, &[], 1_800);
+		while replay.step().is_some() {}
+		let mut board = Framebuffer::new();
+		replay.draw(&mut board);
+		let canvas = panel_at(1_800);
+		assert!((0..HEIGHT).all(|y| (0..WIDTH).all(|x| board.get(x, y) == canvas.lit(x, y))));
+		assert!((0..HEIGHT).any(|y| (0..WIDTH).any(|x| board.get(x, y))), "something is drawn");
+		let mut line = String::new();
+		board.write_frame(&mut line).unwrap();
+		assert!(line.starts_with("FRAME 256 64 "), "{line}");
 	}
 
 	#[test]

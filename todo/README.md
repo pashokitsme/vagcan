@@ -135,11 +135,14 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
    no moving-car check (found in review, 2026-09-28; it predates that change). A command that
    resembles a sweep and is unguarded gets the guard (`CLAUDE.md`, Safety).
 9. **Which way up the glass hangs** — [`dash/22`](dash/22-oled.md): `turned`, with the housing.
-9a. **The review's architecture** (2026-10-19): [`dash/25`](dash/25-one-core-for-board-and-replay.md)
-   one core for the board and the replay (the frame loop and staleness written twice today);
+9a. **The review's architecture** (2026-10-19):
    [`dash/24`](../.archive/tasks/done/dash/24-bus-time-check.md), the bus-time estimate, is built
-   on `feat/dash-bus-time` (its constant waits for the board's `exch=` on the car). `dash/27`
-   (the board indexes the plan's joins, one way to say the pages changed, an alarm on a
+   on `feat/dash-bus-time` (its constant waits for the board's `exch=` on the car). `dash/25` (one
+   core for the board and the replay: `vag-dash-core` owns the value store, the frame, the
+   framebuffer and the board's pure modules, their host tests its own; the renderer's `PANEL` is
+   the glass) is built on `refactor/dash-core` (2026-10-20), archived in
+   [`.archive/tasks/done/dash/`](../.archive/tasks/done/dash/25-one-core-for-board-and-replay.md).
+   `dash/27` (the board indexes the plan's joins, one way to say the pages changed, an alarm on a
    chart-only channel, one rate cap of 50 Hz) and `dash/26` ("the car stands" as one fact of
    the plan) are built on `refactor/dash-plan-joins` (2026-10-19), archived in
    [`.archive/tasks/done/dash/`](../.archive/tasks/done/dash/27-plan-joins-and-signals.md); the plan
@@ -194,7 +197,6 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 | [`dash/22-oled.md`](dash/22-oled.md) | the SSD1322 on the board — merged (PR #21, 2026-09-30), draws on the bench and in the car; GPIO8/20/21 the standard (2026-10-03); which way up is open |
 | [`dash/20-fault-count.md`](dash/20-fault-count.md) | the car's stored codes counted once after boot, a triangle and the count at the status strip's right end, `?` when there is no count — built 2026-09-27; needs the car |
 | [`dash/21-runs-in-flash.md`](dash/21-runs-in-flash.md) | stopwatch runs in flash, read over BLE, saved on LIMIT; recorded 2026-09-27, open questions for the owner |
-| [`dash/25-one-core-for-board-and-replay.md`](dash/25-one-core-for-board-and-replay.md) | the frame loop, staleness and panel geometry in one crate for the board and the replay — recorded 2026-10-19 |
 | [`dash/23-power-consumption.md`](dash/23-power-consumption.md) | watts in the status strip — recorded 2026-10-19, not started: needs a derived channel and the currents verified on the car |
 | [`label-lookup/04-vcds-follow-ups.md`](label-lookup/04-vcds-follow-ups.md) | what `label-lookup/02` and `03` left open — filed 2026-09-28; three items for the owner to decide |
 | [`measure/01-pedal-at-rest.md`](measure/01-pedal-at-rest.md) | the engine's absolute pedal reads 15 % at rest and the coastdown waits for 1 % — found in review 2026-09-28; the owner's call |

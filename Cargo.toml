@@ -11,6 +11,7 @@ members = [
   "crates/data/vag-data-db",
   # dash/ — the OLED device. Its firmware is excluded (see below), not absent.
   "crates/dash/vag-dash-render",
+  "crates/dash/vag-dash-core",
   "crates/dash/vag-dash-wasm",
   "crates/dash/vag-dash-ble",
   "crates/dash/vag-dash-cfg",

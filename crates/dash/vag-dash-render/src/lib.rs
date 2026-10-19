@@ -1,4 +1,4 @@
-//! The panel, as pixels. 256×32, and nothing about where they land.
+//! The panel, as pixels. 256×64, and nothing about where they land.
 //!
 //! This crate draws a [`Frame`] onto any `embedded_graphics` `DrawTarget` and
 //! knows nothing else — not CAN, not UDS, not what a control unit is. On the
@@ -27,9 +27,8 @@
 //! board's pins and `dashsim`'s presses as commands; [`stalk`], the cruise lever as buttons while cruise is off; and
 //! [`stopwatch`], the stopwatch page's arming, launch and marks (`todo/dash/19`).
 //!
-//! Sizes are in pixels and the panel is 32 of them tall, which is the single
-//! fact that shapes every decision here. Four tiers of text — the label over two
-//! lines, the number, the unit under it — do not fit. Two do.
+//! Sizes are in pixels, and the panel's height is the fact that shapes the layout: it is
+//! read from the target, not assumed ([`render`] says what 64 rows hold and what 32 do).
 
 #![no_std]
 
@@ -55,10 +54,10 @@ pub use theme::{Numerals, Theme};
 
 use embedded_graphics::geometry::Size;
 
-/// The panel this crate is laid out for.
+/// The glass: the board's SSD1322, 256×64 (`vag-dash-core`'s framebuffer and the glass's driver
+/// are sized by it, and so is the laptop's replay of the board).
 ///
-/// Carried as a constant rather than read from the target's bounding box so a
-/// test can state the panel it means. The renderer honours whatever size the
-/// target actually reports; this is what the layout was *designed* against, and
-/// the two differing is worth knowing about.
-pub const PANEL: Size = Size::new(256, 32);
+/// The renderer honours whatever size its target reports, so the layout is decided by
+/// measuring; this is the size the tests lay the pages out on, because it is the one a board
+/// shows. A test of the 32-row fallback ([`render`]) names its own size.
+pub const PANEL: Size = Size::new(256, 64);

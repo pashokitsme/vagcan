@@ -10,6 +10,7 @@
 //! backoff; from the second in a row it is backed off, as silence backs it off. Any other unit is
 //! backed off from its first (round 5).
 
+use vag_dash_core::exchange::RESPONSE_TIMEOUT_MS as ANSWER_TIMEOUT_MS;
 use vag_dash_render::stopwatch::SILENCE_MS;
 use vag_uds_client::schedule::{Answer, Budget, Class, Delivery, Next, Planner, Unit};
 
@@ -24,8 +25,6 @@ const SILENT: Unit = Unit {
 	request: 0x714,
 	response: 0x77E,
 };
-/// The board's answer timeout (`exchange::RESPONSE_TIMEOUT_MS` in the firmware).
-const ANSWER_TIMEOUT_MS: u64 = 500;
 
 /// How long a speed read takes to answer: a unit behind the gateway answers in about 4–20 ms.
 const SPEED_ANSWER_MS: u64 = 10;

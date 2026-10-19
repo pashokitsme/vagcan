@@ -33,8 +33,10 @@ use esp_hal::spi::master::{Config, Spi};
 use esp_hal::time::Rate;
 use esp_hal::timer::systimer::SystemTimer;
 use log::{info, warn};
-use vag_dash_fw::panel::{Framebuffer, HEIGHT, WIDTH};
-use vag_dash_fw::ssd1322::{CLOCK_HZ, FULL, Ssd1322};
+use vag_dash_core::panel::{Framebuffer, HEIGHT, WIDTH};
+use vag_dash_core::ssd1322::{CLOCK_HZ, FULL, Ssd1322};
+// The panic handler is the library's (`health.rs`); nothing else of it is used here.
+use vag_dash_fw as _;
 
 // The library's panic handler prints through the allocator-backed logger, so the heap has
 // to exist even though this probe allocates nothing itself.

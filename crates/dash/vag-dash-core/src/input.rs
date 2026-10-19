@@ -15,8 +15,7 @@
 //! seconds late, which is worse than one that never happened. The newest is the one
 //! dropped: those already waiting were pressed first.
 //!
-//! Nothing here touches hardware, so it is compiled on the host as well
-//! (`research/dash/host/tests/input_queue.rs`): this crate cannot be built there.
+//! Nothing here touches hardware, so it runs on the host as well (`tests/input_queue.rs`).
 
 use core::fmt;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;

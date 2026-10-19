@@ -52,7 +52,7 @@ page, a copy of the plan's pages and the run. Nothing on the board edits pages, 
 list that was not the plan's was refused, so every `dash.toml` change reset brightness and the
 page to the defaults and left `unsaved=1`.
 
-- **Schema 3** (`vag-dash-fw/src/schema.rs`): brightness, active page, the run, and the id of
+- **Schema 3** (`vag-dash-core/src/schema.rs`): brightness, active page, the run, and the id of
   the plan it was saved against. No pages: the board shows the plan's.
 - **The plan id** is FNV-1a 64 over the generated `plan.rs` short of its last lines
   (`vag_cli_core::dash::plan_id`). `plan.rs` ends with `PLAN_ID`, `plan.json` carries `id`,
