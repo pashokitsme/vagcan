@@ -11,6 +11,10 @@
 
 - Keep the `Claude-Session:` trailer line as well.
 - Use Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`…).
+- **Commit subjects and PR titles are impersonal**: they name the change, never a person —
+  no "owner's", "his", "the user's" (`fix: the first-run path — …`, not `fix: a new owner's
+  path — …`; owner, 2026-10-19). A squash merge takes the PR's title, so the title counts as a
+  commit subject.
 
 ## Commands: `just` (MANDATORY)
 
