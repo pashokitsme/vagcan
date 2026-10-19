@@ -48,16 +48,16 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 
 - **Values page**: up to 4 cells, each with a label, a value and a unit.
 - **Chart page**: one channel shown large, with its recent history on a fixed scale.
-- **Status strip**: a line across the top of a page: its `title` in the middle, the battery voltage on the left (`14.2V`).
+- **Status strip**: a line across the top of a page: its `title` in the middle, the battery voltage on the left (`14.2V`), the USB and BLE icons and the fault badge on the right.
 - **Strip voltage**: from the channel `[strip]` names. Off on a page with `volts = false`.
 - **No voltage twice**: a page that shows the voltage channel as a cell has none in its strip.
-- **No strip**: a page with no `title` and no voltage uses the whole panel.
+- **Every page has the strip**, the stopwatch's too. A host connecting or the fault count arriving changes the strip, never the page under it.
 - **Pages** are set per car in `dash.toml` and switched with buttons on the board's pins (`[[button]]`) or with the cruise lever while cruise is off (`[stalk]`).
 - **No input**: with no `[stalk]` and no `next`/`previous` `[[button]]`, only `dashsim` or `dashcfg`'s `set page` turns the page. With no `[stalk]` and no `[[button]]` at all, only `dashsim` silences an alarm; otherwise it stays up until its channel answers in range again. The build says so.
 - **Alarms**: a `[[channel]]` in `dash.toml` may carry `alarm_max` and/or `alarm_min`, each with an optional off value (`alarm_max_off`, `alarm_min_off`; 5 % inside by default), or a drift alarm against its `setpoint` (`drift_percent`, `drift_off_percent`, `drift_hold_ms`, `drift_min_setpoint`). The board watches every such channel on every page. Past the bound, it shows the first values page with the channel, every channel out on it inverted: blinking while the value is out, steady for the 2.5 s the page stays up after it is back at its off value. A press silences them until the value comes back. `alarm_priority` orders them (1 first); without it, the order in the file. The build's `bus:` line says what the board reads on every page.
 - **Specified values**: a channel paired with `setpoint` shows the difference from what its control unit asked for on a line of its own, under the number. [`docs/dash/dash-toml.md`](docs/dash/dash-toml.md) is the whole file format.
 - **Fault count**: once per start, 10 s in, the board counts the stored fault codes of the engine, the gearbox, the gateway and every unit the gateway lists. A listed id that shares a CAN id with a unit already asked is skipped, so the total can be lower than `vagcan faults`'.
-- **Fault badge**: the number over a warning triangle, bottom-right on every page. Inverted while a code is failing now. Hidden at 0. In the colours of the cell under it, as the link icons.
+- **Fault badge**: a warning triangle and the number, in the strip left of the link icons, on every page. Inverted while a code is failing now. Hidden at 0.
 - **`?` on the badge**: no count — the gateway gave no list, the walk would pass 64 units, or no unit could be counted. The board's USB log says which; `dashcfg` shows `?`.
 - **`dashcfg`** shows the count as stored, failing now and how many units it is of: `9 stored, 1 failing now — 17 of 18 units counted`.
 - **The fault count waits** while the stopwatch is up, and while a laptop runs `vagcan measure` through the board. It goes on where it stopped.
@@ -99,7 +99,7 @@ Updated 2026-10-19.
 - [x] 0–60 and 0–100 km/h stopwatch on the dash (works on the car, 2026-09-30; not yet compared with `vagcan measure`)
 - [x] Dash counts the car's stored fault codes once after start and shows the number with a warning triangle
 - [ ] Page the dash with buttons on its pins
-- [ ] Dash status strip: the page's title and the battery voltage across the top (built 2026-10-19, waiting for the car)
+- [ ] Dash status strip: the page's title, the battery voltage, the link icons and the fault badge across the top (built 2026-10-19, waiting for the car)
 - [ ] Alarms as keys of a channel: a maximum, a minimum and an off value for each, any number of them, an explicit priority; `[[alarm]]` removed (built 2026-10-19, waiting for the car)
 - [ ] Electrical consumption in watts in the dash's strip, beside the voltage (not started: needs derived channels, and the currents checked on the car)
 

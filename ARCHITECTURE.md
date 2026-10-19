@@ -506,10 +506,10 @@ exchange keeps the board's 500 ms and 10 s. A unit still asking for time at 2 s 
 counted. None starts while the board's stopwatch is up or a host holds its timing
 channel; the walk goes on where it stopped. The count is `vag_uds_client::faultcount`, the
 board's shell round it `vag_dash_fw::faults`, an exchange's waits `vag_dash_fw::exchange`; all
-three are pure and tested on the host. The panel draws the number over a warning triangle in
-the bottom-right corner, in the colours of the cell under it, inverted while a code is failing
-now. `?` means no count: the gateway gave no list, the walk would pass 64 units, or no unit
-could be counted — the USB log says which. `state` says `faults=9 failing=1 units=17/18`,
+three are pure and tested on the host. The panel draws a warning triangle and the number at
+the status strip's right end, left of the link icons, inverted while a code is failing now.
+`?` means no count: the gateway gave no list, the walk would pass 64 units, or no unit could
+be counted — the USB log says which. `state` says `faults=9 failing=1 units=17/18`,
 `faults=?`, or `faults=-` before the count ends.
 
 **Every exchange drops a late answer to another request.** An answer to another service,

@@ -42,9 +42,10 @@ mock-up of the states:
    the triangle with `?` for the number. Before the count and at zero, nothing, as before.
    The count is not repeated (once per boot, and the board is powered with the ignition).
 
-The badge sits under the rightmost cell's value on every page, the stopwatch's included: in
-the previews it hides no pixel of any page (the values' ink ends at row 46, the badge's ground
-starts at 47), and a two-digit count inverted stands close to a wide time (`18.4`) but clear of it.
+The badge sits at the status strip's right end on every page, the stopwatch's included, left of
+the link icons (2026-10-19, `feat/dash-icons-in-strip`): it hides no pixel of any page. Until
+then it stood under the rightmost cell's value; the section below is that layout, kept as the
+record of what the owner decided for it.
 
 ## What is read — the same as `vagcan faults`
 
@@ -139,6 +140,12 @@ Freed at the end but for the `Tally` if the shell keeps it. `Faults` 8 B; `Board
 local per frame). Phase 2's RAM: "Phase 2", below.
 
 ## The badge: `vag_dash_render` (phase 1, done)
+
+**Moved into the status strip, 2026-10-19** (`render::corner`): a 6-row triangle (the label
+face's digits' height) and the count in the label face on the strip's line, left of the USB and
+BLE runes; inverted as an 8-row lit box; always on the strip's dark ground, so the "colours of
+the cell under it" rule below is gone; `?` laid out as one digit, never inverted. The bullets
+below are the layout it had over the page until then.
 
 `Board::faults: Option<Faults>`, `Faults::Counted { stored: u32, failing_now: bool }` or
 `Faults::Failed` (phase 2, answer 4); drawn by `draw_with` last, over the page.
