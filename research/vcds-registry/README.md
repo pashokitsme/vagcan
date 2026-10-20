@@ -250,13 +250,15 @@ candidate is the name VCDS opens.
   reachable as their own `F19E`.
 - **Joining rows:** a redirected unit's rows are stored under the **source** name, the name the
   unit joins on; the read looks a unit up once per recorded project that carries it, and a
-  command naming the car joins with the car's project (`Extracted::for_car`), so two cars of two
-  projects never share VCDS rows.
-- **The log** (`registry.json`) records each unit per project, and a unit is untried until every
-  project a read would look it up with has a line — a car of no known project is a lookup with
-  none. A log with an older `read_version` (`READ_VERSION`, 1 since this order) has tried
-  nothing, so a machine read under the old order re-reads every unit once by itself. A "no
-  file" logged while `ReDir.rod` did not open is read again only once the table opens.
+  command naming the car joins by the stem its own project's lookup stored, logged as `stem`
+  (`Extracted::for_car`), and by rank with its project only when none is logged — so two cars
+  of two projects, or a car of no known project beside one, never share VCDS rows.
+- **The log** (`registry.json`) records each unit per project, with the stem its rows went
+  under, and a unit is untried until every project a read would look it up with has a line — a
+  car of no known project is a lookup with none. A log with an older `read_version`
+  (`READ_VERSION`: 1 for this order, 2 for the stems) has tried nothing, so a machine re-reads
+  every unit once by itself. A "no file" logged while `ReDir.rod` did not open is read again
+  only once the table opens.
 
 **`UDS_EV/chassis.clb`** gives the project. A plain label file once decrypted: 282 lines
 `<model code>,<project>` (18 with a numeric model code), the model code being VIN characters

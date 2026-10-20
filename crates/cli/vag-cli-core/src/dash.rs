@@ -3542,13 +3542,17 @@ pub fn resolve(inputs: Inputs) -> anyhow::Result<Resolved> {
 	let extracted = crate::extracted::open(&project).for_car(Some(vin.as_str()));
 	let referenced = referenced_units(&parsed);
 	let (used, unused): (Vec<UnitIdentity>, Vec<UnitIdentity>) = units.iter().cloned().partition(|u| referenced.contains(&u.request));
-	let unused_note = {
+	let (used_note, unused_note) = {
 		let described = crate::registry::described_by(&extracted);
-		refuse_unread(&vin, read_attempted, crate::registry::unread(&project, &used, &described)?)?;
-		unread_note(&vin, read_attempted, crate::registry::unread(&project, &unused, &described)?)
+		let used = refuse_unread(&vin, read_attempted, crate::registry::unread(&project, &used, &described)?)?;
+		(
+			used,
+			unread_note(&vin, read_attempted, crate::registry::unread(&project, &unused, &described)?),
+		)
 	};
 	let language = crate::config::language(&crate::config::load());
 	let mut built = build(&parsed, &store, &extracted, &units, language)?;
+	built.notes.extend(used_note);
 	built.notes.extend(unused_note);
 	let inputs = vec![
 		input_path,
@@ -3622,10 +3626,16 @@ const ABOVE_THE_NOTE: &str = "the first lines of this output say";
 
 /// The refusal behind [`resolve`]: the plan's units whose channels have not been read,
 /// and what reads them. Nothing when there are none.
-fn refuse_unread(vin: &str, read_attempted: bool, unread: crate::registry::Unread) -> anyhow::Result<()> {
+///
+/// Units only an older version of this tool read are no reason to refuse: their rows are
+/// in the cache, and the plan is built from them — the firmware's build script, too, after
+/// a [`crate::registry::READ_VERSION`] bump. The note that comes back says so; a command
+/// with the car reads them again once.
+fn refuse_unread(vin: &str, read_attempted: bool, unread: crate::registry::Unread) -> anyhow::Result<Option<String>> {
 	use crate::registry::Unread;
 	match unread {
-		Unread::Nothing => Ok(()),
+		Unread::Nothing => Ok(None),
+		Unread::Outdated { units, .. } => Ok(Some(outdated_note(vin, &units))),
 		Unread::Readable { units, .. } => anyhow::bail!("{} — {}", unread_subject(&units), what_reads_them(vin, read_attempted, ABOVE_THE_REFUSAL)),
 		Unread::Unreadable { units, why } => anyhow::bail!("{}, and {why}", unread_subject(&units)),
 	}
@@ -3637,6 +3647,7 @@ fn unread_note(vin: &str, read_attempted: bool, unread: crate::registry::Unread)
 	use crate::registry::Unread;
 	match unread {
 		Unread::Nothing => None,
+		Unread::Outdated { units, .. } => Some(outdated_note(vin, &units)),
 		Unread::Readable { units, .. } => Some(format!(
 			"{}, which the plan does not use; {}",
 			unread_subject(&units),
@@ -3644,6 +3655,18 @@ fn unread_note(vin: &str, read_attempted: bool, unread: crate::registry::Unread)
 		)),
 		Unread::Unreadable { units, why } => Some(format!("{}, which the plan does not use, and {why}", unread_subject(&units))),
 	}
+}
+
+/// What a build says of units an older version of this tool read: built from the rows the
+/// cache holds, and what reads them again.
+fn outdated_note(vin: &str, units: &std::collections::BTreeSet<(String, String)>) -> String {
+	format!(
+		"{} {} read by an older version of this tool: built from the channels the cache holds; \
+		 `vagcan dev dash build {vin}`, or a command with the car, reads {} again once",
+		units.len(),
+		if units.len() == 1 { "control unit was" } else { "control units were" },
+		if units.len() == 1 { "it" } else { "them" }
+	)
 }
 
 /// The whole command: read the input, the car's record of its units and the
@@ -3788,7 +3811,7 @@ mod tests {
 		// The plan's units are refused; the rest are a note, with the cause.
 		use crate::registry::Unread;
 		let units = |names: &[&str]| names.iter().map(|n| (n.to_string(), "001".to_string())).collect();
-		assert!(refuse_unread("VIN", false, Unread::Nothing).is_ok());
+		assert_eq!(refuse_unread("VIN", false, Unread::Nothing).unwrap(), None);
 		assert_eq!(unread_note("VIN", false, Unread::Nothing), None);
 		let readable = Unread::Readable {
 			units: units(&["EV_Sixteenth"]),
@@ -3817,6 +3840,17 @@ mod tests {
 			note.ends_with("which the plan does not use; the first lines of this output say what stopped the read"),
 			"{note}"
 		);
+		// Units only an older read tried: the build goes ahead on the cache's rows, and says
+		// so — the firmware's build after a READ_VERSION bump must not refuse (found in
+		// review, 2026-10-20).
+		let outdated = Unread::Outdated {
+			units: units(&["EV_Gatew", "EV_Brake"]),
+			root: PathBuf::from("/vcds"),
+		};
+		let note = refuse_unread("VIN", false, outdated.clone()).unwrap().expect("a note");
+		assert!(note.starts_with("2 control units were read by an older version of this tool"), "{note}");
+		assert!(note.contains("built from the channels the cache holds"), "{note}");
+		assert_eq!(unread_note("VIN", false, outdated), Some(note));
 		let gone = Unread::Unreadable {
 			units: units(&["EV_A", "EV_B"]),
 			why: "the VCDS installation to read from is not on this machine any more".into(),

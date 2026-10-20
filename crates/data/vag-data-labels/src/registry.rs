@@ -413,7 +413,12 @@ pub fn unit_measurements(
 /// those, so one copy's stale key cannot undo another's fresh one — as soon as
 /// that unit is done, which is when a caller can save them and count the unit.
 /// Two units that share a store whose key is not cached would both search for
-/// it; a file under its own name needs no search.
+/// it, and so would two lookups of one unit for two car projects; a file under
+/// its own name needs no search. With keys from the file names, a search is
+/// left only for a file that does not open by its name — classic, since a
+/// shifted one is never searched — which is rare enough that the duplicate
+/// search is not coordinated: both find the same key, and saving it twice is
+/// harmless.
 pub fn units_measurements(
 	root: &Path,
 	units: &[(&str, &str, crate::label_files::Lookup<'_>)],
