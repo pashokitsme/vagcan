@@ -169,7 +169,9 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 13. **The rest of `dash/17` §4** — through the board over the cable (USB before OBD power), the
     moving-car guard (`bleuds`), the CANable on car traffic, the ESC's wheel speeds; §2 item 8.
 14. **Freeze frames** — the layouts (`MCD_DB_ENV_DATA_DESC`) for `faults --details`; `faults`
-    with ODIS text only is done (owner, 2026-10-19).
+    with ODIS text only is done (owner, 2026-10-19). VCDS's `RF.rod` field layouts are in the
+    cache since 2026-10-20 (`registry_row`, section `FFMUX`); how a fault picks its record is
+    open (`research/vcds-registry/README.md` §9.4).
 15. **Questions only the car answers** — `dash/06`.
 16. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.

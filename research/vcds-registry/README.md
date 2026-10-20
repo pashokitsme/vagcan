@@ -312,3 +312,128 @@ has what landed, the acceptance on the reference car and what is left.
 
 `.archive/tasks/roadmap-history.md` is dated history and is left as written; the dated status
 that superseded it points here.
+
+---
+
+## 9. The other registries — RA, RG, RS, RF, RX, MUX (2026-10-20)
+
+A unit's `.rod` (or the `IV_…` store its `[INC]` names) carries, beside `[MWB]` and `[DTC]`,
+the sections `[ADP]`, `[GES]`, `[SOT]`, `[FFMUX]` and `[XPL]`. Each is a list of `<n>,<code>`
+rows, `n` a **1-based** row number into one global registry, exactly as `[MWB]` → `RM.rod`.
+Every registry row is `<key>,<payload>`, the payload under `TableAlphabet::for_key(key)`, and
+after one or two fields of its own each carries **RM's value description in RM's order**:
+`table, flags, offset, numerator, denominator, unit, byte, bit, bit length, name` (§1: type =
+`flags & 63`, bit 6 little-endian, bit 7 signed; value = `(raw·num + off)/den`). Read by
+`vag-data-labels::registries`, stored by `setup`'s step 5 and `registry::ensure` in
+`cache.sqlite`'s `registry_row` / `registry_level` under the unit's file stem, beside its
+channels. Nothing reads them back yet.
+
+**What may ever use them.** Adaptations are read with `0x22` and freeze frames with `0x19`.
+Basic settings are routines (`0x31`) and output tests input/output control (`0x2F`): both are
+outside the allowlist for good, so those rows are names and nothing else.
+
+Ground truth: the reference car's 14 units with a file, joined to their ODIS variants
+(`EV_<unit>_<F1A2 major>`) through a throwaway reading of the ODIS project's
+`ReadDataByIdentCalibData`, `RoutiContrRequeRoutiResulBasicSetti` and
+`InputOutpuContrByIdentActuaTestShortTermAdjus` services (the measurement chain pointed at
+another service; scratch only, nothing of it in the tree). Section keys came from the
+computed-key formula (`perf/vcds-setup`), verification only.
+
+**Store letters.** `IV_…_A*` holds `[ADP]`, `_G` `[GES]`, `_S` `[SOT]`, `_F` `[FFMUX]`, `_X`
+`[XPL]` (as `_M` `[MWB]`, `_D` `[DTC]`): 51/51 stores of the car that opened.
+`registry::list_in` reads every section from the **one** file the unit's `[MWB]` was found in:
+searching the other candidates took the brake unit's freeze frames from `_032` for `_036`.
+
+### 9.1 `RA.rod [ADP]` — adaptation channels (82,361 rows, 7,425 keys; 15 fields)
+
+| field | meaning | evidence |
+|---|---|---|
+| f0 | the field's 1-based place among one DID's fields; empty for a one-field DID | car: 446/446 one-row DIDs empty; 108/108 several-row DIDs all set, rising with the bit offset |
+| f1 | the DID `0x22` reads | ODIS adaptation DIDs present in the units' lists: **421/426** |
+| f2–f11 | RM's value description (table, flags, offset, num, den, unit, byte, bit, length, name) | ODIS channels with a same-DID row: layout agrees 1666/1679; layout + scaling **1489/1679** (control, another row of the same key: 423/1337); 162 of the rest are VCDS type 7 (raw bytes) where ODIS scales |
+| key | the `TTTEXT` record of the channel (its tail = the ODX `IDE`/`MAS` id) | gearbox `04FC` key IDE02332 = ODIS IDE02332; steering `1920` IDE04130 = ODIS |
+| f12 | **unknown** — numbers as text (`0`, `1`, `100`, `0x0`, `26.0`); looks like a default value, unchecked | — |
+| f13 | **unknown** 6-hex; first byte `40` in 82,355/82,355 (RM: `80`/`90`/`A0`/`B0`; RG `20`; RS `10`) | — |
+| f14 | **unknown** 4-hex, as RM's f12 | — |
+
+Per car unit (rows stored / ODIS DIDs found / ODIS channels whole): ACClima 110 / 52 of 52 /
+106 of 108; airbag 90 / 2 of 2 / 8 of 9; brake 45 / 44 of 44 / 45 of 45; doors 8 / 8 of 8 /
+2 of 8 each (4 raw); cluster 336 / 71 of 71 / 119 of 254 (135 raw); engine 20 / 18 of 18 /
+18 of 20; EPB 47 / 29 of 29 / 46 of 47; gateway 677 / 47 of 47 / 151 of 157; infotainment 803 /
+39 of 43 / 785 of 810; OCU 227 / 84 of 84 / 189 of 194; SMLS 62 / 9 of 9 / 9 of 9; steering 11 /
+8 of 8 / 8 of 8; gearbox 2 / 2 of 3 / 1 of 2 (its TEA list lost its first row). **2,446 rows.**
+
+### 9.2 `RG.rod [GES]` — basic settings (9,759 rows, 3,312 keys; 14 fields)
+
+RA's layout without f14. f1 is the **routine id** (`0x31 01 <RID>`): ODIS routine-result RIDs
+found in the units' lists **74/76** outside the engine (the engine's ODIS table has 560 RIDs, its
+VCDS list 52, 50 of them in ODIS). The two misses are the first rows of TEA lists (EPB `0366`,
+OCU `0317`), which no reader can recover. The key's tail is ODIS's text id (OCU `03E7` IDE02325,
+`0317` IDE00498). Type 10 (new) puts a **constant** in the table field (`0x040000`, the
+routine-control option record) — kept as written. Type 39 (new): a routine with no layout.
+f0 ordinal: 152/152 one-row RIDs empty, 10/10 several-row rising. f12, f13 unknown.
+**185 rows** on the car.
+
+### 9.3 `RS.rod [SOT]` — output tests (11,165 rows, 1,868 keys; 14 fields)
+
+RG's layout. f1 is the **input/output DID** (`0x2F <DID>`): the infotainment unit, the one whose
+ODIS IO-control service reads with this chain, **13/13**; the key's tail is ODIS's text id
+(`016E` IDE01627, `029C` IDE02060, `805F` IDE09544, …). Rows of one DID are the fields of its
+control record (control parameter as type 10 `0x03FF`, then "Actuation time", "Start parameter").
+These DIDs are not 0x22 measurement DIDs: 4/127 are (control 1/127). f0 ordinal: 15/15, 114/114.
+f12 looks like a default value — unknown. **360 rows** on the car.
+
+### 9.4 `RF.rod [FFMUX]` — freeze-frame fields (23,081 rows, 131 keys; 11 fields)
+
+`<f0>,` then RM's value description; no DID field.
+
+- **f0 = 100 + the record's length in bytes**: 917/1001 runs of one (key, f0) end exactly there
+  (control, f0 shuffled across runs: 26/1001); on the car 41/52 records.
+- **The key is not a name record**: keys are 3–147 plus `999` and the sentinel `999999` (last
+  row, one field). Whether it is the `0x19 06` extended-data record number is **not
+  established** — all keys but the two sentinels fit a byte; ODIS keeps these layouts in
+  `MUX_DTCExtenDataRecor` DOPs that no reader here parses. Names come from f10 alone.
+- The names match ODIS's structures by sense: SMLS `StrucExtenFreezFrameValeo1/2/3`
+  (`Ubat30Volta`, `IgnitState`, `AD1`–`AD3`, `LINTemp`, `Isens`, `PWM`, `Kp`, `Ki`, …) against
+  VCDS's "Ubat 30 Voltage", "Ignition State", "A/D #1"…, "LIN_Temp", "Isense", "PWM", "kp". Names
+  only, not a field-by-field check.
+- How a fault (RD) picks its record is **not found**: RD's 7 fields name no RF key.
+
+**217 rows** on the car.
+
+### 9.5 `RX.rod [XPL]` — named bits (22,350 rows, 7,131 keys; 13 fields)
+
+`<ordinal>,<empty>,` then the value description with f11 (name) empty in 22,303/22,303 rows:
+the key is the name record. Every list opens with a one-field header row (key `999999`,
+payload `2`; 47 such rows). Mostly 1-bit text tables at byte/bit positions. The names are coding
+options ("Lane departure warning", "Counter steer support", "Ignition Switch Key Lock
+Solenoid"), so these are most likely the bits of the unit's coding — **not verified**: ODIS's
+coding structure does not read through the measurement chain. Reading a coding is `0x22`;
+writing one never happens here. **568 rows** on the car.
+
+### 9.6 `MUX.rod [MUX]` — multiplexer cases (42,431 rows, 11,221 keys; 17 fields)
+
+Until now `setup` copied `MUX.rod` into the pool (`SHARED_ROD_FILES`) for its key and nothing
+parsed it. It holds the cases of a value of **type 6**: an RM, RF or RA row of type 6 names a MUX
+key in its table field — RM 23,547/23,547 rows name an existing key, and the key's selector width
+and case width equal the row's bit length in 21,193/22,947 (control, a random key: 9,657); RF
+2,053/2,329 (control 915).
+
+| field | meaning |
+|---|---|
+| f0–f3 | **unknown** (f0 mostly 0, 1, 8; f1, f2 always 0; f3 mostly 0) |
+| f4 | the selector's width in bits |
+| f5, f6 | the case's raw range, both ends included; `D,D` = the default case (one per key in 10,252 keys; none in 911) — 0 cases with lower > upper |
+| f7–f16 | RM's value description for that case |
+
+Stored per unit for the keys its listed rows name: **2,106 rows** on the car (one ACClima RF
+row alone names a key of 327 cases).
+
+### 9.7 Not done
+
+- RF ↔ fault: which record a stored fault's environment data is read as.
+- XPL: which bytes the bits describe.
+- RA/RG/RS f12, every 6-hex and 4-hex field, MUX f0–f3: stored in `registry_row.raw` only.
+- No reader. A cache from before the two tables is upgraded in place (schema version 3,
+  `vag_data_db::migrate`): they are created empty, and the next registry read — `setup`, or
+  `ensure` meeting a unit not read yet — fills them. Units already read are not re-read for it.
