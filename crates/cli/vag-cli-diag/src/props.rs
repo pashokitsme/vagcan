@@ -67,21 +67,29 @@ impl Property {
 	pub fn hex(&self) -> String {
 		crate::render::hex_spaced(&self.data)
 	}
+
+	/// Hex, cut for the terminal when the value is long.
+	fn hex_short(&self) -> String {
+		if self.data.len() <= 12 {
+			return self.hex();
+		}
+		format!("{} … ({} bytes)", crate::render::hex_spaced(&self.data[..12]), self.data.len())
+	}
 }
 
-/// Render the properties of one ECU as a report.
+/// The properties of one unit as a table: `did`, `name`, `value`, under a `unit` line.
 ///
-/// Named identifiers come first in the documented order so the interesting
-/// facts are at the top; the rest follow numerically as raw rows, still worth
-/// showing because that is where the undocumented content lives.
-pub fn render(ecu_label: &str, props: &[Property]) -> String {
-	let mut out = format!("{ecu_label}\n\n");
-	if props.is_empty() {
-		out.push_str("  (no identifiers answered)\n");
+/// Named identifiers come first in the documented order so the interesting facts are at
+/// the top; the rest follow as read, with no name — still worth showing because that is
+/// where the undocumented content lives. `extra` rows (the OBD-II mode-09 answers) close
+/// it, named by the caller.
+pub fn render(unit_label: &str, props: &[Property], extra: &[(u16, String, String)]) -> String {
+	let mut out = vag_cli_core::table::pairs(&[("unit", unit_label.to_string())]);
+	out.push('\n');
+	if props.is_empty() && extra.is_empty() {
+		out.push_str("no identifiers answered\n");
 		return out;
 	}
-
-	let width = KNOWN.iter().map(|(_, n)| n.len()).max().unwrap_or(0);
 	let mut named = Vec::new();
 	let mut rest = Vec::new();
 	for p in props {
@@ -92,31 +100,22 @@ pub fn render(ecu_label: &str, props: &[Property]) -> String {
 	}
 	named.sort_by_key(|(name, _)| KNOWN.iter().position(|(_, n)| n == name).unwrap_or(usize::MAX));
 
+	let mut table = vag_cli_core::table::Table::new(&["did", "name", "value"]);
 	for (name, p) in named {
-		let value = p.text().unwrap_or_else(|| p.hex());
-		out.push_str(&format!("  {name:<width$}  {value}\n"));
+		table.row(vec![format!("{:04X}", p.did), name.to_string(), p.text().unwrap_or_else(|| p.hex())]);
 	}
-	if !rest.is_empty() {
-		out.push_str("\n  Undocumented identifiers:\n");
-		for p in rest {
-			let value = match p.text() {
-				Some(t) => format!("{:<24}  \"{t}\"", p.hex_short()),
-				None => p.hex_short(),
-			};
-			out.push_str(&format!("    {:04X}  {value}\n", p.did));
-		}
+	for p in rest {
+		let value = match p.text() {
+			Some(t) => format!("{}  \"{t}\"", p.hex_short()),
+			None => p.hex_short(),
+		};
+		table.row(vec![format!("{:04X}", p.did), String::new(), value]);
 	}
+	for (did, name, value) in extra {
+		table.row(vec![format!("{did:04X}"), name.clone(), value.clone()]);
+	}
+	out.push_str(&table.render(vag_cli_core::table::terminal_width()));
 	out
-}
-
-impl Property {
-	/// Hex, cut for the terminal when the value is long.
-	fn hex_short(&self) -> String {
-		if self.data.len() <= 12 {
-			return self.hex();
-		}
-		format!("{} … ({} bytes)", crate::render::hex_spaced(&self.data[..12]), self.data.len())
-	}
 }
 
 #[cfg(test)]
@@ -160,30 +159,32 @@ mod tests {
 	#[test]
 	fn the_report_names_what_is_documented_and_shows_the_rest_raw() {
 		let text = render(
-			"Engine (01)",
+			"01",
 			&[
-				prop(0xF1AB, b"00230076007600760318"),
+				prop(0xF1AB, b"0023007600"),
 				prop(0xF190, b"XW8AD4NE9JH008917"),
 				prop(0xF19E, b"EV_ECM18TFS0208V0906264H\0"),
 			],
+			&[(0xF802, "OBD-II 09: VIN".to_string(), "XW8AD4NE9JH008917".to_string())],
 		);
-		// Named rows carry the name, not the number.
-		assert!(text.contains("VIN "), "{text}");
-		assert!(text.contains("XW8AD4NE9JH008917"), "{text}");
-		assert!(text.contains("ODX label file"), "{text}");
-		// The label file is the join key to the .rod label files — it must be legible.
-		assert!(text.contains("EV_ECM18TFS0208V0906264H"), "{text}");
-		// Unknown identifiers are shown, but under an honest heading.
-		assert!(text.contains("Undocumented identifiers:"), "{text}");
-		assert!(text.contains("F1AB"), "{text}");
-		// VIN is documented, so it must NOT appear in the undocumented block.
-		let (_, undocumented) = text.split_once("Undocumented").unwrap();
-		assert!(!undocumented.contains("F190"), "{text}");
+		// Named rows carry the name; the label file is the join key to the .rod label
+		// files, so it must be legible. Unknown identifiers are shown with no name, after
+		// the named ones; the mode-09 rows close the table.
+		assert_eq!(
+			text,
+			"unit  01\n\
+			 \n\
+			 did   name            value\n\
+			 F190  VIN             XW8AD4NE9JH008917\n\
+			 F19E  ODX label file  EV_ECM18TFS0208V0906264H\n\
+			 F1AB                  30 30 32 33 30 30 37 36 30 30  \"0023007600\"\n\
+			 F802  OBD-II 09: VIN  XW8AD4NE9JH008917\n"
+		);
 	}
 
 	#[test]
 	fn named_rows_follow_the_documented_order_not_the_read_order() {
-		let text = render("Engine (01)", &[prop(0xF19E, b"EV_ECM1\0"), prop(0xF187, b"8V0906264H ")]);
+		let text = render("01", &[prop(0xF19E, b"EV_ECM1\0"), prop(0xF187, b"8V0906264H ")], &[]);
 		let part = text.find("VW spare part number").unwrap();
 		let odx = text.find("ODX label file").unwrap();
 		assert!(part < odx, "part number is listed before the ODX name: {text}");
@@ -191,6 +192,6 @@ mod tests {
 
 	#[test]
 	fn an_ecu_that_answers_nothing_says_so() {
-		assert!(render("Gearbox (02)", &[]).contains("no identifiers answered"));
+		assert_eq!(render("02", &[], &[]), "unit  02\n\nno identifiers answered\n");
 	}
 }

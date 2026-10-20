@@ -385,7 +385,8 @@ impl CatalogStore {
 		match MeasurementCatalog::from_json(&text) {
 			Ok(catalog) => Some(catalog.defs),
 			Err(e) => {
-				eprintln!("catalog {key}.json is not readable: {e}");
+				// Written, not `eprintln!`ed, which panics on a stderr that takes nothing.
+				let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("catalog {key}.json is not readable: {e}\n"));
 				None
 			}
 		}

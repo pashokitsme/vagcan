@@ -25,6 +25,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 | `vagcan sensors` | Standard OBD-II readings |
 | `vagcan watch` | Live values from several units at once, with a chart of up to 6 channels. States show by name. `--out` records to CSV |
 | `vagcan measure` | Acceleration run timing from the car's own speed signal. `measure view` opens a saved run as a chart |
+| `-v`, `-vv` | On any command. `-v`: where the data came from, why a row is unnamed or skipped, caveats, timings. `-vv`: also every request and answer on the bus. Data is on stdout, the rest on stderr |
 
 ### Development commands – `vagcan dev`
 
@@ -208,7 +209,8 @@ Check that it found your adapter:
 
 ```
 $ vagcan devices
-/dev/cu.usbmodem206E37A148451  CANable 2.0 (slcan)
+path                           adapter  device
+/dev/cu.usbmodem206E37A148451  yes      CANable 2.0 (slcan)
 ```
 
 If nothing is listed while the adapter is plugged in, unplug it and plug it back in. It can appear on USB without the system creating a serial port for it.

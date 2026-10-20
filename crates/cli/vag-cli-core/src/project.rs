@@ -420,7 +420,7 @@ pub fn has_source(project: &Project, kind: &str) -> Result<bool> {
 pub fn say_unreadable(project: &Project, why: &anyhow::Error, instead: &str) {
 	static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 	if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
-		eprintln!("note: the sources of {} did not read ({why:#}); {instead}", project.id);
+		crate::say!("note: the sources of {} did not read ({why:#}); {instead}", project.id);
 	}
 }
 
@@ -504,7 +504,7 @@ fn adopt_legacy(project: &Project) {
 		}
 	}
 	if std::fs::remove_file(&path).is_ok() {
-		eprintln!("note: {} read into {} and removed", path.display(), project.cache().display());
+		crate::say!("note: {} read into {} and removed", path.display(), project.cache().display());
 	}
 }
 

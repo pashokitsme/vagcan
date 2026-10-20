@@ -56,15 +56,29 @@ pub trait Terminal {
 	fn off(&mut self, switch: Switch) -> Result<()>;
 }
 
-/// The terminal a person is sitting at.
-pub struct Crossterm;
+/// The terminal a person is sitting at. The cursor is switched on the stream that draws:
+/// stderr for the in-place menus ([`in_place`]), stdout for a full screen — so a log a
+/// stream is redirected to gets no cursor escapes from the other one.
+pub struct Crossterm {
+	cursor_on_stderr: bool,
+}
+
+impl Crossterm {
+	fn cursor(&self, command: impl crossterm::Command) -> Result<()> {
+		match self.cursor_on_stderr {
+			true => execute!(std::io::stderr(), command)?,
+			false => execute!(std::io::stdout(), command)?,
+		}
+		Ok(())
+	}
+}
 
 impl Terminal for Crossterm {
 	fn on(&mut self, switch: Switch) -> Result<()> {
 		let mut out = std::io::stdout();
 		match switch {
 			Switch::Raw => terminal::enable_raw_mode()?,
-			Switch::Cursor => execute!(out, cursor::Hide)?,
+			Switch::Cursor => self.cursor(cursor::Hide)?,
 			Switch::Alternate => execute!(out, terminal::EnterAlternateScreen)?,
 			Switch::Mouse => execute!(out, event::EnableMouseCapture)?,
 		}
@@ -75,7 +89,7 @@ impl Terminal for Crossterm {
 		let mut out = std::io::stdout();
 		match switch {
 			Switch::Raw => terminal::disable_raw_mode()?,
-			Switch::Cursor => execute!(out, cursor::Show)?,
+			Switch::Cursor => self.cursor(cursor::Show)?,
 			Switch::Alternate => execute!(out, terminal::LeaveAlternateScreen)?,
 			Switch::Mouse => execute!(out, event::DisableMouseCapture)?,
 		}
@@ -92,6 +106,8 @@ impl Terminal for Crossterm {
 #[derive(Clone, Debug)]
 pub struct Wanted {
 	switches: Vec<Switch>,
+	/// Whether what draws is on stderr — the in-place menus — rather than stdout.
+	on_stderr: bool,
 }
 
 /// A list drawn where the cursor already is — raw keys and no cursor, and
@@ -106,6 +122,7 @@ pub struct Wanted {
 pub fn in_place() -> Wanted {
 	Wanted {
 		switches: vec![Switch::Raw, Switch::Cursor],
+		on_stderr: true,
 	}
 }
 
@@ -118,6 +135,7 @@ pub fn in_place() -> Wanted {
 pub fn full_screen() -> Wanted {
 	Wanted {
 		switches: vec![Switch::Raw, Switch::Alternate],
+		on_stderr: false,
 	}
 }
 
@@ -143,7 +161,10 @@ impl Wanted {
 	/// terminal depends on what the command would have done with one, so the
 	/// sentence is added by the caller.
 	pub fn enter(self) -> Result<Guard<Crossterm>> {
-		self.enter_on(Crossterm)
+		let terminal = Crossterm {
+			cursor_on_stderr: self.on_stderr,
+		};
+		self.enter_on(terminal)
 	}
 
 	/// The same, against something that is not a terminal.
@@ -188,6 +209,15 @@ impl<T: Terminal> Drop for Guard<T> {
 mod tests {
 	use super::*;
 	use std::sync::{Arc, Mutex};
+
+	#[test]
+	fn the_cursor_is_switched_on_the_stream_that_draws() {
+		// A menu draws on stderr, a full screen on stdout: a cursor escape on the other
+		// stream lands in whatever file that one is redirected to (review of PR #38).
+		assert!(in_place().on_stderr);
+		assert!(!full_screen().on_stderr);
+		assert!(!full_screen().hiding_cursor().on_stderr);
+	}
 
 	/// What a terminal was told to do, in order.
 	#[derive(Clone, Copy, Debug, PartialEq, Eq)]

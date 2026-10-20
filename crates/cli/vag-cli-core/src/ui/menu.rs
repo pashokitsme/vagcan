@@ -85,7 +85,7 @@ impl Asker for Console {
 		// No progress line may tick over the menu (`crate::progress::hold`).
 		let _held = crate::progress::hold();
 		let mut at = at.min(items.len() - 1);
-		let mut out = std::io::stdout();
+		let mut out = std::io::stderr();
 		// Everything below this line can leave through a `?` or a panic, and both
 		// have to hand the terminal back the way they found it.
 		let _raw = term::in_place().enter()?;
@@ -142,7 +142,7 @@ impl Asker for Console {
 		// No progress line may tick over the question (`crate::progress::hold`).
 		let _held = crate::progress::hold();
 		// Asked outside raw mode, so the answer echoes and a backspace works.
-		let mut out = std::io::stdout();
+		let mut out = std::io::stderr();
 		write!(out, "{}", prompt(question, default))?;
 		out.flush()?;
 		let mut typed = String::new();

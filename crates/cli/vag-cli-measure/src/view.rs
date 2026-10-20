@@ -55,19 +55,10 @@ pub fn write_beside(input: &Path, session: &serde_json::Value) -> Result<PathBuf
 	Ok(out)
 }
 
-/// Write the page, say where it is, then try to open it.
-///
-/// The path is printed **first**: opening the file is a convenience, and a
-/// platform without a usable opener is not a failure of the command.
-pub fn write_and_open(input: &Path, session: &serde_json::Value) -> Result<PathBuf> {
-	let out = write_beside(input, session)?;
-	println!("{}", out.display());
-	open_in_browser(&out);
-	Ok(out)
-}
-
 /// Ask the desktop to open a file. Every failure is ignored, including the
-/// absence of anything to ask.
+/// absence of anything to ask: the page's path is printed before it is opened
+/// (`measure`'s `write_view`), so a platform without a usable opener is not a
+/// failure of the command.
 pub fn open_in_browser(path: &Path) {
 	vag_cli_core::desktop::open(path);
 }

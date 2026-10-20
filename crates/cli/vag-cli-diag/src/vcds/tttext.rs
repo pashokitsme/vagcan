@@ -12,6 +12,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use crate::render::plural;
+use vag_cli_core::verbosity::{self, NOTES, WIRE};
 use vag_data_labels::codes::CodePage;
 use vag_data_labels::tttext::{self, Table, Tail};
 
@@ -23,26 +25,33 @@ pub struct Options<'a> {
 
 pub fn run(opts: Options<'_>) -> Result<()> {
 	let table = read_file(Path::new(opts.file), CodePage::Windows1252)?;
+	vag_cli_core::note!("read {} as Windows-1252", opts.file);
 
-	let mut sink: Box<dyn Write> = match opts.out {
-		Some(path) => Box::new(std::io::BufWriter::new(
-			std::fs::File::create(path).with_context(|| format!("creating the output file {path:?}"))?,
-		)),
-		None => Box::new(std::io::BufWriter::new(std::io::stdout().lock())),
-	};
+	// The records are the data: on stdout, or in `--out` instead.
+	let mut lines = String::new();
 	for text in &table.texts {
 		let (kind, value) = text.tail.as_ref().map_or(("", ""), |t| (t.kind.as_str(), t.value.as_str()));
-		writeln!(sink, "{:06}\t{}\t{kind}\t{value}", text.id, text.name)?;
+		lines.push_str(&format!("{:06}\t{}\t{kind}\t{value}\n", text.id, text.name));
 	}
-	sink.flush()?;
+	match opts.out {
+		Some(path) => {
+			let mut file = std::io::BufWriter::new(std::fs::File::create(path).with_context(|| format!("creating the output file {path:?}"))?);
+			file.write_all(lines.as_bytes())?;
+			file.flush()?;
+			vag_cli_core::say!("wrote {} {} to {path}", table.texts.len(), plural(table.texts.len(), "record"));
+		}
+		None => vag_cli_core::out!("{lines}"),
+	}
 
 	if let Some(path) = opts.catalog {
 		let written = write_names(&table, Path::new(path))?;
-		eprintln!("{written} names written to {path}");
+		vag_cli_core::say!("wrote {written} {} to {path}", plural(written, "name"));
 	}
-	eprintln!("{}", summary(&table));
-	for (id, plain) in table.malformed.iter().take(10) {
-		eprintln!("  {id:06} read as {plain:?}");
+	// On stderr, not after the records: on stdout it would be one more record to
+	// whatever reads the tab-separated stream.
+	vag_cli_core::say!("{}", summary(&table));
+	for (at, (id, plain)) in table.malformed.iter().enumerate() {
+		verbosity::say(if at < 10 { NOTES } else { WIRE }, &format!("{id:06} read as {plain:?}"));
 	}
 	Ok(())
 }
@@ -56,15 +65,16 @@ pub fn read_file(path: &Path, page: CodePage) -> Result<Table> {
 /// What a reading holds, in one line.
 pub fn summary(table: &Table) -> String {
 	let with_ids = table.texts.iter().filter(|t| t.tail.as_ref().and_then(Tail::odx_id).is_some()).count();
-	let mut line = format!("{} records read, {with_ids} of them naming an IDE or MAS id", table.texts.len());
+	let mut line = format!(
+		"{} {} · {with_ids} with an IDE or MAS id",
+		table.texts.len(),
+		plural(table.texts.len(), "record")
+	);
 	if !table.malformed.is_empty() {
-		line.push_str(&format!(
-			"; {} read as neither `<name>,` nor `<name>,<kind>,<value>` and are left out",
-			table.malformed.len()
-		));
+		line.push_str(&format!(" · {} malformed, left out", table.malformed.len()));
 	}
 	if table.not_records > 0 {
-		line.push_str(&format!("; {} lines were not records", table.not_records));
+		line.push_str(&format!(" · {} {} not records", table.not_records, plural(table.not_records, "line")));
 	}
 	line
 }
@@ -176,9 +186,9 @@ mod tests {
 	#[test]
 	fn the_summary_says_what_was_left_out() {
 		let t = table(&[(17, "Invented flap position,2,90001"), (5, "no separator")]);
-		let line = summary(&t);
-		assert!(line.starts_with("1 records read, 1 of them naming an IDE or MAS id"), "{line}");
-		assert!(line.contains("1 read as neither"), "{line}");
+		assert_eq!(summary(&t), "1 record · 1 with an IDE or MAS id · 1 malformed, left out");
+		let two = table(&[(17, "Invented flap position,2,90001"), (18, "Invented lid,")]);
+		assert_eq!(summary(&two), "2 records · 1 with an IDE or MAS id");
 	}
 
 	/// The research's four cribs, against the owner's VCDS install when it is

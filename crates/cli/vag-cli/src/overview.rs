@@ -315,7 +315,8 @@ fn state(facts: &Facts) -> String {
 		// No USB adapter: nothing looks for Bluetooth unasked, so say how to ask.
 		Adapters::Unrecognised(n) => {
 			out.push_str(&format!(
-				"  Adapter   none recognised — {n} other serial device(s) connected, see `vagcan devices`\n"
+				"  Adapter   none recognised — {n} other serial {} connected, see `vagcan devices`\n",
+				vag_cli_core::table::plural(*n, "device")
 			));
 			out.push_str(&format!("            {}\n", device::BLE_COMMAND_HINT));
 		}
@@ -344,8 +345,9 @@ fn state(facts: &Facts) -> String {
 			}
 			if car.proven_catalogs > 0 {
 				out.push_str(&format!(
-					"            {} catalog file(s) with scalings proven on a car\n",
-					car.proven_catalogs
+					"            {} {} with scalings proven on a car\n",
+					car.proven_catalogs,
+					vag_cli_core::table::plural(car.proven_catalogs, "catalog file")
 				));
 			}
 		}
@@ -573,7 +575,7 @@ mod tests {
 				cars: Cars::One(car()),
 			});
 			let hints: Vec<&str> = text.lines().filter(|line| line.contains("vagcan info --ble")).collect();
-			assert_eq!(hints, ["            An adapter over Bluetooth: vagcan info --ble"], "{text}");
+			assert_eq!(hints, ["            an adapter over Bluetooth: `vagcan info --ble`"], "{text}");
 		}
 		let ready = render(&Facts {
 			adapters: Adapters::Ready(vec![adapter("/dev/cu.usbmodem1", "CANable")]),
@@ -592,7 +594,7 @@ mod tests {
 		assert!(text.contains("CANable 2.0 (slcan)"), "{text}");
 		assert!(text.contains("SK37X, from a VCDS installation and an ODIS project"), "{text}");
 		assert!(text.contains("399283 channels across 669 control-unit variants"), "{text}");
-		assert!(text.contains("3 catalog file(s) with scalings proven"), "{text}");
+		assert!(text.contains("3 catalog files with scalings proven"), "{text}");
 		for command in ["vagcan info", "vagcan units", "vagcan faults", "vagcan watch"] {
 			assert!(text.contains(command), "{command} missing from:\n{text}");
 		}

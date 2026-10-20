@@ -23,9 +23,9 @@ pub fn list() -> Result<()> {
 		true => Default::default(),
 		false => vag_data_db::source_rows(&project.cache()).map_err(|e| anyhow::anyhow!("{e}"))?,
 	};
-	print!("{}", render(&project, &sources, &rows));
+	vag_cli_core::out!("{}", render(&project, &sources, &rows));
 	for note in notes(&sources, &unowned) {
-		eprintln!("{note}");
+		vag_cli_core::say!("{note}");
 	}
 	Ok(())
 }
@@ -64,7 +64,7 @@ fn drop_with(io: &mut impl Asker, project: &Project, selector: &str, yes: bool, 
 		}
 		let typed = io.line(&format!("Drop source {} and its {} rows? [y/N]", source.id, held.total()), "")?;
 		if !matches!(typed.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-			eprintln!("nothing dropped");
+			vag_cli_core::say!("nothing dropped");
 			return Ok(());
 		}
 	}
@@ -72,7 +72,7 @@ fn drop_with(io: &mut impl Asker, project: &Project, selector: &str, yes: bool, 
 		vag_data_db::drop_source(&cache, source.id).map_err(|e| anyhow::anyhow!("dropping source {} from {}: {e}", source.id, cache.display()))?;
 	io.say(&dropped(source, &gone))?;
 	for note in leftovers(project, &source.kind)? {
-		eprintln!("{note}");
+		vag_cli_core::say!("{note}");
 	}
 	Ok(())
 }
@@ -148,23 +148,29 @@ fn render(project: &Project, sources: &[vag_data_db::Source], rows: &std::collec
 	if sources.is_empty() {
 		return out;
 	}
-	let header = [
-		"ID",
-		"KIND",
-		"STATE",
-		"LANG",
-		"VERSION",
-		"READ",
-		"FAULTS",
-		"CHANNELS",
-		"LABELS",
-		"MEASUREMENTS",
-		"PATH",
-	];
-	let mut table: Vec<Vec<String>> = vec![header.iter().map(|h| h.to_string()).collect()];
+	let mut table = vag_cli_core::table::Table::new(&[
+		"id",
+		"kind",
+		"state",
+		"lang",
+		"version",
+		"read",
+		"faults",
+		"channels",
+		"labels",
+		"measurements",
+		"path",
+	])
+	.right(0)
+	.right(6)
+	.right(7)
+	.right(8)
+	.right(9)
+	// The path last and never cut: a cut path is no path.
+	.no_cut();
 	for source in sources {
 		let held = rows.get(&source.id).copied().unwrap_or_default();
-		table.push(vec![
+		table.row(vec![
 			source.id.to_string(),
 			source.kind.clone(),
 			state(source).to_string(),
@@ -178,25 +184,8 @@ fn render(project: &Project, sources: &[vag_data_db::Source], rows: &std::collec
 			source.path().to_string(),
 		]);
 	}
-	// Numbers right-aligned, words left; the last column unpadded.
-	let numeric = [true, false, false, false, false, false, true, true, true, true, false];
-	let widths: Vec<usize> = (0..header.len())
-		.map(|c| table.iter().map(|row| row[c].chars().count()).max().unwrap_or(0))
-		.collect();
 	out.push('\n');
-	for row in &table {
-		let cells: Vec<String> = row
-			.iter()
-			.enumerate()
-			.map(|(c, cell)| match (c + 1 == row.len(), numeric[c]) {
-				(true, _) => cell.clone(),
-				(false, true) => format!("{cell:>width$}", width = widths[c]),
-				(false, false) => format!("{cell:<width$}", width = widths[c]),
-			})
-			.collect();
-		out.push_str(cells.join("  ").trim_end());
-		out.push('\n');
-	}
+	out.push_str(&table.render(vag_cli_core::table::terminal_width()));
 	out
 }
 
@@ -390,7 +379,7 @@ mod tests {
 		let lines: Vec<&str> = text.lines().collect();
 		assert_eq!(lines[0], "project  SK37X");
 		assert!(lines[1].starts_with("cache    ") && lines[1].ends_with("cache.sqlite"), "{text}");
-		assert!(lines[3].starts_with("ID  KIND  STATE") && lines[3].ends_with("PATH"), "{text}");
+		assert!(lines[3].starts_with("id  kind  state") && lines[3].ends_with("path"), "{text}");
 		assert!(lines[4].contains("stale") && lines[4].ends_with("vendor/vcds-en/Labels"), "{text}");
 		assert!(
 			lines[5].contains(" ok ") && lines[5].contains("282621") && lines[5].contains("399283"),
@@ -398,8 +387,8 @@ mod tests {
 		);
 		assert!(lines[6].contains("gone") && lines[6].contains("2026-10-20 07:26"), "{text}");
 		assert!(lines[6].ends_with("/Users/x/vcds-en"), "the folder setup was pointed at: {text}");
-		// Columns line up: every row puts its path at the header's PATH.
-		let at = lines[3].find("PATH").unwrap();
+		// Columns line up: every row puts its path at the header's `path`.
+		let at = lines[3].find("path").unwrap();
 		for (line, source) in lines[4..].iter().zip(&sources) {
 			assert_eq!(line.get(at..), Some(source.path()), "{text}");
 		}
@@ -440,7 +429,11 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let project = project_with_both(here.path());
 		let mut io = Scripted::new(vec![Answer::Type("n".into())]);
+		let capture = vag_cli_core::verbosity::Capture::start(0);
 		drop_with(&mut io, &project, "odis", false, true).unwrap();
+		let said = capture.finish();
+		// A refusal is said on stderr; stdout is the listing's alone.
+		assert_eq!((said.stdout.as_str(), said.stderr.as_str()), ("", "nothing dropped\n"));
 		assert!(
 			io.all_said().contains("faults        1"),
 			"what would go is shown first: {}",

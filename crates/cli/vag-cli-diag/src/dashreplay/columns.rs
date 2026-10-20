@@ -24,6 +24,7 @@ use vag_dash_render::plan::{Channel as DeviceChannel, Plan as DevicePlan};
 
 use super::engine::{Series, address_name, channel_name};
 use crate::plan::{Channel as Offered, hex_bytes};
+use crate::render::plural;
 use crate::watch::replay::{Column, Recording, unconverted};
 
 /// Where a plan channel's values are in the recording.
@@ -41,7 +42,113 @@ pub enum Source {
 pub struct Matched {
 	/// One per plan channel, in plan order.
 	pub sources: Vec<Option<Source>>,
+	/// The channels the replay runs and the recording has no column for, in plan order.
+	pub gaps: Vec<Gap>,
+	/// What a match it made rests on, at `-v`.
 	pub notes: Vec<String>,
+}
+
+/// Why a plan channel has no values in the replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GapKind {
+	/// No column of the recording is it.
+	Missing,
+	/// A column is named like it and like another channel of the car.
+	Ambiguous,
+	/// Its column holds a cell the plan's scaling cannot have produced.
+	OffScale,
+}
+
+/// A plan channel the replay has no values for: one row of what `dev recording dash` says.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Gap {
+	pub kind: GapKind,
+	/// `BOOST (01:202A)`.
+	pub channel: String,
+	/// Its unit's request id and its identifier: what `watch --did` takes.
+	pub read: (u16, u16),
+	/// `"Speed" names 2 channels: 01:1001, 02:2001`; empty for a missing one.
+	pub detail: String,
+}
+
+impl Gap {
+	/// `missing`, `ambiguous`, `off-scale`, the channel, and the detail.
+	pub fn cells(&self) -> Vec<String> {
+		let kind = match self.kind {
+			GapKind::Missing => "missing",
+			GapKind::Ambiguous => "ambiguous",
+			GapKind::OffScale => "off-scale",
+		};
+		vec![kind.to_string(), self.channel.clone(), self.detail.clone()]
+	}
+}
+
+/// The gaps as aligned rows, no header: `missing  BOOST (01:202A)`.
+pub fn gap_rows(gaps: &[Gap]) -> Vec<String> {
+	let mut table = vag_cli_core::table::Table::new(&["", "", ""]);
+	for gap in gaps {
+		table.row(gap.cells());
+	}
+	table.render(None).lines().skip(1).map(str::to_string).collect()
+}
+
+/// What each kind of gap rests on, once a kind, at `-v`.
+pub fn caveats(gaps: &[Gap]) -> Vec<String> {
+	let has = |kind: GapKind| gaps.iter().any(|g| g.kind == kind);
+	let mut out = Vec::new();
+	if has(GapKind::Missing) {
+		out.push("missing: not in the recording, so no value and never an alarm".to_string());
+	}
+	if has(GapKind::Ambiguous) {
+		// `watch` heads a column with a name and no unit, so a name two channels share is every
+		// one of them. The owner's own name for one of them, written before the drive, is what
+		// tells them apart.
+		out.push("ambiguous: `watch` heads a column with a name and no unit, so which of the channels it holds is not known — not used".to_string());
+	}
+	if has(GapKind::OffScale) {
+		out.push(
+			"off-scale: the column was recorded with another scaling, or by a `watch` before 2026-09-26, which wrote an answer \
+			 it could not convert as bare hex — not used"
+				.to_string(),
+		);
+	}
+	out
+}
+
+/// What to type so that a drive has these channels: record them again, after naming the
+/// ambiguous ones apart. `plan` stands in when there is no gap to name.
+pub fn fix(gaps: &[Gap], plan: &Plan) -> String {
+	let reads: Vec<(u16, u16)> = match gaps.is_empty() {
+		true => plan.channels.iter().map(|c| (c.unit, c.did)).collect(),
+		false => gaps.iter().map(|g| g.read).collect(),
+	};
+	let record = format!("vagcan watch --did \"{}\" --out FILE", watch_spec(&reads));
+	match gaps.iter().any(|g| g.kind == GapKind::Ambiguous) {
+		true => format!("Fix: give each ambiguous one a name of its own in ~/.vagcan/names.csv (`vagcan dev glossary`), then `{record}`"),
+		false => format!("Fix: `{record}`"),
+	}
+}
+
+/// `watch --did`'s spelling of the reads, one group a unit in the order first met:
+/// `01:202A,F405 713:1001`.
+fn watch_spec(reads: &[(u16, u16)]) -> String {
+	let mut groups: Vec<(u16, Vec<u16>)> = Vec::new();
+	for &(unit, did) in reads {
+		match groups.iter_mut().find(|(u, _)| *u == unit) {
+			Some((_, dids)) if dids.contains(&did) => {}
+			Some((_, dids)) => dids.push(did),
+			None => groups.push((unit, vec![did])),
+		}
+	}
+	groups
+		.iter()
+		.map(|(unit, dids)| {
+			let unit = vag_uds_client::address::UnitAddress::from_request(*unit).map_or_else(|| format!("{unit:03X}"), |a| a.label());
+			let dids: Vec<String> = dids.iter().map(|d| format!("{d:04X}")).collect();
+			format!("{unit}:{}", dids.join(","))
+		})
+		.collect::<Vec<_>>()
+		.join(" ")
 }
 
 /// What a column can be: unit, identifier and — for a converted value — the field's bit
@@ -79,7 +186,7 @@ pub fn match_columns(columns: &[Column], offered: &[Offered], plan: &Plan) -> Ma
 
 	let mut sources = Vec::with_capacity(plan.channels.len());
 	let mut notes = Vec::new();
-	let mut missing = Vec::new();
+	let mut gaps = Vec::new();
 	let mut by_name = Vec::new();
 	let unused = unused(plan);
 	for (index, channel) in plan.channels.iter().enumerate() {
@@ -104,25 +211,31 @@ pub fn match_columns(columns: &[Column], offered: &[Offered], plan: &Plan) -> Ma
 			(Some(_), _) => by_name.push(name),
 			(None, Some(&i)) => {
 				// `watch` heads a column with a name and no unit, so a name two channels share is
-				// every one of them. The owner's own name for one of them, written before the
-				// drive, is what tells them apart.
+				// every one of them ([`caveats`]).
 				let candidates: Vec<String> = meanings[i]
 					.iter()
 					.map(|&(unit, did, bits)| address_name(unit, did, bits.unwrap_or(0)))
 					.collect();
-				notes.push(format!(
-					"{name}: the column \"{}\" is the name of {} channels of this car ({}), so which one it holds is not known — \
-					 not used. A name of its own in ~/.vagcan/names.csv (`vagcan dev glossary`) before the drive tells them apart",
-					columns[i].name,
-					meanings[i].len(),
-					candidates.join(", ")
-				));
+				gaps.push(Gap {
+					kind: GapKind::Ambiguous,
+					channel: name,
+					read: (channel.unit, channel.did),
+					detail: format!(
+						"{:?} names {} {}: {}",
+						columns[i].name,
+						meanings[i].len(),
+						plural(meanings[i].len(), "channel"),
+						candidates.join(", ")
+					),
+				});
 			}
-			(None, None) => missing.push(name),
+			(None, None) => gaps.push(Gap {
+				kind: GapKind::Missing,
+				channel: name,
+				read: (channel.unit, channel.did),
+				detail: String::new(),
+			}),
 		}
-	}
-	if !missing.is_empty() {
-		notes.insert(0, format!("not in the recording, so no value and never an alarm: {}", missing.join(", ")));
 	}
 	// `watch` names a column from the units it knew on the day: the car's record as it
 	// stood, and the units it identified live. The plan's units are the record as it
@@ -135,7 +248,7 @@ pub fn match_columns(columns: &[Column], offered: &[Offered], plan: &Plan) -> Ma
 			by_name.join(", ")
 		));
 	}
-	Matched { sources, notes }
+	Matched { sources, gaps, notes }
 }
 
 /// The plan channels the replay has no use for, by index: the lever's three, which only the
@@ -198,7 +311,7 @@ fn name_of(channel: &PlanChannel) -> String {
 
 /// Every plan channel's readings out of the recording, in its own time where the file
 /// gives one: `None` for a channel with no column, and for one whose column holds a cell
-/// the plan's scaling cannot have produced, which is said in `notes`.
+/// the plan's scaling cannot have produced, which is a [`GapKind::OffScale`] in `gaps`.
 ///
 /// A reading is what the board's store would hold after it: a value, or `None` where the
 /// unit answered with nothing the board decodes. A read that missed is `None` too, as on
@@ -213,7 +326,7 @@ fn name_of(channel: &PlanChannel) -> String {
 /// is an older recording's unconverted answer written as bare hex, which nothing tells
 /// apart from a number. Neither is salvaged: keeping the cells that happen to fit would
 /// put numbers on the glass the board never shows.
-pub fn series(recording: &Recording, sources: &[Option<Source>], plan: &Plan, device: &DevicePlan, notes: &mut Vec<String>) -> Vec<Option<Series>> {
+pub fn series(recording: &Recording, sources: &[Option<Source>], plan: &Plan, device: &DevicePlan, gaps: &mut Vec<Gap>) -> Vec<Option<Series>> {
 	sources
 		.iter()
 		.enumerate()
@@ -243,14 +356,13 @@ pub fn series(recording: &Recording, sources: &[Option<Source>], plan: &Plan, de
 						None => match written_number(cell).and_then(|v| on_the_boards_scale(v, owned, board)) {
 							Some(value) => Some(value),
 							None => {
-								notes.push(format!(
-									"{}: the recording's {cell:?} is not a number on the plan's scaling (×{} {:+}) — the column was \
-									 recorded with another scaling, or it is from a recording made before 2026-09-26, which wrote an \
-									 answer it could not convert as bare hex; not used",
-									name_of(owned),
-									owned.factor,
-									owned.offset
-								));
+								// Why it can be: [`caveats`].
+								gaps.push(Gap {
+									kind: GapKind::OffScale,
+									channel: name_of(owned),
+									read: (owned.unit, owned.did),
+									detail: format!("{cell:?} is not a number on the plan's scaling (×{} {:+})", owned.factor, owned.offset),
+								});
 								return None;
 							}
 						},
@@ -423,6 +535,7 @@ mod tests {
 			[Some(Source::Converted(2)), Some(Source::Converted(3)), Some(Source::Converted(0))]
 		);
 		assert_eq!(matched.notes.len(), 1, "only the caveat on names: {:?}", matched.notes);
+		assert!(matched.gaps.is_empty(), "{:?}", matched.gaps);
 	}
 
 	#[test]
@@ -494,12 +607,29 @@ mod tests {
 		let recording = columns("t_s,Speed\n0.0,1\n");
 		let matched = match_columns(&recording.columns, &offered, &plan);
 		assert_eq!(matched.sources, [None, None]);
-		assert_eq!(matched.notes.len(), 2, "{:?}", matched.notes);
-		assert!(matched.notes[0].starts_with("not in the recording") && matched.notes[0].contains("absent (01:1009)"));
-		assert!(
-			matched.notes[1].contains("\"Speed\" is the name of 2 channels of this car (01:1001, 02:2001)"),
-			"{:?}",
-			matched.notes
+		assert!(matched.notes.is_empty(), "{:?}", matched.notes);
+		// One row a channel, in plan order, aligned; why each kind is not used at `-v`.
+		assert_eq!(
+			gap_rows(&matched.gaps),
+			[
+				"ambiguous  speed (01:1001)   \"Speed\" names 2 channels: 01:1001, 02:2001",
+				"missing    absent (01:1009)",
+			]
+		);
+		let caveats = caveats(&matched.gaps);
+		assert_eq!(caveats.len(), 2, "{caveats:?}");
+		assert!(caveats[0].starts_with("missing: not in the recording, so no value and never an alarm"));
+		assert!(caveats[1].starts_with("ambiguous: `watch` heads a column with a name and no unit"));
+		// What to type: the ambiguous one named apart, then both recorded, one group a unit.
+		assert_eq!(
+			fix(&matched.gaps, &plan),
+			"Fix: give each ambiguous one a name of its own in ~/.vagcan/names.csv (`vagcan dev glossary`), \
+			 then `vagcan watch --did \"01:1001,1009\" --out FILE`"
+		);
+		assert_eq!(fix(&matched.gaps[1..], &plan), "Fix: `vagcan watch --did \"01:1009\" --out FILE`");
+		assert_eq!(
+			watch_spec(&[(ENGINE, 0x1001), (GEARBOX, 0x2001), (ENGINE, 0x1001), (ENGINE, 0x1002)]),
+			"01:1001,1002 02:2001"
 		);
 	}
 
@@ -546,22 +676,20 @@ mod tests {
 		let missing = |owned: &Plan| {
 			let matched = match_columns(&recording.columns, &one, owned);
 			matched
-				.notes
+				.gaps
 				.iter()
-				.find(|n| n.starts_with("not in the recording"))
-				.cloned()
-				.unwrap_or_default()
+				.filter(|g| g.kind == GapKind::Missing)
+				.map(|g| g.channel.clone())
+				.collect::<Vec<_>>()
+				.join(", ")
 		};
-		assert_eq!(missing(&owned), "not in the recording, so no value and never an alarm: absent (01:1009)");
+		assert_eq!(missing(&owned), "absent (01:1009)");
 		owned.pages = vec![Page::Values {
 			title: "T".into(),
 			cells: vec![0, 1, 5],
 			volts: true,
 		}];
-		assert_eq!(
-			missing(&owned),
-			"not in the recording, so no value and never an alarm: speed (01:1002), absent (01:1009)"
-		);
+		assert_eq!(missing(&owned), "speed (01:1002), absent (01:1009)");
 		// Nor on no page when a `zero_at_rest` channel a page shows asks it whether the car
 		// stands (`todo/dash/26`): the replay reads it with that channel.
 		let mut resting = owned.clone();
@@ -572,10 +700,7 @@ mod tests {
 		}];
 		resting.channels[0].zero_at_rest = true;
 		resting.standstill = Some(vag_cli_core::dash::Standstill::Speed { channel: 1 });
-		assert_eq!(
-			missing(&resting),
-			"not in the recording, so no value and never an alarm: speed (01:1002), absent (01:1009)"
-		);
+		assert_eq!(missing(&resting), "speed (01:1002), absent (01:1009)");
 		// Nor is any other note about columns written for them: a heading the cruise status
 		// shares with a gearbox channel is not worth a word when nothing reads either.
 		let shared = [
@@ -585,6 +710,7 @@ mod tests {
 		];
 		let matched = match_columns(&columns("t_s,One,Cruise\n0.0,1,0\n").columns, &shared, &owned);
 		assert!(!matched.notes.iter().any(|n| n.contains("cruise")), "{:?}", matched.notes);
+		assert!(!matched.gaps.iter().any(|g| g.channel.contains("cruise")), "{:?}", matched.gaps);
 	}
 
 	#[test]
@@ -645,7 +771,7 @@ mod tests {
 
 	/// One channel planned `factor` over a field `bits` wide, and what `series` makes of a
 	/// one-column recording of it.
-	fn read_on(factor: f64, bits: u32, csv: &str) -> (Vec<Option<Series>>, Vec<String>) {
+	fn read_on(factor: f64, bits: u32, csv: &str) -> (Vec<Option<Series>>, Vec<Gap>) {
 		let offered = [offered(ENGINE, 0x1001, "One", RawForm::I16Be)];
 		let mut channel = plan_channel(ENGINE, 0x1001, 0, "one");
 		channel.factor = factor;
@@ -660,7 +786,7 @@ mod tests {
 	}
 
 	/// [`read_on`] over an unsigned field.
-	fn read_on_unsigned(factor: f64, bits: u32, csv: &str) -> (Vec<Option<Series>>, Vec<String>) {
+	fn read_on_unsigned(factor: f64, bits: u32, csv: &str) -> (Vec<Option<Series>>, Vec<Gap>) {
 		let offered = [offered(ENGINE, 0x1001, "One", RawForm::I16Be)];
 		let mut channel = plan_channel(ENGINE, 0x1001, 0, "one");
 		(channel.factor, channel.bit_length, channel.signed) = (factor, bits, false);
@@ -689,7 +815,7 @@ mod tests {
 			let (series, notes) = read_on(0.75, bits, csv);
 			assert_eq!(series, [None], "{bits}-bit: {csv:?}");
 			assert_eq!(notes.len(), 1, "{notes:?}");
-			assert!(notes[0].contains("not a number on the plan's scaling (×0.75 +0)"), "{notes:?}");
+			assert!(notes[0].detail.contains("not a number on the plan's scaling (×0.75 +0)"), "{notes:?}");
 		}
 	}
 
@@ -701,7 +827,9 @@ mod tests {
 		for cell in ["0B", "01", "0B34", "0100"] {
 			let (series, notes) = read_on(0.01, 16, &format!("t_s,One\n0.0,-2.3\n0.1,{cell}\n"));
 			assert_eq!(series, [None], "{cell}");
-			assert!(notes[0].contains("bare hex") && notes[0].contains("before 2026-09-26"), "{notes:?}");
+			assert_eq!(notes[0].kind, GapKind::OffScale, "{notes:?}");
+			let said = caveats(&notes);
+			assert!(said.iter().any(|c| c.contains("bare hex") && c.contains("before 2026-09-26")), "{said:?}");
 		}
 		// Numbers that fit are the values the board computes.
 		let (series, notes) = read_on(0.01, 16, "t_s,One\n0.0,-2.3\n0.3,100\n0.4,0\n0.5,0.5\n");
@@ -725,7 +853,7 @@ mod tests {
 			let csv = format!("t_s,One\n0.0,3\n0.1,{cell}\n0.2,6\n");
 			let (series, notes) = read_on_unsigned(1.0, bits, &csv);
 			assert_eq!(series, [None], "{bits}-bit: {cell}");
-			assert!(notes[0].contains("not a number on the plan's scaling"), "{notes:?}");
+			assert!(notes[0].detail.contains("not a number on the plan's scaling"), "{notes:?}");
 		}
 		// The ends of the field are values the board can show.
 		let (series, notes) = read_on_unsigned(1.0, 8, "t_s,One\n0.0,0\n0.1,255\n");
@@ -763,7 +891,7 @@ mod tests {
 		// 999999.75 where the board shows 750000.
 		let (series, notes) = read_on(0.75, 32, "t_s,One\n0.0,1000000\n");
 		assert_eq!(series, [None]);
-		assert!(notes[0].contains("not a number on the plan's scaling"), "{notes:?}");
+		assert!(notes[0].detail.contains("not a number on the plan's scaling"), "{notes:?}");
 	}
 
 	#[test]
@@ -801,6 +929,6 @@ mod tests {
 		let matched = match_columns(&recording.columns, &offered, &owned);
 		let mut notes = Vec::new();
 		assert_eq!(series(&recording, &matched.sources, &owned, &device, &mut notes), [None]);
-		assert!(notes[0].contains("not a number on the plan's scaling"), "{notes:?}");
+		assert!(notes[0].detail.contains("not a number on the plan's scaling"), "{notes:?}");
 	}
 }

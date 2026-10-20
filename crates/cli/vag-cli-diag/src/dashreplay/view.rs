@@ -19,8 +19,8 @@ use super::glass::{Canvas, braille, half_blocks};
 use crate::ui::term;
 use vag_dash_core::panel::{HEIGHT, WIDTH};
 
-/// Play `replay` to the end or until the person leaves, and return every line of the log —
-/// `notes` first — for the caller to print once the screen is gone.
+/// Play `replay` to the end or until the person leaves, and return the events of the log —
+/// the lines under the panel after `notes` — for the caller to print once the screen is gone.
 pub fn show(mut replay: Replay, notes: &[String], title: &str, speed: f64) -> Result<Vec<String>> {
 	let screen = term::full_screen()
 		.hiding_cursor()
@@ -60,7 +60,7 @@ pub fn show(mut replay: Replay, notes: &[String], title: &str, speed: f64) -> Re
 		}
 	}
 	drop(screen);
-	Ok(log)
+	Ok(log.split_off(notes.len()))
 }
 
 /// Wait for the frame's moment, listening for a way out. `true` when the person left.

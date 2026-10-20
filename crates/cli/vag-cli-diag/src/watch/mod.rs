@@ -1831,7 +1831,7 @@ fn replay_identities(vin: Option<&str>) -> Result<Vec<crate::plan::UnitIdentity>
 	let cars = match crate::units::recorded_cars() {
 		Ok(cars) => cars,
 		Err(e) => {
-			eprintln!("{e:#} — name the car with --vin to get one tab per control unit");
+			vag_cli_core::say!("{e:#} — name the car with --vin for one tab per control unit");
 			return Ok(Vec::new());
 		}
 	};
@@ -1839,8 +1839,8 @@ fn replay_identities(vin: Option<&str>) -> Result<Vec<crate::plan::UnitIdentity>
 		[one] => Ok(one.units.clone()),
 		[] => Ok(Vec::new()),
 		many => {
-			eprintln!(
-				"{} cars are recorded on this machine — name one with --vin to get one tab per control unit",
+			vag_cli_core::say!(
+				"{} cars are recorded on this machine — name one with --vin for one tab per control unit",
 				many.len()
 			);
 			Ok(Vec::new())
@@ -1925,6 +1925,8 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, vin: Option<&st
 		// The errno crossterm fails with ("Device not configured") says nothing a
 		// reader can use; that there is no terminal is the whole answer.
 		.map_err(|_| anyhow::anyhow!("{REPLAY_NEEDS_A_TERMINAL}"))?;
+	// Notes would draw over the view; a redirected stderr still gets them.
+	let notes_held = vag_cli_core::verbosity::hold();
 	let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
 	let mut app = App::new(channels);
@@ -2042,8 +2044,9 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, vin: Option<&st
 	// ratatui's `Drop` shows the cursor it hid while drawing, so it goes first.
 	drop(terminal);
 	drop(screen);
-	println!(
-		"replayed {recording_path} — {:.0}s of driving, {} columns, {} of which ever changed",
+	drop(notes_held);
+	vag_cli_core::outln!(
+		"replayed {recording_path} · {:.0} s · {} columns · {} changed",
 		duration,
 		recording.columns.len(),
 		moved.len()
@@ -2250,13 +2253,17 @@ fn silent_units(identities: &[crate::plan::UnitIdentity], channels: &[Channel]) 
 /// set here, and the units with nothing to show are a line of their own, since
 /// "the tool cannot name this unit's identifiers" and "the tool did not find
 /// this unit" look identical on screen and are not the same problem.
+///
+/// Lines with the level each is said at, for stderr (stdout is the CSV in the plain
+/// view): at 0 which units answered and which have nothing to show, at `-v` what each
+/// group is and why, and what to do about it.
 fn coverage_report(
 	identities: &[crate::plan::UnitIdentity],
 	channels: &[Channel],
 	catalogs: &str,
 	project: Option<&str>,
 	causes: &std::collections::BTreeMap<u16, String>,
-) -> String {
+) -> Vec<(u8, String)> {
 	let list = |units: &[u16]| units.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(" ");
 	let units: Vec<u16> = identities.iter().map(|i| i.request).collect();
 	let any = |request: u16, f: &dyn Fn(&Channel) -> bool| channels.iter().any(|c| c.request == request && f(c));
@@ -2283,22 +2290,21 @@ fn coverage_report(
 	// Every one of these answered this run — the record is never taken as a
 	// reason not to ask — so "on this car" is what was seen, not what was
 	// remembered.
-	let mut out = format!(
-		"{} control {} on this car: {}\n",
-		units.len(),
-		crate::render::plural(units.len(), "unit"),
-		list(&units)
-	);
+	let mut out: Vec<(u8, String)> = vec![(0, format!("units    {}: {}", units.len(), list(&units)))];
+	let mut push = |level: u8, text: String| out.push((level, text.trim_end_matches('\n').to_string()));
 	if !proven.is_empty() {
-		out.push_str(&format!("  measurements proven on a car: {}\n", list(&proven)));
+		push(1, format!("proven   {} (measurements proven on a car)", list(&proven)));
 	}
 	if !named.is_empty() {
 		// Named and scaled without a drive — the whole point of reading an ODIS
 		// project — but said in words that do not claim more than that.
-		out.push_str(&format!(
-			"  named and scaled from this project's source data, not yet confirmed on a car: {}\n",
-			list(&named)
-		));
+		push(
+			1,
+			format!(
+				"named    {} (named and scaled from this project's source data, not yet confirmed on a car)",
+				list(&named)
+			),
+		);
 	}
 	// Nothing on this car is scaled but the standard OBD-II rows. That is the
 	// state of a project `setup` has not read a source into for this car, and it
@@ -2306,24 +2312,26 @@ fn coverage_report(
 	// needs to change that.
 	let undescribed = proven.is_empty() && named.is_empty() && !units.is_empty();
 	if undescribed {
-		out.push_str(&crate::missing::no_catalog("This car", std::path::Path::new(catalogs)));
+		push(
+			0,
+			"scalings none for this car on this machine — `vagcan setup` reads a source".to_string(),
+		);
+		push(1, crate::missing::no_catalog("This car", std::path::Path::new(catalogs)));
 	}
 	if !raw.is_empty() {
 		// The raw channels are the ones `--did` named that nothing describes:
 		// watched as bytes, and said to be, with what turns bytes into numbers —
 		// a row of hex with no way to learn whether it is fixable is the screen
 		// this line exists to explain.
-		out.push_str(&format!("  raw identifiers, asked for with --did: {}\n", list(&raw)));
+		push(1, format!("raw identifiers, asked for with --did: {}", list(&raw)));
 		let unproven = channels.iter().filter(|c| c.def.is_none()).count();
-		for line in crate::missing::raw_channels_note(unproven).lines() {
-			out.push_str(&format!("  {line}\n"));
-		}
+		push(1, crate::missing::raw_channels_note(unproven));
 	}
 	if !silent.is_empty() {
 		// Every line that carries a list or a path ends with it: these are as
 		// long as the car makes them, and a hard wrap placed before one lands
 		// in a different place on every car.
-		out.push_str(&format!("nothing to show for {}\n", list(&silent)));
+		push(0, format!("nothing to show for {}", list(&silent)));
 		// **Which shortage this is, in the words that pick the right fix.** A
 		// project that is installed and does not reach these units is not the
 		// same state as no project at all, and the two have different next
@@ -2334,20 +2342,23 @@ fn coverage_report(
 			1 => ("it answers", "its"),
 			_ => ("they answer", "their"),
 		};
-		out.push_str(&match project {
-			Some(id) => format!("  — {they}, but neither the project {id} nor any catalog in {catalogs}\n    describes {their} identifiers.\n"),
-			None => {
-				format!(
-					"  — {they}, but no catalog in {catalogs} matches {their} part numbers,\n    and no project is set up that might describe {}.\n",
-					if silent.len() == 1 { "it" } else { "them" }
-				)
-			}
-		});
+		push(
+			1,
+			match project {
+				Some(id) => format!("  — {they}, but neither the project {id} nor any catalog in {catalogs}\n    describes {their} identifiers.\n"),
+				None => {
+					format!(
+						"  — {they}, but no catalog in {catalogs} matches {their} part numbers,\n    and no project is set up that might describe {}.\n",
+						if silent.len() == 1 { "it" } else { "them" }
+					)
+				}
+			},
+		);
 		// And the cause, where a VCDS read logged one for the unit: "no file"
 		// is a different next step from "shifted".
 		for request in &silent {
 			if let Some(cause) = causes.get(request) {
-				out.push_str(&format!("    {request:03X} {cause}\n"));
+				push(1, format!("    {request:03X} {cause}"));
 			}
 		}
 	}
@@ -2445,10 +2456,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 	// merged field by field into what earlier runs recorded; a write that fails
 	// is one line. A car that gave no VIN has no record to write into, and
 	// that is said, or a dash owner waits for a file that never comes.
-	match &vin {
-		Some(vin) => crate::units::record_quietly(vin, &identities),
-		None => eprintln!("{}", crate::units::NOT_RECORDED_WITHOUT_A_VIN),
-	}
+	crate::units::record_for(vin.as_deref(), &identities);
 	// The channels of units nothing has read yet, out of the VCDS installation
 	// the project was set up from — the first time this car is seen, and before
 	// the project's rows are loaded below, so they include them.
@@ -2465,16 +2473,15 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 	// On stderr, because in the plain-console view stdout is the CSV: a
 	// paragraph of prose in front of the header is not something a reader of
 	// that stream can be asked to skip. It is still the terminal either way.
-	eprint!(
-		"{}",
-		coverage_report(
-			&identities,
-			&channels,
-			catalogs,
-			extracted.project(),
-			&crate::registry::causes(&identities)
-		)
-	);
+	for (level, line) in coverage_report(
+		&identities,
+		&channels,
+		catalogs,
+		extracted.project(),
+		&crate::registry::causes(&identities),
+	) {
+		vag_cli_core::verbosity::say(level, &line);
+	}
 	// A cache from before each state kept its whole range still names a state
 	// read on the range's lower end, and shows the rest as bytes. Said once, for
 	// the units on this car only, because only `setup` can fix it.
@@ -2482,7 +2489,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 		.iter()
 		.any(|u| extracted.levels_predate_bounds(u.odx_name.as_deref(), u.odx_version.as_deref()))
 	{
-		eprintln!("{}", crate::missing::state_ranges_note(&extracted.odis_sources()));
+		vag_cli_core::note!("{}", crate::missing::state_ranges_note(&extracted.odis_sources()));
 	}
 	// What `--did` named, among them. Refused here, before the screen, when it names a
 	// row this car's unit does not have; see `plan::select_wanted`.
@@ -2511,7 +2518,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 		.collect();
 	let favourites = app.select_favourites();
 	if favourites > 0 {
-		eprintln!(
+		vag_cli_core::note!(
 			"{favourites} of your {} favourites are on this car — press `f` on the selection screen to change them",
 			app.favourites.len()
 		);
@@ -2536,7 +2543,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 	if let View::Plain(duration) = view {
 		let mut sink: Box<dyn std::io::Write> = match sink {
 			Some(file) => Box::new(file),
-			None => Box::new(io::stdout().lock()),
+			None => Box::new(vag_cli_core::verbosity::Stdout),
 		};
 		// Seconds on the bus's clock, where a duration a caller is free to name
 		// cannot overflow anything: too far away to reach is no deadline at all.
@@ -2567,7 +2574,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 								return Err(link_closed(&bus));
 							}
 							// At once, and on stderr: stdout is the CSV.
-							eprintln!("{line}");
+							vag_cli_core::say!("{line}");
 						}
 					}
 					None => return Err(link_closed(&bus)),
@@ -2575,7 +2582,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 				() = tokio::time::sleep(Duration::from_secs_f64((wake - app.clock).max(0.0))) => {}
 			}
 		}
-		eprintln!("{rows} rows, {}", closing_line(app.readings, bus.secs() - watching_since));
+		vag_cli_core::say!("{rows} rows · {}", closing_line(app.readings, bus.secs() - watching_since));
 		return Ok(());
 	}
 
@@ -2588,6 +2595,8 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
              writes CSV."
 		)
 	})?;
+	// Notes would draw over the view; a redirected stderr still gets them.
+	let notes_held = vag_cli_core::verbosity::hold();
 	let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 	let mut next_frame = 0.0f64;
 	let mut next_row = bus.secs() + period.as_secs_f64();
@@ -2637,10 +2646,11 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 	// reason as in the replay path above.
 	drop(terminal);
 	drop(screen);
+	drop(notes_held);
 	if let Some(w) = sink.as_mut() {
 		w.flush()?;
 	}
-	println!("{}", closing_line(app.readings, bus.secs() - watching_since));
+	vag_cli_core::outln!("{}", closing_line(app.readings, bus.secs() - watching_since));
 	result
 }
 
@@ -2648,7 +2658,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 /// over one span, rather than a total beside the footer's rate over its last two seconds.
 fn closing_line(readings: u64, secs: f64) -> String {
 	match secs > 0.0 {
-		true => format!("{readings} readings in {secs:.1} s ({:.1} a second)", readings as f64 / secs),
+		true => format!("{readings} readings · {secs:.1} s · {:.1}/s", readings as f64 / secs),
 		false => format!("{readings} readings"),
 	}
 }
@@ -2776,6 +2786,11 @@ mod tests {
 		]
 	}
 
+	/// Every line of a coverage report, at whatever level it is said.
+	fn joined(lines: Vec<(u8, String)>) -> String {
+		lines.into_iter().map(|(_, line)| line + "\n").collect()
+	}
+
 	fn store(dir: std::path::PathBuf) -> vag_data_labels::catalog::CatalogStore {
 		vag_data_labels::catalog::CatalogStore::open(dir)
 	}
@@ -2787,10 +2802,10 @@ mod tests {
 		// with catalogs. Whatever else the summary says, those two must agree.
 		let identities = reference_identities();
 		let channels = crate::plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
-		let text = coverage_report(&identities, &channels, "catalogs/vehicles", None, &Default::default());
+		let text = joined(coverage_report(&identities, &channels, "catalogs/vehicles", None, &Default::default()));
 		let first = text.lines().next().unwrap().to_string();
 		let (count, listed) = first.split_once(':').unwrap();
-		let count: usize = count.split_whitespace().next().unwrap().parse().unwrap();
+		let count: usize = count.split_whitespace().last().unwrap().parse().unwrap();
 		assert_eq!(count, identities.len());
 		assert_eq!(listed.split_whitespace().count(), count, "{first}");
 	}
@@ -2803,7 +2818,7 @@ mod tests {
 		// used to be offered here is gone (owner, 2026-09-28).
 		let identities = reference_identities();
 		let channels = crate::plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
-		let text = coverage_report(&identities, &channels, "catalogs/vehicles", None, &Default::default());
+		let text = joined(coverage_report(&identities, &channels, "catalogs/vehicles", None, &Default::default()));
 		assert!(text.contains("nothing to show for"), "{text}");
 		assert!(text.contains("713"), "the unit with nothing to show is named: {text}");
 		for never in ["survey", "blind", "fuzz"] {
@@ -2827,7 +2842,13 @@ mod tests {
 		let empty = vag_data_labels::catalog::CatalogStore::open("/definitely/not/here");
 		let channels = crate::plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
 		let causes = [(0x70E_u16, "EV_BCMMQB: no file of that name in this installation".to_string())].into();
-		let text = coverage_report(&identities, &channels, "/x/data/SK37X/measurements", Some("SK37X"), &causes);
+		let text = joined(coverage_report(
+			&identities,
+			&channels,
+			"/x/data/SK37X/measurements",
+			Some("SK37X"),
+			&causes,
+		));
 		assert!(text.contains("nothing to show for 70E\n"), "{text}");
 		assert!(text.contains("— it answers, but neither the project SK37X"), "{text}");
 		assert!(text.contains("describes its identifiers"), "{text}");
@@ -2840,7 +2861,13 @@ mod tests {
 			ident(0x713, "EV_Brake"),
 		];
 		let channels = crate::plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
-		let text = coverage_report(&identities, &channels, "/x/data/SK37X/measurements", Some("SK37X"), &causes);
+		let text = joined(coverage_report(
+			&identities,
+			&channels,
+			"/x/data/SK37X/measurements",
+			Some("SK37X"),
+			&causes,
+		));
 		assert!(text.contains("nothing to show for 70E 713\n"), "{text}");
 		assert!(text.contains("— they answer, but neither"), "{text}");
 		assert!(text.contains("    70E EV_BCMMQB:"), "{text}");
@@ -2863,7 +2890,7 @@ mod tests {
 			text_id: None,
 			selected: true,
 		});
-		let text = coverage_report(&identities, &channels, "/x/data", None, &Default::default());
+		let text = joined(coverage_report(&identities, &channels, "/x/data", None, &Default::default()));
 		assert!(text.contains("raw identifiers, asked for with --did: 713"), "{text}");
 		assert!(text.contains("nothing read into this project scales them"), "{text}");
 		assert!(text.contains("vagcan setup"), "{text}");
@@ -2889,7 +2916,13 @@ mod tests {
 		let identities = vec![ident(0x714), ident(0x713), ident(0x70C)];
 		let empty = vag_data_labels::catalog::CatalogStore::open("/definitely/not/here");
 		let channels = crate::plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
-		let text = coverage_report(&identities, &channels, "/x/data/SK37X/measurements", None, &Default::default());
+		let text = joined(coverage_report(
+			&identities,
+			&channels,
+			"/x/data/SK37X/measurements",
+			None,
+			&Default::default(),
+		));
 		assert!(text.contains("has no scalings on this machine"), "{text}");
 		assert!(text.contains("/x/data/SK37X/measurements"), "{text}");
 		assert!(text.contains(crate::missing::scalings_path()), "{text}");
@@ -2913,7 +2946,13 @@ mod tests {
 		let empty = vag_data_labels::catalog::CatalogStore::open("/definitely/not/here");
 		let channels = crate::plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
 		assert!(channels.iter().any(|c| c.is_standard()), "the engine has its standard rows");
-		let text = coverage_report(&identities, &channels, "/x/data/SK37X/measurements", Some("SK37X"), &Default::default());
+		let text = joined(coverage_report(
+			&identities,
+			&channels,
+			"/x/data/SK37X/measurements",
+			Some("SK37X"),
+			&Default::default(),
+		));
 		assert!(text.contains("has no scalings on this machine"), "{text}");
 		assert!(!text.contains("named and scaled from this project"), "{text}");
 		// 714 answers nothing described; the route to a source is given once.
@@ -3140,7 +3179,7 @@ mod tests {
 	/// a rate over the last two seconds.
 	#[test]
 	fn the_closing_line_is_a_total_over_the_time_the_reads_ran() {
-		assert_eq!(closing_line(100, 10.0), "100 readings in 10.0 s (10.0 a second)");
+		assert_eq!(closing_line(100, 10.0), "100 readings · 10.0 s · 10.0/s");
 		assert_eq!(closing_line(0, 0.0), "0 readings");
 	}
 

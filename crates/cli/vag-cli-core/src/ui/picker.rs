@@ -214,7 +214,7 @@ impl Chooser for Console {
 		// No progress line may tick over the list (`crate::progress::hold`).
 		let _held = crate::progress::hold();
 		let mut at = at.min(choices.len().saturating_sub(1));
-		let mut out = std::io::stdout();
+		let mut out = std::io::stderr();
 		// Everything below this line can leave through a `?` or a panic, and
 		// both of those have to hand the terminal back the way they found it.
 		let _raw = term::in_place().enter()?;
@@ -274,7 +274,7 @@ impl Chooser for Console {
 		}
 		// No progress line may tick over the question (`crate::progress::hold`).
 		let _held = crate::progress::hold();
-		let mut out = std::io::stdout();
+		let mut out = std::io::stderr();
 		write!(out, "{question}")?;
 		out.flush()?;
 		let mut line = String::new();

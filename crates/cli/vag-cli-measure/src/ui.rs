@@ -307,7 +307,8 @@ pub fn discarded(index: usize, rewritten: Option<&str>, left: usize) -> String {
 	match rewritten {
 		Some(path) => format!(
 			"run {index} discarded. It had already been written, so {path} has been \
-             rewritten without it — {left} run(s) left in the file."
+             rewritten without it — {left} {} left in the file.",
+			vag_cli_core::table::plural(left, "run")
 		),
 		None => format!(
 			"run {index} discarded. It was never written anywhere, so there is nothing \
@@ -332,7 +333,10 @@ pub fn nothing_to_keep() -> String {
 
 /// Enter, done: the run is on disk and the screen is the one a run starts on.
 pub fn kept(path: &str, runs: usize) -> String {
-	format!("{runs} run(s) saved to {path}. Ready for the next one.")
+	format!(
+		"{runs} {} saved to {path}. Ready for the next one.",
+		vag_cli_core::table::plural(runs, "run")
+	)
 }
 
 /// Handle one key.

@@ -14,14 +14,20 @@
 //! * **A code is printed as a code until something names it.** The texts come
 //!   from the ODIS project's own fault tables first ([`crate::odisfaults`])
 //!   and from the VCDS label files where the project has none
-//!   ([`crate::faultnames`]); where neither resolves one, it shows the raw
-//!   bytes rather than a plausible-sounding invention. [`Namers`] is the
-//!   order, in one place for both the live and the recorded path.
+//!   ([`crate::faultnames`]); where neither resolves one, the text column is
+//!   empty rather than a plausible-sounding invention, and `-v` says why.
+//!   [`Namers`] is the order, in one place for both the live and the recorded path.
+//!
+//! What it prints: one table, a row per code (`unit id name code dtc status km count
+//! last seen text`), and a summary line, on stdout; the adapter, where the names come
+//! from and the sealed catalogues on stderr; the rest at `-v` (`vag_cli_core::verbosity`).
 //!
 //! Read-only: the service issued is `0x19`, which reads. Clearing faults is
 //! `0x14`, which the client's allowlist rejects.
 
 use anyhow::Result;
+use vag_cli_core::table::Table;
+use vag_cli_core::{note, out, say};
 use vag_uds_can::UnitLink;
 use vag_uds_client::address::UnitAddress;
 use vag_uds_client::dtc::{CONFIRMED, CarTime, FAILED_NOW, FaultContext, UnitStamp};
@@ -43,8 +49,12 @@ impl UnitFaults {
 	}
 }
 
-/// How a code is written: the three bytes, and the decimal fault number VW's
-/// own tools print.
+/// A code's three bytes, as the unit sent them: `047120`.
+pub fn code_hex(code: [u8; 3]) -> String {
+	format!("{:02X}{:02X}{:02X}", code[0], code[1], code[2])
+}
+
+/// The decimal fault number VW's own tools print beside a code.
 ///
 /// **All three bytes are one number**, big-endian. An earlier version of this
 /// function split them into a two-byte number and a symptom byte, which was
@@ -53,9 +63,8 @@ impl UnitFaults {
 /// and `291104` beside the steering column's `04 71 20`
 /// (`vendor/vcds-ru/Scans/`), matching the 24-bit reading in all four cases
 /// checked and the 16-bit one in none.
-pub fn format_code(code: [u8; 3]) -> String {
-	let number = u32::from_be_bytes([0, code[0], code[1], code[2]]);
-	format!("{:02X}{:02X}{:02X}  ({number})", code[0], code[1], code[2])
+pub fn fault_number(code: [u8; 3]) -> u32 {
+	u32::from_be_bytes([0, code[0], code[1], code[2]])
 }
 
 /// How long ago a fault happened, told against the unit's own counters.
@@ -89,20 +98,18 @@ pub fn describe_age(context: &FaultContext, now: Option<&UnitStamp>) -> String {
 	parts.join(", ")
 }
 
-/// When a fault was stored, by the car's own clock.
+/// When a fault was stored, by the car's own clock: `2026-07-27 00:00:03`, or `—` for a
+/// stamp that is not a date.
 ///
 /// Exact, to the second: the stamp is a packed date and time, and two VCDS
 /// printouts of this car reproduce field for field (`vag_uds_client::dtc::CarTime`).
-/// It is the *car's* clock, which on this car runs some days behind real time,
-/// so the wording says whose clock it is.
+/// It is the *car's* clock, which on this car runs some days behind real time —
+/// `faults --help` says whose clock the column is.
 pub fn describe_when(context: &FaultContext) -> String {
 	match CarTime::parse(context.clock) {
-		Some(t) => format!(
-			"{:04}-{:02}-{:02} {:02}:{:02}:{:02} by the car's own clock",
-			t.year, t.month, t.day, t.hour, t.minute, t.second
-		),
+		Some(t) => format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", t.year, t.month, t.day, t.hour, t.minute, t.second),
 		// An unset or corrupt stamp is not a moment.
-		None => format!("clock {:08X}, not a date", context.clock),
+		None => "—".to_string(),
 	}
 }
 
@@ -125,6 +132,17 @@ pub fn describe_status(status: u8) -> String {
 	if set.is_empty() { format!("{status:02X}") } else { set.join(", ") }
 }
 
+/// The status byte in one word for the table, the most telling state first (ISO 14229-1
+/// table D.1): failing now, confirmed, pending, else the byte. `-v` decodes it in full.
+pub fn short_status(status: u8) -> String {
+	match status {
+		s if s & FAILED_NOW != 0 => "failing".to_string(),
+		s if s & CONFIRMED != 0 => "confirmed".to_string(),
+		s if s & 0x04 != 0 => "pending".to_string(),
+		s => format!("{s:02X}"),
+	}
+}
+
 /// The identifiers by which a unit names its own description file: the ODX
 /// name, and the coding index whose first three digits pick the variant
 /// (`.archive/research/labels/fault-naming-hop.md` §10.4). Both come off the car.
@@ -143,10 +161,8 @@ fn ident_text(bytes: &[u8]) -> String {
 /// installation names a code through a registry, a per-unit catalogue and a
 /// text store, each of which can be missing or sealed. The project is asked
 /// first because it answers for the exact variant the unit named; the chain
-/// is asked where the project has no table for the unit, or first where the
-/// preferred language — `[faults] language`, else English wherever a source has
-/// it ([`crate::odisfaults::OdisFaults::preferred`]) — is one only the VCDS
-/// build declares.
+/// is asked where the project has no table for the unit, or where
+/// `[faults] language` names a language only the VCDS build declares.
 ///
 /// Either half may be absent — a project set up from one source has one —
 /// and a command with neither still prints the codes.
@@ -162,6 +178,34 @@ pub struct UnitNamers {
 	odis: Option<crate::odisfaults::UnitTexts>,
 	vcds: Option<vag_data_labels::UnitLookup>,
 }
+
+/// What one code is called, taken apart for the table: the code a tester prints, the
+/// words, and what `-v` says about where they came from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Named {
+	/// `B1168F2`: the project's display code, or VCDS's SAE code and failure type.
+	pub dtc: Option<String>,
+	/// The text, its line breaks flattened — a fault text is one row on a screen.
+	pub text: Option<String>,
+	/// Where the words came from when that is worth saying, or why there are none.
+	pub note: Option<String>,
+	/// Whether there are words: the run's tally counts names, not rows.
+	pub named: bool,
+	/// Whose words the row shows, in the table's `src` column: [`ODIS`], [`ODIS_GUESSED`]
+	/// when the variant is not settled, [`VCDS`]; empty with no words.
+	pub src: &'static str,
+	/// The variant was picked by family, not by the car's own F1A2: recording F1A2 settles it.
+	pub needs_f1a2: bool,
+}
+
+/// The project's words, its variant settled by the car.
+pub const ODIS: &str = "odis";
+/// The project's words from a variant the car's identifiers did not settle — one of
+/// several, or picked by family. The table never presents such a row as settled
+/// (`odisfaults::Naming::provenance`).
+pub const ODIS_GUESSED: &str = "odis?";
+/// The VCDS labels' words.
+pub const VCDS: &str = "vcds";
 
 impl Namers {
 	/// Open whatever this machine has. Never fails for a shortage of data —
@@ -192,7 +236,22 @@ impl Namers {
 		&self.vcds_root
 	}
 
-	/// The lines that say where the names come from, for above a listing.
+	/// The `names` line above a listing: which sources name the codes, in the order they
+	/// are asked — `ODIS SK37X (deu) · VCDS (fallback)`.
+	pub fn summary(&self) -> String {
+		let odis = self.odis.as_ref().map(|o| o.short());
+		let vcds_first = self.odis.as_ref().is_some_and(|o| o.prefers_vcds());
+		let parts: Vec<String> = match (odis, self.vcds.is_some()) {
+			(Some(odis), true) if vcds_first => vec!["VCDS".to_string(), format!("{odis} (fallback)")],
+			(Some(odis), true) => vec![odis, "VCDS (fallback)".to_string()],
+			(Some(odis), false) => vec![odis],
+			(None, true) => vec!["VCDS".to_string()],
+			(None, false) => Vec::new(),
+		};
+		parts.join(" · ")
+	}
+
+	/// The lines that say where the names come from and how many there are, for `-v`.
 	pub fn describe(&self) -> Vec<String> {
 		let mut out = Vec::new();
 		if let Some(odis) = &self.odis {
@@ -225,7 +284,7 @@ impl Namers {
 		}
 	}
 
-	/// Why a unit's codes may come out as numbers, one line each.
+	/// Why a unit's codes may come out as numbers, one line each, for `-v`.
 	///
 	/// The VCDS chain's own reasons are only worth saying when that chain is
 	/// what the unit's codes will be named from — a sealed catalogue is no
@@ -255,9 +314,8 @@ impl Namers {
 		}
 	}
 
-	/// One line for a code, and whether that line is a name rather than a
-	/// reason. `None` when there is nothing to say under the number.
-	pub fn name(&self, unit: &UnitNamers, code: [u8; 3]) -> Option<(String, bool)> {
+	/// What a code is called. `None` when there is nothing to say beside the number.
+	pub fn name(&self, unit: &UnitNamers, code: [u8; 3]) -> Option<Named> {
 		let odis = self.odis.as_ref().zip(unit.odis.as_ref()).and_then(|(o, u)| o.name(u, code));
 		let vcds = match (&self.vcds, &unit.vcds) {
 			(Some(namer), Some(vag_data_labels::UnitLookup::Found { catalogue, .. })) => Some(namer.name(catalogue, code)),
@@ -315,6 +373,30 @@ fn open_vcds(root: &std::path::Path, keys: &std::path::Path, given: bool, withou
 	crate::faultnames::Namer::open(root, keys).map(Some)
 }
 
+/// The VCDS chain's answer, taken apart: the code VCDS prints, the words, or why there
+/// are none.
+fn vcds_named(naming: &crate::faultnames::Naming) -> Named {
+	use crate::faultnames::Naming;
+	match naming {
+		Naming::Named { text, sae, failure_type } => Named {
+			dtc: match (sae, failure_type) {
+				(Some(sae), Some(ftb)) => Some(format!("{sae}{ftb:02X}")),
+				(Some(sae), None) => Some(sae.clone()),
+				_ => None,
+			},
+			text: Some(text.replace('\n', " / ")),
+			note: None,
+			named: true,
+			src: VCDS,
+			needs_f1a2: false,
+		},
+		other => Named {
+			note: other.line(),
+			..Named::default()
+		},
+	}
+}
+
 /// The order the two chains are asked in, as one function over their answers.
 ///
 /// Separated from [`Namers::name`] so the order is testable without a project
@@ -324,48 +406,73 @@ fn open_vcds(root: &std::path::Path, keys: &std::path::Path, given: bool, withou
 /// The project wins, except where it has nothing to say. **A row with a
 /// display code and no text is one of those** — two of the reference
 /// project's 291,346 rows are shaped that way. The code is still the
-/// project's and is kept; the words come from VCDS, and the line says whose
-/// they are. Printing `(no text in the project)` over a name that exists one
-/// lookup away, and counting it as named, was the bug.
+/// project's and is kept; the words come from VCDS, and the note says whose
+/// they are. Printing no words over a name that exists one lookup away, and
+/// counting it as named, was the bug.
 fn compose(
 	odis: Option<crate::odisfaults::Naming>,
 	vcds: Option<crate::faultnames::Naming>,
 	prefer_vcds: bool,
 	project_has_unit: bool,
-) -> Option<(String, bool)> {
-	let vcds_text = match &vcds {
-		Some(crate::faultnames::Naming::Named { text, .. }) => Some(text.clone()),
-		_ => None,
-	};
-	if prefer_vcds && let Some(line) = vcds.as_ref().filter(|_| vcds_text.is_some()).and_then(|n| n.line()) {
-		return Some((line, true));
+) -> Option<Named> {
+	let vcds = vcds.as_ref().map(vcds_named);
+	if prefer_vcds && let Some(named) = vcds.clone().filter(|n| n.named) {
+		return Some(named);
 	}
-	if let Some(mut naming) = odis {
-		if naming.text.is_none()
-			&& let Some(text) = vcds_text
-		{
-			naming.text = Some(text);
-			return Some((format!("{}  (text from the VCDS labels)", naming.line()), true));
+	if let Some(naming) = odis {
+		let text = naming.text.as_deref().map(|t| t.replace('\n', " / "));
+		let mut notes: Vec<String> = Vec::new();
+		// `LEVEL` in the file's own word. It matched VCDS's fault priority on both codes it
+		// was checked against (`research/odis-dtc/README.md` §2), which is evidence for a
+		// decoder and not one — so the number is said and the word stays the file's.
+		if naming.level > 0 {
+			notes.push(format!("level {}", naming.level));
 		}
-		// A code without words anywhere is not a named code, whatever else the
-		// row carries — the run's tally counts names, not rows.
-		let named = naming.text.is_some();
-		// VCDS was asked first, for its language, and had nothing: these are the
-		// project's words, likely in another language, and the line says so —
-		// as a borrowed VCDS text says whose it is above.
-		if prefer_vcds && named {
-			return Some((format!("{}  (text from the ODIS project)", naming.line()), true));
+		if let Some(provenance) = naming.provenance() {
+			notes.push(provenance);
 		}
-		return Some((naming.line(), named));
+		let odis_src = if naming.provenance().is_none() { ODIS } else { ODIS_GUESSED };
+		// Whose words these are is the `src` column's, at level 0: a borrowed or a
+		// fallen-back text is another source's words, likely in another language.
+		let (text, named, src) = match (text, vcds.as_ref().and_then(|v| v.text.clone())) {
+			// VCDS was asked first, for its language, and had nothing: these are the
+			// project's words, likely in another language.
+			(Some(text), _) if prefer_vcds => {
+				notes.push("text from the ODIS project".to_string());
+				(Some(text), true, odis_src)
+			}
+			(Some(text), _) => (Some(text), true, odis_src),
+			(None, Some(borrowed)) => {
+				notes.push("text from the VCDS labels".to_string());
+				(Some(borrowed), true, VCDS)
+			}
+			// A code without words anywhere is not a named code, whatever else the
+			// row carries.
+			(None, None) => {
+				notes.push("no text in the project".to_string());
+				(None, false, "")
+			}
+		};
+		return Some(Named {
+			dtc: naming.display_code.clone(),
+			text,
+			note: (!notes.is_empty()).then(|| notes.join("; ")),
+			named,
+			src,
+			// Only a family match leaves F1A2 to be recorded; several variants of the
+			// car's own F1A2 disagreeing is a fact of the project, not a missing read.
+			needs_f1a2: src == ODIS_GUESSED && !naming.confirmed,
+		});
 	}
-	if let Some(naming) = vcds {
-		return naming
-			.line()
-			.map(|line| (line, matches!(naming, crate::faultnames::Naming::Named { .. })));
+	if let Some(named) = vcds {
+		return (named.named || named.note.is_some()).then_some(named);
 	}
 	// The project has a table for the unit and this number is not in it,
 	// and nothing else can be asked: said, rather than left blank.
-	project_has_unit.then(|| ("not in this unit's fault table in the ODIS project".to_string(), false))
+	project_has_unit.then(|| Named {
+		note: Some("not in this unit's fault table in the ODIS project".to_string()),
+		..Named::default()
+	})
 }
 
 /// The request ids a `--unit` list names, checked before the adapter is opened:
@@ -378,6 +485,154 @@ fn unit_list(flag: &str, spec: &str) -> Result<Vec<u16>> {
 			.iter()
 			.map(|u| u.request)
 			.collect(),
+	)
+}
+
+/// The caveat that used to head every listing, said at `-v` (and in `faults --help`):
+/// a stored code is a record, not a diagnosis.
+pub const STORED_IS_NOT_FAILING: &str =
+	"a stored code is a record that something happened once — not a diagnosis, and not necessarily a fault now; `failing` is failing now";
+
+/// One row of the table: a code and what is known about it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Row {
+	/// The unit's short number, `--` when it has none.
+	pub unit: String,
+	pub request: u16,
+	/// What the unit called itself (`F197`).
+	pub name: String,
+	pub code: [u8; 3],
+	pub dtc: String,
+	pub status: u8,
+	/// From the first extended-data record that reads as a fault context.
+	pub context: Option<FaultContext>,
+	pub text: String,
+	/// Whose words `text` is: [`ODIS`], [`ODIS_GUESSED`], [`VCDS`], or empty.
+	pub src: &'static str,
+}
+
+/// The fault table, as `faults` prints it on stdout. `width`: the terminal's, when known.
+///
+/// One row per code, the text last. Nothing but the text is ever shortened, and the text is
+/// never cut: with too little room it goes whole on an indented line under its row
+/// ([`Table::render`]). When even the columns before the text are wider than the screen —
+/// an 80-column terminal — each code takes two lines and its text a third
+/// ([`render_narrow`]), so no line wraps.
+pub fn render_rows(rows: &[Row], width: Option<usize>) -> String {
+	let mut table = Table::new(&["unit", "id", "name", "code", "dtc", "status", "km", "count", "last seen", "src", "text"])
+		.right(6)
+		.right(7);
+	for row in rows {
+		let (km, count, when) = context_cells(row, describe_when);
+		let mut cells = head_cells(row);
+		cells.extend([short_status(row.status), km, count, when, row.src.to_string(), row.text.clone()]);
+		table.row(cells);
+	}
+	match width {
+		Some(width) if table.width_before_last() > width => render_narrow(rows, width),
+		_ => table.render(width),
+	}
+}
+
+/// What names a code: unit, id, name, code, dtc.
+fn head_cells(row: &Row) -> Vec<String> {
+	vec![
+		row.unit.clone(),
+		format!("{:03X}", row.request),
+		row.name.clone(),
+		code_hex(row.code),
+		row.dtc.clone(),
+	]
+}
+
+/// A code's record — km, count, when — with `when` written by `when`.
+fn context_cells(row: &Row, when: fn(&FaultContext) -> String) -> (String, String, String) {
+	match &row.context {
+		Some(c) => (
+			c.mileage_km.to_string(),
+			match c.occurrences {
+				0xFF => "255+".to_string(),
+				n => n.to_string(),
+			},
+			when(c),
+		),
+		None => (String::new(), String::new(), String::new()),
+	}
+}
+
+/// When a fault was stored, to the minute: the two-line layout's `last seen`.
+fn describe_when_minute(context: &FaultContext) -> String {
+	let full = describe_when(context);
+	// `YYYY-MM-DD HH:MM:SS` loses its seconds; `—` stays as it is.
+	match full.len() {
+		19 => full[..16].to_string(),
+		_ => full,
+	}
+}
+
+/// The table for a screen narrower than one row: per code a line of what names it, an
+/// indented line of its record, and its text under them, wrapped at spaces to the screen.
+fn render_narrow(rows: &[Row], width: usize) -> String {
+	let mut head = Table::new(&["unit", "id", "name", "code", "dtc"]);
+	let mut record = Table::new(&["status", "km", "count", "last seen", "src"]).right(1).right(2);
+	for row in rows {
+		head.row(head_cells(row));
+		let (km, count, when) = context_cells(row, describe_when_minute);
+		record.row(vec![short_status(row.status), km, count, when, row.src.to_string()]);
+	}
+	let indent = "      ";
+	let head = head.render(None);
+	let record = record.render(None);
+	let mut out = String::new();
+	for (at, (first, second)) in head.lines().zip(record.lines()).enumerate() {
+		out.push_str(first);
+		out.push('\n');
+		out.push_str(indent);
+		out.push_str(second);
+		out.push('\n');
+		// The header pair has no text under it; row `at - 1` does.
+		if let Some(row) = at.checked_sub(1).and_then(|n| rows.get(n)) {
+			for line in vag_cli_core::table::wrap(&row.text, width.saturating_sub(indent.len()).max(20)) {
+				out.push_str(indent);
+				out.push_str(&line);
+				out.push('\n');
+			}
+		}
+	}
+	out
+}
+/// The one stderr line under a table with guessed rows (`src` [`ODIS_GUESSED`]): which
+/// units, and where the variant was picked by family, what F1A2 did — the identifier that
+/// settles it. `by_family`: those units, and whether each answered F1A2. `None` when every
+/// row's source is settled.
+pub fn guessed_line(rows: &[Row], by_family: &[(u16, bool)]) -> Option<String> {
+	let mut guessed: Vec<u16> = rows.iter().filter(|r| r.src == ODIS_GUESSED).map(|r| r.request).collect();
+	guessed.dedup();
+	if guessed.is_empty() {
+		return None;
+	}
+	let ids = |ids: &[u16]| ids.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(" ");
+	let mut line = format!("{ODIS_GUESSED}    {}: the ODIS variant is a guess", ids(&guessed));
+	let silent: Vec<u16> = by_family.iter().filter(|(_, read)| !read).map(|(r, _)| *r).collect();
+	let unmatched: Vec<u16> = by_family.iter().filter(|(_, read)| *read).map(|(r, _)| *r).collect();
+	if !silent.is_empty() {
+		line.push_str(&format!(
+			"; F1A2 not read from {}: run `vagcan faults` again with the ignition on",
+			ids(&silent)
+		));
+	}
+	if !unmatched.is_empty() {
+		line.push_str(&format!("; F1A2 of {} matches no variant in the project", ids(&unmatched)));
+	}
+	Some(line)
+}
+
+/// The summary line under the table.
+pub fn summary(stored: usize, failing: usize, units: usize, all: bool) -> String {
+	let what = if all { "listed" } else { "stored" };
+	format!(
+		"{stored} {what} · {failing} failing now · {units} {} read",
+		crate::render::plural(units, "unit")
 	)
 }
 
@@ -432,7 +687,7 @@ pub async fn run<L: UnitLink>(
 			let listed = match uds.read_data_by_identifier(gateway::INSTALLATION_LIST).await {
 				Ok(bitmap) => gateway::decode_installation_list(&bitmap),
 				Err(e) => {
-					println!("the gateway did not list the car's units ({e})");
+					say!("the gateway did not list the car's units ({e}): only the engine, the gearbox and the gateway are read");
 					Vec::new()
 				}
 			};
@@ -443,39 +698,39 @@ pub async fn run<L: UnitLink>(
 		}
 	};
 
-	// The caveat belongs before the codes, not after them. A list of hex on a
-	// screen headed "faults" is read as a verdict on the car; by the time a
-	// disclaimer arrives at the bottom the reader has already had the fright.
+	// Where the names come from: one line every run, the counts at -v. Where nothing
+	// opened, the data has not been set up yet — the codes read fine, and the line says
+	// how to name them.
 	if !supported {
-		println!(
-			"Stored codes are a record that something happened once — not a diagnosis, and \n\
-             not necessarily a fault present now. Only codes marked \"failed now\" are \n\
-             currently failing.\n"
-		);
-		// Where something opened, each code names itself or says why it could
-		// not, so only where the names come from is owed here. Where nothing
-		// did, the data has not been set up yet — the codes read fine, and the
-		// note says how to name them.
-		if namers.is_empty() {
-			println!("{}\n", crate::missing::no_fault_labels(namers.vcds_root()));
-		} else {
-			for line in namers.describe() {
-				println!("{line}");
+		match namers.is_empty() {
+			true => {
+				say!("names    none — `vagcan setup` names the codes");
+				note!("{}", crate::missing::no_fault_labels(namers.vcds_root()));
 			}
-			println!();
+			false => {
+				say!("names    {}", namers.summary());
+				for line in namers.describe() {
+					note!("{line}");
+				}
+			}
 		}
+		note!("{STORED_IS_NOT_FAILING}");
 	}
 
-	let mut total = 0usize;
+	let mut rows: Vec<Row> = Vec::new();
+	let mut supported_table = Table::new(&["unit", "id", "name", "code", "number"]).right(4);
+	let mut supported_total = 0usize;
+	let mut raw_table = Table::new(&["id", "code", "record", "bytes"]);
 	let mut sealed: Vec<std::path::PathBuf> = Vec::new();
-	let mut failing_now = 0usize;
+	// Units with a row whose ODIS variant was picked by family, and whether they answered F1A2.
+	let mut guessed_by_family: Vec<(u16, bool)> = Vec::new();
+	let mut read = 0usize;
 	let count = order.len();
 	let mut progress = crate::progress::Line::new();
 	for (at, request) in order.into_iter().enumerate() {
 		progress.update(&format!("reading faults — {request:03X}, unit {} of {count}", at + 1));
 		let Some(address) = UnitAddress::from_request(request) else {
-			progress.finish();
-			println!("  {request:03X} has no diagnostic address (700-795 or 7E0-7E7) — skipped");
+			note!("{request:03X}  skipped: no diagnostic address (700-795 or 7E0-7E7)");
 			continue;
 		};
 		let mut uds = AsyncUdsClient::new(backend.to_unit(CanId::Standard(address.request), CanId::Standard(address.response)));
@@ -492,9 +747,16 @@ pub async fn run<L: UnitLink>(
 			.ok()
 			.map(|b| String::from_utf8_lossy(&b).trim_end_matches(['\0', ' ']).to_string())
 			.filter(|s| !s.is_empty());
+		let listing = uds.read_dtcs_by_status_mask(0xFF).await;
+		// A list that did not come back is not a clean unit: said at level 0, and the unit
+		// is not counted as read in the summary.
+		match &listing {
+			Ok(_) => read += 1,
+			Err(e) => say!("{request:03X}  fault list not read: {e}"),
+		}
 		let unit = UnitFaults {
 			component,
-			all: uds.read_dtcs_by_status_mask(0xFF).await.unwrap_or_default(),
+			all: listing.unwrap_or_default(),
 		};
 		// The unit's own "now": the same odometer and counter its faults are
 		// stamped with, so ages are differences rather than dates.
@@ -503,6 +765,10 @@ pub async fn run<L: UnitLink>(
 			.await
 			.ok()
 			.and_then(|data| UnitStamp::parse(&data));
+		// A unit with no short number shows a dash rather than repeating
+		// its id, which reads as a rendering fault.
+		let number = crate::car::unit_number(vag_uds_client::address::short_number(request));
+		let name = unit.component.clone().unwrap_or_default();
 
 		if supported {
 			// The unit's whole catalogue of codes, in its own order — which is
@@ -510,20 +776,18 @@ pub async fn run<L: UnitLink>(
 			// worth comparing.
 			match uds.read_supported_dtcs().await {
 				Ok(list) => {
-					println!(
-						"\n{}  {:03X}  {}  — {} {} supported",
-						address.label(),
-						request,
-						unit.component.clone().unwrap_or_default(),
-						list.len(),
-						crate::render::plural(list.len(), "code")
-					);
 					for dtc in &list {
-						println!("  {}", format_code(dtc.code));
+						supported_table.row(vec![
+							number.clone(),
+							format!("{request:03X}"),
+							name.clone(),
+							code_hex(dtc.code),
+							fault_number(dtc.code).to_string(),
+						]);
 					}
-					total += list.len();
+					supported_total += list.len();
 				}
-				Err(e) => println!("\n{}  {:03X}  no supported list ({e})", address.label(), request),
+				Err(e) => note!("{request:03X}  no supported list ({e})"),
 			}
 			backend = L::release(uds.into_transport());
 			continue;
@@ -534,26 +798,27 @@ pub async fn run<L: UnitLink>(
 		} else {
 			unit.confirmed().into_iter().cloned().collect()
 		};
+		note!(
+			"{request:03X}  {} {} listed, {} confirmed",
+			unit.all.len(),
+			crate::render::plural(unit.all.len(), "code"),
+			unit.confirmed().len()
+		);
 		// Something failing right now outranks a code stored months ago.
 		show.sort_by_key(|d| (d.status & FAILED_NOW == 0, d.code));
-		failing_now += show.iter().filter(|d| d.status & FAILED_NOW != 0).count();
 		if !show.is_empty() {
-			progress.finish();
-			// A unit with no short number shows a dash rather than repeating
-			// its id, which reads as a rendering fault.
-			let number = match vag_uds_client::address::short_number(request) {
-				Some(n) => format!("{n:02X}"),
-				None => "--".to_string(),
-			};
-			println!("\n{number}  {request:03X}  {}", unit.component.clone().unwrap_or_default());
 			// The unit names its own variant and description file, so they are
 			// read only once something has to be named out of them.
+			// What the unit answered for F1A2, for the line a guessed variant gets.
+			let mut f1a2 = String::new();
 			let lookup = match namers.is_empty() {
 				true => None,
 				false => {
 					let read = |data: Option<Vec<u8>>| data.map(|b| ident_text(&b)).unwrap_or_default();
 					let odx = read(uds.read_data_by_identifier(ODX_NAME).await.ok());
 					let version = read(uds.read_data_by_identifier(ODX_VERSION).await.ok());
+					vag_cli_core::wire!("   {request:03X}  names looked up by F19E {odx:?} F1A2 {version:?}");
+					f1a2 = version.clone();
 					Some(namers.unit(&odx, &version))
 				}
 			};
@@ -562,72 +827,85 @@ pub async fn run<L: UnitLink>(
 			{
 				sealed.push(file);
 			}
-			for note in lookup.as_ref().map(|l| namers.notes(l)).unwrap_or_default() {
-				println!("  ({note})");
+			for line in lookup.as_ref().map(|l| namers.notes(l)).unwrap_or_default() {
+				note!("{request:03X}  {line}");
 			}
 			for dtc in &show {
-				println!("  {}   {}", format_code(dtc.code), describe_status(dtc.status));
-				// The name goes under the code, never instead of it: the
-				// number is what the car said and the name is this project's
-				// reading of it.
-				if let Some((line, _)) = lookup.as_ref().and_then(|l| namers.name(l, dtc.code)) {
-					println!("      {line}");
+				let named = lookup.as_ref().and_then(|l| namers.name(l, dtc.code)).unwrap_or_default();
+				if let Some(why) = &named.note {
+					note!("{request:03X}  {}  {why}", code_hex(dtc.code));
 				}
 				// Extended data carries when it happened: the odometer at the
 				// time and how often. Read for every fault, since that is the
 				// question a stored code raises.
 				let records = uds.read_dtc_extended(dtc.code).await.unwrap_or_default();
+				let mut context = None;
 				for record in &records {
-					match FaultContext::parse(&record.data) {
-						Some(context) => {
-							println!("      {}", describe_age(&context, now.as_ref()));
-							println!("      {}", describe_when(&context));
-						}
-						// A record this project cannot read is shown, not
-						// dropped — and not guessed at either.
-						None if details => println!(
-							"      record {:02X}: {}",
-							record.record,
-							record.data.iter().map(|b| format!("{b:02X}")).collect::<String>()
-						),
-						None => {}
-					}
-					if details {
-						println!(
-							"      raw {:02X}: {}",
-							record.record,
-							record.data.iter().map(|b| format!("{b:02X}")).collect::<String>()
+					let parsed = FaultContext::parse(&record.data);
+					if let Some(parsed) = &parsed {
+						note!(
+							"{request:03X}  {}  {} · {}",
+							code_hex(dtc.code),
+							describe_status(dtc.status),
+							describe_age(parsed, now.as_ref())
 						);
 					}
+					context = context.or(parsed);
+					if details {
+						raw_table.row(vec![
+							format!("{request:03X}"),
+							code_hex(dtc.code),
+							format!("{:02X}", record.record),
+							crate::render::hex_spaced(&record.data),
+						]);
+					}
+				}
+				rows.push(Row {
+					unit: number.clone(),
+					request,
+					name: name.clone(),
+					code: dtc.code,
+					dtc: named.dtc.unwrap_or_default(),
+					status: dtc.status,
+					context,
+					text: named.text.unwrap_or_default(),
+					src: named.src,
+				});
+				if named.needs_f1a2 && !guessed_by_family.iter().any(|(r, _)| *r == request) {
+					guessed_by_family.push((request, !f1a2.is_empty()));
 				}
 			}
-			total += show.len();
 		}
 		backend = L::release(uds.into_transport());
 	}
-	// The walk is over, and so is its line: cleared and its ticker stopped
-	// before the summary and the offer below. The last unit has nothing to show
-	// more often than not, so nothing in the loop finished the line, and it
-	// ticked on over the offer's question (2026-10-20). Dropped rather than
-	// finished, so no ticker is left running either.
+	// Off the screen before anything else is written, and for good: a spinner left
+	// ticking draws over the summary and over the question below it.
 	drop(progress);
 
+	let width = vag_cli_core::table::terminal_width();
 	if supported {
-		return Ok(());
-	}
-	if total == 0 {
-		println!("No stored codes.");
-		return Ok(());
-	}
-	println!(
-		"\n{total} stored {}. {}",
-		if total == 1 { "code" } else { "codes" },
-		match failing_now {
-			0 => "None is failing now — all of them are history.".to_string(),
-			1 => "1 is failing now; the rest are history.".to_string(),
-			n => format!("{n} are failing now; the rest are history."),
+		if !supported_table.is_empty() {
+			out!("{}\n", supported_table.render(width));
 		}
-	);
+		out!(
+			"{supported_total} {} supported · {read} {} read\n",
+			crate::render::plural(supported_total, "code"),
+			crate::render::plural(read, "unit")
+		);
+		return Ok(());
+	}
+	let failing = rows.iter().filter(|r| r.status & FAILED_NOW != 0).count();
+	if !rows.is_empty() {
+		out!("{}\n", render_rows(&rows, width));
+	}
+	if details && !raw_table.is_empty() {
+		out!("{}\n", raw_table.render(width));
+	}
+	out!("{}\n", summary(rows.len(), failing, read, all_codes));
+	// A guessed variant is marked in the table; what settles it, once, under the summary.
+	if let Some(line) = guessed_line(&rows, &guessed_by_family) {
+		say!("{line}");
+	}
 	crate::faultnames::offer_to_unseal(&sealed, &keys)?;
 	Ok(())
 }
@@ -766,9 +1044,19 @@ mod tests {
 			sae: Some("B1168".into()),
 			failure_type: Some(0xF2),
 		};
-		let (line, named) = compose(Some(textless_odis_row()), Some(vcds), false, true).expect("a code with a display code says something");
-		assert_eq!(line, "B1168F2  Steering angle sensor  (text from the VCDS labels)");
-		assert!(named, "a borrowed name is still a name");
+		let named = compose(Some(textless_odis_row()), Some(vcds), false, true).expect("a code with a display code says something");
+		assert_eq!(
+			named,
+			Named {
+				dtc: Some("B1168F2".into()),
+				text: Some("Steering angle sensor".into()),
+				note: Some("text from the VCDS labels".into()),
+				named: true,
+				src: VCDS,
+				needs_f1a2: false,
+			},
+			"a borrowed name is still a name, under the project's own code"
+		);
 	}
 
 	#[test]
@@ -785,26 +1073,54 @@ mod tests {
 			sae: Some("B1168".into()),
 			failure_type: Some(0xF2),
 		};
-		let (line, named) = compose(Some(german.clone()), Some(english), true, true).unwrap();
-		assert_eq!(line, "B1168 F2  Steering angle sensor");
-		assert!(named);
-		let (line, _) = compose(Some(german), Some(crate::faultnames::Naming::NotListed), true, true).unwrap();
+		let named = compose(Some(german.clone()), Some(english), true, true).unwrap();
 		assert_eq!(
-			line, "B1168F2  Lenkwinkelsensor  (text from the ODIS project)",
+			(named.dtc.as_deref(), named.text.as_deref()),
+			(Some("B1168F2"), Some("Steering angle sensor"))
+		);
+		assert!(named.named);
+		let named = compose(Some(german.clone()), Some(crate::faultnames::Naming::NotListed), true, true).unwrap();
+		assert_eq!(named.text.as_deref(), Some("Lenkwinkelsensor"));
+		assert_eq!(
+			named.note.as_deref(),
+			Some("text from the ODIS project"),
 			"the project's words where VCDS was asked first say whose they are"
 		);
 		// With the project first, as usual, its own words need no marker.
-		let (line, _) = compose(
-			Some(crate::odisfaults::Naming {
-				text: Some("Lenkwinkelsensor".into()),
-				..textless_odis_row()
-			}),
-			None,
-			false,
-			true,
-		)
-		.unwrap();
-		assert_eq!(line, "B1168F2  Lenkwinkelsensor");
+		let named = compose(Some(german), None, false, true).unwrap();
+		assert_eq!((named.text.as_deref(), named.note), (Some("Lenkwinkelsensor"), None));
+	}
+
+	#[test]
+	fn a_row_whose_variant_is_not_settled_is_marked_in_the_table_itself() {
+		// `odisfaults::Naming::provenance`: the line never presents a guessed variant as
+		// settled. The guess and whose words a row has are the `src` column's, at level 0.
+		let text = |naming: crate::odisfaults::Naming| crate::odisfaults::Naming {
+			text: Some("Lenkwinkelsensor".into()),
+			..naming
+		};
+		let settled = compose(Some(text(textless_odis_row())), None, false, true).unwrap();
+		assert_eq!((settled.src, settled.needs_f1a2), (ODIS, false));
+		let by_family = crate::odisfaults::Naming {
+			confirmed: false,
+			..text(textless_odis_row())
+		};
+		let guessed = compose(Some(by_family), None, false, true).unwrap();
+		assert_eq!((guessed.src, guessed.needs_f1a2), (ODIS_GUESSED, true));
+		let of_two = crate::odisfaults::Naming {
+			matched: 2,
+			disagrees: true,
+			..text(textless_odis_row())
+		};
+		let guessed = compose(Some(of_two), None, false, true).unwrap();
+		assert_eq!((guessed.src, guessed.needs_f1a2), (ODIS_GUESSED, false), "the car's own F1A2 picked two");
+		// A borrowed text is the other source's, said in the same column.
+		let vcds = crate::faultnames::Naming::Named {
+			text: "Steering angle sensor".into(),
+			sae: None,
+			failure_type: None,
+		};
+		assert_eq!(compose(Some(textless_odis_row()), Some(vcds), false, true).unwrap().src, VCDS);
 	}
 
 	#[test]
@@ -812,9 +1128,31 @@ mod tests {
 		// The display code alone is how a tester writes the number, not what
 		// went wrong. Counting it as named was what made the run's tally say
 		// every code had a name.
-		let (line, named) = compose(Some(textless_odis_row()), None, false, true).unwrap();
-		assert_eq!(line, "B1168F2  (no text in the project)");
-		assert!(!named);
+		let named = compose(Some(textless_odis_row()), None, false, true).unwrap();
+		assert_eq!(named.dtc.as_deref(), Some("B1168F2"));
+		assert_eq!(named.text, None);
+		assert_eq!(named.note.as_deref(), Some("no text in the project"));
+		assert!(!named.named);
+	}
+
+	#[test]
+	fn a_vcds_name_is_the_sae_code_and_the_words_and_a_reason_is_a_note() {
+		let named = compose(
+			None,
+			Some(crate::faultnames::Naming::Named {
+				text: "Line 1\nline 2".into(),
+				sae: Some("U1110".into()),
+				failure_type: Some(0x00),
+			}),
+			false,
+			false,
+		)
+		.unwrap();
+		assert_eq!(named.dtc.as_deref(), Some("U111000"));
+		assert_eq!(named.text.as_deref(), Some("Line 1 / line 2"), "one row on a screen");
+		let unlisted = compose(None, Some(crate::faultnames::Naming::NotListed), false, false).unwrap();
+		assert_eq!((unlisted.text, unlisted.named), (None, false));
+		assert!(unlisted.note.unwrap().contains("not in this unit's fault catalogue"));
 	}
 
 	#[test]
@@ -844,6 +1182,11 @@ mod tests {
 		assert_eq!(describe_status(0x09), "failed now, confirmed");
 		// Nothing asserted: report the byte rather than an empty line.
 		assert_eq!(describe_status(0x00), "00");
+		// One word in the table, the most telling one.
+		assert_eq!(short_status(0x09), "failing");
+		assert_eq!(short_status(0x2C), "confirmed");
+		assert_eq!(short_status(0x04), "pending");
+		assert_eq!(short_status(0x50), "50");
 	}
 
 	#[test]
@@ -890,10 +1233,10 @@ mod tests {
 				clock,
 			})
 		};
-		assert_eq!(at(0x69F6_0003), "2026-07-27 00:00:03 by the car's own clock");
-		assert_eq!(at(0x69F9_7C82), "2026-07-28 23:50:02 by the car's own clock");
+		assert_eq!(at(0x69F6_0003), "2026-07-27 00:00:03");
+		assert_eq!(at(0x69F9_7C82), "2026-07-28 23:50:02");
 		// An unset stamp is reported as one, not as the year 2000.
-		assert!(at(0x0000_0000).contains("not a date"));
+		assert_eq!(at(0x0000_0000), "—");
 	}
 
 	#[test]
@@ -906,6 +1249,11 @@ mod tests {
 			clock: 0x69F9_68D9,
 		};
 		assert!(describe_age(&context, None).contains("255+ times"));
+		let row = Row {
+			context: Some(context),
+			..Row::default()
+		};
+		assert!(render_rows(&[row], None).contains(" 255+ "), "the table's count column too");
 	}
 
 	#[test]
@@ -913,8 +1261,110 @@ mod tests {
 		// Checked against this car's own VCDS scan, which prints these decimal
 		// numbers for these units: reading the first two bytes as the number
 		// would give 1, 1137 and 260 instead.
-		assert_eq!(format_code([0x00, 0x01, 0x29]), "000129  (297)");
-		assert_eq!(format_code([0x04, 0x71, 0x20]), "047120  (291104)");
-		assert_eq!(format_code([0x01, 0x04, 0x05]), "010405  (66565)");
+		assert_eq!((code_hex([0x00, 0x01, 0x29]), fault_number([0x00, 0x01, 0x29])), ("000129".into(), 297));
+		assert_eq!(
+			(code_hex([0x04, 0x71, 0x20]), fault_number([0x04, 0x71, 0x20])),
+			("047120".into(), 291_104)
+		);
+		assert_eq!(
+			(code_hex([0x01, 0x04, 0x05]), fault_number([0x01, 0x04, 0x05])),
+			("010405".into(), 66_565)
+		);
+	}
+
+	#[test]
+	fn the_table_is_the_reference_layout() {
+		// Invented units and texts in the layout the owner gave (2026-10-20).
+		let context = |km, n, clock| {
+			Some(FaultContext {
+				priority: 1,
+				occurrences: n,
+				cycle_counter: 0,
+				mileage_km: km,
+				clock,
+			})
+		};
+		let rows = [
+			Row {
+				unit: "16".into(),
+				request: 0x70C,
+				name: "Lenks.Modul".into(),
+				code: [0x04, 0x71, 0x20],
+				dtc: "B145501".into(),
+				status: 0x08,
+				context: context(214_592, 254, 0x69F6_0003),
+				text: "Unterbrechung des Signalpfades \"Init\"".into(),
+				src: ODIS,
+			},
+			Row {
+				unit: "17".into(),
+				request: 0x714,
+				name: "KOMBI".into(),
+				code: [0xFF, 0xFF, 0x3C],
+				dtc: "U111000".into(),
+				status: 0x09,
+				context: context(214_634, 13, 0x69F9_7C82),
+				text: "BAP_TEL_0x28 keine Kommunikation".into(),
+				src: ODIS_GUESSED,
+			},
+		];
+		assert_eq!(
+			render_rows(&rows, None),
+			"unit  id   name         code    dtc      status         km  count  last seen            src    text\n\
+			 16    70C  Lenks.Modul  047120  B145501  confirmed  214592    254  2026-07-27 00:00:03  odis   Unterbrechung des Signalpfades \"Init\"\n\
+			 17    714  KOMBI        FFFF3C  U111000  failing    214634     13  2026-07-28 23:50:02  odis?  BAP_TEL_0x28 keine Kommunikation\n"
+		);
+		// With room for 30 columns of text, only the text is cut, to a known width only.
+		let cut = render_rows(&rows, Some(125));
+		assert!(cut.lines().all(|l| l.chars().count() <= 125), "{cut}");
+		assert!(cut.contains("2026-07-27 00:00:03  odis   Unterbrechung des Signalpfade…"), "{cut}");
+		// At 100 columns the row fits and the text goes whole under it, never cut inside
+		// the columns before it (both reviews of PR #38).
+		let wide = render_rows(&rows, Some(100));
+		assert_eq!(
+			wide,
+			"unit  id   name         code    dtc      status         km  count  last seen            src\n\
+			 16    70C  Lenks.Modul  047120  B145501  confirmed  214592    254  2026-07-27 00:00:03  odis\n\
+			 \x20     Unterbrechung des Signalpfades \"Init\"\n\
+			 17    714  KOMBI        FFFF3C  U111000  failing    214634     13  2026-07-28 23:50:02  odis?\n\
+			 \x20     BAP_TEL_0x28 keine Kommunikation\n"
+		);
+		assert!(wide.lines().all(|l| l.chars().count() <= 100), "{wide}");
+		// At 80 the columns before the text alone are wider than the screen: two lines a
+		// code, the seconds dropped, the text under them — no line wraps.
+		let narrow = render_rows(&rows, Some(80));
+		assert_eq!(
+			narrow,
+			"unit  id   name         code    dtc\n\
+			 \x20     status         km  count  last seen         src\n\
+			 16    70C  Lenks.Modul  047120  B145501\n\
+			 \x20     confirmed  214592    254  2026-07-27 00:00  odis\n\
+			 \x20     Unterbrechung des Signalpfades \"Init\"\n\
+			 17    714  KOMBI        FFFF3C  U111000\n\
+			 \x20     failing    214634     13  2026-07-28 23:50  odis?\n\
+			 \x20     BAP_TEL_0x28 keine Kommunikation\n"
+		);
+		assert!(narrow.lines().all(|l| l.chars().count() <= 80), "{narrow}");
+		// A long text is wrapped at spaces to the screen, not run past it.
+		let long = Row {
+			text: "a fault text long enough that one indented line of an eighty column screen will not hold it".into(),
+			..rows[0].clone()
+		};
+		let wrapped = render_rows(&[long], Some(80));
+		assert!(wrapped.lines().all(|l| l.chars().count() <= 80), "{wrapped}");
+		assert!(wrapped.contains("hold it"), "{wrapped}");
+		// A guessed variant is said under the table, with what F1A2 did.
+		assert_eq!(
+			guessed_line(&rows, &[(0x714, false)]).as_deref(),
+			Some("odis?    714: the ODIS variant is a guess; F1A2 not read from 714: run `vagcan faults` again with the ignition on")
+		);
+		assert_eq!(
+			guessed_line(&rows, &[]).as_deref(),
+			Some("odis?    714: the ODIS variant is a guess"),
+			"several variants of the car's own F1A2: nothing to read again"
+		);
+		assert_eq!(guessed_line(&rows[..1], &[]), None, "every row settled: no line");
+		assert_eq!(summary(2, 1, 18, false), "2 stored · 1 failing now · 18 units read");
+		assert_eq!(summary(0, 0, 1, true), "0 listed · 0 failing now · 1 unit read");
 	}
 }

@@ -92,6 +92,40 @@ pub struct Resolved {
 	pub request: u16,
 	pub did: u16,
 	pub def: MeasurementDef,
+	/// Which row it is and why it answered the role: what `-v` says it came from.
+	pub origin: Origin,
+}
+
+/// Where a resolved channel's row came from, and what it answered to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Origin {
+	/// A row a drive proved on a car — the project's measurement rows.
+	Proven,
+	/// The project's row under one of the role's text ids.
+	TextId(String),
+	/// SAE J1979's row at the role's PID, predicted for an engine whose variant
+	/// declares no OBD-II row.
+	Standard(u8),
+	/// The project's row, by the words in its name: it carries no text id.
+	Words,
+}
+
+impl std::fmt::Display for Origin {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Origin::Proven => write!(f, "drive-proven row"),
+			Origin::TextId(id) => write!(f, "text id {id}"),
+			Origin::Standard(pid) => write!(f, "SAE J1979 PID {pid:02X}"),
+			Origin::Words => write!(f, "row named by its words, no text id"),
+		}
+	}
+}
+
+/// A role this run reads nothing for, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Absent {
+	pub key: &'static str,
+	pub why: String,
 }
 
 impl Resolved {
@@ -145,12 +179,42 @@ pub struct Set {
 	/// above — the list exists so the caller can tell which rows are speeds
 	/// without matching names a second time.
 	pub cross_check_speeds: Vec<Resolved>,
+	/// The roles that are not read, each with why: not on this car, or read only
+	/// under `--full`.
+	pub absent: Vec<Absent>,
 }
 
 impl Set {
 	/// Every channel that will be polled, in priority order.
 	pub fn all(&self) -> impl Iterator<Item = &Resolved> {
 		self.leading_unit.iter().chain(self.background.iter())
+	}
+
+	/// Where every channel came from and why a role is not read, as a table: what a
+	/// run and `setup` say at `-v`. `part` is the part number a unit reported.
+	pub fn provenance(&self, part: impl Fn(u16) -> Option<String>) -> String {
+		let mut table = vag_cli_core::table::Table::new(&["role", "unit", "part", "did", "name", "from"]);
+		for channel in self.all() {
+			table.row(vec![
+				channel.key.to_string(),
+				format!("{:03X}", channel.request),
+				part(channel.request).unwrap_or_else(|| "—".to_string()),
+				format!("{:04X}", channel.did),
+				channel.def.name.to_string(),
+				channel.origin.to_string(),
+			]);
+		}
+		for absent in &self.absent {
+			table.row(vec![
+				absent.key.to_string(),
+				"—".into(),
+				"—".into(),
+				"—".into(),
+				"—".into(),
+				absent.why.clone(),
+			]);
+		}
+		table.render(None)
 	}
 }
 
@@ -694,11 +758,21 @@ fn push(into: &mut Vec<Resolved>, channel: Resolved) -> bool {
 /// join the leading batch of a unit it does not live on.)
 pub fn resolve(store: &CatalogStore, extracted: &crate::extracted::Extracted, units: &[UnitIdentity], full: bool) -> Result<Set, Vec<Missing>> {
 	let pool = candidates(store, extracted, units);
+	vag_cli_core::wire!("{} rows on offer over {} units", pool.len(), units.len());
 	let mut found: Vec<Resolved> = Vec::new();
 	let mut missing: Vec<Missing> = Vec::new();
+	let mut absent: Vec<Absent> = Vec::new();
+	let looked_for = |spec: &RoleSpec| {
+		let tried: Vec<String> = tried(spec).iter().map(|t| format!("\"{t}\"")).collect();
+		format!("not on this car (looked for {})", tried.join(", "))
+	};
 
 	for spec in ROLES {
 		if spec.full_only && !full {
+			absent.push(Absent {
+				key: spec.key,
+				why: "read only under --full".to_string(),
+			});
 			continue;
 		}
 		// By id, or as the engine's legislated row at the role's PID. A row a
@@ -714,30 +788,79 @@ pub fn resolve(store: &CatalogStore, extracted: &crate::extracted::Extracted, un
 		let by_words = |c: &Candidate| (c.drive_proven || (!with_id && c.text_id.is_none())) && matches(spec, &c.def);
 		let mut hits: Vec<&Candidate> = pool.iter().filter(|c| by_id(spec, c) || by_standard(spec, c) || by_words(c)).collect();
 		if hits.is_empty() {
-			if spec.required {
-				missing.push(Missing {
+			vag_cli_core::wire!("{}: no row answers ({})", spec.key, looked_for(spec));
+			match spec.required {
+				true => missing.push(Missing {
 					key: spec.key,
 					tried: tried(spec),
-				});
+				}),
+				false => absent.push(Absent {
+					key: spec.key,
+					why: looked_for(spec),
+				}),
 			}
 			continue;
 		}
 		hits.sort_by(|a, b| better(a, b, spec));
+		// In the order the hit was admitted by: a proven row answers to its words as
+		// well, and is named for the evidence rather than for whichever test it passed.
+		let origin = |c: &Candidate| {
+			if c.drive_proven {
+				Origin::Proven
+			} else if by_id(spec, c) {
+				Origin::TextId(c.text_id.clone().unwrap_or_default())
+			} else if let Some(pid) = spec.pid.filter(|_| by_standard(spec, c)) {
+				Origin::Standard(pid)
+			} else {
+				Origin::Words
+			}
+		};
 		let resolved = |key: &'static str, c: &Candidate| Resolved {
 			key,
 			request: c.request,
 			did: c.did,
 			def: c.def.clone(),
+			origin: origin(c),
 		};
 		// The best hit whose identifier no earlier role holds: a row answering to
 		// two roles goes to the first, and the second takes its next row rather
 		// than vanishing.
-		let Some(at) = hits.iter().position(|c| push(&mut found, resolved(spec.key, c))) else {
-			if spec.required {
-				missing.push(Missing {
+		let at = hits.iter().position(|c| push(&mut found, resolved(spec.key, c)));
+		if vag_cli_core::verbosity::at(vag_cli_core::verbosity::WIRE) {
+			vag_cli_core::wire!(
+				"{}: {} row{} answer, best first",
+				spec.key,
+				hits.len(),
+				if hits.len() == 1 { "" } else { "s" }
+			);
+			for (rank, c) in hits.iter().enumerate() {
+				let taken = match at {
+					Some(at) if at == rank => "taken",
+					Some(at) if rank < at => "held by an earlier role",
+					Some(_) if spec.key == SPEED => "a cross-check speed, unless held",
+					_ => "ranked lower",
+				};
+				vag_cli_core::wire!(
+					"  {:03X} {:04X}  {}  {}  step {}  {}: {taken}",
+					c.request,
+					c.did,
+					c.def.name,
+					c.def.unit,
+					step(spec, &c.def),
+					origin(c)
+				);
+			}
+		}
+		let Some(at) = at else {
+			match spec.required {
+				true => missing.push(Missing {
 					key: spec.key,
 					tried: tried(spec),
-				});
+				}),
+				false => absent.push(Absent {
+					key: spec.key,
+					why: "every row it answers to is read for an earlier role".to_string(),
+				}),
 			}
 			continue;
 		};
@@ -774,6 +897,7 @@ pub fn resolve(store: &CatalogStore, extracted: &crate::extracted::Extracted, un
 		leading_unit,
 		background,
 		cross_check_speeds,
+		absent,
 	})
 }
 

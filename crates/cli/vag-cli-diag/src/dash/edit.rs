@@ -92,8 +92,8 @@ pub async fn run(vin: &str) -> Result<()> {
 	write(&dir.join("index.html"), PAGE.as_bytes())?;
 	write(&dir.join("dash.wasm"), WASM)?;
 	match made {
-		Made::Kept(n) => println!("{n} channels, kept from the last run: {}", dir.join("channels.json").display()),
-		Made::Built(n, numeric) => println!("{n} channels, {numeric} of them numbers: {}", dir.join("channels.json").display()),
+		Made::Kept(n) => vag_cli_core::note!("channels  {n}, kept from the last run: {}", dir.join("channels.json").display()),
+		Made::Built(n, numeric) => vag_cli_core::note!("channels  {n}, {numeric} of them numbers: {}", dir.join("channels.json").display()),
 	}
 
 	let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -101,11 +101,11 @@ pub async fn run(vin: &str) -> Result<()> {
 		.context("opening a port on 127.0.0.1")?;
 	let port = listener.local_addr()?.port();
 	let url = format!("http://127.0.0.1:{port}/");
-	println!("the editor: {url}");
-	println!(
-		"it changes no file of yours: copy the block it shows into {}. Ctrl-C ends it.",
-		input_path.display()
-	);
+	// The address is what the command makes: data. How to use it is a note.
+	vag_cli_core::outln!("{url}");
+	vag_cli_core::note!("serving   {} on 127.0.0.1 only", dir.display());
+	vag_cli_core::note!("it changes no file of yours: copy the block it shows into {}", input_path.display());
+	vag_cli_core::say!("Ctrl-C ends it");
 	vag_cli_core::desktop::open(&url);
 	serve(listener, dir).await
 }
@@ -394,6 +394,12 @@ pub async fn serve(listener: tokio::net::TcpListener, dir: PathBuf) -> Result<()
 				Ok(true) => Response::refuse(431, "Request Header Fields Too Large"),
 				_ => return,
 			};
+			vag_cli_core::wire!(
+				"{} → {} {}",
+				String::from_utf8_lossy(&head).lines().next().unwrap_or_default(),
+				response.status,
+				response.reason
+			);
 			let _ = stream.write_all(&response.bytes()).await;
 			let _ = stream.shutdown().await;
 		});

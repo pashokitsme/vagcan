@@ -36,6 +36,7 @@ use clap::Subcommand;
 
 use crate::device::DeviceArg;
 use crate::{analyse, datadir, labels, names};
+use vag_cli_core::table::{self, Table};
 
 /// `labels`' `--device`: only `--from-car` opens one.
 const LABELS_DEVICE_HELP: &str = "Adapter to use with --from-car: a serial path (a USB-CAN adapter, or the dash board on its USB cable), \
@@ -55,8 +56,14 @@ pub enum Tool {
 	/// IN: a VCDS install root or any directory below it, plus one of
 	/// `--part`, `--block`, `--odx`, or `--from-car` to say what to look up.
 	///
-	/// OUT: the resolved label file and its measurements, on stdout. The cache
-	/// is written under `~/.vagcan/label-cache/`.
+	/// OUT, on stdout: with no lookup, the files by kind — `.lbl`/`.clb` in the
+	/// label directory, the ones the label cache is built from, and `.rod` in the
+	/// whole tree; `--part`, the file it resolves to and its measurements;
+	/// `--block`, every file defining the block; `--odx`, the file's sections,
+	/// each `open` or `sealed`. `-v` gives the cipher of each: `tea`, `zlib`,
+	/// `no key` (`vagcan dev vcds rod` recovers it), or `no crib` (no key can be
+	/// searched for; the file is not damaged). `--part` and `--block` read this
+	/// project's label cache, built on first use.
 	#[command(mut_arg("device", |a| a.help(LABELS_DEVICE_HELP)))]
 	Labels {
 		/// VCDS install root, or any directory below it.
@@ -93,9 +100,9 @@ pub enum Tool {
 		///
 		/// VW ships .rod files with their contents encrypted, and the key for a
 		/// section has to be recovered by a separate, slow tool before that
-		/// section can be read. A section with no key here is reported as
-		/// unreadable rather than guessed, and the command that recovers one is
-		/// printed against the section that needs it.
+		/// section can be read. A section with no key here is listed as `sealed`
+		/// rather than guessed, and the command that recovers its key is printed
+		/// on stderr.
 		/// Default: this project's `rod-keys.json`, written by `vagcan setup`.
 		#[arg(long, value_name = "FILE")]
 		iv_cache: Option<String>,
@@ -110,10 +117,9 @@ pub enum Tool {
 	/// IN: a substring, and the names (`--catalog`, by default what `vagcan setup`
 	/// wrote into this project from a VCDS installation, an ODIS project, or both).
 	///
-	/// OUT: matching names on stdout. They are keyed by their text id, not by
-	/// data identifier — this list does not say which identifier
-	/// carries a name — so a match is a hypothesis to test on the car, not an
-	/// identification.
+	/// OUT: a table of matches (id, name; the source when both files are
+	/// searched) and a count, on stdout. A name is keyed by its text id, not by
+	/// data identifier: a match is a guess to test on the car.
 	Names {
 		/// Substring to look for, case-insensitive.
 		#[arg(value_name = "TEXT")]
@@ -131,16 +137,17 @@ pub enum Tool {
 	/// Cross a bus capture with a VCDS log to prove measurement scalings.
 	///
 	/// FOR: learning what raw bytes mean, by watching VCDS read the same car at
-	/// the same moment and print the engineering value. This is where the
-	/// project's proven scalings come from; the label files provably does not
-	/// carry them.
+	/// the same moment and print the engineering value.
 	///
 	/// IN: a capture from `vagcan dev sniff --out`, and the VCDS measuring-blocks
 	/// CSV export recorded alongside it. The two are aligned by their wall-clock
 	/// stamps — a subtraction, never a search.
 	///
-	/// OUT: the fits that clear the bar, on stdout; with `--out`, those same
-	/// rows as a measurement catalog that `vagcan watch` reads directly.
+	/// OUT: one row per logged measurement on stdout — its scaling and `proven`,
+	/// or why there is none; a fit that cleared the bar and lost to a better one
+	/// is `outranked` (proportional quantities fit each other). `-v` adds the
+	/// clock offset and the near misses. With `--out`, the proven rows as a
+	/// measurement catalog that `vagcan watch` reads directly.
 	Analyse {
 		/// Capture written by `vagcan dev sniff`.
 		#[arg(long, value_name = "FILE")]
@@ -171,15 +178,19 @@ pub enum Tool {
 	/// IN: one `.rod` file from a VCDS installation, e.g. `TTTEXT.ROD` or
 	/// `EV_ECM18TFS0208V0906264H.rod`.
 	///
-	/// OUT: one line per section on stdout (tag, how it decoded, size,
-	/// preview); recovered keys appended to the IV cache JSON; with `--dump
-	/// DIR`, each section's plaintext written to `DIR/<TAG>.bin`.
+	/// OUT: the file and its key cache, then one row per section on stdout:
+	/// section, state (`open`, `sealed`), bytes, key (`new` when recovered this
+	/// run), preview. `-v` gives the cipher of each: `tea`, `zlib`, `no key`, or
+	/// `no crib` (the file masks its IVs, so the key cannot be searched for; the
+	/// file is not damaged). Recovered keys are added to the cache; with
+	/// `--dump DIR`, each opened section is written to `DIR/<section>.bin`
+	/// (`DIR/TXT.bin`).
 	Rod {
 		/// The `.rod` file to open.
 		#[arg(value_name = "FILE")]
 		file: String,
 		/// Use only keys already in the cache; do not search for missing ones.
-		/// Searching costs about a minute of every core per blocked section.
+		/// Searching costs minutes per file; a file under its own name needs none.
 		#[arg(long)]
 		no_crack: bool,
 		/// Where recovered keys are read and written. Default: next to the
@@ -187,8 +198,8 @@ pub enum Tool {
 		/// this project's `rod-keys.json`.
 		#[arg(long, value_name = "PATH")]
 		cache: Option<String>,
-		/// Also write each decoded section to `DIR/<TAG>.bin`. This is how the
-		/// input to `vagcan dev vcds tttext` is produced.
+		/// Also write each decoded section to `DIR/<section>.bin`. This is how
+		/// the input to `vagcan dev vcds tttext` is produced.
 		#[arg(long, value_name = "DIR")]
 		dump: Option<String>,
 	},
@@ -202,8 +213,8 @@ pub enum Tool {
 	///
 	/// IN: a VCDS `Labels/` directory, or any directory below it.
 	///
-	/// OUT: a coverage summary on stdout, and with `--out`, a JSON array of
-	/// label files sorted by source name.
+	/// OUT: the files and the records by kind, on stdout; with `--out`, a JSON
+	/// array of label files sorted by source name.
 	///
 	/// To look ONE part number up, use `vagcan dev vcds labels --part` instead — it
 	/// answers from a cache instead of reparsing the label files.
@@ -231,7 +242,8 @@ pub enum Tool {
 	/// OUT: one line per record, `<id> TAB <name> TAB <kind> TAB <value>`, to
 	/// stdout or `--out`. Kind and value are the record's tail, empty when it
 	/// has none: kind 2 is an IDE and kind 7 a MAS, so `2 TAB 00594` is
-	/// IDE00594. A count on stderr, with any record that read as neither shape.
+	/// IDE00594. A count on stderr; `-v` lists the records that read as
+	/// neither shape.
 	Tttext {
 		/// The `[TXT]` section, decrypted and inflated.
 		#[arg(value_name = "FILE")]
@@ -251,6 +263,9 @@ pub enum Tool {
 	/// FOR: telling "setup wrote nothing" apart from "setup wrote something I
 	/// cannot find", which are the same screenful of missing names otherwise.
 	/// EXPECTS: nothing — it reads this project's own cache. WRITES: nothing.
+	///
+	/// OUT: rows per table on stdout; `-v` names the cache and the sources it
+	/// was built from.
 	Stats {
 		/// Read this cache instead of the current project's.
 		#[arg(long, value_name = "FILE")]
@@ -399,9 +414,42 @@ fn stats(db_path: &std::path::Path, named: bool) -> Result<()> {
 		anyhow::bail!(crate::missing::NoLabelData::new("There is no label cache to count.").looked_for(db_path));
 	}
 	let counts = vag_data_db::row_counts(db_path)?;
-	println!("{}", db_path.display());
-	for (table, n) in counts {
-		println!("  {table:<13} {n}");
+	vag_cli_core::out!("{}", render_stats(&counts));
+	vag_cli_core::note!("label cache {}", db_path.display());
+	for (kind, dir) in vag_data_db::sources_of(db_path).unwrap_or_default() {
+		vag_cli_core::note!("source {kind} {dir}");
 	}
 	Ok(())
+}
+
+/// `stats`' table: rows per table, in the schema's order, under `what  count` like every
+/// count table in `dev vcds`.
+fn render_stats(counts: &[(&str, i64)]) -> String {
+	let mut table = Table::new(&["what", "count"]).right(1);
+	for (name, n) in counts {
+		table.row(vec![name.to_string(), n.to_string()]);
+	}
+	table.render(table::terminal_width())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn stats_are_one_row_per_table() {
+		assert_eq!(
+			render_stats(&[("label_file", 1), ("measurement", 101889)]),
+			"what          count
+label_file        1
+measurement  101889
+"
+		);
+	}
+
+	#[test]
+	fn a_named_cache_that_is_not_there_is_an_error_naming_it() {
+		let err = stats(std::path::Path::new("/nope/cache.sqlite"), true).unwrap_err().to_string();
+		assert_eq!(err, "no label cache at /nope/cache.sqlite");
+	}
 }

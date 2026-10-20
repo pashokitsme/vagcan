@@ -79,8 +79,19 @@ pub fn record(vin: &str, identities: &[UnitIdentity]) -> anyhow::Result<PathBuf>
 /// The record is a convenience for the next command, not a condition of this
 /// one: a read-only home directory must not take `watch` off the car.
 pub fn record_quietly(vin: &str, identities: &[UnitIdentity]) {
-	if let Err(e) = record(vin, identities) {
-		eprintln!("the car's control units were not recorded: {e:#}");
+	match record(vin, identities) {
+		Ok(path) => crate::note!("units  recorded in {}", path.display()),
+		Err(e) => crate::say!("the car's control units were not recorded: {e:#}"),
+	}
+}
+
+/// What every live command does with the units it identified: [`record_quietly`] under
+/// the VIN, or — with no VIN to file them under — [`NOT_RECORDED_WITHOUT_A_VIN`], at
+/// level 0 on every command alike.
+pub fn record_for(vin: Option<&str>, identities: &[UnitIdentity]) {
+	match vin {
+		Some(vin) => record_quietly(vin, identities),
+		None => crate::say!("{NOT_RECORDED_WITHOUT_A_VIN}"),
 	}
 }
 
@@ -89,7 +100,7 @@ pub fn record_quietly(vin: &str, identities: &[UnitIdentity]) {
 /// told to connect to the car once would otherwise wait for a file that never
 /// comes.
 pub const NOT_RECORDED_WITHOUT_A_VIN: &str =
-	"the engine gave no VIN, so the car's control units were not recorded (the record is filed by VIN); `vagcan dev dash build` needs it";
+	"units not recorded: the engine gave no VIN to file them under (`vagcan dev dash build` needs the record)";
 
 /// The units recorded for one car, or `None` when no command has recorded it.
 ///
@@ -228,7 +239,7 @@ impl std::fmt::Display for NotARecord {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		write!(
 			f,
-			"{} is not a record this tool wrote ({}) — move it aside; `vagcan watch`, `measure` or `units --identify` with that car writes a fresh one",
+			"{} is not a record this tool wrote ({}) — move it aside: the next car command that meets that car writes a fresh one",
 			self.path.display(),
 			self.cause
 		)
@@ -433,6 +444,17 @@ pub async fn identify_listed<B: UnitLink>(mut backend: B, requests: &[u16], prog
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_car_with_no_vin_is_said_at_level_0_by_every_live_command() {
+		// `measure` said it at -v only, `watch` and `units` at level 0 (review of PR #38):
+		// one function now, for all three.
+		let capture = crate::verbosity::Capture::start(0);
+		record_for(None, &[]);
+		let said = capture.finish();
+		assert_eq!(said.stderr, format!("{NOT_RECORDED_WITHOUT_A_VIN}\n"));
+		assert!(said.stdout.is_empty());
+	}
 
 	fn unit(request: u16, part: &str, odx: Option<&str>) -> UnitIdentity {
 		UnitIdentity {

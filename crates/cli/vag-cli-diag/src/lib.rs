@@ -18,6 +18,7 @@
 pub use vag_cli_core::{analyse, config, datadir, device, extracted, glossary, missing, plan, progress, project, registry, ui, units, vcdslog};
 
 pub mod anomaly;
+pub mod car;
 pub mod dash;
 pub mod dashreplay;
 pub mod discover;

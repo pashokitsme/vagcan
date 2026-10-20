@@ -43,7 +43,7 @@ impl Drop for State {
 	/// run this would land on top of whatever the screen is drawing.
 	fn drop(&mut self) {
 		if let Some(note) = late_note(self.discarded) {
-			eprintln!("{note}");
+			crate::note!("{note}");
 		}
 	}
 }
@@ -164,12 +164,14 @@ impl State {
 				record_len,
 				to,
 			} => {
+				crate::wire!("+  {:03X}  {did:04X} every {period_ms} ms ({class:?})", unit.request);
 				let id = self.planner.subscribe(now, class, unit, did, period_ms, record_len);
 				self.subs.insert(id, to);
 				self.keys.insert(key, id);
 			}
 			Command::Unsubscribe { key } => {
 				if let Some(id) = self.keys.remove(&key) {
+					crate::wire!("-  subscription {id:?} dropped");
 					self.planner.unsubscribe(id);
 					self.subs.remove(&id);
 				}
@@ -266,9 +268,16 @@ async fn talk<L: UnitLink>(slot: &mut Option<L>, unit: Unit, pdu: &[u8], timeout
 			discarded: 0,
 		};
 	};
-	link.discard_stale().await;
+	let stale = link.discard_stale().await;
+	if stale > 0 {
+		crate::wire!(
+			"   {:03X}  {stale} stale {} dropped before the request",
+			unit.request,
+			crate::table::plural(stale, "answer")
+		);
+	}
 	let mut channel = link.to_unit(CanId::Standard(unit.request), CanId::Standard(unit.response));
-	let heard = exchange(&mut channel, pdu, timeout).await;
+	let heard = exchange(&mut channel, unit, pdu, timeout).await;
 	*slot = Some(L::release(channel));
 	heard
 }
@@ -279,14 +288,26 @@ async fn talk<L: UnitLink>(slot: &mut Option<L>, unit: Unit, pdu: &[u8], timeout
 /// never told about a pending answer. An answer that does not answer *this* request
 /// ([`answers`]) — one that arrived after an earlier request stopped waiting for it —
 /// is discarded, and the wait goes on for what is left of the deadline, not a new one.
-async fn exchange<C: AsyncIsoTpTransport>(channel: &mut C, pdu: &[u8], timeout: Duration) -> Heard {
+///
+/// At `-vv` each step is a line on stderr ([`crate::wire!`]): what went out, what came
+/// back and after how long, every `78`, every late answer thrown away, and how it ended
+/// when it ended without an answer. Nothing it sends depends on the level.
+///
+/// Those lines are written as they happen, between the send and the receive, and the write
+/// blocks: a stderr that stops taking bytes — a terminal paused with XOFF, a pipe nobody
+/// reads — holds the exchange up, and a unit past its deadline reads as no answer. For a
+/// long `-vv` trace, send stderr to a file (`2>trace.log`).
+async fn exchange<C: AsyncIsoTpTransport>(channel: &mut C, unit: Unit, pdu: &[u8], timeout: Duration) -> Heard {
 	let mut discarded = 0;
 	// A request that suppressed its positive response is answered only by a refusal, so
 	// it waits [`SUPPRESSED_WAIT`] for one rather than the caller's whole deadline, and
 	// silence is what it asked for. Once the unit says `78` it owes a final answer after
 	// all (ISO 14229-1), and silence from then on is no answer.
 	let mut none_expected = expects_no_answer(pdu);
+	let sent = Instant::now();
+	crate::wire!("→  {:03X}  {}", unit.request, crate::verbosity::hex(pdu));
 	if let Err(why) = channel.send(pdu).await {
+		crate::wire!("×  {:03X}  not sent: {why}", unit.request);
 		return failed(why, discarded, none_expected);
 	}
 	// The first wait is the whole deadline, and so is the first after a `78`; only a
@@ -297,29 +318,50 @@ async fn exchange<C: AsyncIsoTpTransport>(channel: &mut C, pdu: &[u8], timeout: 
 	let mut pending = 0;
 	loop {
 		if wait.is_zero() {
+			crate::wire!("×  {:03X}  no answer in {} ms", unit.request, sent.elapsed().as_millis());
 			return failed(TransportError::Timeout, discarded, none_expected);
 		}
 		let answer = match channel.recv(wait).await {
 			Ok(answer) => answer,
-			Err(why) => return failed(why, discarded, none_expected),
+			Err(why) => {
+				match (&why, none_expected) {
+					(TransportError::Timeout, true) => crate::wire!("   {:03X}  no refusal in {} ms, as asked", unit.request, sent.elapsed().as_millis()),
+					(TransportError::Timeout, false) => crate::wire!("×  {:03X}  no answer in {} ms", unit.request, sent.elapsed().as_millis()),
+					(why, _) => crate::wire!("×  {:03X}  link: {why}", unit.request),
+				}
+				return failed(why, discarded, none_expected);
+			}
 		};
 		// The arrival, before anything else is done with the answer.
 		let at = Instant::now();
 		if !answers(pdu, &answer) {
+			crate::wire!(
+				"←  {:03X}  {}  late, for an earlier request: dropped",
+				unit.response,
+				crate::verbosity::hex(&answer)
+			);
 			discarded += 1;
 			wait = deadline.saturating_duration_since(at);
 			continue;
 		}
 		if is_pending(&answer) {
+			crate::wire!("←  {:03X}  {}  pending ({})", unit.response, crate::verbosity::hex(&answer), pending + 1);
 			none_expected = false;
 			pending += 1;
 			if pending > MAX_PENDING {
+				crate::wire!("×  {:03X}  still pending after {MAX_PENDING}: given up", unit.request);
 				return failed(TransportError::Timeout, discarded, none_expected);
 			}
 			deadline = at + PENDING_WAIT;
 			wait = PENDING_WAIT;
 			continue;
 		}
+		crate::wire!(
+			"←  {:03X}  {}  {} ms",
+			unit.response,
+			crate::verbosity::hex(&answer),
+			at.saturating_duration_since(sent).as_millis()
+		);
 		return Heard {
 			answer: Answer::Pdu(answer),
 			at,

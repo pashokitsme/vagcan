@@ -17,8 +17,8 @@
 mod overview;
 
 use vag_cli_core::device::{ADAPTER_BAUD, DeviceArg, NotThroughTheBoard, Target};
-use vag_cli_core::{config, datadir, device, glossary, plan, progress, project};
-use vag_cli_diag::{anomaly, dash, faults, labels, props, recording, render, rescue, safety, scan, setup, sniff, vcds, watch};
+use vag_cli_core::{config, datadir, device, glossary, plan, project};
+use vag_cli_diag::{car, dash, faults, labels, recording, rescue, setup, sniff, vcds, watch};
 #[cfg(feature = "measure")]
 use vag_cli_measure as measure;
 
@@ -26,12 +26,8 @@ use std::io::IsTerminal as _;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
-
-use vag_uds_can::UnitLink;
-use vag_uds_client::address::UnitAddress;
-use vag_uds_client::{AsyncUdsClient, UdsReadExt};
 
 /// `--help`'s tour of the commands, built rather than written, because one line
 /// of it is not always there.
@@ -109,6 +105,9 @@ struct Cli {
 	#[arg(long, global = true, display_order = 901)]
 	slcan: bool,
 
+	#[command(flatten)]
+	verbose: vag_cli_core::verbosity::VerboseArg,
+
 	/// Nothing at all is a question — "what is this and what do I type" — and
 	/// clap's answer to it was `error: requires a subcommand`, which is true of
 	/// the grammar and useless to a person. `None` is that question, and
@@ -159,9 +158,13 @@ const GLOBALS_APPLY: &[(&str, &[&str])] = &[
 	),
 ];
 
-/// Whether global flag `id` is shown on the command at `path`.
+/// `--verbose`'s help on a command that opens no adapter: nothing to say about the bus.
+const VERBOSE_OFFLINE: &str = "More on stderr. -v: where the data came from, why a row is unnamed or skipped, caveats and timings; -vv: more detail where the command has it. Data stays on stdout.";
+
+/// Whether global flag `id` is shown on the command at `path`. `--verbose` means
+/// something on every command, and is shown on every one.
 fn global_applies(id: &str, path: &str) -> bool {
-	GLOBALS_APPLY.iter().any(|(flag, paths)| *flag == id && paths.contains(&path))
+	id == "verbose" || GLOBALS_APPLY.iter().any(|(flag, paths)| *flag == id && paths.contains(&path))
 }
 
 /// [`GLOBALS_APPLY`], applied to the command tree.
@@ -192,7 +195,12 @@ fn scope_globals(mut command: clap::Command, globals: &[clap::Arg], path: &str) 
 		command = command.mut_subcommand(&name, |mut sub| {
 			for flag in globals {
 				let shown = global_applies(flag.get_id().as_str(), &here);
-				sub = sub.arg(flag.clone().hide(!shown));
+				let mut flag = flag.clone().hide(!shown);
+				// `-vv`'s bus traffic means something only where a command talks to a car.
+				if flag.get_id() == "verbose" && !global_applies("slcan", &here) {
+					flag = flag.help(VERBOSE_OFFLINE).long_help(VERBOSE_OFFLINE);
+				}
+				sub = sub.arg(flag);
 			}
 			scope_globals(sub, globals, &here)
 		});
@@ -219,7 +227,8 @@ enum Command {
 	/// seen to carry: `vagcan watch`, `measure` or `units --identify` with the
 	/// car records them and reads their channels from the installation the
 	/// first time (`vagcan dev dash build` does the same offline, for a car
-	/// already recorded) — so keep it in place. Both land in one project under
+	/// already recorded) — so keep it in place; an ODIS project can be deleted
+	/// afterwards. Both land in one project under
 	/// `~/.vagcan/data/<id>/`, and a second source is added to a project rather
 	/// than replacing what is in it; where both describe a channel, ODIS wins.
 	///
@@ -231,6 +240,9 @@ enum Command {
 	/// copy and the label files when they are newer than what they read, and
 	/// `--refresh` redoes them. `--list` shows what the project was read from, and
 	/// `--drop` removes one source with everything it wrote.
+	///
+	/// Prints one row per step and a summary line; `-v` adds what each step wrote,
+	/// why a step is short, and timings.
 	///
 	/// No VCDS installation: https://www.ross-tech.com/vcds/download/
 	Setup {
@@ -317,6 +329,12 @@ enum Command {
 	/// everything returns hundreds of tests that have merely never run since
 	/// the memory was cleared. Read-only — clearing faults is a write, which
 	/// this tool cannot do.
+	///
+	/// A stored code is a record that something happened once, not a diagnosis.
+	/// `failing` in the status column is failing now. `km`, `count` and `last seen`
+	/// are the unit's own record; `last seen` is the car's clock, which can be days
+	/// off. An empty text: nothing names the code; `-v` says why, and where every
+	/// text came from.
 	Faults {
 		#[command(flatten)]
 		device: DeviceArg,
@@ -343,9 +361,9 @@ enum Command {
 		/// assisting while it is in one.
 		#[arg(long)]
 		extended: bool,
-		/// Where the recovered `.rod` section keys are cached. A fault
-		/// catalogue is sealed with one, and recovering one costs ~95 s of
-		/// every core — so they are kept as data, not searched for per run.
+		/// Where the recovered `.rod` section keys are cached. A file under its own
+		/// name needs none; one under another name costs a search of minutes — so
+		/// those are kept as data, not searched for per run.
 		/// Default: this project's `rod-keys.json`, written by `vagcan setup`.
 		//
 		// Not on `-h`: nobody reading a car needs it, and `--help` still has it.
@@ -362,7 +380,7 @@ enum Command {
 	/// They are only converted on the emissions-related units ISO 15765-4
 	/// addresses (0x7E0..0x7E7), and only where the answer is the width SAE
 	/// J1979 defines. Other units answer `F4xx` identifiers too and mean
-	/// something else by them, so those are shown as bytes with the reason.
+	/// something else by them, so those are shown as `raw` bytes, the reason in the name column.
 	Sensors {
 		#[command(flatten)]
 		device: DeviceArg,
@@ -453,6 +471,9 @@ enum Command {
 	///
 	/// There is no `--hz`: the rate is measured and reported, never asserted in
 	/// advance, and a flag that throttled a stopwatch could only make it worse.
+	///
+	/// A mark from a standstill prints as a range, its middle first — not a ±.
+	/// `-v` says how to read the tables and gives the rate.
 	#[cfg(feature = "measure")]
 	Measure(#[command(flatten)] measure::args::Args),
 
@@ -555,19 +576,27 @@ enum Dev {
 /// to fix it, and an error already printed there must not be printed again on
 /// the way out. Owning the printing is what keeps a `no` at that question
 /// costing the reader nothing they would not have seen anyway.
+///
+/// Written, not `eprintln!`ed: `eprintln!` panics when stderr will not take the bytes — a
+/// full disk under `2>log`, `2>/dev/full` — and the panic's own message then has nowhere to
+/// go either, which ended a run with exit 101 and nothing said.
 fn report(err: &anyhow::Error) {
-	eprintln!("Error: {err:?}");
+	use std::io::Write as _;
+	let _ = writeln!(std::io::stderr(), "Error: {err:?}");
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
 	// A binary `cargo test` built reads a temporary data dir, never ~/.vagcan: said once,
 	// first, so one run by hand cannot quietly report a machine with no data.
+	// Through `say!`, which never panics on a stderr that takes nothing (`report`).
 	if let Some(note) = vag_cli_core::datadir::test_build_note() {
-		eprintln!("{note}");
+		vag_cli_core::say!("{note}");
 	}
 	match run().await {
 		Ok(code) => code,
+		// `vagcan watch … | head`: the reader had what it wanted; the run ends quietly.
+		Err(err) if vag_cli_core::verbosity::is_broken_pipe(&err) => ExitCode::SUCCESS,
 		Err(err) => {
 			report(&err);
 			ExitCode::FAILURE
@@ -578,6 +607,7 @@ async fn main() -> ExitCode {
 /// Everything before the command, and then the command.
 async fn run() -> Result<ExitCode> {
 	let cli = Cli::parse();
+	vag_cli_core::verbosity::set(cli.verbose.verbose);
 	// Before any command runs, because a dozen leaves consult it and none of
 	// them takes it as an argument — the same reason the label files' unit
 	// numbering is installed rather than threaded through.
@@ -588,12 +618,12 @@ async fn run() -> Result<ExitCode> {
 	// applied silently: names would then arrive in the vendor's wording and
 	// nothing on screen would connect that to the line somebody wrote.
 	if let Some(why) = config::language_complaint(&config::load()) {
-		eprintln!("{why}\n");
+		vag_cli_core::say!("{why}");
 	}
 	// It reads no more than `~/.vagcan/data/` and opens no adapter.
 	let Some(command) = cli.command else {
 		let facts = overview::gather();
-		print!("{}", overview::render(&facts));
+		vag_cli_core::out!("{}", overview::render(&facts));
 		return Ok(if overview::settled(&facts) {
 			ExitCode::SUCCESS
 		} else {
@@ -614,15 +644,13 @@ async fn run() -> Result<ExitCode> {
 			// is found, so the next run does not search for it again.
 			vag_cli_core::progress::silence();
 			if std::io::stderr().is_terminal() {
-				eprintln!();
+				vag_cli_core::say!();
 			}
 			if vag_cli_core::registry::reading() {
 				// Saved after the tables and after each unit — not after each key,
 				// so a unit that needs two searches and was cut short between them
 				// is searched for again.
-				eprintln!(
-					"interrupted while reading the VCDS registry: the keys found for the tables and for every unit finished so far are cached, and the next run continues from them"
-				);
+				vag_cli_core::say!("interrupted: the VCDS registry keys found so far are cached; the next run goes on from them");
 			}
 			// The command is dropped here, and every bus handle with it: each bus task ends
 			// and drops its link, and a serial link closes its channel on the way
@@ -699,12 +727,16 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 		}
 		// Serial devices only: Bluetooth is scanned by a command given `--ble`.
 		Command::Devices => {
-			println!("{}", device::render_list(&device::list()?));
+			let found = device::list()?;
+			vag_cli_core::out!("{}", device::render_list(&found));
+			for (level, note) in device::list_notes(&found) {
+				vag_cli_core::verbosity::say(level, &note);
+			}
 			Ok(())
 		}
 		// Every car command resolves its device inside `open`, once what it can check
 		// without the car has been checked: a typo must not cost a Bluetooth scan or a menu.
-		Command::Info { device } => info(async || device::connect(device.requested(), slcan).await).await,
+		Command::Info { device } => car::info(async || device::connect(device.requested(), slcan).await).await,
 		// The two depths of the same question. `--identify <unit>` names one
 		// unit and reads its whole identification block; `--identify` alone
 		// asks every unit the gateway lists, the gateway and the powertrain for
@@ -719,7 +751,7 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 				let path = device::resolve_cable_for(device.requested(), slcan, &IDENTIFY)?;
 				device::open_bus(&Target::Serial(path)).await
 			};
-			identification(open, &ecu, while_driving).await
+			car::identification(open, &ecu, while_driving).await
 		}
 		// `requires = "identify"` above stops `units --while-driving` at the
 		// parse, but `--identify` with no unit satisfies it and lands here,
@@ -734,9 +766,9 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 		// Resolved inside `open`, not here: `units` reads the label files first.
 		Command::Units { device, identify, .. } => {
 			let open = async || device::connect(device.requested(), slcan).await;
-			units(open, identify.is_some()).await
+			car::units(open, identify.is_some()).await
 		}
-		Command::Sensors { device, unit } => sensors(async || device::connect(device.requested(), slcan).await, &unit).await,
+		Command::Sensors { device, unit } => car::sensors(async || device::connect(device.requested(), slcan).await, &unit).await,
 		Command::Watch {
 			replay: Some(path),
 			data,
@@ -844,8 +876,8 @@ async fn dispatch_dev(tool: Dev, slcan: bool) -> Result<()> {
 		Dev::Vcds { tool } => match vcds::run(tool)? {
 			vcds::Outcome::Done => Ok(()),
 			vcds::Outcome::FromCar { dir, ecu, iv_cache, device } => {
-				let name = odx_name_from_car(async || device::connect(device.as_deref(), slcan).await, &ecu).await?;
-				println!("control unit {ecu} names its label file {name:?}\n");
+				let name = car::odx_name_from_car(async || device::connect(device.as_deref(), slcan).await, &ecu).await?;
+				vag_cli_core::note!("unit {ecu}  F19E  {name}");
 				labels::resolve_odx(&dir, &name, &iv_cache)
 			}
 		},
@@ -878,16 +910,6 @@ fn duration_arg(text: &str) -> Result<Duration, String> {
 	Duration::try_from_secs_f64(seconds).map_err(|e| e.to_string())
 }
 
-/// Parse how the user named a control unit — `01`, `17`, or a request id like
-/// `70E`. Which id block it lives on, and therefore which response rule
-/// applies, is decided by `vag_uds_client::address`.
-///
-/// `flag` is the flag the unit was typed on (`--unit`, `--identify`), and what an
-/// error is said under.
-fn parse_ecu(flag: &str, text: &str) -> Result<UnitAddress> {
-	vag_uds_client::address::parse(text).map_err(|e| anyhow::anyhow!("{flag}: {e}"))
-}
-
 /// `units`' `--device`: the shared help, and which of its depths needs a cable.
 const UNITS_DEVICE_HELP: &str = "Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB cable), `ble` for an adapter \
                                  over Bluetooth, or `ble:<name>` for one adapter by name. Omit it to use the one adapter or board on USB; \
@@ -916,415 +938,27 @@ const SNIFF: NotThroughTheBoard<'static> = NotThroughTheBoard {
 const SNIFF_OVER_BLE: &str = "`dev sniff` reads CAN frames, and the BLE link carries none — use a cable";
 const SNIFF_OVER_USB: &str = "`dev sniff` reads CAN frames; through the dash board that needs `--slcan`, which makes it a plain adapter";
 
-/// Address one control unit over UDS.
-fn address_unit<L: UnitLink>(link: L, unit: UnitAddress) -> AsyncUdsClient<L::Channel> {
-	AsyncUdsClient::new(link.to_unit(
-		vag_uds_transport::CanId::Standard(unit.request),
-		vag_uds_transport::CanId::Standard(unit.response),
-	))
-}
-
-/// Identify the car (see the `Info` subcommand docs).
-async fn info<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>) -> Result<()> {
-	// One link, two control units: read the engine, then release the link and
-	// address the gearbox rather than re-opening it.
-	let engine_unit = vag_uds_client::address::parse("01").expect("01 is a unit number");
-	let mut engine_uds = address_unit(open().await?, engine_unit);
-	let engine = engine_uds.read_identity().await;
-
-	let gearbox_unit = vag_uds_client::address::parse("02").expect("02 is a unit number");
-	let mut gearbox_uds = address_unit(L::release(engine_uds.into_transport()), gearbox_unit);
-	let gearbox = gearbox_uds.read_identity().await;
-
-	if engine.is_empty() && gearbox.is_empty() {
-		println!("{}", render::render_nothing_answered());
-		return Ok(());
-	}
-	println!("{}", render::render_info(engine.vin.as_deref(), &engine, &gearbox));
-	println!(
-		"\nNext:  vagcan units      what else this car has\n       \
-         vagcan faults     stored fault codes\n       \
-         vagcan sensors    live standard readings\n       \
-         vagcan watch      live values from several units at once"
-	);
-	Ok(())
-}
-
-/// Read the standard OBD-II sensors (see the `Sensors` subcommand docs).
-///
-/// The table in `vag_data_labels::obd` is SAE J1979's, and J1979 is only binding on
-/// the emissions-related units ISO 15765-4 addresses. Every identifier that
-/// answers is still shown; whether its bytes become a number is decided by
-/// `obd::conversion_for`, per parameter, from the unit's block and the width of
-/// what it actually answered.
-async fn sensors<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, ecu_text: &str) -> Result<()> {
-	use render::SensorLine;
-	use vag_data_labels::obd::{self, PIDS};
-
-	labels::install_recorded_units();
-	let unit = parse_ecu("--unit", ecu_text)?;
-	let established = unit.is_emissions_related();
-	let mut uds = address_unit(open().await?, unit);
-
-	// Ask for every standard parameter; the unit refuses the ones it does not
-	// implement, and those are skipped rather than failing the run.
-	let mut lines = Vec::new();
-	for p in PIDS {
-		let did = obd::did_for_pid(p.pid);
-		let Ok(bytes) = uds.read_data_by_identifier(did).await else { continue };
-		lines.push(match obd::conversion_for(p, established, &bytes) {
-			Ok(def) => SensorLine::Converted(vag_uds_client::Reading {
-				name: def.name.to_string(),
-				unit: def.unit.to_string(),
-				value: def.interpret(&bytes),
-				raw: bytes,
-			}),
-			Err(why) => SensorLine::Unconverted { did, bytes, why },
-		});
-	}
-
-	if lines.is_empty() {
-		println!("{}", render::render_nothing_answered());
-		return Ok(());
-	}
-	println!("{}", render::render_sensors(&unit.label(), &lines));
-	Ok(())
-}
-
-/// Read the ODX label-file name a control unit reports for itself (F19E).
-async fn odx_name_from_car<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, ecu_text: &str) -> Result<String> {
-	const ODX_FILE_NAME: u16 = 0xF19E;
-
-	labels::install_recorded_units();
-	let unit = parse_ecu("--unit", ecu_text)?;
-	let mut uds = address_unit(open().await?, unit);
-	let data = uds
-		.read_data_by_identifier(ODX_FILE_NAME)
-		.await
-		.context("reading the ODX file name (F19E) from the control unit")?;
-	let name = String::from_utf8_lossy(&data).trim_end_matches(['\0', ' ']).to_string();
-	if name.is_empty() {
-		anyhow::bail!("the control unit returned an empty ODX file name");
-	}
-	Ok(name)
-}
-
-/// List the car's control units (see the `Units` subcommand docs).
-async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify: bool) -> Result<()> {
-	// Spelled out: this function shares its name with the module.
-	use vag_cli_core::units as walk;
-
-	// The label files turn a part number the car reports into the unit's diagnostic
-	// address and name, for any VAG car rather than for a list written here.
-	// They come from what `vagcan setup` extracted, so `units --identify`
-	// resolves names with no flag, the plain listing names what it can from them,
-	// and a machine that has not run setup simply goes without.
-	//
-	// A machine with no project set up simply identifies without names — this is
-	// the ordinary "setup has not run yet" case, not an error.
-	let label_files_dir = project::current().ok().filter(labels::has_project_labels);
-	let label_files = match &label_files_dir {
-		Some(project) => match labels::load_project(project) {
-			Ok(db) => {
-				// The label files' numbering, in force for the rest of the run: what
-				// each number *is*. Which id answers it is learned below, from the
-				// car.
-				labels::install_unit_numbers(&db);
-				Some(db)
-			}
-			Err(e) if identify => return Err(e),
-			// The plain listing only borrows names from them, and a list of ids is
-			// still the answer without.
-			Err(_) => None,
-		},
-		None => None,
-	};
-
-	// The same read `watch` and `measure` start from, so the three cannot come to
-	// different lists.
-	let mut spinner = progress::Line::new();
-	let (backend, listed) = walk::installed(open().await?, &mut spinner).await;
-	spinner.finish();
-	// A gateway that does not answer its list ends the plain listing, which has
-	// nothing else to show. With `--identify` it does not: `watch` in the same
-	// state still identifies the powertrain and the gateway, and so does this,
-	// with the cause kept in the one line that says so.
-	let (ids, unlisted) = match listed {
-		Ok(ids) => (ids, None),
-		Err(e) if identify => (Vec::new(), Some(e)),
-		Err(e) => return Err(anyhow::Error::new(e).context("reading the car's list of control units from the gateway")),
-	};
-
-	if !identify {
-		if ids.is_empty() {
-			println!("The gateway listed no control units.");
-			return Ok(());
-		}
-		// Names from this machine only — nothing more is asked of the car. A record
-		// that does not read is no names, not a failed listing.
-		let cars = walk::recorded_cars().unwrap_or_default();
-		let record = record_of_these(&ids, &cars);
-		let by_part = |part: &str| label_files.as_ref()?.unit_for_part(part).map(|u| (u.address, u.name.clone()));
-		let by_number = |number: u8| label_files.as_ref()?.unit_name(number).map(str::to_owned);
-		print!(
-			"{}",
-			render_listing(
-				&ids,
-				record.map(|car| car.units.as_slice()),
-				by_part,
-				by_number,
-				vag_uds_client::address::short_number
-			)
-		);
-		// The record is the one source here that may not be this car's: say whose it is.
-		if let Some(car) = record {
-			println!(
-				"\nNames: the label files, and what {}'s units said to `vagcan units --identify`.",
-				car.vin
-			);
-		}
-		return Ok(());
-	}
-
-	// The walk `watch` and `measure` make, and no other request: the gateway's
-	// list, the gateway itself and the powertrain, four identifiers each, then
-	// the VIN off the engine — so that what is recorded here is what they would
-	// record.
-	let wanted = walk::to_identify(&ids, &[plan::ENGINE]);
-	let (backend, found) = walk::identify_listed(backend, &wanted, &mut spinner).await;
-	spinner.update("reading the vehicle identification number");
-	let (_, vin) = walk::read_vin(backend).await;
-	spinner.finish();
-	// Written down for the commands that need this car's units without the car:
-	// `setup`'s registry step, and the dash build — this is the command a dash
-	// owner runs once. A write that fails is one line, and so is a car that gave
-	// no VIN to file it under.
-	match &vin {
-		Some(vin) => walk::record_quietly(vin, &found),
-		None => eprintln!("{}", walk::NOT_RECORDED_WITHOUT_A_VIN),
-	}
-	// And the channels of the units nothing has read yet, out of the VCDS
-	// installation the project was set up from — as `watch` and `measure` do,
-	// so that a dash owner who ran this once has channels to build from.
-	vag_cli_core::registry::ensure_async(found.clone()).await;
-
-	let mut asked: Vec<u16> = wanted;
-	asked.sort_unstable();
-	asked.dedup();
-	// An empty list is not a stop either: the gateway and the powertrain are
-	// asked, recorded and printed, as `watch` does in the same state.
-	match (&unlisted, ids.is_empty()) {
-		(Some(cause), _) => {
-			println!("The gateway did not give the car's list of control units ({cause}), so only the gateway and the powertrain were asked:\n")
-		}
-		(None, true) => println!("The gateway listed no control units, so only the gateway and the powertrain were asked:\n"),
-		(None, false) => println!(
-			"{} {} listed by the gateway, and the gateway and the powertrain besides:\n",
-			ids.len(),
-			render::plural(ids.len(), "control unit")
-		),
-	}
-	let mut identified = 0usize;
-	let mut resolved = 0usize;
-	for id in asked {
-		if UnitAddress::from_request(id).is_none() {
-			println!("  {id:03X}  has no diagnostic address (700-795 or 7E0-7E7) — skipped");
-			continue;
-		}
-		let Some(unit) = found.iter().find(|u| u.request == id) else {
-			println!("  {id:03X}  (did not answer)");
-			continue;
-		};
-		let part = unit.part_number.clone().unwrap_or_default();
-		let component = unit.component.clone().unwrap_or_default();
-		if part.is_empty() && component.is_empty() {
-			println!("  {id:03X}  (did not answer)");
-			continue;
-		}
-		// Two names, both from data: the unit's own component string, and
-		// what the label files call the part number — the latter also
-		// supplying the diagnostic address people use.
-		identified += 1;
-		let name = label_files
-			.as_ref()
-			.and_then(|db| db.unit_for_part(&part))
-			.map(|u| {
-				resolved += 1;
-				// This is the pairing: the label files say the part number is
-				// unit 44, the car says 0x712 answered with it. Neither
-				// half is in this program's source, and one read of the
-				// car is what joins them.
-				vag_uds_client::address::install([vag_uds_client::address::UnitNumber {
-					number: u.address,
-					request: Some(id),
-					name: Some(u.name.clone()),
-				}]);
-				u.name.clone()
-			})
-			.unwrap_or_default();
-		// The number in force — the label files' and the car's, then the
-		// built-in fallback's — or the request id when nothing has paired one
-		// with it.
-		let number = UnitAddress::from_request(id).map(|a| a.label()).unwrap_or_else(|| format!("{id:03X}"));
-		println!("  {id:03X}  {number:<4} {part:<14} {component:<16} {name}");
-	}
-	if let Some(project) = &label_files_dir {
-		// Silence here would read as "the label files agree"; it usually means the
-		// label files have no entry for these part numbers.
-		println!(
-			"\n{resolved} of {identified} part numbers resolved against the label files of project `{}`.",
-			project.id
-		);
-	}
-	Ok(())
-}
-
-/// The one recorded car whose record holds every unit the gateway listed, if there is exactly
-/// one.
-///
-/// The plain listing reads no VIN, so it cannot ask which car this is. A record that covers
-/// the list is this car's, or one built like it; with two or more there is no telling which,
-/// so none is used.
-fn record_of_these<'a>(listed: &[u16], cars: &'a [vag_cli_core::units::Recorded]) -> Option<&'a vag_cli_core::units::Recorded> {
-	let mut covering = cars
-		.iter()
-		.filter(|car| listed.iter().all(|id| car.units.iter().any(|u| u.request == *id)));
-	match (covering.next(), covering.next()) {
-		(Some(one), None) => Some(one),
-		_ => None,
-	}
-}
-
-/// The plain `units` listing: each request id, the short number it goes by, and a name.
-///
-/// The name is, in order: what the label files call the part number the unit reported (with
-/// the number they give it), what they call its short number, and what the unit called itself
-/// (`F197`). The part number and that last name come from `record`, what an earlier
-/// `--identify` wrote down. With none of them, just the id.
-fn render_listing(
-	ids: &[u16],
-	record: Option<&[plan::UnitIdentity]>,
-	by_part: impl Fn(&str) -> Option<(u8, String)>,
-	by_number: impl Fn(u8) -> Option<String>,
-	short: impl Fn(u16) -> Option<u8>,
-) -> String {
-	let mut out = format!("{} {}:\n\n", ids.len(), render::plural(ids.len(), "control unit"));
-	for &id in ids {
-		let said = record.and_then(|units| units.iter().find(|u| u.request == id));
-		let from_part = said.and_then(|u| u.part_number.as_deref()).and_then(&by_part);
-		let number = from_part.as_ref().map(|(n, _)| *n).or_else(|| short(id));
-		let name = from_part
-			.map(|(_, name)| name)
-			.or_else(|| number.and_then(&by_number))
-			.or_else(|| said.and_then(|u| u.component.clone()));
-		let number = number.map(|n| format!("{n:02X}")).unwrap_or_default();
-		let line = format!("  {id:03X}  {number:<3} {}", name.unwrap_or_default());
-		out.push_str(line.trim_end());
-		out.push('\n');
-	}
-	out
-}
-
 /// Write or refresh the owner's glossary (see the `Glossary` subcommand docs).
 fn glossary_command() -> Result<()> {
 	let project = project::current()?;
 	let seeded = glossary::seed(&project)?;
 	let language = config::language(&config::load());
-	println!(
-		"{} channel names in {}\n  {} already yours, {} still blank\n",
-		seeded.total,
-		seeded.path.display(),
-		seeded.translated,
-		seeded.blank
+	vag_cli_core::out!(
+		"{}",
+		vag_cli_core::table::pairs(&[
+			("file", seeded.path.display().to_string()),
+			("channels", seeded.total.to_string()),
+			("yours", seeded.translated.to_string()),
+			("blank", seeded.blank.to_string()),
+			("column", language.code().to_string()),
+		])
 	);
-	println!(
-		"Write in the `{}` column and it wins over ODIS and VCDS wherever that\n\
-         channel is shown. The `current` column is what it is called today and is\n\
-         not read back. Change which column is used with `language` in {}.",
+	vag_cli_core::note!(
+		"a name written in the `{}` column wins over ODIS and VCDS; `current` is today's name and is not read back; \
+		 `language` in {} picks the column",
 		language.code(),
 		config::path()?.display()
 	);
-	Ok(())
-}
-
-/// Read one unit's whole identification block (`vagcan units --identify <unit>`).
-///
-/// The deeper of the two depths `units` has: the shallow one asks every unit
-/// the four identifiers that name it, this asks one unit the whole
-/// 256-identifier block and names what answers.
-async fn identification<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, ecu_text: &str, while_driving: bool) -> Result<()> {
-	let unit = parse_ecu("--identify", ecu_text)?;
-	let ranges = scan::parse_ranges(props::IDENT_RANGE).expect("the built-in range parses");
-
-	let mut backend = open().await?;
-	// 256 reads aimed at one control unit is a sweep, whatever the block they
-	// are in is called. This was the one sweep-shaped path in the tool with no
-	// road-speed check on it — `vagcan units --identify`, which anybody could run at
-	// speed while the whole-car sweep refused to. Guarded now like the rest.
-	if !while_driving {
-		backend = match safety::require_stationary(backend).await {
-			Ok(backend) => backend,
-			Err((_, why)) => anyhow::bail!(
-				"{why}\n\n\
-                 Reading a unit's whole identification block asks it 256 identifiers, \n\
-                 and a unit that mishandles one can stop doing its job while the car is \n\
-                 in motion. Read it while parked, or pass --while-driving if you accept \n\
-                 that risk with the car moving."
-			),
-		};
-	}
-	let mut uds = address_unit(backend, unit);
-
-	let mut found = Vec::new();
-	// The read is bounded and the block is standardised, but the rule "stop
-	// when something changes" is not about how big the read was. No witness:
-	// there is nothing established as known-good before this runs, so the guard
-	// watches only for the unit going quiet after it had been answering.
-	let mut monitor = anomaly::Monitor::new(unit.request);
-	let mut guard = scan::Guard {
-		witness: None,
-		monitor: &mut monitor,
-	};
-	scan::scan_dids(&mut uds, &ranges, std::time::Duration::from_millis(2), 400, &mut guard, |hit| {
-		found.push(props::Property {
-			did: hit.did,
-			data: hit.data.clone(),
-		});
-		Ok(())
-	})
-	.await?;
-	if let Some(halt) = monitor.halted() {
-		let mut progress = progress::Line::new();
-		progress.notice(&halt.report());
-		anyhow::bail!("the read was stopped: control unit {} changed while it was being read", halt.unit());
-	}
-
-	if found.is_empty() {
-		println!("{}", render::render_nothing_answered());
-		return Ok(());
-	}
-	println!("{}", props::render(&format!("Control unit {}", unit.label()), &found));
-
-	// Mode 09 lives outside the identification block and carries what a part
-	// number cannot: which emissions calibration this unit is actually
-	// running.
-	let mut info = Vec::new();
-	for (pid, name) in vag_data_labels::obd::VEHICLE_INFO {
-		let did = vag_data_labels::obd::did_for_info_pid(*pid);
-		let Ok(data) = uds.read_data_by_identifier(did).await else {
-			continue;
-		};
-		if let Some(items) = vag_data_labels::obd::decode_info_text(&data) {
-			info.push((*name, items.join(", ")));
-		}
-	}
-	if !info.is_empty() {
-		let width = info.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
-		println!("  Vehicle information (OBD-II mode 09):");
-		for (name, value) in info {
-			println!("    {name:<width$}  {value}");
-		}
-	}
 	Ok(())
 }
 
@@ -1949,6 +1583,65 @@ mod tests {
 	}
 
 	#[test]
+	fn setup_help_says_what_lands_where_and_what_to_keep() {
+		// Said here since the shortage message is one line of what to type
+		// (`vag_cli_core::missing::FIX`), which points at this help.
+		let help = help_of(&["setup"], true);
+		assert!(help.contains("~/.vagcan/data/<id>/"), "{help}");
+		assert!(help.contains("keep it in place"), "a VCDS installation is read again later:\n{help}");
+		assert!(help.contains("ODIS project can be deleted"), "{help}");
+		assert!(help.contains(vag_cli_core::missing::VCDS_DOWNLOAD), "{help}");
+		assert!(vag_cli_core::missing::FIX.contains("vagcan setup --help"));
+	}
+
+	#[test]
+	fn faults_help_carries_the_caveats_the_listing_no_longer_prints() {
+		let help = help_of(&["faults"], true);
+		assert!(help.contains("not a diagnosis"), "{help}");
+		assert!(help.contains("`failing`"), "{help}");
+		assert!(help.contains("car's clock"), "{help}");
+		assert!(help.contains("-v"), "{help}");
+	}
+
+	#[test]
+	fn the_verbose_help_names_the_bus_only_where_a_command_talks_to_a_car() {
+		let verbose = |path: &[&str]| flag_help(path, "verbose");
+		for path in [&["devices"][..], &["setup"], &["dev", "glossary"], &["dev", "vcds", "rod"]] {
+			let help = verbose(path);
+			assert!(!help.contains("bus"), "{path:?}: {help}");
+			assert!(help.contains("-v:"), "{path:?}: {help}");
+		}
+		for path in [&["faults"][..], &["watch"], &["units"]] {
+			assert!(verbose(path).contains("every request and answer on the bus"), "{path:?}");
+		}
+	}
+
+	#[test]
+	fn verbose_is_counted_on_every_command_before_or_after_it_and_shown_on_each() {
+		let level = |args: &[&str]| Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}")).verbose.verbose;
+		assert_eq!(level(&["vagcan", "faults"]), 0);
+		assert_eq!(level(&["vagcan", "-v", "faults"]), 1);
+		assert_eq!(level(&["vagcan", "faults", "-v"]), 1);
+		assert_eq!(level(&["vagcan", "faults", "-vv"]), 2);
+		assert_eq!(level(&["vagcan", "--verbose", "faults"]), 1);
+		assert_eq!(level(&["vagcan", "dev", "vcds", "rod", "f.rod", "-vv"]), 2);
+		assert_eq!(level(&["vagcan", "-v"]), 1, "the bare overview takes it too");
+		for path in every_path() {
+			let words: Vec<&str> = path.split(' ').collect();
+			let help = help_of(&words, false);
+			assert!(help.contains("-v, --verbose"), "`vagcan {path} -h`:\n{help}");
+			let mut args = vec!["vagcan"];
+			args.extend(&words);
+			args.push("-vv");
+			// Only the parse of the flag is asked here: a command with a required
+			// argument fails for want of it, never for `-vv`.
+			if let Err(e) = Cli::try_parse_from(&args) {
+				assert_ne!(e.kind(), clap::error::ErrorKind::UnknownArgument, "{args:?}: {e}");
+			}
+		}
+	}
+
+	#[test]
 	fn a_hidden_global_flag_still_parses_wherever_it_did() {
 		for args in [
 			&["vagcan", "setup", "--slcan", "--project", "SK37X"][..],
@@ -2015,54 +1708,5 @@ mod tests {
 		assert!(help_of(&["faults"], true).contains("--iv-cache"));
 		assert!(!help_of(&["watch"], false).contains("--data"));
 		assert!(help_of(&["watch"], true).contains("--data"));
-	}
-
-	fn identity(request: u16, part: &str, component: &str) -> plan::UnitIdentity {
-		plan::UnitIdentity {
-			request,
-			part_number: Some(part.to_string()),
-			component: Some(component.to_string()),
-			..plan::UnitIdentity::default()
-		}
-	}
-
-	#[test]
-	fn the_plain_listing_names_each_unit_from_what_is_on_this_machine() {
-		// Invented parts and names; the rule is what is tested.
-		let record = [identity(0x7E0, "PART-E", "ENGINE SELF"), identity(0x713, "PART-B", "BRAKES SELF")];
-		let by_part = |part: &str| (part == "PART-B").then(|| (0x03, "Brakes by part".to_string()));
-		let by_number = |n: u8| (n == 0x01).then(|| "Engine by number".to_string());
-		let short = |request: u16| (request == 0x7E0).then_some(0x01);
-		let listing = render_listing(&[0x7E0, 0x713, 0x70A], Some(&record), by_part, by_number, short);
-		assert_eq!(
-			listing,
-			"3 control units:\n\n  \
-			 7E0  01  Engine by number\n  \
-			 713  03  Brakes by part\n  \
-			 70A\n"
-		);
-		// No label files: what the units called themselves.
-		let listing = render_listing(&[0x7E0, 0x713], Some(&record), |_| None, |_| None, short);
-		assert_eq!(listing, "2 control units:\n\n  7E0  01  ENGINE SELF\n  713      BRAKES SELF\n");
-		// Nothing on this machine: the ids, as before.
-		let listing = render_listing(&[0x7E0, 0x713], None, |_| None, |_| None, |_| None);
-		assert_eq!(listing, "2 control units:\n\n  7E0\n  713\n");
-	}
-
-	#[test]
-	fn the_plain_listing_uses_a_record_only_when_one_car_covers_the_list() {
-		let car = |vin: &str, requests: &[u16]| vag_cli_core::units::Recorded {
-			vin: vin.to_string(),
-			units: requests.iter().map(|r| identity(*r, "P", "C")).collect(),
-		};
-		let cars = [
-			car("TESTVIN0000000001", &[0x7E0, 0x713]),
-			car("TESTVIN0000000002", &[0x7E0, 0x713, 0x70A]),
-		];
-		assert_eq!(record_of_these(&[0x7E0, 0x70A], &cars).map(|c| c.vin.as_str()), Some("TESTVIN0000000002"));
-		// Both cover it: no telling which this is.
-		assert_eq!(record_of_these(&[0x7E0, 0x713], &cars), None);
-		// A unit no record has: not a car recorded here.
-		assert_eq!(record_of_these(&[0x7E0, 0x746], &cars), None);
 	}
 }

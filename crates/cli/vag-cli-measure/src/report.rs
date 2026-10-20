@@ -458,15 +458,54 @@ fn power_series(run: &Run, accel: &Track, model: &Model, window: Seconds) -> (Tr
 /// Pure formatting: everything numeric arrived in [`Derived`], and the only
 /// decisions taken here are about how a number is spelled — which is not a
 /// detail, since a mark's own precision is what says how much of it to believe.
+///
+/// This is the table the full screen shows, with what it takes to read it beside the
+/// numbers. On stdout the run prints [`results_data`] and says [`caveats`] at `-v`.
 pub fn results(run: &Run, derived: &Derived, setting: &Setting) -> String {
 	let mut out = String::new();
-	measured_block(&mut out, run, derived, setting);
-	computed_block(&mut out, run, derived, setting);
+	measured_block(&mut out, run, derived, setting, false);
+	computed_block(&mut out, run, derived, setting, false);
+	out
+}
+
+/// [`results`] as the data a run prints on stdout: the same rows and figures, with no
+/// sentence about how to read them — those are [`caveats`].
+pub fn results_data(run: &Run, derived: &Derived, setting: &Setting) -> String {
+	let mut out = String::new();
+	measured_block(&mut out, run, derived, setting, true);
+	computed_block(&mut out, run, derived, setting, true);
+	out
+}
+
+/// How to read [`results_data`]'s figures, one line each — what [`results`] says
+/// inside the table. Empty when nothing in the run needs one.
+pub fn caveats(run: &Run, derived: &Derived) -> Vec<String> {
+	let mut out = Vec::new();
+	if run.marks.iter().any(Mark::starts_at_launch) {
+		out.push(
+			"a mark from a standstill is a range: the car rolls before its own speed signal wakes up, and the two \
+             ways back to zero err in opposite directions; the figure in front is the middle of the range, not a ±"
+				.to_string(),
+		);
+		if let Some(mark) = run.marks.iter().find(|mark| !mark.starts_at_launch()) {
+			out.push(format!(
+				"{}-{} starts from a real crossing and has no such gap",
+				mark.from_kmh, mark.to_kmh
+			));
+		}
+	}
+	out.push("distance ±3 %: the car's own speed signal, not the maths".to_string());
+	if derived.peak_power_shaft_kw.is_some() {
+		out.push("peak power, shaft: an estimate with the engine-side inertia included".to_string());
+	}
+	if derived.shifts.iter().any(|shift| !shift.resolved()) {
+		out.push("a shift cost \"under ±x\" is below what this session could resolve".to_string());
+	}
 	out
 }
 
 /// Times, and the peaks of channels the car itself reported.
-fn measured_block(out: &mut String, run: &Run, derived: &Derived, setting: &Setting) {
+fn measured_block(out: &mut String, run: &Run, derived: &Derived, setting: &Setting, terse: bool) {
 	let aborted = if run.aborted { " (aborted)" } else { "" };
 	let _ = writeln!(out, "  Run {} — measured{aborted}", run.index);
 
@@ -484,7 +523,7 @@ fn measured_block(out: &mut String, run: &Run, derived: &Derived, setting: &Sett
 		let _ = writeln!(out, "    {name:<name_w$}   {time:<time_w$}   {accel}");
 	}
 
-	if run.marks.iter().any(Mark::starts_at_launch) {
+	if !terse && run.marks.iter().any(Mark::starts_at_launch) {
 		let _ = writeln!(
 			out,
 			"\n    A mark from a standstill carries a range: the car is already rolling\n\
@@ -572,14 +611,11 @@ fn other_peaks(out: &mut String, run: &Run, setting: &Setting) {
 
 /// Figures this tool worked out, under a heading naming what it worked them out
 /// with.
-fn computed_block(out: &mut String, run: &Run, derived: &Derived, setting: &Setting) {
+fn computed_block(out: &mut String, run: &Run, derived: &Derived, setting: &Setting, terse: bool) {
 	let _ = writeln!(out, "  Run {} — computed   ({})", run.index, conditions(setting, derived));
 
-	let _ = writeln!(
-		out,
-		"    distance            {:.0} m      ±3 % — the car's own speed signal, not the maths",
-		derived.distance_m
-	);
+	let distance_note = if terse { "" } else { " — the car's own speed signal, not the maths" };
+	let _ = writeln!(out, "    distance            {:.0} m      ±3 %{distance_note}", derived.distance_m);
 	if let Some(peak) = derived.peak_accel {
 		let gear = match &derived.peak_accel_gear {
 			Some(gear) => format!(" in gear {gear}"),
@@ -598,11 +634,8 @@ fn computed_block(out: &mut String, run: &Run, derived: &Derived, setting: &Sett
 		let _ = writeln!(out, "    peak power, wheel   {}    estimate", power_figure(kw));
 	}
 	if let Some(kw) = derived.peak_power_shaft_kw {
-		let _ = writeln!(
-			out,
-			"    peak power, shaft   {}    estimate, engine-side inertia included",
-			power_figure(kw)
-		);
+		let inertia = if terse { "" } else { ", engine-side inertia included" };
+		let _ = writeln!(out, "    peak power, shaft   {}    estimate{inertia}", power_figure(kw));
 	}
 	for shift in &derived.shifts {
 		// A deficit that does not clear the session's own noise is printed as
@@ -616,12 +649,8 @@ fn computed_block(out: &mut String, run: &Run, derived: &Derived, setting: &Sett
 			// the two saying 0.10 and 0.20 about one shift with no way for a
 			// reader to tell they agreed.
 			let bar = sigma * derive::DEFICIT_RESOLVED_SIGMAS;
-			let _ = writeln!(
-				out,
-				"    shift {}→{}           cost under ±{bar:.2} km/h — below what this \
-                 session could resolve",
-				shift.from, shift.to
-			);
+			let below = if terse { "" } else { " — below what this session could resolve" };
+			let _ = writeln!(out, "    shift {}→{}           cost under ±{bar:.2} km/h{below}", shift.from, shift.to);
 			continue;
 		}
 		let cost = match (shift.cost_on_mark_s, derived.cost_mark) {
@@ -1021,5 +1050,45 @@ mod tests {
 		let table = results(&run, &derived, &Setting::default());
 		assert!(table.contains("Run 2 — measured (aborted)"), "{table}");
 		assert!(table.contains("0-10"), "{table}");
+	}
+
+	#[test]
+	fn the_data_on_stdout_is_the_screens_table_without_its_sentences() {
+		let run = run();
+		let setting = setting_with_units();
+		let derived = recompute(&run, &setting);
+		let data = results_data(&run, &derived, &setting);
+		assert_eq!(
+			data,
+			"  Run 2 — measured\n\
+             \x20   mark (km/h)   time                     average acceleration\n\
+             \x20   0-10          0.69 s (0.60 … 0.79)     4.0 m/s²\n\
+             \x20   0-100         6.94 s (6.85 … 7.04)     4.0 m/s²\n\
+             \x20   50-100        3.47 s ± 0.02            4.00 m/s²\n\
+             \x20   peak engine speed   5000 /min at 5.0 s\n\
+             \x20   peak boost          2.10 bar abs at 0.0 s\n\
+             \x20 Run 2 — computed   (window 0.30 s, central, refresh ≤ 0.05 s bound)\n\
+             \x20   distance            128 m      ±3 %\n\
+             \x20   peak acceleration   4.0 m/s²  (0.41 g) at 7.90 s in gear 2  (mean over ±0.2 s)\n\
+             \x20   shift 1→2           cost under ±0.00 km/h\n",
+			"{data}"
+		);
+		// Every row of it is a row of the screen's table, word for word up to where the
+		// screen goes on to explain it.
+		let screen = results(&run, &derived, &setting);
+		for line in data.lines() {
+			assert!(
+				screen.lines().any(|row| row.starts_with(line)),
+				"{line:?} is not on the screen:\n{screen}"
+			);
+		}
+		assert!(screen.contains("A mark from a standstill carries a range"), "{screen}");
+		// What the screen explains inline is said at -v, one line each.
+		let caveats = caveats(&run, &derived);
+		assert!(caveats[0].starts_with("a mark from a standstill is a range"), "{caveats:?}");
+		assert_eq!(caveats[1], "50-100 starts from a real crossing and has no such gap");
+		assert_eq!(caveats[2], "distance ±3 %: the car's own speed signal, not the maths");
+		assert_eq!(caveats[3], "a shift cost \"under ±x\" is below what this session could resolve");
+		assert_eq!(caveats.len(), 4, "{caveats:?}");
 	}
 }

@@ -4,8 +4,6 @@
 //! every full-screen command and the picker enter through, and the file chooser
 //! `measure view` and `recording` both offer when a path was left off.
 
-use std::io::Write as _;
-
 pub mod bars;
 pub mod chart;
 pub mod menu;
@@ -33,12 +31,22 @@ pub mod term;
 /// defaults answer themselves while the ones without refuse.
 ///
 /// **Not the same question as a progress bar's.** [`crate::progress::Line`]
-/// asks whether *stderr* is a terminal — "may I draw and erase a line" — which
-/// is true of a run whose stdin is a pipe and false of one whose output is
-/// redirected. The two go opposite ways on the same command often enough that
-/// merging them would be a bug, not a simplification.
+/// asks only whether *stderr* is a terminal — "may I draw and erase a line" —
+/// which is true of a run whose stdin is a pipe. This asks that *and* stdin: the
+/// question is drawn on stderr and answered on stdin, and a run with either one
+/// redirected has nobody to ask.
 pub fn can_ask() -> bool {
-	std::io::IsTerminal::is_terminal(&std::io::stdin())
+	asks_on(
+		std::io::IsTerminal::is_terminal(&std::io::stdin()),
+		std::io::IsTerminal::is_terminal(&std::io::stderr()),
+	)
+}
+
+/// [`can_ask`] over the two facts. A question and a menu are drawn on stderr, so both
+/// stdin and stderr must be the terminal: with `2>trace.log` the question would land in
+/// the file and the terminal sit waiting for an answer to nothing on it.
+fn asks_on(stdin_is_terminal: bool, stderr_is_terminal: bool) -> bool {
+	stdin_is_terminal && stderr_is_terminal
 }
 
 /// Repaint a block of `lines` in place, over whatever the last call left.
@@ -86,7 +94,7 @@ pub fn erase(out: &mut impl std::io::Write, drawn: usize) -> anyhow::Result<()> 
 	Ok(())
 }
 
-/// The screen a person actually uses: a list on stdout, keys off the terminal.
+/// The screen a person actually uses: a list on stderr, keys off the terminal.
 ///
 /// **One type for both screens, where there were two.** [`menu`] and [`picker`]
 /// each had a `Console` holding one `String`, a `new` that wrapped it and a
@@ -109,10 +117,22 @@ impl Console {
 	}
 
 	/// Say one line. Both traits below declare a `say`, and both are this.
+	///
+	/// On stderr, with the questions it goes with: stdout is a command's data.
 	pub(crate) fn say_line(&mut self, line: &str) -> anyhow::Result<()> {
-		let mut out = std::io::stdout();
-		writeln!(out, "{line}")?;
-		out.flush()?;
+		crate::verbosity::say(0, line);
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	#[test]
+	fn nobody_is_asked_with_stdin_or_stderr_away_from_the_terminal() {
+		// `faults -vv 2>trace.log`: the question went into the file and the terminal
+		// looked hung (review of PR #38).
+		assert!(super::asks_on(true, true));
+		assert!(!super::asks_on(true, false), "stderr redirected: the question would not be seen");
+		assert!(!super::asks_on(false, true), "stdin redirected: nobody to answer");
 	}
 }

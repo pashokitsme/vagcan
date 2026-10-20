@@ -624,6 +624,9 @@ struct Prepared {
 	banner: String,
 	/// Present exactly when `--full` was accepted.
 	full: bool,
+	/// What the run says before it starts, each line with its level: the one summary
+	/// line every run prints, where the channels and the car file came from at `-v`.
+	said: Vec<(u8, String)>,
 }
 
 /// A channel's key as the session file spells it: `snake_case`, one spelling in
@@ -920,21 +923,61 @@ pub fn view_picked() -> Result<()> {
 /// session is evidence from a drive and cannot be regenerated, so half-reading
 /// one is worse than refusing it.
 pub fn open_view(path: &str) -> Result<()> {
+	let page = write_view(path)?;
+	view::open_in_browser(&page);
+	Ok(())
+}
+
+/// [`open_view`] up to the browser: read the session, re-derive it, write the page
+/// beside it and say so — the session and the page on stdout, what was re-derived at
+/// `-v`, each run at `-vv`. Hands back the page.
+pub fn write_view(path: &str) -> Result<std::path::PathBuf> {
+	use vag_cli_core::verbosity::{NOTES, WIRE, say};
 	let text = std::fs::read_to_string(path).with_context(|| format!("reading the session {path:?}"))?;
 	let session: Value = serde_json::from_str(&text).with_context(|| format!("{path} is not a session this tool wrote"))?;
 	match session["schema"].as_u64() {
 		Some(SCHEMA) => {}
-		Some(other) => anyhow::bail!(
-			"{path} is schema {other} and this build reads schema {SCHEMA}.\n\
-             A session cannot be regenerated, so it is left alone rather than half-read.\n\
-             Use a build that knows schema {other}."
-		),
-		None => anyhow::bail!("{path} carries no `schema` field, so it is not a session this tool wrote."),
+		Some(other) => {
+			say(
+				NOTES,
+				"a session cannot be regenerated, so one in another schema is left alone rather than half-read",
+			);
+			anyhow::bail!("{path} is schema {other} and this build reads schema {SCHEMA}\nopen it with a build that reads schema {other}")
+		}
+		None => anyhow::bail!("{path} carries no `schema` field: not a session this tool wrote"),
 	}
 	let mut session = session;
-	refresh_derived(&mut session);
-	view::write_and_open(std::path::Path::new(path), &session)?;
-	Ok(())
+	let reread = refresh_derived(&mut session);
+	let page = view::write_beside(std::path::Path::new(path), &session)?;
+	vag_cli_core::verbosity::out(&vag_cli_core::table::pairs(&[
+		("session", path.to_string()),
+		("page", page.display().to_string()),
+	]));
+	let fresh = reread.iter().filter(|(_, fresh)| *fresh).count();
+	say(
+		NOTES,
+		&format!(
+			"{} run{} · {fresh} re-derived from the samples by this build · {} kept as recorded",
+			reread.len(),
+			if reread.len() == 1 { "" } else { "s" },
+			reread.len() - fresh
+		),
+	);
+	if fresh < reread.len() {
+		say(
+			NOTES,
+			"a run this build cannot rebuild from its samples keeps the figures it was saved with",
+		);
+	}
+	for (index, fresh) in &reread {
+		let what = if *fresh {
+			"re-derived"
+		} else {
+			"kept as recorded: not rebuildable from its samples"
+		};
+		say(WIRE, &format!("run {index}  {what}"));
+	}
+	Ok(page)
 }
 
 /// Re-derive every run from its own samples, so an old file is read by today's
@@ -956,22 +999,31 @@ pub fn open_view(path: &str) -> Result<()> {
 /// road load, and those live in a car file that may have been edited, replaced
 /// or measured again since — so a power figure is left exactly as it was
 /// computed, with the conditions the file records beside it.
-fn refresh_derived(session: &mut Value) {
+///
+/// Hands back every run's index and whether it was re-derived.
+fn refresh_derived(session: &mut Value) -> Vec<(u64, bool)> {
 	let setting = report::Setting {
 		accel_window_s: session["config"]["accel_window_s"].as_f64().unwrap_or_default(),
 		peak_tau_s: report::PEAK_TAU_S,
 		..report::Setting::default()
 	};
 	let Some(runs) = session.get_mut("runs").and_then(Value::as_array_mut) else {
-		return;
+		return Vec::new();
 	};
-	for value in runs.iter_mut() {
-		let Some(run) = reread::run(value) else { continue };
+	let mut reread = Vec::new();
+	for (at, value) in runs.iter_mut().enumerate() {
+		let index = value["index"].as_u64().unwrap_or(at as u64 + 1);
+		let Some(run) = reread::run(value) else {
+			reread.push((index, false));
+			continue;
+		};
 		// Only the block that is a cache. Everything else in the run — the
 		// samples, the marks, when it was driven — is evidence and is left
 		// exactly as the drive left it.
 		merge_derived(value, Value::Object(derived_json(&report::recompute(&run, &setting))));
+		reread.push((index, true));
 	}
+	reread
 }
 
 /// Replace the cached block, keeping any figure this build could not recompute.
@@ -1020,25 +1072,15 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 	// Written down for the commands that need this car's units without the car
 	// (`setup`'s registry step, the dash build); a write that fails is one line,
 	// and so is a car that gave no VIN to file it under.
-	match &vin {
-		Some(vin) => crate::units::record_quietly(vin, &identities),
-		None => eprintln!("{}", crate::units::NOT_RECORDED_WITHOUT_A_VIN),
-	}
+	crate::units::record_for(vin.as_deref(), &identities);
 	// The channels of units nothing has read yet, out of the VCDS installation
 	// the project was set up from — before the project's rows are loaded below.
 	crate::registry::ensure_async(identities.clone()).await;
 
 	let prepared = prepare(&store, &crate::extracted::current(), &identities, vin.clone(), &opts)?;
-	if !prepared.banner.is_empty() {
-		println!("{}", prepared.banner);
+	for (level, line) in &prepared.said {
+		vag_cli_core::verbosity::say(*level, line);
 	}
-	let (channels, units) = (prepared.plan.by_address.len(), identities.len());
-	println!(
-		"{channels} channel{} on {units} control unit{} — timing from {}",
-		if channels == 1 { "" } else { "s" },
-		if units == 1 { "" } else { "s" },
-		prepared.meta.speed_source
-	);
 
 	let feed = LiveFeed::new(bus, &prepared.plan);
 	let full_screen = std::io::IsTerminal::is_terminal(&std::io::stdout());
@@ -1058,19 +1100,16 @@ fn prepare(
 ) -> Result<Prepared> {
 	let set = channels::resolve(store, extracted, identities, opts.full).map_err(|missing| {
 		let found = found_report(identities, &missing);
-		anyhow::anyhow!(
-			"{}",
-			messages::missing_channels(
-				&found,
-				&missing
-					.into_iter()
-					.map(|m| messages::MissingChannel { key: m.key, tried: m.tried })
-					.collect::<Vec<_>>()
-			)
-		)
+		refused(messages::missing_channels(
+			&found,
+			&missing
+				.into_iter()
+				.map(|m| messages::MissingChannel { key: m.key, tried: m.tried })
+				.collect::<Vec<_>>(),
+		))
 	})?;
 
-	let (car, car_path) = load_car_file(vin.as_deref(), opts);
+	let (car, car_path, mut said) = load_car_file(vin.as_deref(), opts);
 	let mut setting = report::Setting {
 		accel_window_s: opts.accel_window_s,
 		tyre: opts
@@ -1088,7 +1127,7 @@ fn prepare(
 		// and there is deliberately no state in between the two modes.
 		let described = car.clone().unwrap_or_else(|| carfile::CarFile::new(vin.clone().unwrap_or_default()));
 		let (load, conditions) =
-			road_load(&described, opts).map_err(|missing| anyhow::anyhow!("{}", messages::full_without_car_file(&known_of(&described), &missing)))?;
+			road_load(&described, opts).map_err(|missing| refused(messages::full_without_car_file(&known_of(&described), &missing)))?;
 		setting.model = Some(report::Model {
 			load,
 			conditions: power::Conditions {
@@ -1131,6 +1170,13 @@ fn prepare(
 
 	let plan = Plan::build(&set, opts.minimal);
 	let channels = channel_descriptors(&plan, opts.full, opts.accel_window_s);
+	said.push((
+		0,
+		start_line(plan.by_address.len(), identities.len(), &set.leading.source(), car_path.as_deref()),
+	));
+	said.push((vag_cli_core::verbosity::NOTES, car_note(car.as_ref(), vin.as_deref(), opts.full)));
+	let part = |request: u16| identities.iter().find(|i| i.request == request).and_then(|i| i.part_number.clone());
+	said.push((vag_cli_core::verbosity::NOTES, set.provenance(part).trim_end().to_string()));
 	Ok(Prepared {
 		meta: Meta {
 			vin,
@@ -1148,12 +1194,65 @@ fn prepare(
 		plan,
 		banner,
 		full: opts.full,
+		said,
 	})
+}
+
+/// A refusal as the error the run ends with — what failed and what to do — with its
+/// detail said at `-v` first, so it stands above the error rather than lost after it.
+fn refused(refusal: messages::Message) -> anyhow::Error {
+	if !refusal.detail.is_empty() {
+		vag_cli_core::verbosity::say(vag_cli_core::verbosity::NOTES, refusal.detail.trim_end());
+	}
+	anyhow::anyhow!("{}", refusal.text)
+}
+
+/// The one line every run says before it starts:
+/// `9 channels on 3 control units · timing from 7E1:F40D · car file none`.
+fn start_line(channels: usize, units: usize, speed_source: &str, car_file: Option<&str>) -> String {
+	format!(
+		"{channels} channel{} on {units} control unit{} · timing from {speed_source} · car file {}",
+		if channels == 1 { "" } else { "s" },
+		if units == 1 { "" } else { "s" },
+		car_file.unwrap_or("none")
+	)
+}
+
+/// What the car file says about this run, at `-v`: what it describes, and what that
+/// makes of the run.
+fn car_note(car: Option<&carfile::CarFile>, vin: Option<&str>, full: bool) -> String {
+	let mode = match full {
+		true => "mode      --full: times, telemetry and power",
+		false => "mode      times, speeds and telemetry; --full adds power",
+	};
+	let Some(car) = car else {
+		let whose = match vin {
+			Some(vin) => format!("none for {vin}"),
+			None => "none: the car gave no VIN to look one up by".to_string(),
+		};
+		return format!("car file  {whose}; no power without one, vagcan measure setup measures the car\n{mode}");
+	};
+	let mut described = vec![car.vin.clone()];
+	if let Some(mass) = car.mass_total_kg() {
+		described.push(format!("mass {mass:.0} kg"));
+	}
+	if let Some(cda) = &car.cda {
+		let how = match cda.source {
+			carfile::Source::Coastdown => "measured",
+			_ => "stated",
+		};
+		described.push(format!(
+			"CdA {:.2} m² {how}{}",
+			cda.value,
+			cda.at.as_deref().map(|at| format!(" {at}")).unwrap_or_default()
+		));
+	}
+	format!("car file  {}\n{mode}", described.join(" · "))
 }
 
 /// What the units answered, so the reader of a refusal can see the check was
 /// real.
-fn found_report(identities: &[crate::plan::UnitIdentity], missing: &[channels::Missing]) -> Vec<messages::ChannelFound> {
+pub(crate) fn found_report(identities: &[crate::plan::UnitIdentity], missing: &[channels::Missing]) -> Vec<messages::ChannelFound> {
 	identities
 		.iter()
 		.flat_map(|unit| {
@@ -1194,32 +1293,38 @@ fn pedal_step(set: &channels::Set) -> Option<f64> {
 /// A file whose VIN differs from the car's is **ignored with a message**, never
 /// applied: mass and road load belong to one specific car, and quietly using
 /// another one's is the false comparison this design spends its length avoiding.
-fn load_car_file(vin: Option<&str>, opts: &Options<'_>) -> (Option<carfile::CarFile>, Option<String>) {
+///
+/// What it has to say about a file it did not use comes back with the file, each line
+/// with its level, for the run to say before it starts.
+fn load_car_file(vin: Option<&str>, opts: &Options<'_>) -> (Option<carfile::CarFile>, Option<String>, Vec<(u8, String)>) {
 	let path = match opts.car {
 		Some(path) => std::path::PathBuf::from(path),
 		None => match vin.and_then(|vin| carfile::CarFile::path_for(vin).ok()) {
 			Some(path) => path,
-			None => return (None, None),
+			None => return (None, None, Vec::new()),
 		},
 	};
 	if !path.exists() {
-		return (None, None);
+		return (None, None, Vec::new());
 	}
 	let car = match carfile::CarFile::load(&path) {
 		Ok(car) => car,
-		Err(why) => {
-			eprintln!("{why:#}");
-			return (None, None);
-		}
+		Err(why) => return (None, None, vec![(0, format!("car file not used: {why:#}"))]),
 	};
 	if let Some(vin) = vin
 		&& car.vin != vin
 	{
-		println!("{}", messages::wrong_car(&car.vin, vin));
-		return (None, None);
+		let said = vec![
+			(0, messages::wrong_car(&car.vin, vin)),
+			(
+				vag_cli_core::verbosity::NOTES,
+				format!("{} ignored: mass and road load belong to one car", path.display()),
+			),
+		];
+		return (None, None, said);
 	}
 	let shown = path.display().to_string();
-	(Some(car), Some(shown))
+	(Some(car), Some(shown), Vec::new())
 }
 
 /// What is already known about the car, in the words the owner was asked in.
@@ -1281,8 +1386,8 @@ async fn drive<F: Feed>(feed: F, prepared: Prepared, opts: &Options<'_>, full_sc
 		prepared,
 		opts,
 		full_screen,
-		&mut |line: &str| eprintln!("{line}"),
-		&mut |text: &str| println!("{text}"),
+		&mut |level: u8, line: &str| vag_cli_core::verbosity::say(level, line),
+		&mut |text: &str| vag_cli_core::verbosity::outln(text),
 	)
 	.await
 }
@@ -1291,31 +1396,39 @@ async fn drive<F: Feed>(feed: F, prepared: Prepared, opts: &Options<'_>, full_sc
 /// the screen, it drops after it, on any return.
 struct Held<'a> {
 	lines: Vec<String>,
-	say: &'a mut (dyn FnMut(&str) + Send),
+	say: &'a mut (dyn FnMut(u8, &str) + Send),
 }
 
-impl Drop for Held<'_> {
-	fn drop(&mut self) {
+impl Held<'_> {
+	/// Say what was held, now that nothing draws over it.
+	fn flush(&mut self) {
 		for line in self.lines.drain(..) {
-			(self.say)(&line);
+			(self.say)(0, &line);
 		}
 	}
 }
 
-/// [`drive`], with where a read that ended is said, and where the console's text goes,
+impl Drop for Held<'_> {
+	fn drop(&mut self) {
+		self.flush();
+	}
+}
+
+/// [`drive`], with where a line on stderr is said, at its level, and where the data goes,
 /// handed in.
 ///
 /// A read other than the speed can end while the run goes on: the dash board refused it
 /// (its walk rule, its caps). One line per read says why — at once on the plain console,
 /// and after the full screen is given back otherwise, where a line would land on top of it.
-/// `print` takes everything else written to the console: the plain line per cycle and
-/// the results tables.
+/// `print` takes the data: the plain line per cycle, the results tables and where the
+/// session was written. `say` takes the rest: what every run says at level 0, and how to
+/// read the tables and the rate measured at `-v`.
 async fn drive_to<F: Feed>(
 	mut feed: F,
 	prepared: Prepared,
 	opts: &Options<'_>,
 	full_screen: bool,
-	say: &mut (dyn FnMut(&str) + Send),
+	say: &mut (dyn FnMut(u8, &str) + Send),
 	print: &mut (dyn FnMut(&str) + Send),
 ) -> Result<()> {
 	let Prepared {
@@ -1323,6 +1436,7 @@ async fn drive_to<F: Feed>(
 		mut meta,
 		banner,
 		full,
+		said: _,
 	} = prepared;
 	let units = chart_units(&plan);
 	let mut session = session::Session::new(opts.marks.clone(), RING_SECONDS, opts.speed_scale);
@@ -1333,6 +1447,9 @@ async fn drive_to<F: Feed>(
 	// Where the session was last written, so a discard can rewrite it. `--out`
 	// fixes it up front; `s` and Enter set it to wherever `save` chose.
 	let mut written_to: Option<String> = opts.out.map(str::to_string);
+	// Whether `written_to` holds a session yet: `--out` names the file before anything
+	// is in it.
+	let mut wrote = false;
 	// Runs thrown away that had not been written.
 	//
 	// `Session` counts the runs the stopwatch closed and has no notion of one
@@ -1378,6 +1495,9 @@ async fn drive_to<F: Feed>(
 		true => Some(Terminal::new(CrosstermBackend::new(io::stdout()))?),
 		false => None,
 	};
+	// The bus's notes and wire lines (`-v`, `-vv`) would land on the view: held off the
+	// terminal while it is up, and still written to a redirected stderr.
+	let hold = screen.is_some().then(vag_cli_core::verbosity::hold);
 
 	let result: Result<()> = loop {
 		if last_frame.is_none_or(|at| at.elapsed() >= FRAME) && (terminal.is_some() || cycled) {
@@ -1408,7 +1528,14 @@ async fn drive_to<F: Feed>(
 				Some(terminal) => {
 					terminal.draw(|frame| ui::draw(frame, &screen))?;
 				}
-				None => print(&ui::plain_line(&screen)),
+				None => {
+					print(&ui::plain_line(&screen));
+					// Nobody reads the lines any more (`measure | head`): the run ends, and
+					// the bus with it, rather than polling the car for nobody.
+					if vag_cli_core::verbosity::stdout_gone() {
+						break Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe).into());
+					}
+				}
 			}
 		}
 
@@ -1452,24 +1579,24 @@ async fn drive_to<F: Feed>(
 					apply_density(&mut meta, density);
 					if let Some(last) = recorded.last_mut().filter(|last| Some(last.run.index) == for_run) {
 						last.derived = report::recompute(&last.run, &meta.setting);
-						let again = report::results(&last.run, &last.derived, &meta.setting);
 						match terminal.is_some() {
 							// Over the table only while it is still up: a run kept or thrown
 							// away since has taken it down.
 							true => {
 								if table.is_some() {
-									table = Some(again);
+									table = Some(report::results(&last.run, &last.derived, &meta.setting));
 								}
 							}
 							// Twice on the plain console: the second says why it is there.
 							false => {
 								print(messages::DENSITY_MEASURED);
-								print(&again);
+								print(&report::results_data(&last.run, &last.derived, &meta.setting));
 							}
 						}
 					}
 					if let Some(path) = opts.out {
 						write_session(path, &meta, &recorded, &session)?;
+						wrote = true;
 					}
 				}
 			}
@@ -1484,7 +1611,7 @@ async fn drive_to<F: Feed>(
 			let line = no_longer_read(&what, request, did, &why);
 			match terminal.is_some() {
 				true => held.lines.push(line),
-				false => (held.say)(&line),
+				false => (held.say)(0, &line),
 			}
 		}
 
@@ -1551,7 +1678,10 @@ async fn drive_to<F: Feed>(
 						},
 					});
 					let derived = report::recompute(&run, &meta.setting);
-					let text = report::results(&run, &derived, &meta.setting);
+					let text = match terminal.is_some() {
+						true => report::results(&run, &derived, &meta.setting),
+						false => report::results_data(&run, &derived, &meta.setting),
+					};
 					recorded.push(Recorded {
 						run: *run,
 						derived,
@@ -1563,6 +1693,7 @@ async fn drive_to<F: Feed>(
 					// back must not cost the run it was for.
 					if let Some(path) = opts.out {
 						write_session(path, &meta, &recorded, &session)?;
+						wrote = true;
 						session.on_command(session::Command::Save);
 						discarded_unsaved = 0;
 					}
@@ -1597,6 +1728,7 @@ async fn drive_to<F: Feed>(
 					discarded_unsaved = 0;
 					warning = Some(messages::saved(&path, recorded.len()));
 					written_to = Some(path);
+					wrote = true;
 				}
 				Err(why) => warning = Some(format!("{why:#}")),
 			}
@@ -1621,6 +1753,7 @@ async fn drive_to<F: Feed>(
 					};
 					if let Some(path) = &rewritten {
 						write_session(path, &meta, &recorded, &session)?;
+						wrote = true;
 					}
 					warning = Some(ui::discarded(dropped.run.index, rewritten.as_deref(), recorded.len()));
 					start_screen(&mut table, &mut closed, &mut charts);
@@ -1640,6 +1773,7 @@ async fn drive_to<F: Feed>(
 						discarded_unsaved = 0;
 						warning = Some(ui::kept(&path, recorded.len()));
 						written_to = Some(path);
+						wrote = true;
 						start_screen(&mut table, &mut closed, &mut charts);
 					}
 					// The results stay up: a run whose save failed is a run the
@@ -1660,16 +1794,52 @@ async fn drive_to<F: Feed>(
 		// while drawing, so it goes first and this guard leaves the screen after.
 		drop(terminal);
 		drop(screen);
-		drop(held);
+		drop(hold);
+		held.flush();
 		for record in &recorded {
-			print(&report::results(&record.run, &record.derived, &meta.setting));
+			print(&report::results_data(&record.run, &record.derived, &meta.setting));
 		}
 	}
 	let unsaved = session.unsaved().saturating_sub(discarded_unsaved);
-	if unsaved > 0 {
-		print(&messages::unsaved_on_quit(unsaved));
+	for (level, line) in exit_lines(&recorded, &session, written_to.as_deref().filter(|_| wrote), unsaved) {
+		match level {
+			None => print(&line),
+			Some(level) => (held.say)(level, &line),
+		}
 	}
 	result
+}
+
+/// What a run says once it is over, after the tables: where the session was written —
+/// data, `None` — then the runs it did not keep at level 0, and at `-v` how to read
+/// the tables and the rate the car was read at.
+fn exit_lines(recorded: &[Recorded], session: &session::Session, written_to: Option<&str>, unsaved: usize) -> Vec<(Option<u8>, String)> {
+	use vag_cli_core::verbosity::NOTES;
+	let mut out: Vec<(Option<u8>, String)> = Vec::new();
+	if let Some(path) = written_to {
+		out.push((None, vag_cli_core::table::pairs(&[("session", path.to_string())]).trim_end().to_string()));
+	}
+	if unsaved > 0 {
+		out.push((Some(0), messages::unsaved_at_exit(unsaved)));
+	}
+	let mut caveats: Vec<String> = Vec::new();
+	for record in recorded {
+		for caveat in report::caveats(&record.run, &record.derived) {
+			if !caveats.contains(&caveat) {
+				caveats.push(caveat);
+			}
+		}
+	}
+	out.extend(caveats.into_iter().map(|caveat| (Some(NOTES), caveat)));
+	if let Some(hz) = session.hz() {
+		let cycle = session
+			.cycle_median_s()
+			.map(|s| format!(" · median cycle {:.0} ms", s * 1000.0))
+			.unwrap_or_default();
+		let degraded = if session.degraded() { " · degraded" } else { "" };
+		out.push((Some(NOTES), format!("rate  {hz:.1} Hz{cycle}{degraded}")));
+	}
+	out
 }
 
 /// Write the session out, and say where it went.
@@ -2193,6 +2363,7 @@ mod tests {
 				raw_form: RawForm::U16Be,
 				scaling: Scaling::Linear(LinearScale { factor, offset: 0.0 }),
 			},
+			origin: channels::Origin::Words,
 		};
 		let leading = row("speed", 0x7E1, 0x1001, "km/h", 0.01);
 		let in_kmh = row("cross-check speed", 0x70E, 0x2B00, "km/h", 1.0);
@@ -2203,6 +2374,7 @@ mod tests {
 			leading_unit: vec![leading],
 			background: vec![in_kmh.clone(), in_ms.clone(), in_knots.clone()],
 			cross_check_speeds: vec![in_kmh, in_ms, in_knots],
+			absent: Vec::new(),
 		};
 		let plan = Plan::build(&set, false);
 
@@ -2530,7 +2702,7 @@ mod tests {
 			answers: BTreeMap::new(),
 			asked: Vec::new(),
 		};
-		let ended = drive(feed, prepared, &opts, false).await;
+		let ended = drive_to(feed, prepared, &opts, false, &mut |_: u8, _: &str| {}, &mut |_: &str| {}).await;
 		assert!(ended.is_err(), "a feed that ends is a link that closed");
 
 		let written: Value = serde_json::from_str(&std::fs::read_to_string(&out).expect("--out was written")).unwrap();
@@ -2627,9 +2799,12 @@ mod tests {
 		let feed = NoDensity {
 			arrivals: launch(&prepared.plan),
 		};
-		let ended = tokio::time::timeout(Duration::from_secs(3600), drive(feed, prepared, &opts, false))
-			.await
-			.expect("the drive does not hang on a density read that never answers");
+		let ended = tokio::time::timeout(
+			Duration::from_secs(3600),
+			drive_to(feed, prepared, &opts, false, &mut |_: u8, _: &str| {}, &mut |_: &str| {}),
+		)
+		.await
+		.expect("the drive does not hang on a density read that never answers");
 		assert!(ended.is_err(), "a feed that ends is a link that closed");
 		let written: Value = serde_json::from_str(&std::fs::read_to_string(&out).expect("--out was written")).unwrap();
 		assert_eq!(written["runs"].as_array().map(Vec::len), Some(1), "{written}");
@@ -2700,9 +2875,12 @@ mod tests {
 			arrivals: launch(&prepared.plan),
 			log: log.clone(),
 		};
-		let ended = tokio::time::timeout(Duration::from_secs(3600), drive(feed, prepared, &opts, false))
-			.await
-			.expect("the drive ends");
+		let ended = tokio::time::timeout(
+			Duration::from_secs(3600),
+			drive_to(feed, prepared, &opts, false, &mut |_: u8, _: &str| {}, &mut |_: &str| {}),
+		)
+		.await
+		.expect("the drive ends");
 		assert!(ended.is_err(), "a feed that ends is a link that closed");
 		let log = log.lock().unwrap();
 		let at = log
@@ -2802,7 +2980,7 @@ mod tests {
 		let mut print = |text: &str| printed.push(text.to_string());
 		let ended = tokio::time::timeout(
 			Duration::from_secs(3600),
-			drive_to(feed, prepared, &opts, false, &mut |_: &str| {}, &mut print),
+			drive_to(feed, prepared, &opts, false, &mut |_: u8, _: &str| {}, &mut print),
 		)
 		.await
 		.expect("the drive ends");
@@ -2885,9 +3063,12 @@ mod tests {
 				}
 			}
 		});
-		let ended = tokio::time::timeout(Duration::from_secs(5), drive(feed, prepared, &opts, false))
-			.await
-			.expect("the run ends rather than wait for a speed that will not come");
+		let ended = tokio::time::timeout(
+			Duration::from_secs(5),
+			drive_to(feed, prepared, &opts, false, &mut |_: u8, _: &str| {}, &mut |_: &str| {}),
+		)
+		.await
+		.expect("the run ends rather than wait for a speed that will not come");
 		let why = ended.expect_err("ended by the refusal").to_string();
 		assert!(why.contains(REFUSAL), "{why}");
 	}
@@ -2966,7 +3147,11 @@ mod tests {
 			}
 		});
 		let mut said: Vec<String> = Vec::new();
-		let mut say = |line: &str| said.push(line.to_string());
+		let mut say = |level: u8, line: &str| {
+			if level == 0 {
+				said.push(line.to_string())
+			}
+		};
 		let ended = tokio::time::timeout(
 			Duration::from_secs(5),
 			drive_to(feed, prepared, &opts, false, &mut say, &mut |_: &str| {}),
@@ -3035,9 +3220,12 @@ mod tests {
 			calls: calls.clone(),
 			silence: Duration::from_millis(400),
 		};
-		let ended = tokio::time::timeout(Duration::from_secs(5), drive(feed, prepared, &opts, false))
-			.await
-			.expect("the drive ends when the feed does");
+		let ended = tokio::time::timeout(
+			Duration::from_secs(5),
+			drive_to(feed, prepared, &opts, false, &mut |_: u8, _: &str| {}, &mut |_: &str| {}),
+		)
+		.await
+		.expect("the drive ends when the feed does");
 		assert!(ended.is_err());
 		let asked = calls.load(std::sync::atomic::Ordering::SeqCst);
 		assert!(asked <= 3, "the feed was asked {asked} times in 400 ms of silence");
@@ -3085,9 +3273,12 @@ mod tests {
 			speed_scale: 1.0,
 		};
 		let prepared = prepare(&store, &crate::extracted::Extracted::none(), &units, None, &opts).expect("the fixture resolves");
-		let ended = tokio::time::timeout(Duration::from_secs(5), drive(Dropped, prepared, &opts, false))
-			.await
-			.expect("the drive ends when the feed does");
+		let ended = tokio::time::timeout(
+			Duration::from_secs(5),
+			drive_to(Dropped, prepared, &opts, false, &mut |_: u8, _: &str| {}, &mut |_: &str| {}),
+		)
+		.await
+		.expect("the drive ends when the feed does");
 		assert_eq!(
 			ended.expect_err("ended by the link").to_string(),
 			"the BLE connection to vagcan-dash dropped"
@@ -3425,5 +3616,199 @@ mod tests {
 			.expect_err("no device");
 		assert_eq!(refused.to_string(), "no adapter found");
 		assert_eq!(std::fs::read(&path).unwrap(), b"yesterday's runs", "--out was truncated");
+	}
+
+	// -- what a run says, and at which level -------------------------------
+
+	/// A plain run's flags: the default mode, the one mark the launch fixture closes.
+	fn plain<'a>(out: Option<&'a str>) -> Options<'a> {
+		Options {
+			car: None,
+			catalogs: "",
+			full: false,
+			minimal: false,
+			marks: vec![(0, 50)],
+			accel_window_s: 0.3,
+			out,
+			quiet: true,
+			mass_kg: None,
+			tyre: None,
+			cda: None,
+			crr: None,
+			inertia_factor: None,
+			grade_percent: 0.0,
+			headwind_ms: 0.0,
+			air_density: None,
+			speed_scale: 1.0,
+		}
+	}
+
+	/// What a run wrote at each level, 0 to 2, from the data it printed and the lines
+	/// it said with their levels — the shape `verbosity::assert_split` checks.
+	fn at_each_level(printed: &[String], said: &[(u8, String)]) -> Vec<vag_cli_core::verbosity::Captured> {
+		let stdout: String = printed.iter().map(|text| format!("{text}\n")).collect();
+		(0..=2u8)
+			.map(|level| vag_cli_core::verbosity::Captured {
+				stdout: stdout.clone(),
+				stderr: said.iter().filter(|(at, _)| *at <= level).map(|(_, text)| format!("{text}\n")).collect(),
+			})
+			.collect()
+	}
+
+	#[test]
+	fn a_run_starts_with_one_line_and_says_where_each_channel_came_from_at_v() {
+		let (store, units) = reference();
+		let prepared = prepare(&store, &crate::extracted::Extracted::none(), &units, None, &plain(None)).expect("the fixture resolves");
+		let every_run: Vec<&str> = prepared
+			.said
+			.iter()
+			.filter(|(level, _)| *level == 0)
+			.map(|(_, text)| text.as_str())
+			.collect();
+		assert_eq!(every_run, ["12 channels on 3 control units · timing from 7E1:F40D · car file none"]);
+		let notes: String = prepared
+			.said
+			.iter()
+			.filter(|(level, _)| *level > 0)
+			.map(|(_, text)| format!("{text}\n"))
+			.collect();
+		assert_eq!(
+			notes,
+			"car file  none: the car gave no VIN to look one up by; no power without one, vagcan measure setup measures the car\n\
+             mode      times, speeds and telemetry; --full adds power\n\
+             role                unit  part      did   name                        from\n\
+             speed               7E1   GBX00002  F40D  Vehicle speed               drive-proven row\n\
+             gear                7E1   GBX00002  3816  Selected gear               drive-proven row\n\
+             pedal               7E1   GBX00002  3804  Accelerator pedal position  drive-proven row\n\
+             selector            7E1   GBX00002  3809  Selector lever              drive-proven row\n\
+             input shaft speed   7E1   GBX00002  380A  Input shaft speed           drive-proven row\n\
+             output shaft speed  7E1   GBX00002  380B  Output shaft speed          drive-proven row\n\
+             cross-check speed   714   CLU00003  22D2  Road speed                  drive-proven row\n\
+             cross-check speed   7E0   ENG00001  F40D  Vehicle speed               SAE J1979 PID 0D\n\
+             engine speed        7E0   ENG00001  8302  Engine speed                drive-proven row\n\
+             boost actual        7E0   ENG00001  8234  Boost pressure, actual      drive-proven row\n\
+             boost specified     7E0   ENG00001  8233  Boost pressure, specified   drive-proven row\n\
+             air mass            7E0   ENG00001  F410  Mass air flow               SAE J1979 PID 10\n\
+             barometer           —     —         —     —                           read only under --full\n\
+             ambient             —     —         —     —                           read only under --full\n"
+		);
+		vag_cli_core::verbosity::assert_split("measure start-up", &at_each_level(&[], &prepared.said));
+	}
+
+	#[test]
+	fn another_cars_file_is_said_and_not_used() {
+		let (store, units) = reference();
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("car.json");
+		carfile::CarFile::new("XW8AD4NE9JH000123").save(&path).unwrap();
+		let car = path.to_string_lossy().to_string();
+		let opts = Options {
+			car: Some(&car),
+			..plain(None)
+		};
+		let prepared = prepare(
+			&store,
+			&crate::extracted::Extracted::none(),
+			&units,
+			Some("XW8AD4NE9JH008917".to_string()),
+			&opts,
+		)
+		.expect("the run goes on without it");
+		let every_run: Vec<&str> = prepared
+			.said
+			.iter()
+			.filter(|(level, _)| *level == 0)
+			.map(|(_, text)| text.as_str())
+			.collect();
+		assert_eq!(
+			every_run,
+			[
+				"the car file is for XW8AD4NE9JH000123 and this car is XW8AD4NE9JH008917\n\
+                 run vagcan measure setup for this car, or pass --car with its own file",
+				"12 channels on 3 control units · timing from 7E1:F40D · car file none",
+			]
+		);
+		assert_eq!(prepared.meta.car_file, None, "another car's mass and drag were applied");
+		vag_cli_core::verbosity::assert_split("measure, another car's file", &at_each_level(&[], &prepared.said));
+	}
+
+	#[test]
+	fn a_car_short_of_a_channel_is_refused_in_two_lines() {
+		let empty = tempfile::tempdir().unwrap();
+		let store = vag_data_labels::catalog::CatalogStore::open(empty.path().to_str().unwrap());
+		let refused = prepare(&store, &crate::extracted::Extracted::none(), &[], None, &plain(None))
+			.err()
+			.expect("nothing resolves on no units");
+		assert_eq!(
+			refused.to_string(),
+			"no speed, engine speed, gear, pedal channel in this car's catalogs\n\
+			 vagcan setup <ODIS project | VCDS installation> brings the channels; -v lists what was looked for"
+		);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_run_ends_with_its_tables_and_where_it_was_written_and_the_rest_at_v() {
+		let (store, units) = reference();
+		let dir = tempfile::tempdir().unwrap();
+		let out = dir.path().join("session.json").to_string_lossy().to_string();
+		let opts = plain(Some(&out));
+		let prepared = prepare(&store, &crate::extracted::Extracted::none(), &units, None, &opts).expect("the fixture resolves");
+		let feed = Fake {
+			arrivals: launch(&prepared.plan),
+			answers: BTreeMap::new(),
+			asked: Vec::new(),
+		};
+		let (mut said, mut printed) = (Vec::new(), Vec::new());
+		let ended = drive_to(
+			feed,
+			prepared,
+			&opts,
+			false,
+			&mut |level: u8, text: &str| said.push((level, text.to_string())),
+			&mut |text: &str| printed.push(text.to_string()),
+		)
+		.await;
+		assert!(ended.is_err(), "a feed that ends is a link that closed");
+		// The data: a line per cycle, the run's tables, and where it was written.
+		let table = printed.iter().find(|text| text.contains("Run 1 — measured")).expect("the run's tables");
+		assert!(!table.contains("A mark from a standstill"), "a sentence among the data:\n{table}");
+		assert_eq!(printed.last().map(String::as_str), Some(format!("session  {out}").as_str()));
+		// Saved as it went, so nothing is owed at level 0.
+		assert!(!said.iter().any(|(level, _)| *level == 0), "{said:?}");
+		let notes: Vec<&str> = said.iter().map(|(_, text)| text.as_str()).collect();
+		assert!(
+			notes.iter().any(|text| text.starts_with("a mark from a standstill is a range")),
+			"{notes:?}"
+		);
+		assert!(notes.iter().any(|text| text.starts_with("rate  ")), "{notes:?}");
+		vag_cli_core::verbosity::assert_split("measure, after the run", &at_each_level(&printed, &said));
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn runs_never_written_are_counted_once_the_run_is_over() {
+		// The plain console has no key to save with: without --out a run is never
+		// written, and the count of what was lost is what every run says.
+		let (store, units) = reference();
+		let opts = plain(None);
+		let prepared = prepare(&store, &crate::extracted::Extracted::none(), &units, None, &opts).expect("the fixture resolves");
+		let feed = Fake {
+			arrivals: launch(&prepared.plan),
+			answers: BTreeMap::new(),
+			asked: Vec::new(),
+		};
+		let (mut said, mut printed) = (Vec::new(), Vec::new());
+		let _ = drive_to(
+			feed,
+			prepared,
+			&opts,
+			false,
+			&mut |level: u8, text: &str| said.push((level, text.to_string())),
+			&mut |text: &str| printed.push(text.to_string()),
+		)
+		.await;
+		let every_run: Vec<&str> = said.iter().filter(|(level, _)| *level == 0).map(|(_, text)| text.as_str()).collect();
+		assert_eq!(every_run, ["1 run not saved"]);
+		assert!(!printed.iter().any(|text| text.starts_with("session")), "{printed:?}");
+		vag_cli_core::verbosity::assert_split("measure, unsaved", &at_each_level(&printed, &said));
 	}
 }
