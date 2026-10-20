@@ -418,6 +418,11 @@ f12 looks like a default value — unknown. **581 rows** on the car.
   VCDS's "Ubat 30 Voltage", "Ignition State", "A/D #1"…, "LIN_Temp", "Isense", "PWM", "kp". Names
   only, not a field-by-field check.
 - How a fault (RD) picks its record is **not found**: RD's 7 fields name no RF key.
+- **2026-10-21, settled in [`../odis-dtc/freeze-frames.md`](../odis-dtc/freeze-frames.md):** a
+  fault does not pick one — its `19 06` answer carries record numbers, and the key **is** the
+  record number (same numbers as the ODIS multiplexers on every unit both describe; `999` =
+  the default case; 113 = the protocol's dynamic record). Lead − 100 is the length where the
+  fields fit: 897 of 1,028 runs. `faults` reads these rows since then.
 
 **244 rows** on the car.
 
