@@ -528,8 +528,15 @@ reads) while the stopwatch is armed or running — unless a host already holds t
 cells drop to at most 1 Hz; an alarm's page over it keeps its cells unless the stopwatch is armed or running.
 A BLE host's requests go through the same planner.
 The acceptance filter starts as the plan's answer ids and moves to an exchange's answer id
-when the plan's does not pass it. Bus-off restarts the controller; a unit that goes silent
-is asked only for its part number until it answers.
+when the plan's does not pass it. Bus-off restarts the controller; a unit that leaves three
+reads in a row unanswered is asked only for its part number until it answers. A unit that
+refuses its part number, or answers it with no number (empty, padding only, not text), at boot
+or after it matched, is asked again every 2 s and read once it names the planned part, never
+dropped for the boot: neither names another part — a unit starting up may refuse with `22` or
+answer blank, and a late refusal of one of its reads (`7F 22 <NRC>`) names no identifier, so it
+answers the `22 F1 87` asked after it. Until it matches, `F187` is all the board asks it. Only a
+unit that names another part number is not polled again. Each unit's check is
+`vag_dash_core::unit_check::UnitCheck`, which the board and the host tests both run.
 
 **The fault count: one protocol read beside the plan.** Once per boot, 10 s in and once a
 plan unit has answered, the board reads the gateway's installation list (`22 2A26`) and asks

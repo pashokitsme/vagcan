@@ -112,6 +112,7 @@ use vag_dash_core::input::{CommandQueue, Source};
 use vag_dash_core::panel::Framebuffer;
 use vag_dash_core::saving::{Flash, RunWrite, Saving};
 use vag_dash_core::ssd1322::{self, Shown, Ssd1322};
+use vag_dash_core::unit_check::{Action, Check, SILENT_AFTER, UnitCheck, part_answer};
 use vag_dash_core::values::{STALE_MS, Slot, fresh_for_ms};
 use vag_dash_fw::can::TwaiBackend;
 use vag_dash_fw::config::{self, Config, Fitted, SavedAgainst};
@@ -124,7 +125,7 @@ use vag_dash_render::alarm::Slot as AlarmSlot;
 use vag_dash_render::control::{self, Command, PinButton};
 #[cfg(feature = "ble")]
 use vag_dash_render::pages;
-use vag_dash_render::plan::{Mode as ReadMode, Page, PartAnswer, PartCheck, Timing};
+use vag_dash_render::plan::{Mode as ReadMode, Page, PartCheck, Timing};
 use vag_dash_render::screen::{Change, Outcome, Screen};
 use vag_dash_render::stalk::{Close, Closer, STALE_CLOSE_MS, Stalk, States};
 use vag_dash_render::stopwatch::{self, Event as Lap, Phase, Stopwatch};
@@ -1587,25 +1588,6 @@ const TIMEOUTS: Timeouts = Timeouts {
 	pending_deadline_ms: PENDING_DEADLINE.as_millis(),
 };
 
-/// What the part-number check has established about one unit.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Check {
-	/// Asked, not answered yet.
-	Pending,
-	/// Asked, no answer; said so once, and asked again as the planner's backoff
-	/// allows — and a unit that answered once and then fell silent comes back
-	/// here, so that a bus which has gone quiet is asked one thing per unit,
-	/// not everything.
-	Absent,
-	/// Answered with the part number the plan was built against: its channels
-	/// are subscribed.
-	Matched,
-	/// Answered with a different one. Never polled again this run: the plan's
-	/// identifiers would answer, plausibly, about a unit they were not
-	/// resolved for.
-	Mismatch,
-}
-
 /// The acceptance filter for the plan's own answer ids; `None` when the plan
 /// polls nobody, since a filter matching nothing would be the same silence with
 /// a harder-to-find cause. See [`vag_uds_can::filter`] for why a filter at all.
@@ -2124,14 +2106,20 @@ struct PanelSub {
 /// another the same identifiers answer and the answers mean something else. A
 /// mismatch is said once and the unit is left alone for the rest of the run. No
 /// answer is said once and retried — ignition off looks like that — as often as
-/// the planner's backoff allows, which doubles to 2 s a unit.
+/// the planner's backoff allows, which doubles to 2 s a unit. A matched unit is
+/// taken for silent after [`SILENT_AFTER`] unanswered reads in a row, and one that
+/// refuses `F187` or answers it with no number, at boot or after it matched, is asked
+/// again after the backoff's cap, never struck off. Each unit's state and what to do
+/// next are [`UnitCheck`]'s (`vag-dash-core`, host-tested there); this does what it says
+/// and says it.
 ///
 /// Every failure lands in [`VALUES`] as `None` before anything else happens, so
 /// the panel never shows a number the bus has stopped confirming; what is
 /// *said* about a failure is said on the change, because the USB line is shared
 /// with the frame stream and a note per reading would be noise.
 struct PanelReads {
-	checks: [Check; UNIT_COUNT],
+	/// Each unit's part check: what is known of it, its retry, its unanswered reads.
+	units: [UnitCheck; UNIT_COUNT],
 	/// The part-number read out for each unit, if one is.
 	part_reads: [Option<ReqId>; UNIT_COUNT],
 	subs: [Option<PanelSub>; CHANNEL_COUNT],
@@ -2141,9 +2129,6 @@ struct PanelReads {
 	shown: Vec<u16>,
 	listed: Vec<u16>,
 	dead_bus: bool,
-	/// A unit whose part-number answer did not parse is asked again no sooner than
-	/// this: the answer reset the planner's backoff, so the pace is kept here.
-	part_retry_at: [Option<Instant>; UNIT_COUNT],
 	shared: Panel,
 	/// The lever's gate and press detector, fed once per answer of the rocker's identifier.
 	stalk: Stalk,
@@ -2173,14 +2158,13 @@ impl PanelReads {
 			|plan| plan.states,
 		);
 		PanelReads {
-			checks: [Check::Pending; UNIT_COUNT],
+			units: [UnitCheck::NEW; UNIT_COUNT],
 			part_reads: [None; UNIT_COUNT],
 			subs: [None; CHANNEL_COUNT],
 			answering: [None; CHANNEL_COUNT],
 			shown: Vec::new(),
 			listed: Vec::new(),
 			dead_bus: false,
-			part_retry_at: [None; UNIT_COUNT],
 			shared,
 			stalk: Stalk::new(states),
 			// With no `[stalk]` it never closes anything.
@@ -2195,7 +2179,11 @@ impl PanelReads {
 	/// unit has answered, queue its next request, or take back the one waiting while the
 	/// stopwatch is up. Called with nothing on the bus.
 	fn count_step(&mut self, bus: &Bus) {
-		let answered = self.checks.iter().filter(|c| matches!(c, Check::Matched | Check::Mismatch)).count();
+		let answered = self
+			.units
+			.iter()
+			.filter(|unit| matches!(unit.check(), Check::Matched | Check::Mismatch | Check::Refusing))
+			.count();
 		let stopwatch = self.shared.screen.lock(|cell| cell.borrow().stopwatch());
 		let (count, subs) = (&mut *self.count, &self.subs);
 		bus.lock(|p| {
@@ -2233,24 +2221,23 @@ impl PanelReads {
 			gate_open: self.stalk.gate_open(),
 			stopwatch,
 			// The cruise status is read only for a lever that can be (PR #12 review).
-			lever: lever_unit().is_some_and(|u| self.checks[u] == Check::Matched),
+			lever: lever_unit().is_some_and(|u| self.units[u].check() == Check::Matched),
 		}
 	}
 
 	/// A unit's check moved: if it is the rocker's, the cruise status — on its own unit,
 	/// maybe — starts or stops being worth a read, and the subscriptions follow.
 	fn checked(&self, u: usize, before: Check) {
-		if lever_unit() == Some(u) && (before == Check::Matched) != (self.checks[u] == Check::Matched) {
+		if lever_unit() == Some(u) && (before == Check::Matched) != (self.units[u].check() == Check::Matched) {
 			PAGES_CHANGED.signal(());
 		}
 	}
 
-	/// Ask again every unit whose garbled part number has waited long enough.
+	/// Ask again every unit whose retry ([`UnitCheck::take_due`]) has come.
 	fn ask_again_when_due(&mut self, bus: &Bus) {
-		let now = Instant::now();
+		let now = ms();
 		for u in 0..PLAN.units.len() {
-			if self.part_retry_at[u].is_some_and(|at| at <= now) {
-				self.part_retry_at[u] = None;
+			if self.units[u].take_due(now) {
 				self.ask_part_number(u, bus);
 			}
 		}
@@ -2258,7 +2245,22 @@ impl PanelReads {
 
 	/// When the next such retry is due, for the bus task's sleep.
 	fn next_retry(&self) -> Option<Instant> {
-		self.part_retry_at.iter().flatten().min().copied()
+		let now = ms();
+		let left = self.units.iter().filter_map(|unit| unit.retry_in_ms(now)).min()?;
+		Some(Instant::from_millis(now + left))
+	}
+
+	/// Do what a unit's check said ([`Action`]).
+	async fn act(&mut self, u: usize, action: Action, bus: &Bus) {
+		match action {
+			Action::None => {}
+			Action::Subscribe => self.subscribe_unit(u, bus),
+			Action::Ask => self.ask_part_number(u, bus),
+			Action::DropAndAsk => {
+				self.unsubscribe_unit(u, bus).await;
+				self.ask_part_number(u, bus);
+			}
+		}
 	}
 
 	/// Ask every unit its part number.
@@ -2318,7 +2320,7 @@ impl PanelReads {
 		self.mode = mode;
 		self.host_clock = host_clock;
 		for u in 0..PLAN.units.len() {
-			if self.checks[u] == Check::Matched {
+			if self.units[u].check() == Check::Matched {
 				self.subscribe_unit(u, bus);
 			}
 		}
@@ -2384,28 +2386,15 @@ impl PanelReads {
 	/// Take a delivery if it is the panel's; hand it back otherwise.
 	async fn take(&mut self, delivery: Delivery, bus: &Bus) -> Option<Delivery> {
 		match &delivery {
-			Delivery::Once { req, result, .. } => {
+			Delivery::Once { req, result, at_ms, .. } => {
 				let Some(u) = self.part_reads.iter().position(|r| *r == Some(*req)) else {
 					return Some(delivery);
 				};
 				self.part_reads[u] = None;
-				let previous = self.checks[u];
-				match judge(u, result.as_deref(), previous) {
-					PartCheck::Matched => {
-						self.checks[u] = Check::Matched;
-						self.subscribe_unit(u, bus);
-					}
-					PartCheck::Mismatch => self.checks[u] = Check::Mismatch,
-					PartCheck::Absent => {
-						self.checks[u] = Check::Absent;
-						self.ask_part_number(u, bus);
-					}
-					PartCheck::RetryLater => {
-						self.checks[u] = Check::Absent;
-						let cap = Duration::from_millis(u64::from(Budget::default().backoff_cap_ms));
-						self.part_retry_at[u] = Some(Instant::now() + cap);
-					}
-				}
+				let previous = self.units[u].check();
+				let part = judge(u, result.as_deref(), previous, self.units[u].matched_before());
+				let action = self.units[u].on_part(part, *at_ms);
+				self.act(u, action, bus).await;
 				self.checked(u, previous);
 				self.say_dead_bus();
 				None
@@ -2415,6 +2404,9 @@ impl PanelReads {
 					return Some(delivery);
 				};
 				let channel = &PLAN.channels[index];
+				// An answer, whatever it decodes to: the unit is there.
+				let action = self.units[usize::from(channel.unit)].on_reading(*at_ms);
+				self.act(usize::from(channel.unit), action, bus).await;
 				let value = channel.decode(data);
 				store(index, value, self.fresh_for(index)).await;
 				self.lever_read(index, Some(data)).await;
@@ -2440,7 +2432,7 @@ impl PanelReads {
 				}
 				None
 			}
-			Delivery::Missed { sub, why, .. } => {
+			Delivery::Missed { sub, why, at_ms, .. } => {
 				let Some(index) = self.channel_of(*sub) else {
 					return Some(delivery);
 				};
@@ -2458,17 +2450,20 @@ impl PanelReads {
 						miss_text(*why)
 					);
 				}
-				// A unit that stops answering is asked one thing — its part
-				// number — until it speaks, not every channel.
+				// A unit that stops answering — `SILENT_AFTER` reads in a row — is asked one
+				// thing, its part number, until it speaks, not every channel.
 				let u = usize::from(channel.unit);
-				if *why == Miss::NoAnswer && self.checks[u] == Check::Matched {
-					self.checks[u] = Check::Absent;
-					note!("can: {:03X} went silent — will keep asking", PLAN.units[u].request);
-					self.unsubscribe_unit(u, bus).await;
-					self.ask_part_number(u, bus);
-					self.checked(u, Check::Matched);
-					self.say_dead_bus();
+				let previous = self.units[u].check();
+				let action = self.units[u].on_miss(*why, *at_ms);
+				if action == Action::DropAndAsk {
+					note!(
+						"can: {:03X} went silent ({SILENT_AFTER} reads unanswered) — will keep asking",
+						PLAN.units[u].request
+					);
 				}
+				self.act(u, action, bus).await;
+				self.checked(u, previous);
+				self.say_dead_bus();
 				None
 			}
 			// The fault count's answer, or a host's.
@@ -2608,7 +2603,7 @@ impl PanelReads {
 	fn say_dead_bus(&mut self) {
 		// `is_empty` on the plan rather than `UNIT_COUNT > 0`: with the empty plan a
 		// CI build links, the constant comparison is one clippy refuses.
-		let dead = !PLAN.units.is_empty() && self.checks.iter().all(|c| *c == Check::Absent);
+		let dead = !PLAN.units.is_empty() && self.units.iter().all(|unit| unit.check() == Check::Absent);
 		if dead != self.dead_bus {
 			self.dead_bus = dead;
 			if dead {
@@ -2664,40 +2659,32 @@ fn miss_text(why: Miss) -> heapless::String<32> {
 
 /// What the unit's part-number answer means, decided by
 /// [`vag_dash_render::plan::Unit::check_part`] (host-tested there) and said here, once
-/// per change: a match, a mismatch (another number, not text, or a refusal to say —
-/// never polled this run), silence (asked again under the planner's backoff), or an
-/// answer that did not parse (asked again after the backoff's cap).
-fn judge(u: usize, answer: Result<&[u8], &Miss>, previous: Check) -> PartCheck {
+/// per change: a match, a mismatch (another part number — never polled this run), a refusal
+/// (asked again after the backoff's cap; `matched_before` says whether the unit had matched
+/// this run, which the line names), a record with no number in it or an answer that did not
+/// parse (asked again after the backoff's cap), or silence (asked again under the planner's
+/// backoff). What is done about it is [`UnitCheck::on_part`]'s.
+fn judge(u: usize, answer: Result<&[u8], &Miss>, previous: Check, matched_before: bool) -> PartCheck {
 	let unit = &PLAN.units[u];
-	let part = match answer {
-		Ok(data) => PartAnswer::Data(data),
-		Err(Miss::Refused(nrc)) => PartAnswer::Refused(*nrc),
-		Err(Miss::NoAnswer) => PartAnswer::NoAnswer,
-		Err(Miss::BusError) => PartAnswer::BusError,
-		Err(Miss::Malformed | Miss::Absent) => PartAnswer::Malformed,
-		Err(Miss::Busy) => PartAnswer::Busy,
-	};
-	let check = unit.check_part(part);
+	let check = unit.check_part(part_answer(answer));
 	match (check, answer) {
 		(PartCheck::Matched, _) => note!("can: {:03X} is {} as planned", unit.request, unit.part_number),
-		(PartCheck::Mismatch, Ok(data)) => match core::str::from_utf8(data) {
-			Ok(reported) => note!(
-				"can: {:03X} is {:?}, the plan was built for {} — not polling it",
-				unit.request,
-				reported.trim_end_matches([' ', '\0']),
-				unit.part_number
-			),
-			Err(_) => note!(
-				"can: {:03X} answered F187 with {:02X?}, not a part number — not polling it",
-				unit.request,
-				data
-			),
-		},
-		(PartCheck::Mismatch, Err(why)) => note!(
-			"can: {:03X} refused F187 ({}) — cannot check it against the plan, not polling it",
+		// A mismatch is text, by `check_part`.
+		(PartCheck::Mismatch, Ok(data)) => note!(
+			"can: {:03X} is {:?}, the plan was built for {} — not polling it",
 			unit.request,
-			miss_text(*why)
+			core::str::from_utf8(data).unwrap_or_default().trim_end_matches([' ', '\0']),
+			unit.part_number
 		),
+		(PartCheck::RetryLater, Ok(data)) if previous != Check::Absent => note!(
+			"can: {:03X} answered F187 with no part number ({:02X?}) — asking again",
+			unit.request,
+			&data[..data.len().min(16)]
+		),
+		(PartCheck::Refused, Err(Miss::Refused(nrc))) if previous != Check::Refusing => match matched_before {
+			true => note!("can: {:03X} refused F187 (NRC {nrc:02X}) after matching — asking again", unit.request),
+			false => note!("can: {:03X} refused F187 (NRC {nrc:02X}) — asking again", unit.request),
+		},
 		(PartCheck::RetryLater, Err(Miss::Busy)) if previous != Check::Absent => {
 			note!(
 				"can: {:03X} is busy, no answer to F187 in time — will ask its part number again",

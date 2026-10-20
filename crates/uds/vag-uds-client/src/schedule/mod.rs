@@ -298,6 +298,14 @@ const TESTER_PRESENT: u8 = 0x3E;
 /// the identifier takes one — a batch `22 F4 0D F4 0C` takes the late `62 F4 0C …` of an earlier
 /// single read of `F40C`, which then gets the stale record while `F40D` is `Absent` that round —
 /// and any identical request does. Nothing in the answer tells them apart.
+///
+/// A refusal is the widest of these: `7F 22 <NRC>` names the service and no identifier, so a late
+/// refusal of any `22` answers every `22` asked of the unit after it. Loosening this rule cannot
+/// help — the protocol carries nothing to tell them apart by — so what a refusal is taken to mean
+/// is the consumer's to bound. The board's: a late refusal of an identifier read taken for that of
+/// `22 F1 87` struck a matched unit off for the boot (found 2026-10-20); a unit is now asked its
+/// part number again on a refusal, never struck off by one
+/// (`vag_dash_render::plan::PartCheck::Refused`).
 pub fn answers(request: &[u8], response: &[u8]) -> bool {
 	let Some(&sid) = request.first() else {
 		return false;

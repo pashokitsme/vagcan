@@ -255,24 +255,45 @@ pub enum PartAnswer<'a> {
 pub enum PartCheck {
 	/// The number the plan was built against: poll the unit.
 	Matched,
-	/// A definite answer that is not that number — another number, not text, or a
-	/// refusal to say. Never polled this run: the plan's identifiers would answer,
-	/// plausibly, about a unit they were not resolved for, and a unit that will not say
-	/// what it is cannot be checked.
+	/// A record of `F187` that names another part number: text, not empty once its padding is
+	/// trimmed, and not the planned one. Never polled this run: the plan's identifiers would
+	/// answer, plausibly, about a unit they were not resolved for. Nothing else is this: a record
+	/// with no number in it is [`PartCheck::RetryLater`], a refusal [`PartCheck::Refused`].
 	Mismatch,
 	/// Not there (yet): ask again, as often as the scheduler's backoff allows.
 	Absent,
-	/// Something came back that did not parse, the unit said it is busy (`21`), or it was heard
-	/// and did not answer in time ([`PartAnswer::Busy`]). An answer, or a unit heard from: the
-	/// scheduler does not back the unit off for it — for a `Busy`, it does as for silence, but for
-	/// a unit a run is timing only from the second in a row;
-	/// ask again no sooner than the backoff's cap.
+	/// Something came back that did not parse, a record with no number in it (empty, padding
+	/// only, or not text — a unit starting up may answer so), the unit said it is busy (`21`), or
+	/// it was heard and did not answer in time ([`PartAnswer::Busy`]). An answer, or a unit heard
+	/// from: the scheduler does not back the unit off for it — for a `Busy`, it does as for
+	/// silence, but for a unit a run is timing only from the second in a row; ask again no sooner
+	/// than the backoff's cap.
 	RetryLater,
+	/// A refusal other than `21`, whether or not the unit matched before: ask again no sooner than
+	/// the backoff's cap, as for [`PartCheck::RetryLater`] — a refusal is an answer, and resets
+	/// the scheduler's backoff — and do not poll the unit until it names the planned part.
+	///
+	/// Not a mismatch: a refusal names no other part. A unit starting up may refuse with `22`
+	/// (conditionsNotCorrect) and answer a moment later. And a refusal is not always its own: a
+	/// negative response names only the service (`7F 22 <NRC>`), so a refusal of an identifier
+	/// read that came after that read's timeout answers the `22 F1 87` asked next
+	/// (`vag_uds_client::schedule::answers` cannot tell them apart, and does not try). Taken for
+	/// a mismatch, either strikes the unit off for the boot — the likely cause of a car's ESC
+	/// showing dashes, boot after boot, on 2026-10-20; the late refusal is reproduced on the host
+	/// (`vag-dash-core`'s `tests/unit_rematch.rs`), neither is yet seen on the car.
+	///
+	/// Asking again is safe: until the unit matches the panel asks it only `F187`, a `22` read,
+	/// once per cap, so nothing of the plan is read from a unit that has not confirmed it.
+	Refused,
 }
 
 /// ISO 14229-1's busyRepeatRequest: the unit is busy, and asks to be asked again. It says
 /// nothing of what the unit is.
 const BUSY_REPEAT_REQUEST: u8 = 0x21;
+
+/// What a fixed-width `F187` field is padded with: a space (one trailing on the reference car),
+/// or a NUL.
+const PADDING: [char; 2] = [' ', '\0'];
 
 /// One value: where it is on the bus, how to cut it out, how to scale it, and
 /// what to call it. Already rendered — there is nothing left to look up.
@@ -786,15 +807,24 @@ impl Unit {
 	/// `F187` carries the number padded — one trailing space on the reference car, and a
 	/// NUL is the other thing a fixed-width field is padded with — so the padding is
 	/// trimmed before comparing, exactly as the record the plan was built from trimmed it.
+	///
+	/// Only a record naming another part number is a mismatch; one with no number in it is asked
+	/// again ([`PartCheck::RetryLater`]). A refusal is
+	/// [`PartCheck::Refused`] whether or not the unit matched earlier this run: it names no other
+	/// part. What came before changes only what the board says about it.
 	pub fn check_part(&self, answer: PartAnswer<'_>) -> PartCheck {
 		match answer {
 			PartAnswer::Data(data) => match core::str::from_utf8(data) {
-				Ok(reported) if reported.trim_end_matches([' ', '\0']) == self.part_number => PartCheck::Matched,
-				_ => PartCheck::Mismatch,
+				// Empty or padding only: no number to compare, which names no other part.
+				Ok(reported) if reported.trim_matches(PADDING).is_empty() => PartCheck::RetryLater,
+				Ok(reported) if reported.trim_end_matches(PADDING) == self.part_number => PartCheck::Matched,
+				Ok(_) => PartCheck::Mismatch,
+				// Not text — an unwritten field reads all `FF` — is no number either.
+				Err(_) => PartCheck::RetryLater,
 			},
 			// Busy — searching its fault memory for the board's fault count, say: ask again.
 			PartAnswer::Refused(BUSY_REPEAT_REQUEST) => PartCheck::RetryLater,
-			PartAnswer::Refused(_) => PartCheck::Mismatch,
+			PartAnswer::Refused(_) => PartCheck::Refused,
 			PartAnswer::NoAnswer | PartAnswer::BusError => PartCheck::Absent,
 			PartAnswer::Malformed => PartCheck::RetryLater,
 			// Heard from, no answer in time: there, busy — ask again.
@@ -1262,22 +1292,42 @@ mod tests {
 		part_number: "PART1",
 	};
 
-	/// The car check (`05`): what an answer to `F187` makes of a unit.
+	/// The car check (`05`): what an answer to `F187` makes of a unit. Only a part number that is
+	/// not the planned one is a mismatch: a record with no number in it — empty, padding only, or
+	/// not text (an unwritten field reads all `FF`) — is a unit that has none to give yet, starting
+	/// up, say, and it is asked again after the backoff's cap.
 	#[test]
-	fn a_part_number_matches_after_its_padding_and_anything_definite_else_is_a_mismatch() {
+	fn a_part_number_matches_after_its_padding_and_any_other_record_is_a_mismatch() {
 		assert_eq!(PARTED.check_part(PartAnswer::Data(b"PART1")), PartCheck::Matched);
 		assert_eq!(PARTED.check_part(PartAnswer::Data(b"PART1 ")), PartCheck::Matched, "a space pads it");
 		assert_eq!(PARTED.check_part(PartAnswer::Data(b"PART1\0\0")), PartCheck::Matched, "so does a NUL");
-		assert_eq!(PARTED.check_part(PartAnswer::Data(b"PART2")), PartCheck::Mismatch);
-		assert_eq!(PARTED.check_part(PartAnswer::Data(&[0xFF, 0xFE])), PartCheck::Mismatch, "not text");
+		assert_eq!(PARTED.check_part(PartAnswer::Data(b"PART2")), PartCheck::Mismatch, "another part");
+		assert_eq!(PARTED.check_part(PartAnswer::Data(b"PART2  ")), PartCheck::Mismatch, "padded too");
+		for blank in [&b""[..], b"   ", b"\0\0\0\0", b" \0 \0"] {
+			assert_eq!(
+				PARTED.check_part(PartAnswer::Data(blank)),
+				PartCheck::RetryLater,
+				"no number: {blank:02X?}"
+			);
+		}
+		for not_text in [&[0xFF; 11][..], &[0xFF, 0xFE]] {
+			assert_eq!(
+				PARTED.check_part(PartAnswer::Data(not_text)),
+				PartCheck::RetryLater,
+				"not text: {not_text:02X?}"
+			);
+		}
 	}
 
-	/// A unit that refuses `F187` cannot be checked against the plan, and a unit that
-	/// cannot be checked is not polled: asking again changes nothing it would say.
+	/// A refusal names no other part, before a unit's first match as after it: a unit starting up
+	/// may refuse with `22` and answer a moment later, and the late `7F 22 22` of an identifier
+	/// read is taken as `F187`'s (2026-10-20). Asked again after the backoff's cap, never struck
+	/// off; until it matches nothing else is read from it.
 	#[test]
-	fn a_refused_part_number_is_a_mismatch_not_a_retry() {
-		assert_eq!(PARTED.check_part(PartAnswer::Refused(0x31)), PartCheck::Mismatch);
-		assert_eq!(PARTED.check_part(PartAnswer::Refused(0x22)), PartCheck::Mismatch);
+	fn a_refused_part_number_is_asked_again_not_a_mismatch() {
+		for nrc in [0x10, 0x11, 0x12, 0x13, 0x22, 0x31, 0x33, 0x7F] {
+			assert_eq!(PARTED.check_part(PartAnswer::Refused(nrc)), PartCheck::Refused, "NRC {nrc:02X}");
+		}
 	}
 
 	/// `21` (busyRepeatRequest, ISO 14229-1) says nothing of what the unit is, only that it
