@@ -37,6 +37,8 @@ pub mod plan;
 pub mod progress;
 pub mod project;
 pub mod registry;
+pub mod table;
 pub mod ui;
 pub mod units;
 pub mod vcdslog;
+pub mod verbosity;

@@ -156,7 +156,7 @@ impl Drop for Remote {
 	/// whatever the screen is drawing.
 	fn drop(&mut self) {
 		for line in &self.notes {
-			eprintln!("{line}");
+			crate::note!("{line}");
 		}
 	}
 }
@@ -376,6 +376,7 @@ impl Remote {
 				if let Some(sub) = self.wire.remove(&key) {
 					self.subs.remove(&sub);
 					// Two bytes and an id: nothing about it can fail to encode.
+					crate::wire!("-  sub {sub} dropped");
 					let _ = self.send(&Message::Unsubscribe { sub });
 				}
 			}
@@ -411,8 +412,10 @@ impl Remote {
 			period_ms: u16::try_from(period_ms).unwrap_or(u16::MAX).max(MIN_PERIOD_MS),
 			priority,
 		};
+		let (period, wire_priority) = (asked.period_ms, asked.priority);
 		match self.send(&Message::Subscribe(asked)) {
 			Ok(()) => {
+				crate::wire!("+  {:03X}  {did:04X} every {period} ms, sub {sub} ({wire_priority:?}), by the board", unit.request);
 				self.subs.insert(sub, Sub { unit, did, priority, to });
 				self.wire.insert(key, sub);
 			}
@@ -451,6 +454,7 @@ impl Remote {
 				Ask::Once { unit, did, .. } => (*unit, read_request(*did), READ_DEADLINE),
 				Ask::Raw { unit, pdu, timeout, .. } => (*unit, pdu.clone(), *timeout),
 			};
+			crate::wire!("→  {:03X}  {}  seq {seq}, through the board", unit.request, crate::verbosity::hex(&pdu));
 			let request = Message::Request(link::Request {
 				seq,
 				request_id: unit.request,
@@ -490,6 +494,7 @@ impl Remote {
 
 	fn reading(&mut self, reading: link::Reading, arrived: Instant) {
 		// Late for a subscription already dropped: it reaches nobody and sets no clock.
+		crate::wire!("←  sub {}  {}", reading.sub, outcome_text(&reading.outcome));
 		let Some(sub) = self.subs.get(&reading.sub) else { return };
 		let (unit, did) = (sub.unit, sub.did);
 		let anchors = matches!(reading.outcome, Outcome::Pdu(_) | Outcome::NoAnswer);
@@ -517,8 +522,10 @@ impl Remote {
 
 	fn answer(&mut self, answer: link::Answer, arrived: Instant) {
 		let Some(flying) = self.flying.take_if(|f| f.seq == answer.seq) else {
+			crate::wire!("←  seq {}  {}  for no request out: dropped", answer.seq, outcome_text(&answer.outcome));
 			return;
 		};
+		crate::wire!("←  seq {}  {}", answer.seq, outcome_text(&answer.outcome));
 		let at = self.at(arrived);
 		match flying.ask {
 			Ask::Once { unit, did, to } => {
@@ -558,6 +565,7 @@ impl Remote {
 		let Some(flying) = self.flying.take_if(|f| f.deadline <= now) else {
 			return;
 		};
+		crate::wire!("×  seq {}  no answer from the board by its deadline", flying.seq);
 		match flying.ask {
 			Ask::Once { to, .. } => {
 				let _ = to.send(Err(Miss::NoAnswer));
@@ -602,6 +610,16 @@ impl Remote {
 				let _ = to.send(Err(ExchangeError::Link(TransportError::Io(why.to_string()))));
 			}
 		}
+	}
+}
+
+/// An answer's status on a `-vv` line.
+fn outcome_text(outcome: &Outcome) -> String {
+	match outcome {
+		Outcome::Pdu(pdu) => crate::verbosity::hex(pdu),
+		Outcome::NoAnswer => "no answer".to_string(),
+		Outcome::Refused(why) => format!("refused: {why}"),
+		Outcome::BusError(why) => format!("bus error: {why}"),
 	}
 }
 

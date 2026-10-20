@@ -9,6 +9,7 @@ use clap::Parser;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
 	let cli = vag_cli_measure::args::Cli::parse();
+	vag_cli_core::verbosity::set(cli.verbose.verbose);
 	if let Some(id) = &cli.project {
 		vag_cli_core::project::select(id);
 	}

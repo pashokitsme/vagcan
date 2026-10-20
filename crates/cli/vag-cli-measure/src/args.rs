@@ -106,6 +106,9 @@ pub struct Cli {
 	pub slcan: bool,
 
 	#[command(flatten)]
+	pub verbose: vag_cli_core::verbosity::VerboseArg,
+
+	#[command(flatten)]
 	pub args: Args,
 }
 
@@ -120,6 +123,16 @@ mod tests {
 		assert!(Cli::try_parse_from(["vagcan-measure", "--slcan"]).unwrap().slcan);
 		assert!(Cli::try_parse_from(["vagcan-measure", "setup", "--slcan"]).unwrap().slcan);
 		assert!(!Cli::try_parse_from(["vagcan-measure"]).unwrap().slcan);
+	}
+
+	#[test]
+	fn verbose_is_counted_before_and_after_the_subcommand() {
+		let level = |args: &[&str]| Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}")).verbose.verbose;
+		assert_eq!(level(&["vagcan-measure"]), 0);
+		assert_eq!(level(&["vagcan-measure", "-v"]), 1);
+		assert_eq!(level(&["vagcan-measure", "-vv"]), 2);
+		assert_eq!(level(&["vagcan-measure", "--verbose", "setup"]), 1);
+		assert_eq!(level(&["vagcan-measure", "setup", "-vv"]), 2);
 	}
 
 	/// `vagcan-measure --ble` is `--device ble`, on the run and on `setup`, as on `vagcan`.

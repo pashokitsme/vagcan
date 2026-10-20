@@ -109,6 +109,9 @@ struct Cli {
 	#[arg(long, global = true, display_order = 901)]
 	slcan: bool,
 
+	#[command(flatten)]
+	verbose: vag_cli_core::verbosity::VerboseArg,
+
 	/// Nothing at all is a question — "what is this and what do I type" — and
 	/// clap's answer to it was `error: requires a subcommand`, which is true of
 	/// the grammar and useless to a person. `None` is that question, and
@@ -159,9 +162,10 @@ const GLOBALS_APPLY: &[(&str, &[&str])] = &[
 	),
 ];
 
-/// Whether global flag `id` is shown on the command at `path`.
+/// Whether global flag `id` is shown on the command at `path`. `--verbose` means
+/// something on every command, and is shown on every one.
 fn global_applies(id: &str, path: &str) -> bool {
-	GLOBALS_APPLY.iter().any(|(flag, paths)| *flag == id && paths.contains(&path))
+	id == "verbose" || GLOBALS_APPLY.iter().any(|(flag, paths)| *flag == id && paths.contains(&path))
 }
 
 /// [`GLOBALS_APPLY`], applied to the command tree.
@@ -578,6 +582,7 @@ async fn main() -> ExitCode {
 /// Everything before the command, and then the command.
 async fn run() -> Result<ExitCode> {
 	let cli = Cli::parse();
+	vag_cli_core::verbosity::set(cli.verbose.verbose);
 	// Before any command runs, because a dozen leaves consult it and none of
 	// them takes it as an argument — the same reason the label files' unit
 	// numbering is installed rather than threaded through.
@@ -699,7 +704,11 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 		}
 		// Serial devices only: Bluetooth is scanned by a command given `--ble`.
 		Command::Devices => {
-			println!("{}", device::render_list(&device::list()?));
+			let found = device::list()?;
+			vag_cli_core::out!("{}", device::render_list(&found));
+			for (level, note) in device::list_notes(&found) {
+				vag_cli_core::verbosity::say(level, &note);
+			}
 			Ok(())
 		}
 		// Every car command resolves its device inside `open`, once what it can check
@@ -1946,6 +1955,31 @@ mod tests {
 		// The top level still lists both: they can be written there for any command.
 		let top = Cli::command().render_help().to_string();
 		assert!(top.contains("--slcan") && top.contains("--project"), "{top}");
+	}
+
+	#[test]
+	fn verbose_is_counted_on_every_command_before_or_after_it_and_shown_on_each() {
+		let level = |args: &[&str]| Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}")).verbose.verbose;
+		assert_eq!(level(&["vagcan", "faults"]), 0);
+		assert_eq!(level(&["vagcan", "-v", "faults"]), 1);
+		assert_eq!(level(&["vagcan", "faults", "-v"]), 1);
+		assert_eq!(level(&["vagcan", "faults", "-vv"]), 2);
+		assert_eq!(level(&["vagcan", "--verbose", "faults"]), 1);
+		assert_eq!(level(&["vagcan", "dev", "vcds", "rod", "f.rod", "-vv"]), 2);
+		assert_eq!(level(&["vagcan", "-v"]), 1, "the bare overview takes it too");
+		for path in every_path() {
+			let words: Vec<&str> = path.split(' ').collect();
+			let help = help_of(&words, false);
+			assert!(help.contains("-v, --verbose"), "`vagcan {path} -h`:\n{help}");
+			let mut args = vec!["vagcan"];
+			args.extend(&words);
+			args.push("-vv");
+			// Only the parse of the flag is asked here: a command with a required
+			// argument fails for want of it, never for `-vv`.
+			if let Err(e) = Cli::try_parse_from(&args) {
+				assert_ne!(e.kind(), clap::error::ErrorKind::UnknownArgument, "{args:?}: {e}");
+			}
+		}
 	}
 
 	#[test]

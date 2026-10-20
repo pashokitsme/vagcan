@@ -188,6 +188,25 @@ impl Drop for Held {
 	}
 }
 
+/// How many columns of the terminal's current line a progress line covers, 0 for none —
+/// whichever line drew it. Held while anything is written to the terminal, so a spinner's
+/// redraw and a line of output never interleave their bytes.
+static SCREEN: Mutex<usize> = Mutex::new(0);
+
+/// Run `write` with no progress line on screen: one that is drawn is cleared first, and its
+/// ticker draws it again under whatever `write` wrote. Every line [`crate::verbosity`]
+/// writes, data and notes alike, goes through here.
+pub(crate) fn above(write: impl FnOnce()) {
+	let mut drawn = SCREEN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+	if *drawn > 0 {
+		let mut err = std::io::stderr();
+		let _ = write!(err, "\r{:width$}\r", "", width = *drawn);
+		let _ = err.flush();
+		*drawn = 0;
+	}
+	write();
+}
+
 impl Shared {
 	/// Whether drawing is allowed at all right now: on a terminal, past the
 	/// threshold, and not silenced.
@@ -212,6 +231,7 @@ impl Shared {
 			true => format!("{} {} — {secs}s", frame(state.step), state.message),
 			false => format!("{} {}", frame(state.step), state.message),
 		};
+		let mut screen = SCREEN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 		let mut err = std::io::stderr();
 		// Pad to the previous width so a shorter message does not leave the
 		// tail of a longer one behind it.
@@ -220,6 +240,7 @@ impl Shared {
 		let _ = err.flush();
 		state.width = text.chars().count();
 		state.drawn = true;
+		*screen = state.width.max(*screen);
 	}
 
 	/// Clear the line, leaving the terminal as it was found, and stop drawing
@@ -229,9 +250,14 @@ impl Shared {
 		if !state.drawn {
 			return;
 		}
-		let mut err = std::io::stderr();
-		let _ = write!(err, "\r{:width$}\r", "", width = state.width);
-		let _ = err.flush();
+		let mut screen = SCREEN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+		// Cleared already when something was written above it since it last drew.
+		if *screen > 0 {
+			let mut err = std::io::stderr();
+			let _ = write!(err, "\r{:width$}\r", "", width = state.width.max(*screen));
+			let _ = err.flush();
+			*screen = 0;
+		}
 		state.drawn = false;
 		state.width = 0;
 	}
