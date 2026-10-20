@@ -69,8 +69,9 @@ pub fn fetch(base: &str) -> Result<PathBuf> {
 	let dir = vendor_dir()?;
 	let unpacked = dir.join(format!("vcds-{BUILD}"));
 	if unpacked.is_dir() && std::fs::read_dir(&unpacked).is_ok_and(|d| d.count() > 0) {
-		vag_cli_core::note!("vcds  using the installation already at {}", unpacked.display());
-		return Ok(unpacked);
+		let root = install_root(&unpacked);
+		vag_cli_core::note!("vcds  using the installation already at {}", root.display());
+		return Ok(root);
 	}
 	std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
@@ -78,7 +79,29 @@ pub fn fetch(base: &str) -> Result<PathBuf> {
 	let archive = dir.join(format!("vcds-{BUILD}.zip"));
 	download(&url, &archive)?;
 	unpack(&archive, &unpacked)?;
-	Ok(unpacked)
+	Ok(install_root(&unpacked))
+}
+
+/// The installation root inside what an archive unpacked into.
+///
+/// An archive made by zipping a folder holds that folder, so its labels land one
+/// level down (`vcds-en/vcds-en/Labels`). When the unpacked directory is not an
+/// installation itself and holds exactly one directory and nothing else, that
+/// directory is the root. Anything else is left where it is, and the label search
+/// that follows says what is missing.
+fn install_root(unpacked: &Path) -> PathBuf {
+	let is_install = |dir: &Path| dir.join("Labels").is_dir() || dir.join(crate::registry::ODX_DIR).is_dir();
+	if is_install(unpacked) {
+		return unpacked.to_path_buf();
+	}
+	let entries: Vec<_> = match std::fs::read_dir(unpacked) {
+		Ok(dir) => dir.flatten().filter(|e| !e.file_name().to_string_lossy().starts_with('.')).collect(),
+		Err(_) => return unpacked.to_path_buf(),
+	};
+	match entries.as_slice() {
+		[only] if only.path().is_dir() => only.path(),
+		_ => unpacked.to_path_buf(),
+	}
 }
 
 /// Download `url` to `into`, with a progress bar, checking what arrived.
@@ -257,6 +280,34 @@ mod tests {
 		assert!(check_archive(&file, Some(bytes.len() as u64)).is_ok());
 		assert!(file.exists());
 		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn an_archive_with_one_top_folder_is_rooted_at_that_folder() {
+		// The hosted zip holds `vcds-en/Labels/…`, so unpacking it into
+		// `vendor/vcds-en` put the labels one level down and setup said "no label
+		// files under …/vcds-en" (2026-10-21).
+		let dir = temp("nested");
+		let inner = dir.join("vcds-en");
+		std::fs::create_dir_all(inner.join("Labels")).unwrap();
+		assert_eq!(install_root(&dir), inner);
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn an_archive_unpacked_flat_is_rooted_where_it_was_unpacked() {
+		let dir = temp("flat");
+		std::fs::create_dir_all(dir.join("Labels")).unwrap();
+		std::fs::create_dir_all(dir.join("UDS_EV")).unwrap();
+		assert_eq!(install_root(&dir), dir);
+		// One folder that is not an installation's own is not descended into either:
+		// the root stays where it was, and the label search says what is missing.
+		let other = temp("other");
+		std::fs::create_dir_all(other.join("something")).unwrap();
+		std::fs::write(other.join("readme.txt"), b"x").unwrap();
+		assert_eq!(install_root(&other), other);
+		let _ = std::fs::remove_dir_all(&dir);
+		let _ = std::fs::remove_dir_all(&other);
 	}
 
 	#[test]
