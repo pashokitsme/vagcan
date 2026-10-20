@@ -42,10 +42,11 @@
 //! # Show each channel's own key at the end of its row.
 //! show_key = false
 //!
-//! # Which source's fault text `faults` prefers, as the ISO 639-2 code the
-//! # source declares — an ODIS project's `deu`, a VCDS build's `eng` or `rus`.
+//! # Which language `faults` shows fault text in: `en`, `de`, `ru`, … (or the
+//! # three-letter code a source declares, `eng`, `deu`, `rus`). Unset, English
+//! # wherever a source has it, else the ODIS project's own.
 //! [faults]
-//! language = "deu"
+//! language = "de"
 //!
 //! # Channels marked with `f` in `watch`, per car, keyed by VIN.
 //! [favourites]
@@ -60,10 +61,11 @@
 //! closed set ([`Language`]): a value nobody wrote a column for is a setting
 //! that cannot be honoured. `[faults] language` is different in kind — it
 //! names which *source* to read fault text from, and a source declares its own
-//! language as an ISO 639-2 code (`deu`, `eng`, `rus`) that this build never
-//! enumerates. Widening [`Language`] to carry those would make the glossary
-//! accept a column that does not exist; a second key keeps each honest. It is
-//! unset by default, and with one source it is never needed.
+//! language as an ISO 639-2 code (`deu`, `eng`, `rus`). The setting takes that
+//! code or its ISO 639-1 short form (`de`, `en`, `ru`), mapped by
+//! [`language_code`]. Widening [`Language`] to carry those would make the
+//! glossary accept a column that does not exist; a second key keeps each
+//! honest. Unset, `faults` shows English wherever a source has it.
 //!
 //! **The document is kept as a `toml::Table`, not deserialized into a struct.**
 //! A struct would silently drop anything this version does not know about — a
@@ -135,11 +137,11 @@ const FRESH: &str = "\
 # can be found in names.csv.\n\
 # show_key = false\n\
 \n\
-# Which source's fault text `faults` shows when several are set up in different\n\
-# languages, as the ISO 639-2 code the source declares: an ODIS project's \"deu\",\n\
-# a VCDS build's \"eng\" or \"rus\". With one source this is never needed.\n\
+# Which language `faults` shows fault text in when the sources set up declare\n\
+# several: \"en\", \"de\", \"ru\", ... Unset, English wherever a source has it,\n\
+# else the ODIS project's own.\n\
 # [faults]\n\
-# language = \"deu\"\n\
+# language = \"de\"\n\
 \n\
 # Channels marked with `f` in `watch`, and the ones the chart draws. Per car,\n\
 # keyed by VIN, written by the tool.\n\
@@ -225,15 +227,78 @@ pub fn language_complaint(document: &Document) -> Option<String> {
 }
 
 /// Which source's fault text `faults` prefers — `[faults] language`, as the
-/// ISO 639-2 code the source declares, lower-cased. `None` when unset, which
-/// is the ordinary state: with one source there is nothing to choose.
+/// ISO 639-2 code a source declares ([`language_code`]: `en` and `eng` are both
+/// `eng`). `None` when unset, which is the ordinary state.
 ///
 /// Not a [`Language`]: that enum is the glossary's closed set of columns, and
 /// this is an open code matched against what each source recorded about
 /// itself (`vag_data_db::CachedFault::language`). See the module note.
 pub fn fault_language(document: &Document) -> Option<String> {
-	let code = document.get("faults")?.get("language")?.as_str()?.trim().to_ascii_lowercase();
+	let code = language_code(document.get("faults")?.get("language")?.as_str()?);
 	(!code.is_empty()).then_some(code)
+}
+
+/// ISO 639: the short code (639-1), the terminological three-letter code
+/// (639-2/T) and the bibliographic one where it differs (639-2/B). A property of
+/// the standard, not of a car: ODIS declares 639-2/T (`deu`), a person types
+/// 639-1 (`de`). The languages VW and Ross-Tech ship text in, and their
+/// neighbours; a code outside the table is still matched as it is written.
+const ISO_639: &[(&str, &str, Option<&str>)] = &[
+	("ar", "ara", None),
+	("bg", "bul", None),
+	("cs", "ces", Some("cze")),
+	("da", "dan", None),
+	("de", "deu", Some("ger")),
+	("el", "ell", Some("gre")),
+	("en", "eng", None),
+	("es", "spa", None),
+	("et", "est", None),
+	("fi", "fin", None),
+	("fr", "fra", Some("fre")),
+	("he", "heb", None),
+	("hr", "hrv", None),
+	("hu", "hun", None),
+	("it", "ita", None),
+	("ja", "jpn", None),
+	("ko", "kor", None),
+	("lt", "lit", None),
+	("lv", "lav", None),
+	("nl", "nld", Some("dut")),
+	("no", "nor", None),
+	("pl", "pol", None),
+	("pt", "por", None),
+	("ro", "ron", Some("rum")),
+	("ru", "rus", None),
+	("sk", "slk", Some("slo")),
+	("sl", "slv", None),
+	("sr", "srp", None),
+	("sv", "swe", None),
+	("th", "tha", None),
+	("tr", "tur", None),
+	("uk", "ukr", None),
+	("zh", "zho", Some("chi")),
+];
+
+/// A language code as sources declare it: ISO 639-2/T, lower-cased. `en`,
+/// `EN`, `eng` are `eng`; `ger` is `deu`. A code the table does not know is
+/// given back trimmed and lower-cased, so it can still match a source that
+/// declared exactly that.
+pub fn language_code(code: &str) -> String {
+	let code = code.trim().to_ascii_lowercase();
+	ISO_639
+		.iter()
+		.find(|(short, long, bibliographic)| *short == code || *long == code || *bibliographic == Some(code.as_str()))
+		.map_or(code, |(_, long, _)| long.to_string())
+}
+
+/// A declared language the way a person types it: ISO 639-1 where there is one
+/// (`deu` is `de`), else the code as it is.
+pub fn short_language(code: &str) -> String {
+	let long = language_code(code);
+	ISO_639
+		.iter()
+		.find(|(_, l, _)| *l == long)
+		.map_or(long, |(short, _, _)| short.to_string())
 }
 
 /// How often `watch` asks the car, in hertz.
@@ -423,6 +488,27 @@ mod tests {
 		assert_eq!(fault_language(&Document::new()), None);
 		let empty: Document = "[faults]\nlanguage = \"\"\n".parse().unwrap();
 		assert_eq!(fault_language(&empty), None);
+	}
+
+	#[test]
+	fn the_fault_text_language_takes_the_short_code_a_person_types() {
+		// Sources declare ISO 639-2 (`deu`, `eng`, `rus`); a person writes `de`.
+		for (written, code) in [
+			("en", "eng"),
+			("de", "deu"),
+			("RU", "rus"),
+			("eng", "eng"),
+			("ger", "deu"),
+			("fre", "fra"),
+		] {
+			let document: Document = format!("[faults]\nlanguage = \"{written}\"\n").parse().unwrap();
+			assert_eq!(fault_language(&document).as_deref(), Some(code), "{written}");
+		}
+		// A code the table does not know is matched as written.
+		assert_eq!(language_code(" XX "), "xx");
+		assert_eq!(short_language("deu"), "de");
+		assert_eq!(short_language("eng"), "en");
+		assert_eq!(short_language("xyz"), "xyz");
 	}
 
 	#[test]

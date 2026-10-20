@@ -191,21 +191,24 @@ impl Namer {
 	}
 }
 
-/// Why a unit's faults are being shown as numbers, in one line for the console.
-pub fn unit_note(lookup: &UnitLookup) -> Option<String> {
+/// Why a unit's faults are not in the VCDS text, in one line for the console.
+///
+/// `instead` is what the codes are shown with: `codes only`, or the ODIS
+/// project's text where the project has the unit and VCDS was only asked first.
+pub fn unit_note(lookup: &UnitLookup, instead: &str) -> Option<String> {
 	match lookup {
 		UnitLookup::Found { .. } => None,
-		UnitLookup::NoFile => Some("the label files have no ODX file of the name this unit gives — codes only".to_string()),
+		UnitLookup::NoFile => Some(format!("the label files have no ODX file of the name this unit gives — {instead}")),
 		UnitLookup::NoSection { candidates } => Some(format!(
-			"none of the {candidates} ODX files of this family carries a fault catalogue — codes only"
+			"none of the {candidates} ODX files of this family carries a fault catalogue — {instead}"
 		)),
 		UnitLookup::Locked { file } => Some(format!(
-			"the fault catalogue in {} is still sealed — codes only",
+			"the fault catalogue in {} is still sealed — {instead}",
 			file.file_name().and_then(|n| n.to_str()).unwrap_or_default()
 		)),
 		UnitLookup::Mismatched { file, listed, distinct } => Some(format!(
 			"{} lists {listed} faults that land on only {distinct} registry rows, \
-             so it is not the same vintage as this RD.rod — refused, codes only",
+             so it is not the same vintage as this RD.rod — refused, {instead}",
 			file.file_name().and_then(|n| n.to_str()).unwrap_or_default()
 		)),
 	}
@@ -343,14 +346,15 @@ mod tests {
 	fn a_units_missing_catalogue_is_explained_rather_than_hidden() {
 		// On the reference car the body control module's F19E is EV_BCMMQB and
 		// no file in the English label files start with that name.
-		assert!(unit_note(&UnitLookup::NoFile).unwrap().contains("no ODX file"));
-		assert!(unit_note(&UnitLookup::NoSection { candidates: 14 }).unwrap().contains("14"));
-		assert!(
-			unit_note(&UnitLookup::Locked {
-				file: PathBuf::from("EV_X.rod")
-			})
-			.unwrap()
-			.contains("EV_X.rod")
-		);
+		assert!(unit_note(&UnitLookup::NoFile, "codes only").unwrap().contains("no ODX file"));
+		assert!(unit_note(&UnitLookup::NoSection { candidates: 14 }, "codes only").unwrap().contains("14"));
+		let sealed = UnitLookup::Locked {
+			file: PathBuf::from("EV_X.rod"),
+		};
+		assert!(unit_note(&sealed, "codes only").unwrap().contains("EV_X.rod"));
+		// Where the ODIS project has the unit, its codes are not numbers alone,
+		// and the note says what they are shown with instead.
+		let note = unit_note(&sealed, "the ODIS project's text").unwrap();
+		assert!(note.ends_with("sealed — the ODIS project's text"), "{note}");
 	}
 }
