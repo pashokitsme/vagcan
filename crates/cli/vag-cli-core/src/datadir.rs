@@ -119,23 +119,63 @@ fn default_root() -> anyhow::Result<PathBuf> {
 	Ok(test_root().to_path_buf())
 }
 
+/// The line a binary built for tests says at startup, or `None` for a normal build.
+///
+/// `cargo test` leaves a `target/debug/vagcan` built with `test-root`, and that binary
+/// reads a temporary directory, not `~/.vagcan`. Run by hand, it must say so rather than
+/// report a machine with no data.
+pub fn test_build_note() -> Option<String> {
+	if !cfg!(any(test, feature = "test-root")) {
+		return None;
+	}
+	let dir = vagcan_dir().map(|dir| dir.display().to_string()).unwrap_or_else(|e| format!("({e})"));
+	Some(format!("note  test build: data dir {dir}, not ~/.vagcan"))
+}
+
 /// The environment variable that names the directory `~/.vagcan` stands for.
 pub const ROOT_ENV: &str = "VAGCAN_HOME";
 
 /// A test build's `~/.vagcan`: one empty temporary directory for the life of the process,
 /// created on first use. Every test in one binary shares it, as they shared HOME before;
 /// a test that needs its own data writes it into a directory of its own.
+///
+/// All of them under one parent, `vagcan-test-roots/<pid>/`, which the first test of each
+/// process clears of the roots older than [`TEST_ROOT_AGE`]: a process leaves its root
+/// behind — nothing runs at a test binary's exit — and a process still running has not
+/// been running that long, so another binary's live root is never taken from under it.
 #[cfg(any(test, feature = "test-root"))]
 pub fn test_root() -> &'static Path {
 	static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 	ROOT.get_or_init(|| {
-		let root = std::env::temp_dir()
-			.join(format!("vagcan-test-root-{}", std::process::id()))
-			.join(".vagcan");
+		let parent = std::env::temp_dir().join("vagcan-test-roots");
+		remove_old_roots(&parent, TEST_ROOT_AGE);
+		let root = parent.join(std::process::id().to_string()).join(".vagcan");
 		let _ = std::fs::remove_dir_all(&root);
 		std::fs::create_dir_all(&root).expect("a temporary directory for a test build's ~/.vagcan");
 		root
 	})
+}
+
+/// How old a test build's root is before the next test process removes it.
+#[cfg(any(test, feature = "test-root"))]
+const TEST_ROOT_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Remove the roots under `parent` older than `age`, best effort: a root another process
+/// is removing, or one that will not go, is left for the next run.
+#[cfg(any(test, feature = "test-root"))]
+fn remove_old_roots(parent: &Path, age: std::time::Duration) {
+	let Ok(entries) = std::fs::read_dir(parent) else { return };
+	for entry in entries.flatten() {
+		let old = entry
+			.metadata()
+			.and_then(|meta| meta.modified())
+			.ok()
+			.and_then(|at| at.elapsed().ok())
+			.is_some_and(|elapsed| elapsed > age);
+		if old {
+			let _ = std::fs::remove_dir_all(entry.path());
+		}
+	}
 }
 
 /// Where the projects live — `~/.vagcan/data/`, one directory per platform.
@@ -531,6 +571,33 @@ mod tests {
 		assert_eq!(reads, 2000);
 		let left = std::fs::read_dir(&dir.0).unwrap().flatten().count();
 		assert_eq!(left, 1, "temporary files were left behind");
+	}
+
+	#[test]
+	fn a_test_process_clears_the_roots_old_processes_left_and_no_live_one() {
+		// Each test process left a `vagcan-test-root-<pid>` behind (review of #37). They
+		// share one parent now, and a root older than any test process lives is removed.
+		let parent = TempDir::new("roots");
+		let (old, live) = (parent.0.join("111"), parent.0.join("222"));
+		for dir in [&old, &live] {
+			std::fs::create_dir_all(dir.join(".vagcan").join("data")).unwrap();
+		}
+		let long_ago = std::time::SystemTime::now() - 2 * TEST_ROOT_AGE;
+		std::fs::File::open(&old).unwrap().set_modified(long_ago).unwrap();
+		remove_old_roots(&parent.0, TEST_ROOT_AGE);
+		assert!(!old.exists(), "a root an ended process left stayed");
+		assert!(live.join(".vagcan").is_dir(), "a live process's root was taken");
+		// And this process's own sits under the one parent.
+		assert!(test_root().starts_with(std::env::temp_dir().join("vagcan-test-roots")));
+	}
+
+	#[test]
+	fn a_test_build_has_a_note_naming_its_data_dir() {
+		let note = test_build_note().expect("this is a test build");
+		assert_eq!(
+			note,
+			format!("note  test build: data dir {}, not ~/.vagcan", vagcan_dir().unwrap().display())
+		);
 	}
 
 	#[test]

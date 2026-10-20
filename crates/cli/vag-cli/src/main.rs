@@ -561,6 +561,11 @@ fn report(err: &anyhow::Error) {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+	// A binary `cargo test` built reads a temporary data dir, never ~/.vagcan: said once,
+	// first, so one run by hand cannot quietly report a machine with no data.
+	if let Some(note) = vag_cli_core::datadir::test_build_note() {
+		eprintln!("{note}");
+	}
 	match run().await {
 		Ok(code) => code,
 		Err(err) => {

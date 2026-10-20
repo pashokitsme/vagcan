@@ -38,7 +38,9 @@ ap.add_argument("--logs", default=".")
 ap.add_argument("args", nargs=argparse.REMAINDER)
 a = ap.parse_args()
 cmd = [a.binary] + [x for x in a.args if x != "--"]
-env = dict(os.environ, HOME=a.home)
+# VAGCAN_HOME as well as HOME: a `target/debug/vagcan` that `cargo test` built reads neither
+# HOME's ~/.vagcan nor any HOME, only VAGCAN_HOME or a temp dir (`datadir::vagcan_dir`).
+env = dict(os.environ, HOME=a.home, VAGCAN_HOME=os.path.join(os.path.abspath(a.home), ".vagcan"))
 os.makedirs(a.logs, exist_ok=True)
 
 

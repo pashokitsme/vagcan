@@ -7,6 +7,9 @@ import rodlib, inc
 from alphabet import decoder
 S = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 B = os.environ.get("VAGCAN") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../target/release/vagcan")
+# Its own data dir, absolute: the binary may be one `cargo test` built, which reads no HOME,
+# and this tool must not read a person's ~/.vagcan either (`datadir::vagcan_dir`).
+ENV = dict(os.environ, VAGCAN_HOME=os.path.join(S, "scratch", "vagcan-home"))
 UDS = inc.UDS
 budget = float(sys.argv[1])
 plan = json.load(open(os.path.join(S, "out/plan.json")))
@@ -29,7 +32,7 @@ def open_file(f):
         t0 = cpu(); w0 = time.time()
         crack = k.get("INC") == "classic" or k.get("MWB") == "classic"
         cmd = [B, "dev", "vcds", "rod", UDS + f, "--cache", os.path.join(S, "ivcache.json"), "--dump", dd] + ([] if crack else ["--no-crack"])
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        r = subprocess.run(cmd, capture_output=True, text=True, env=ENV)
         c = cpu() - t0
         log.write(f"{time.strftime('%H:%M:%S')} {f} cpu={c:.1f}s wall={time.time()-w0:.1f}s\n{r.stdout[-800:]}\n{r.stderr[-300:]}\n"); log.flush()
     opened[f] = (k, dd, c)

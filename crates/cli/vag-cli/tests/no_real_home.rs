@@ -106,3 +106,34 @@ fn the_canary_is_one_an_open_would_change() {
 	assert_ne!(snapshot(home.path()), before, "reaching the data dir left the canary as it was");
 	assert!(!project.join("sources.json").exists());
 }
+
+#[test]
+fn a_test_build_says_once_at_startup_which_data_dir_it_reads() {
+	// A `target/debug/vagcan` that `cargo test` left behind reads a temporary directory;
+	// run by hand it must say so, first, and once — on a command that fails, too.
+	let home = tempfile::tempdir().unwrap();
+	for args in [&["devices"][..], &["setup", "--list"]] {
+		let out = run(home.path(), args);
+		let stderr = String::from_utf8_lossy(&out.stderr);
+		let first = stderr.lines().next().unwrap_or_default();
+		assert!(
+			first.starts_with("note  test build: data dir ") && first.ends_with(", not ~/.vagcan"),
+			"`vagcan {}`: {stderr}",
+			args.join(" ")
+		);
+		assert!(!first.contains(&home.path().display().to_string()), "it named HOME's: {first}");
+		assert_eq!(stderr.matches("note  test build").count(), 1, "{stderr}");
+	}
+	// The override is what it names when one is set.
+	let other = home.path().join("elsewhere");
+	let out = Command::new(env!("CARGO_BIN_EXE_vagcan"))
+		.arg("devices")
+		.env(vag_cli_core::datadir::ROOT_ENV, &other)
+		.output()
+		.expect("vagcan runs");
+	let stderr = String::from_utf8_lossy(&out.stderr);
+	assert!(
+		stderr.starts_with(&format!("note  test build: data dir {}, not ~/.vagcan", other.display())),
+		"{stderr}"
+	);
+}
