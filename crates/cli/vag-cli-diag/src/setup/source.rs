@@ -431,6 +431,10 @@ pub fn choose(io: &mut impl Asker, dialog: &mut impl Dialog, preselected: Option
 	}
 }
 
+/// Said at `-v` when the second question was skipped: what the project holds, and
+/// how to add the other source later.
+const NO_VCDS: &str = "no VCDS installation: the project holds the ODIS project alone; another `vagcan setup` adds one";
+
 /// The recommended row: an ODIS project, then somewhere to get the wording.
 ///
 /// **The ODIS project is asked for first**, and the order is not arbitrary.
@@ -464,12 +468,8 @@ fn odis_and_names(io: &mut impl Asker, dialog: &mut impl Dialog) -> Result<Optio
 		None => None,
 	};
 	if names.is_none() {
-		// Wrapped by hand, like every other message this command prints: `say`
-		// does not clip, so a sentence left to the terminal comes out ragged.
-		io.say(
-			"No VCDS installation — the project holds the ODIS project alone. Adding\n\
-             one later is another `vagcan setup` into this project.",
-		)?;
+		// What was given up, at `-v`: the closing table shows the ODIS rows alone.
+		vag_cli_core::note!("{NO_VCDS}");
 	}
 	Ok(Some(Choice { source, names }))
 }
@@ -503,7 +503,7 @@ fn odis_and_names(io: &mut impl Asker, dialog: &mut impl Dialog) -> Result<Optio
 fn ask_for(io: &mut impl Asker, dialog: &mut impl Dialog, want: Look, back: &str) -> Result<Option<Source>> {
 	// Said before the menu because the menu's own legend can only offer `q`,
 	// and what `q` costs is the thing worth knowing before pressing it.
-	io.say(&format!("Point at the folder in a window, or type its path. Leaving without one {back}."))?;
+	io.say(&format!("Leaving without a folder {back}."))?;
 	let Some(row) = io.ask(want.question(), &how_options(), 0)? else {
 		return Ok(None);
 	};
@@ -516,7 +516,7 @@ fn ask_for(io: &mut impl Asker, dialog: &mut impl Dialog, want: Look, back: &str
 		// through to the prompt rather than back to the menu is what makes a
 		// machine with no window server usable at all: the row above is dead
 		// there, and silently landing on nothing would look like a hang.
-		io.say("No folder came back from the dialog. Type the path instead.")?;
+		io.say("No folder came back from the dialog: type the path.")?;
 	}
 	// A row outside the menu names nothing, and typing is the way that works
 	// everywhere — so it is what a nonsense answer lands on.
@@ -546,7 +546,7 @@ fn from_dialog(io: &mut impl Asker, dialog: &mut impl Dialog, want: Look) -> Res
 
 /// The folder as a person types, pastes or drops it.
 fn typed_path(io: &mut impl Asker, want: Look, back: &str) -> Result<Option<Source>> {
-	io.say(&format!("Drag the folder into this window, or paste its path. An empty line {back}."))?;
+	io.say(&format!("Drag the folder here or paste its path; an empty line {back}."))?;
 	loop {
 		let typed = io.line(want.question(), "")?;
 		if typed.trim().is_empty() {
@@ -777,10 +777,8 @@ fn unrecognised(dir: &Path) -> String {
 	};
 	// The ODIS shape first, the order the menu offers them in.
 	format!(
-		"{head}{}\n\n    {}\n    {}\n\n\
-         With no path at all, `vagcan setup` asks which to read — and offers to download an\n\
-         installation if you have neither.\n\
-         Ross-Tech's own: {}",
+		"{head}{}\n    {}\n    {}\n\
+         With no path, `vagcan setup` asks which, and offers to download an installation; Ross-Tech's own: {}",
 		hint(dir, None),
 		Look::Odis.expected(),
 		Look::Vcds.expected(),
@@ -881,7 +879,7 @@ pub fn project_id(io: &mut impl Asker, source: &Source, existing: &[String], rer
 	if let Some(name) = &folder
 		&& why_not(name).is_none()
 	{
-		io.say(&settled(name, landing(name, existing, rereads), true, false))?;
+		vag_cli_core::note!("{}", settled(name, landing(name, existing, rereads), true, false));
 		return Ok(name.clone());
 	}
 	let default = match (folder.as_deref().map(clean), existing) {
@@ -896,24 +894,15 @@ pub fn project_id(io: &mut impl Asker, source: &Source, existing: &[String], rer
 		(_, [only]) => only.clone(),
 		_ => DEFAULT_ID.to_string(),
 	};
-	io.say(
-		// Wrapped by hand at the width every other message in this command is
-		// wrapped at. `say` does not clip — it must not, it is not a redraw — so
-		// a sentence left to the terminal comes out as a ragged wall.
-		"A project is a kind of car rather than one car — VW's own naming puts several\n\
-         models under one, so two cars can share it. What is true of exactly one car\n\
-         lives under cars/<VIN>/ instead.\n\
-         A second source is added to a project rather than replacing what is there.",
-	)?;
+	// What a project is, at `-v`: the question itself needs only the names.
+	vag_cli_core::note!("{WHAT_A_PROJECT_IS}");
 	// A default that appears out of nowhere is worse than no default: somebody
 	// shown `[SK-37X-copy]` with no explanation cannot tell whether the tool
 	// read it somewhere or invented it.
 	if let Some(name) = &folder
 		&& name != &default
 	{
-		io.say(&format!(
-			"The folder is called `{name}`; `{default}` is that name made into one a directory can have."
-		))?;
+		io.say(&format!("The folder `{name}` cannot be a project name; `{default}` can."))?;
 	}
 	if !existing.is_empty() {
 		io.say(&format!("Projects already here: {}", existing.join(", ")))?;
@@ -923,28 +912,29 @@ pub fn project_id(io: &mut impl Asker, source: &Source, existing: &[String], rer
 		let id = typed.trim().to_string();
 		match why_not(&id) {
 			None => {
-				io.say(&settled(
-					&id,
-					landing(&id, existing, rereads),
-					false,
-					matches!(source, Source::Vcds { .. }),
-				))?;
+				vag_cli_core::note!(
+					"{}",
+					settled(&id, landing(&id, existing, rereads), false, matches!(source, Source::Vcds { .. }))
+				);
 				return Ok(id);
 			}
 			// Asked again rather than refused: a name is one keystroke, and
 			// losing the whole run over a slash would be a poor trade.
 			// The resolved path goes last because it is the one part whose
-			// length is unknown here — anywhere else it would push the rest of
-			// the sentence past the width this is wrapped to.
+			// length is unknown here.
 			Some(why) => io.say(&format!(
 				"`{id}` cannot be a project name — {why}.\n    \
-                 A name may hold letters, digits, `-`, `_` and `.` and nothing else:\n    \
-                 it is one folder under {}",
+                 Letters, digits, `-`, `_` and `.` only: it is one folder under {}",
 				projects_in()
 			))?,
 		}
 	}
 }
+
+/// What a project is, said at `-v` before its name is asked for.
+const WHAT_A_PROJECT_IS: &str = "project: a kind of car rather than one car (VW's naming puts several models under one); \
+                                 what is true of one car lives under cars/<VIN>/; a second source is added to a project \
+                                 rather than replacing what is there";
 
 /// Where projects live, in words, for a sentence a person reads.
 ///
@@ -1001,15 +991,13 @@ fn settled(id: &str, landing: Landing, from_odis: bool, vcds: bool) -> String {
 		true => " — the name ODIS gives this folder",
 		false => "",
 	};
-	// Two lines, because one ran to 110 columns on a real terminal. The id is
-	// the only part whose length is unknown, so it goes on the first.
 	let what = match landing {
-		Landing::Rereads => "It has read this source before; reading it again replaces what it wrote.",
-		Landing::Adds if vcds => "This installation is added to it: ODIS rows stay, and any VCDS read before is replaced.",
-		Landing::Adds => "This source is added to it; what other sources put there stays.",
-		Landing::New => "New — nothing has been read into it yet.",
+		Landing::Rereads => "it has read this source before; reading it again replaces what it wrote",
+		Landing::Adds if vcds => "this installation is added to it: ODIS rows stay, and any VCDS read before is replaced",
+		Landing::Adds => "this source is added to it; what other sources put there stays",
+		Landing::New => "new — nothing has been read into it yet",
 	};
-	format!("Project `{id}`{how}.\n{what}")
+	format!("project  `{id}`{how}: {what}")
 }
 
 /// Why this cannot be a directory under `~/.vagcan/data/`, if it cannot.
@@ -1264,11 +1252,10 @@ mod tests {
 		] {
 			let mut io = Scripted::new(answers);
 			assert_eq!(choose(&mut io, &mut no_dialog(), None).unwrap(), alone);
-			// Asserted either side of the hand-wrap, never across it.
-			let said = io.all_said();
-			assert!(said.contains("No VCDS installation"), "it says what that means: {said}");
-			assert!(said.contains("into this project"), "and how to add one later: {:?}", io.said);
 		}
+		// What was given up is said at `-v`: what that means, and how to add one later.
+		assert!(NO_VCDS.contains("ODIS project alone"), "{NO_VCDS}");
+		assert!(NO_VCDS.contains("another `vagcan setup` adds one"), "{NO_VCDS}");
 	}
 
 	#[test]
@@ -1659,7 +1646,8 @@ mod tests {
 		let id = project_id(&mut io, &Source::Odis { dir: project }, &[], &[]).unwrap();
 		assert_eq!(id, "SK37X");
 		assert!(io.typed.is_empty(), "nothing was asked");
-		assert!(io.all_said().contains("SK37X"), "it still says what it landed on: {:?}", io.said);
+		// What it landed on is said at `-v`; the closing line names the project too.
+		assert!(settled(&id, landing(&id, &[], &[]), true, false).contains("`SK37X` — the name ODIS gives this folder"));
 	}
 
 	#[test]
@@ -1669,9 +1657,11 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
 		let mut io = Scripted::new(vec![]);
-		let id = project_id(&mut io, &Source::Odis { dir: project }, &["SK37X".to_string()], &[]).unwrap();
+		let existing = ["SK37X".to_string()];
+		let id = project_id(&mut io, &Source::Odis { dir: project }, &existing, &[]).unwrap();
 		assert_eq!(id, "SK37X");
-		let said = io.all_said();
+		assert_eq!(landing(&id, &existing, &[]), Landing::Adds);
+		let said = settled(&id, Landing::Adds, true, false);
 		assert!(said.contains("added"), "{said}");
 		assert!(said.contains("what other sources put there stays"), "{said}");
 	}
@@ -1689,7 +1679,8 @@ mod tests {
 			project_id(&mut io, &Source::Odis { dir: project }, &existing, &existing).unwrap(),
 			"SK37X"
 		);
-		let said = io.all_said();
+		assert_eq!(landing("SK37X", &existing, &existing), Landing::Rereads);
+		let said = settled("SK37X", Landing::Rereads, true, false);
 		assert!(said.contains("again"), "{said}");
 		assert!(said.contains("replaces"), "{said}");
 		assert!(!said.contains("is added to it"), "{said}");
@@ -1700,7 +1691,7 @@ mod tests {
 			project_id(&mut io, &Source::Vcds { dir: install }, &existing, &existing).unwrap(),
 			"SK37X"
 		);
-		assert!(io.all_said().contains("again"), "{:?}", io.said);
+		assert!(settled("SK37X", Landing::Rereads, false, true).contains("again"));
 	}
 
 	#[test]
@@ -1742,7 +1733,7 @@ mod tests {
 		assert_eq!(id, "SK37X");
 		// A second VCDS installation replaces the first one's label files, so
 		// "what other sources put there stays" would be false here.
-		let said = io.all_said();
+		let said = settled(&id, Landing::Adds, false, true);
 		assert!(!said.contains("what other sources put there stays"), "{said}");
 		assert!(said.contains("any VCDS read before is replaced"), "{said}");
 	}
@@ -1788,7 +1779,8 @@ mod tests {
 		let install = vcds(here.path());
 		let mut io = Scripted::new(vec![Answer::Type(String::new())]);
 		project_id(&mut io, &Source::Vcds { dir: install }, &[], &[]).unwrap();
-		let said = io.all_said();
+		// Said at `-v`, before the name is asked for.
+		let said = WHAT_A_PROJECT_IS;
 		assert!(!said.contains("one car's data"), "{said}");
 		assert!(said.contains("kind of car"), "it says what a project actually covers: {said}");
 		// The one-car store is still a real thing, and it is somewhere else.

@@ -69,7 +69,7 @@ pub fn fetch(base: &str) -> Result<PathBuf> {
 	let dir = vendor_dir()?;
 	let unpacked = dir.join(format!("vcds-{BUILD}"));
 	if unpacked.is_dir() && std::fs::read_dir(&unpacked).is_ok_and(|d| d.count() > 0) {
-		println!("Using the installation already at {}", unpacked.display());
+		vag_cli_core::note!("vcds  using the installation already at {}", unpacked.display());
 		return Ok(unpacked);
 	}
 	std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -91,7 +91,8 @@ fn download(url: &str, into: &Path) -> Result<()> {
 	let part = into.with_extension("zip.part");
 	let _ = std::fs::remove_file(&part);
 
-	println!("Downloading {url}");
+	// The one line a download of minutes gets; curl draws its own bar on stderr.
+	vag_cli_core::say!("downloading {url}");
 	let status = std::process::Command::new("curl")
 		// `--fail` so an HTML error page is not saved as a zip; `--location`
 		// because the hosting redirects to object storage.
@@ -103,11 +104,7 @@ fn download(url: &str, into: &Path) -> Result<()> {
 	if !status.success() {
 		let _ = std::fs::remove_file(&part);
 		anyhow::bail!(
-			"downloading {url} failed ({status}).\n\n\
-             If the address is not reachable, fetch a VCDS installation yourself and \
-             point at it:\n    \
-             vagcan setup /path/to/VCDS\n\
-             {}",
+			"downloading {url} failed ({status})\nfetch an installation yourself ({}), then: vagcan setup /path/to/VCDS",
 			crate::missing::VCDS_DOWNLOAD
 		);
 	}
@@ -147,12 +144,9 @@ pub fn check_archive(path: &Path, expected: Option<u64>) -> Result<()> {
 	if let Some(want) = expected {
 		if got != want {
 			let _ = std::fs::remove_file(path);
-			anyhow::bail!(
-				"the download stopped: {got} bytes of {want}. Nothing was unpacked — \
-                 a partial archive becomes a VCDS installation missing files, and that \
-                 failure surfaces days later as label files with holes in it. Run \
-                 `vagcan setup` again."
-			);
+			// Nothing unpacked: a partial archive becomes an installation missing
+			// files, and that surfaces days later as label files with holes in them.
+			anyhow::bail!("the download stopped: {got} bytes of {want}; nothing was unpacked\nrun `vagcan setup` again");
 		}
 	}
 	let mut magic = [0u8; 4];
@@ -166,8 +160,8 @@ pub fn check_archive(path: &Path, expected: Option<u64>) -> Result<()> {
 	if read < 4 || &magic != ZIP_MAGIC {
 		let _ = std::fs::remove_file(path);
 		anyhow::bail!(
-			"what arrived is not a zip archive — the address served something else. \
-             Nothing was unpacked."
+			"what arrived is not a zip archive; nothing was unpacked\nfetch an installation yourself ({}), then: vagcan setup /path/to/VCDS",
+			crate::missing::VCDS_DOWNLOAD
 		);
 	}
 	Ok(())
@@ -176,7 +170,7 @@ pub fn check_archive(path: &Path, expected: Option<u64>) -> Result<()> {
 /// Unpack the archive into `into`.
 fn unpack(archive: &Path, into: &Path) -> Result<()> {
 	need_tool("unzip", "")?;
-	println!("Unpacking into {}", into.display());
+	vag_cli_core::note!("vcds  unpacking into {}", into.display());
 	std::fs::create_dir_all(into).with_context(|| format!("creating {}", into.display()))?;
 	let status = std::process::Command::new("unzip")
 		.args(["-q", "-o"])
@@ -187,8 +181,7 @@ fn unpack(archive: &Path, into: &Path) -> Result<()> {
 		.context("running unzip")?;
 	anyhow::ensure!(
 		status.success(),
-		"unpacking {} failed ({status}) — the archive may be damaged; delete it and \
-         run `vagcan setup` again",
+		"unpacking {} failed ({status})\ndelete it and run `vagcan setup` again",
 		archive.display()
 	);
 	Ok(())
@@ -205,14 +198,14 @@ fn need_tool(tool: &str, url: &str) -> Result<()> {
 	{
 		return Ok(());
 	}
-	anyhow::bail!(
-		"`{tool}` is not installed, and this step is a download and an unzip rather \
-         than a dependency of this program.\n\n\
-         Do it by hand and then point at the result:\n    \
-         curl -L -o vcds.zip {url}\n    \
-         unzip vcds.zip -d vcds\n    \
-         vagcan setup vcds"
-	)
+	// The download is `curl` and `unzip` rather than a dependency of this program,
+	// so a missing one is done by hand.
+	let url = if url.is_empty() {
+		ARCHIVE_BASE.to_string() + "/vcds-" + BUILD + ".zip"
+	} else {
+		url.to_string()
+	};
+	anyhow::bail!("`{tool}` is not installed\nby hand: curl -L -o vcds.zip {url} && unzip vcds.zip -d vcds && vagcan setup vcds")
 }
 
 #[cfg(test)]
@@ -237,7 +230,7 @@ mod tests {
 		std::fs::write(&file, b"PK\x03\x04partial").unwrap();
 		let err = check_archive(&file, Some(90_000_000)).unwrap_err().to_string();
 		assert!(err.contains("the download stopped"), "{err}");
-		assert!(err.contains("Nothing was unpacked"), "{err}");
+		assert!(err.contains("nothing was unpacked"), "{err}");
 		assert!(!file.exists(), "a short download must not be left to be found later");
 		let _ = std::fs::remove_dir_all(&dir);
 	}

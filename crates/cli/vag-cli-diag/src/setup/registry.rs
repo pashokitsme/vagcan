@@ -3,30 +3,28 @@
 //! The reading is [`vag_cli_core::registry`]'s — `watch`, `measure` and `units --identify`
 //! read the same way for the car in front of them, and `dev dash build` offline — and this is
 //! `setup`'s side of it: which units (every car recorded on this machine,
-//! `~/.vagcan/cars/<VIN>/units.json`, written by those three commands), the step's header and
-//! a line per unit as it is done, and what the read came to as a [`Step`] of the closing
-//! report.
+//! `~/.vagcan/cars/<VIN>/units.json`, written by those three commands), a spinner that counts
+//! them down, a `-v` line per unit as it is done, and what the read came to as a [`Step`] of
+//! the closing table.
 //!
-//! What the step could not read, it says: a table that did not open, a row that
-//! did not read, a list that lost its first row. A number on its own reads as
-//! everything there was.
+//! What the step could not read, it says at `-v`: a table that did not open, a row that
+//! did not read, a list that lost its first row. The row is `partial` then: a number on its
+//! own reads as everything there was.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::Result;
 
-use super::Step;
+use super::{State, Step};
 use crate::progress::Spinner;
 use crate::registry::{Progress, Read};
 
-pub(super) const WHAT: &str = "channels from the VCDS registry";
+pub(super) const NAME: &str = "registry";
 
-/// Why the step is pending with no car recorded, wrapped for the report: what
-/// to type, and no other instruction (spec 4).
-pub(super) const PENDING_WHY: &str = "no car recorded on this machine;\n    \
-                                     `vagcan watch`, `measure` or `units --identify` with the car reads\n    \
-                                     the channels of its units";
+/// Why the step is pending with no car recorded, at `-v`: what reads the channels.
+pub(super) const PENDING_WHY: &str =
+	"no car recorded on this machine; `vagcan watch`, `measure` or `units --identify` with the car reads the channels of its units";
 
 /// The `(F19E, F1A2)` of every unit of every car recorded on this machine,
 /// each once, in order. A unit that did not say what it is has no file to find.
@@ -55,6 +53,7 @@ struct Said {
 
 impl Progress for Said {
 	fn waiting(&mut self, what: &str) {
+		vag_cli_core::wire!("vcds registry: {what}");
 		// Cleared before the next one draws, or two lines spin at once.
 		self.spinner = None;
 		self.spinner = Some(Spinner::new(what));
@@ -70,7 +69,7 @@ impl Progress for Said {
 
 	fn done(&mut self, line: &str) {
 		self.spinner = None;
-		println!("      [{}/{}] {line}", self.at + 1, self.of);
+		vag_cli_core::note!("vcds registry [{}/{}] {line}", self.at + 1, self.of);
 	}
 }
 
@@ -86,10 +85,6 @@ impl Progress for Said {
 /// leaves the next one less to search for.
 pub(super) async fn registry_channels(root: &Path, project: &crate::project::Project, units: &BTreeSet<(String, String)>) -> Result<Step> {
 	if units.is_empty() {
-		println!(
-			"[5/5] Channels — no car recorded on this machine yet, so there is no list\n      \
-             of its units."
-		);
 		// The label step has just made this installation's source, so it is there; a
 		// `None` would be a source dropped from another terminal meanwhile, and then
 		// there is nothing to say about rows.
@@ -97,13 +92,10 @@ pub(super) async fn registry_channels(root: &Path, project: &crate::project::Pro
 		// Where the installation is, written down now: the first command with a
 		// car reads the channels of the car's units from it.
 		crate::registry::record_installation(project, root)?;
-		return Ok(Step::Pending {
-			what: WHAT,
-			why: format!("{PENDING_WHY}{removed}"),
-		});
+		return Ok(Step::new(vag_data_db::VCDS, NAME, State::Pending, super::NEXT_WITH_THE_CAR).because(format!("{PENDING_WHY}{removed}")));
 	}
-	println!(
-		"[5/5] Channels — reading the VCDS registry for {} unit{}.",
+	vag_cli_core::note!(
+		"vcds registry: {} unit{} of the cars recorded here",
 		units.len(),
 		plural(units.len())
 	);
@@ -115,43 +107,40 @@ pub(super) async fn registry_channels(root: &Path, project: &crate::project::Pro
 	.await
 	.map_err(|e| anyhow::anyhow!("the registry read did not finish: {e}"))??;
 	Ok(match outcome {
-		Read::NoRegistry { why, removed } => Step::Missing {
-			what: WHAT,
-			why: format!("the registry did not open: {why}{removed}"),
-		},
+		Read::NoRegistry { why, removed } => {
+			Step::new(vag_data_db::VCDS, NAME, State::Missing, "RM.rod did not open").because(format!("the registry did not open: {why}{removed}"))
+		}
 		Read::Done(summary) => {
 			let detail = summary.detail();
 			match summary.notes.is_empty() {
-				true => Step::Wrote {
-					what: WHAT,
-					path: summary.cache,
-					detail,
-				},
-				false => Step::Partial {
-					what: WHAT,
-					path: summary.cache,
-					detail,
-					why: summary.notes.join("\n    "),
-				},
+				true => Step::new(vag_data_db::VCDS, NAME, State::Wrote, detail).at(summary.cache),
+				false => Step::new(vag_data_db::VCDS, NAME, State::Partial, detail)
+					.because(summary.notes.join("\n    "))
+					.at(summary.cache),
 			}
 		}
 	})
 }
 
-/// The step when the cars' records could not be read: nothing was read, and the
-/// report says which file and why — the path on a line of its own, since it is
-/// as long as the car's home makes it, and what to do about it once, at the
-/// close ([`super::AFTER_A_FAILED_STEP`]).
+/// The step when the cars' records could not be read: nothing was read. The row
+/// names the file — the one thing to act on — and what to do about it closes the
+/// run ([`super::AFTER_A_FAILED_STEP`]); the cause is at `-v`.
 pub(super) fn failed(e: &anyhow::Error) -> Step {
-	let why = match e.downcast_ref::<crate::units::NotARecord>() {
-		Some(bad) => format!(
-			"a car's record on this machine is not one this tool wrote:\n    {}\n    ({})",
+	match e.downcast_ref::<crate::units::NotARecord>() {
+		Some(bad) => Step::new(
+			vag_data_db::VCDS,
+			NAME,
+			State::Failed,
+			format!("not a record this tool wrote: {}", bad.path.display()),
+		)
+		.because(format!(
+			"a car's record on this machine is not one this tool wrote: {} ({})",
 			bad.path.display(),
 			bad.cause
-		),
-		None => format!("the records of the cars on this machine could not be read:\n    {e:#}"),
-	};
-	Step::Failed { what: WHAT, why }
+		)),
+		None => Step::new(vag_data_db::VCDS, NAME, State::Failed, "the cars' records could not be read")
+			.because(format!("the records of the cars on this machine could not be read: {e:#}")),
+	}
 }
 
 fn plural(n: usize) -> &'static str {
@@ -178,13 +167,14 @@ mod tests {
 		};
 		std::fs::create_dir_all(&project.dir).unwrap();
 		let step = registry_channels(&root, &project, &BTreeSet::new()).await.unwrap();
-		let Step::Pending { what, why } = &step else {
-			panic!("{step:?}");
-		};
-		assert_eq!(*what, "channels from the VCDS registry");
+		assert_eq!(step.state, State::Pending, "{step:?}");
+		assert_eq!((step.source, step.name), ("vcds", "registry"));
+		// The row says what to type; `-v` says which commands read the channels.
+		assert_eq!(step.detail, "no car recorded: run `vagcan watch` with the car");
+		let why = step.why.as_deref().expect("a reason at -v");
 		assert!(why.starts_with("no car recorded on this machine"), "{why}");
 		assert!(
-			why.contains("`vagcan watch`, `measure` or `units --identify` with the car reads\n    the channels of its units"),
+			why.contains("`vagcan watch`, `measure` or `units --identify` with the car reads the channels of its units"),
 			"{why}"
 		);
 		assert!(!why.contains("survey"), "no other instruction: {why}");

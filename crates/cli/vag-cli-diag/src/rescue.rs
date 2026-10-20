@@ -50,19 +50,14 @@ use crate::ui::menu::Asker;
 /// with one, and a sentence that cannot be printed still has to be true.
 const INSTEAD: &str = crate::setup::WITHOUT_A_TERMINAL;
 
-/// The offer, as the person reads it.
+/// The question, and the offer in it.
 ///
-/// Three facts and no more: what it would do, what it costs, and that it is
-/// offline. The shortage itself has already been printed above this — it says
-/// what is missing, where it looked, and how to do the same thing by hand — so
-/// none of that is repeated here.
-const OFFER: &str = "\nvagcan can do that now: fetch a VCDS installation (about 90 MB), read it, and\n\
-                     carry on with what you asked for. A few minutes, mostly parsing.\n\
-                     Offline — it opens no adapter and touches no car.";
-
-/// The question. `[y/N]` in the text rather than as a default, because the
-/// answer is a letter and the default is the empty line.
-const QUESTION: &str = "Fetch it and carry on? [y/N]";
+/// Three facts and no more: what it would do, what it costs, and that it touches
+/// no car. The shortage itself has already been printed above this — it says what
+/// is missing and how to do the same thing by hand — so none of that is repeated
+/// here. `[y/N]` in the text rather than as a default, because the answer is a
+/// letter and the default is the empty line.
+const QUESTION: &str = "Fetch a VCDS installation (about 90 MB, a few minutes; touches no car), read it and carry on? [y/N]";
 
 /// Whether `err` is a command that failed for want of label data, and whether
 /// there is somebody there to be asked about it.
@@ -110,7 +105,6 @@ pub async fn offer(archive_base: &str) -> Result<bool> {
 /// — an expensive thing offered unprompted — and it is the rule this one needs
 /// most: the cost here is a download.
 fn asked(io: &mut impl Asker) -> Result<bool> {
-	io.say(OFFER)?;
 	let typed = io.line(QUESTION, "")?;
 	Ok(matches!(typed.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
 }
@@ -132,8 +126,11 @@ fn asked(io: &mut impl Asker) -> Result<bool> {
 /// `refresh` is false. This runs because something was *missing*; redoing work
 /// already on disk is a different request, and `vagcan setup --refresh` is
 /// still the only way to ask for it.
+///
+/// [`crate::setup::run_inside`], not `run`: `setup`'s table goes to stderr here,
+/// since stdout is the data of the command that is run again afterwards.
 async fn fix(archive_base: &str) -> Result<()> {
-	crate::setup::run(crate::setup::Options {
+	crate::setup::run_inside(crate::setup::Options {
 		dir: None,
 		refresh: false,
 		archive_base,
@@ -164,8 +161,8 @@ mod tests {
 		}
 		let err = like_a_site().unwrap_err();
 		assert!(err.downcast_ref::<NoLabelData>().is_some(), "{err}");
-		// And it still prints as it always did, prefix to fix.
-		assert!(err.to_string().contains("vagcan setup <path to the ODIS project folder>"), "{err}");
+		// And it still prints, with the fix in it — whatever its wording.
+		assert!(err.to_string().contains("vagcan setup"), "{err}");
 	}
 
 	#[test]
@@ -216,16 +213,18 @@ mod tests {
 		// reassurance that matters in a tool that reads cars: this touches none.
 		let mut io = Scripted::new(vec![Answer::Type(String::new())]);
 		asked(&mut io).unwrap();
-		let said = io.all_said();
-		assert!(said.contains("90 MB"), "{said}");
-		assert!(said.contains("minutes"), "{said}");
-		assert!(said.contains("no car") || said.contains("touches no car"), "{said}");
-		// It must not repeat the fix the shortage above it has just spelled
-		// out — the reader has that paragraph on screen.
-		assert!(!said.contains("vagcan setup <path"), "{said}");
-		// One question, and it defaults to nothing rather than to a yes.
+		// One question, the offer in it and nothing around it, and it defaults to
+		// nothing rather than to a yes.
+		assert!(io.said.is_empty(), "{:?}", io.said);
 		assert_eq!(io.typed.len(), 1);
 		assert_eq!(io.defaults(), vec![String::new()]);
-		assert!(io.typed[0].0.contains("[y/N]"), "{:?}", io.typed[0]);
+		let question = &io.typed[0].0;
+		assert!(question.contains("90 MB"), "{question}");
+		assert!(question.contains("minutes"), "{question}");
+		assert!(question.contains("touches no car"), "{question}");
+		assert!(question.ends_with("[y/N]"), "{question}");
+		// It must not repeat the fix the shortage above it has just spelled
+		// out — the reader has that paragraph on screen.
+		assert!(!question.contains("vagcan setup <path"), "{question}");
 	}
 }

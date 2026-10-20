@@ -148,6 +148,8 @@ struct Chosen {
 	/// directory was created, and kept rather than reopened: it holds 88 MB of
 	/// inflated string pools.
 	odis: Option<vag_data_labels::odis::Project>,
+	/// What landing on `project` means for the source: the closing line says it.
+	landing: source::Landing,
 }
 
 /// Ask what to read, work out what to call it, and open the store.
@@ -171,14 +173,15 @@ fn choose(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source::Dialog
 	let asked = source::project_id(io, &source, &existing, &rereads)?;
 	// Opened before a directory exists, so its own name can win.
 	let odis = match &source {
-		source::Source::Odis { dir } => Some(open_odis(io, dir)?),
+		source::Source::Odis { dir } => Some(open_odis(dir)?),
 		_ => None,
 	};
 	let id = match &odis {
-		Some(project) => prefer_its_own_name(io, project.id(), &asked, &existing, &rereads)?,
+		Some(project) => prefer_its_own_name(project.id(), &asked, &existing, &rereads),
 		None => asked,
 	};
 	Ok(Some(Chosen {
+		landing: source::landing(&id, &existing, &rereads),
 		source,
 		names,
 		project: crate::project::open_or_create(&id)?,
@@ -224,13 +227,12 @@ fn fetched(source: source::Source, opts: &Options<'_>) -> Result<source::Source>
 	}
 }
 
-/// Run one stage of setup, and say how long it took when somebody is measuring.
+/// Run one stage of setup, and say at `-v` how long it took.
 ///
-/// Silent unless `VAGCAN_TIMING` is set in the environment, and then one line
-/// per stage on **stderr**, so it never lands in output somebody is piping.
-/// This is the instrument the 2026-09-10 performance work was done with, kept
-/// because "which stage got slow" is the first question the next regression
-/// asks, and an `eprintln!` somebody has to re-add is not an instrument.
+/// One `timing` line per stage on stderr. This is the instrument the 2026-09-10
+/// performance work was done with (it was `VAGCAN_TIMING=1` until `-v` took it
+/// over), kept because "which stage got slow" is the first question the next
+/// regression asks, and an `eprintln!` somebody has to re-add is not an instrument.
 fn timed<T>(stage: &str, work: impl FnOnce() -> T) -> T {
 	let started = std::time::Instant::now();
 	let out = work();
@@ -240,21 +242,25 @@ fn timed<T>(stage: &str, work: impl FnOnce() -> T) -> T {
 
 /// [`timed`]'s line, for a stage that is awaited rather than called.
 fn took(stage: &str, started: std::time::Instant) {
-	if std::env::var_os("VAGCAN_TIMING").is_some() {
-		eprintln!("[timing] {stage}: {:.2}s", started.elapsed().as_secs_f64());
-	}
+	vag_cli_core::note!("{}", timing(stage, started.elapsed()));
 }
 
-/// Open an ODIS project and say which one it turned out to be.
-fn open_odis(io: &mut impl crate::ui::menu::Asker, dir: &Path) -> Result<vag_data_labels::odis::Project> {
-	let project = timed("open (string pools)", || vag_data_labels::odis::Project::open(dir))
+/// A `timing` line: the stage, then seconds.
+fn timing(stage: &str, took: std::time::Duration) -> String {
+	format!("timing  {stage}  {:.2}s", took.as_secs_f64())
+}
+
+/// Open an ODIS project and say at `-v` which one it turned out to be.
+fn open_odis(dir: &Path) -> Result<vag_data_labels::odis::Project> {
+	let project = timed("odis open (string pools)", || vag_data_labels::odis::Project::open(dir))
 		.with_context(|| format!("reading the ODIS project at {}", dir.display()))?;
-	io.say(&format!(
-		"{} pools, project version {}.",
-		project.pools().len(),
-		project.version().unwrap_or("unknown")
-	))?;
+	vag_cli_core::note!("{}", opened_odis(dir, project.pools().len(), project.version()));
 	Ok(project)
+}
+
+/// The `-v` line for an opened ODIS project.
+fn opened_odis(dir: &Path, pools: usize, version: Option<&str>) -> String {
+	format!("odis  {}  {pools} pools, version {}", dir.display(), version.unwrap_or("unknown"))
 }
 
 /// The name the project gives itself, where it can be a directory name.
@@ -263,42 +269,35 @@ fn open_odis(io: &mut impl crate::ui::menu::Asker, dir: &Path) -> Result<vag_dat
 /// a directory cannot be named: nothing is sanitised into shape here, because a
 /// mangled name files a car where no later run would look for it.
 ///
-/// **`existing` is why this takes four arguments.** `source::project_id` has
-/// already said "New — nothing has been read into it yet" or "added to the one
-/// already there", and it said it about `asked`. Swapping the name here can
-/// turn one into the other, and the case where it does is the ordinary re-run:
-/// a second download unzips to `SK37X (1)`, which cleans to a name no project
-/// has, so the person is told "New" — and then `<SHORT-NAME>` files it into the
-/// `SK37X` that has been there all along. Design §5 makes that a merge, and a
-/// merge nobody was told about is the one this has to say out loud.
-fn prefer_its_own_name(io: &mut impl crate::ui::menu::Asker, named: &str, asked: &str, existing: &[String], rereads: &[String]) -> Result<String> {
+/// **The landing is decided on the name this returns.** `source::project_id` has
+/// already worked out "new" or "added" for `asked`, and swapping the name here can
+/// turn one into the other — the ordinary re-run: a second download unzips to
+/// `SK37X (1)`, which cleans to a name no project has, and then `<SHORT-NAME>`
+/// files it into the `SK37X` that has been there all along. Design §5 makes that a
+/// merge, so the closing line's landing is asked of the name filed under
+/// ([`choose`]), and the swap itself is said at `-v` ([`renamed`]).
+fn prefer_its_own_name(named: &str, asked: &str, existing: &[String], rereads: &[String]) -> String {
 	if named == asked {
-		return Ok(asked.to_string());
+		return asked.to_string();
 	}
 	match crate::project::folder_name(named) {
 		Ok(own) => {
-			let merge = match source::landing(&own, existing, rereads) {
-				source::Landing::Rereads => {
-					"\n    That project is already here and has read this source before:\n    reading it again replaces what it wrote."
-				}
-				source::Landing::Adds => "\n    That project is already here: this source is added to it, and\n    what other sources put there stays.",
-				source::Landing::New => "",
-			};
-			// Both names last, one to a line. Neither has a knowable width when
-			// this sentence is written — a project id may be sixty-four
-			// characters — and an earlier draft ran to 278 columns on a real
-			// terminal by putting them in the middle of it.
-			io.say(&format!(
-				"One car, one store: the project names itself in its own index.xml,\n\
-                 so that is what it is filed under, not what the folder happens\n\
-                 to be called.\n    \
-                 the folder:  {asked}\n    \
-                 filed under: {own}{merge}"
-			))?;
-			Ok(own)
+			vag_cli_core::note!("{}", renamed(asked, &own, source::landing(&own, existing, rereads)));
+			own
 		}
-		Err(_) => Ok(asked.to_string()),
+		Err(_) => asked.to_string(),
 	}
+}
+
+/// The `-v` line for a project filed under the name its `index.xml` gives, not its
+/// folder's: both names, and what landing on that one means.
+fn renamed(asked: &str, own: &str, landing: source::Landing) -> String {
+	let merge = match landing {
+		source::Landing::Rereads => "; it has read this source before: reading it again replaces what it wrote",
+		source::Landing::Adds => "; it is already here: this source is added to it, what other sources put there stays",
+		source::Landing::New => "",
+	};
+	format!("project  filed under `{own}` (its index.xml), not the folder's `{asked}`{merge}")
 }
 
 /// The file this installation uses for a job, by name or by asking.
@@ -325,12 +324,8 @@ fn locate(dir: &Path, known: &[&str], what: &str, suffix: &str) -> Result<Option
 	if !crate::ui::can_ask() || !holds_any(dir, suffix) {
 		return Ok(None);
 	}
-	println!(
-		"\n      None of {known:?} is in {}.\n      \
-         Ross-Tech names this file differently in each language build, so pick the\n      \
-         {what} out of what is actually there:",
-		dir.display()
-	);
+	// The question's own line: what is asked for, and why it is asked at all.
+	vag_cli_core::say!("none of {known:?} is in {} — pick the {what}:", dir.display());
 	let mut chooser = crate::ui::Console::new(format!(
 		"re-run `vagcan setup` from a terminal, or point it at a build\n\
          whose {what} is one of {known:?}"
@@ -376,78 +371,119 @@ fn keyed_already(source: &Path, project: &crate::project::Project) -> Result<boo
 /// Detected from the files themselves rather than from a marker, and only the
 /// mismatch clears: an unchanged installation still costs a second to confirm.
 /// `--refresh` clears unconditionally, which is what it is for.
-fn replace_if_another_build(root: &Path, target: &Path, refresh: bool) -> Result<()> {
+///
+/// Returns the build it cleared away when it was another one, for the copy's row:
+/// a shared pool emptied under every project is not a thing to say at `-v` only.
+fn replace_if_another_build(root: &Path, target: &Path, refresh: bool) -> Result<Option<&'static str>> {
 	if !target.exists() {
-		return Ok(());
+		return Ok(None);
 	}
 	let (here, incoming) = (build_of(target), build_of(root));
 	let mismatch = matches!((here, incoming), (Some(a), Some(b)) if a != b);
 	if !mismatch && !refresh {
-		return Ok(());
+		return Ok(None);
 	}
 	if mismatch {
-		println!(
-			"{} already holds the build that ships {}, and this one ships {}.\n\
-             Clearing it first — layering the two would leave names from one and fault\n\
-             text from the other, with nothing to say which was which.\n",
+		// Why, at `-v`: layering the two would leave names from one build and fault
+		// text from the other, with nothing to say which was which.
+		vag_cli_core::note!(
+			"vcds copy: {} held the build that ships {}, this one ships {}: cleared first",
 			target.display(),
 			here.unwrap_or("?"),
 			incoming.unwrap_or("?")
 		);
 	}
 	std::fs::remove_dir_all(target).with_context(|| format!("clearing {}", target.display()))?;
-	Ok(())
+	Ok(if mismatch { here } else { None })
 }
 
-/// What one step of the run did, for the closing report.
+/// How a step ended: the `state` column of the closing table.
 ///
-/// A step that was skipped is worth as much as one that ran: somebody who
-/// expected minutes and got seconds needs to be told why, or they will assume
-/// it failed.
-#[derive(Debug)]
-enum Step {
-	Wrote {
-		what: &'static str,
-		path: PathBuf,
-		detail: String,
-	},
-	Skipped {
-		what: &'static str,
-		path: PathBuf,
-		why: &'static str,
-	},
+/// A step that had nothing to do is worth a row as much as one that ran: somebody
+/// who expected minutes and got seconds needs to see why, or they will assume it
+/// failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum State {
+	Wrote,
+	/// Nothing written: what is on disk reads as this run's read does.
+	Current,
 	/// Wrote something, but not all of it. Distinct from `Wrote` because a
 	/// number on its own reads as a total: "124,294 names" looks complete until
 	/// you know the table held 195,910. Distinct from `Missing` because what it
 	/// did write is real and usable.
-	Partial {
-		what: &'static str,
-		path: PathBuf,
-		detail: String,
-		why: String,
-	},
-	Missing {
-		what: &'static str,
-		why: String,
-	},
+	Partial,
+	/// Wrote nothing: the source lacks it.
+	Missing,
 	/// Not done yet, for a reason that is a step still to take rather than
 	/// something the source lacks: the registry's channels wait for a car to
-	/// have been connected. Not a gap — "Done, with gaps" and "a newer VCDS may have it" would
-	/// send the reader to the wrong place — and `why` says what to type.
-	Pending {
-		what: &'static str,
-		why: String,
-	},
+	/// have been connected. Not a gap — "with gaps" and "a newer VCDS may have
+	/// it" would send the reader to the wrong place — and the detail says what to
+	/// type.
+	Pending,
 	/// Did not complete, for a reason on this machine rather than in the
 	/// source: a record of a car's units that does not read. A gap in the
 	/// report, never an abort of the run — the steps before it wrote real
 	/// files, and a run that stopped without its report would leave them
-	/// unmentioned (found in review, 2026-09-28). `why` names the file and
-	/// says to move it aside.
-	Failed {
-		what: &'static str,
-		why: String,
-	},
+	/// unmentioned (found in review, 2026-09-28). The detail names the file;
+	/// what to do about it closes the run ([`AFTER_A_FAILED_STEP`]).
+	Failed,
+}
+
+impl State {
+	fn word(self) -> &'static str {
+		match self {
+			State::Wrote => "wrote",
+			State::Current => "current",
+			State::Partial => "partial",
+			State::Missing => "missing",
+			State::Pending => "pending",
+			State::Failed => "failed",
+		}
+	}
+
+	/// Whether the run is short of something because of it.
+	fn gap(self) -> bool {
+		matches!(self, State::Partial | State::Missing | State::Failed)
+	}
+}
+
+/// What one step of the run did: a row of the closing table, and what `-v` adds.
+#[derive(Debug)]
+struct Step {
+	/// Which source the step read: [`vag_data_db::VCDS`] or [`vag_data_db::ODIS`].
+	source: &'static str,
+	/// The step, in a word: `copy`, `labels`, `names`, `keys`, `registry`, `channels`, `faults`.
+	name: &'static str,
+	state: State,
+	/// The row's last column, one line: the counts, or a gap's reason in a few words.
+	detail: String,
+	/// The whole reason, at `-v`, for a step short of something.
+	why: Option<String>,
+	/// What it wrote into, at `-v`.
+	path: Option<PathBuf>,
+}
+
+impl Step {
+	fn new(source: &'static str, name: &'static str, state: State, detail: impl Into<String>) -> Step {
+		Step {
+			source,
+			name,
+			state,
+			detail: detail.into(),
+			why: None,
+			path: None,
+		}
+	}
+
+	fn at(mut self, path: impl Into<PathBuf>) -> Step {
+		self.path = Some(path.into());
+		self
+	}
+
+	fn because(mut self, why: impl Into<String>) -> Step {
+		self.why = Some(why.into());
+		self
+	}
 }
 
 /// The command to type when there is no terminal to ask at — what `setup` and
@@ -465,20 +501,39 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
 	// of `NSOpenPanel`; see `source::native_folder`. Do not wrap this call in
 	// `spawn_blocking`, and do not `spawn` it: the one thing that leaves the
 	// main thread is step 5's registry read, inside `registry_channels`.
-	run_with(&mut io, &mut source::native_folder, opts).await
+	run_with(&mut io, &mut source::native_folder, opts, Data::Stdout).await
+}
+
+/// [`run`] inside another command — [`crate::rescue`]'s, which fetches label data
+/// for a command that stopped short of it and then runs that command again. The
+/// closing table goes to stderr there: stdout is the data of the command asked
+/// for, and `vagcan faults > out.txt` must hold the faults and nothing of `setup`.
+pub(crate) async fn run_inside(opts: Options<'_>) -> Result<()> {
+	let mut io = crate::ui::Console::new(WITHOUT_A_TERMINAL);
+	// On the main thread, for the reason [`run`] gives.
+	run_with(&mut io, &mut source::native_folder, opts, Data::Stderr).await
+}
+
+/// Where the closing table goes: stdout when `setup` is the command, stderr when
+/// it runs inside another one ([`run_inside`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Data {
+	Stdout,
+	Stderr,
 }
 
 /// The rule behind [`run`], with the asking behind [`crate::ui::menu::Asker`] and
 /// [`source::Dialog`] so the flow is testable without a terminal — and without a
 /// window, which CI has even less of.
-async fn run_with(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source::Dialog, opts: Options<'_>) -> Result<()> {
+async fn run_with(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source::Dialog, opts: Options<'_>, data: Data) -> Result<()> {
 	let Some(mut chosen) = choose(io, dialog, &opts)? else { return Ok(()) };
 	let project = &chosen.project;
-	io.say(&format!("Writing into {}\n", project.dir.display()))?;
+	vag_cli_core::note!("project  {}  {}", project.id, project.dir.display());
 	let reads = this_run_reads(&chosen);
 	let removed = prepare_cache(&project.cache(), opts.refresh, &reads)?;
 	if let Some(said) = &removed {
-		io.say(&format!("{said}\n"))?;
+		// Its first line, as it happens; in full at the close, where it is read.
+		vag_cli_core::note!("{}", said.lines().next().unwrap_or_default());
 	}
 
 	// **The pair's order: the VCDS installation's files, the ODIS project, then
@@ -521,10 +576,30 @@ async fn run_with(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source
 	// there are no scalings anywhere.
 	let scalings = !crate::extracted::open(project).is_empty();
 	let fault_labels = fault_text_available(&crate::project::rod_pool()?, project)?;
-	println!("\n{}", report(&steps, scalings, fault_labels));
-	// Said again last, where it is read: the run's own lines have scrolled it away.
-	if let Some(said) = removed.filter(|said| said.contains(READ_AGAIN)) {
-		println!("\n{said}");
+	let closing = Closing {
+		project: &project.id,
+		landing: chosen.landing,
+		scalings,
+		fault_labels,
+	};
+	let report = report(&steps, &closing);
+	for note in &report.notes {
+		vag_cli_core::verbosity::say(vag_cli_core::verbosity::NOTES, note);
+	}
+	match data {
+		Data::Stdout => vag_cli_core::out!("{}", report.data),
+		Data::Stderr => {
+			for line in report.data.lines() {
+				vag_cli_core::say!("{line}");
+			}
+		}
+	}
+	for (level, line) in &report.after {
+		vag_cli_core::verbosity::say(*level, line);
+	}
+	// Last, where it is read: a removed cache leaves sources to read again.
+	if let Some(said) = removed {
+		vag_cli_core::say!("{said}");
 	}
 	Ok(())
 }
@@ -671,11 +746,9 @@ async fn off_the_main_task<T: Send + 'static>(step: impl FnOnce() -> Result<T> +
 /// between them (see [`run_with`]).
 fn read_vcds_files(root: &Path, project: &crate::project::Project, refresh: bool) -> Result<Vec<Step>> {
 	let pool = crate::project::rod_pool()?;
-	replace_if_another_build(root, &pool, refresh)?;
+	let replaced = replace_if_another_build(root, &pool, refresh)?;
 	std::fs::create_dir_all(&pool).with_context(|| format!("creating {}", pool.display()))?;
-	// No warning that this takes long: it took tens of minutes while the keys were
-	// searched for, and seconds since they come from the file names (2026-10-20).
-	println!("Reading the VCDS installation at {}", root.display());
+	vag_cli_core::note!("vcds  {}", root.display());
 
 	// The copy runs first and the derivations then read from it, so afterwards
 	// `~/.vagcan` is the one set of raw files the car commands read. The
@@ -684,12 +757,15 @@ fn read_vcds_files(root: &Path, project: &crate::project::Project, refresh: bool
 	// The fault text is looked for once, in step [1/5], and handed on: finding
 	// it can mean asking the person which file it is, and one run must ask
 	// that once.
-	let (copied, codes) = timed("vcds: raw files", || copy_label_files(root, &pool, refresh))?;
+	let (mut copied, codes) = timed("vcds copy", || copy_label_files(root, &pool, refresh))?;
+	if let Some(build) = replaced {
+		copied.detail.push_str(&format!("; replaced the {build} build"));
+	}
 	Ok(vec![
 		copied,
-		timed("vcds: label files", || label_cache(root, codes.as_deref(), project, refresh))?,
-		timed("vcds: names", || names(&pool, project))?,
-		timed("vcds: .rod keys", || rod_keys(&pool, project))?,
+		timed("vcds labels", || label_cache(root, codes.as_deref(), project, refresh))?,
+		timed("vcds names", || names(&pool, project))?,
+		timed("vcds keys", || rod_keys(&pool, project))?,
 	])
 }
 
@@ -715,14 +791,11 @@ async fn read_vcds_registry(root: &Path, project: &crate::project::Project) -> R
 			step
 		}
 		Err(e) => {
-			println!(
-				"[5/5] Channels — a car's record on this machine does not read, so nothing\n      \
-                 was read from the registry."
-			);
 			crate::registry::note_installation(project, root)?;
 			registry::failed(&e)
 		}
 	};
+	vag_cli_core::note!("{}", timing("vcds registry", started.elapsed()));
 	// From the installation itself, not the pool: see `registry`.
 	crate::project::record_source(
 		project,
@@ -778,11 +851,9 @@ impl Skipped {
 /// key) or a shape this reader has no loader for must not cost the other
 /// hundreds. The count of what was skipped is reported rather than hidden.
 fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate::project::Project) -> Result<Vec<Step>> {
-	println!("Reading the ODIS project at {}", dir.display());
 	let source = dir.display().to_string();
 
-	println!("[1/2] Control units — walking each variant's measurement chain and fault table.");
-	let variants = timed("variants", || odis.variants()).with_context(|| format!("listing the variants of {}", dir.display()))?;
+	let variants = timed("odis variants", || odis.variants()).with_context(|| format!("listing the variants of {}", dir.display()))?;
 	// The language the project declares for itself, on its source row — the
 	// fault texts carry none of their own (`vag_data_labels::odis::Project::language`).
 	if let Some(language) = odis.language() {
@@ -807,7 +878,7 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 		let progress = crate::progress::Line::new();
 		let reporter = progress.reporter();
 		let done = std::sync::atomic::AtomicUsize::new(0);
-		timed("readings (walk)", || {
+		timed("odis readings (walk)", || {
 			variants
 				.par_iter()
 				.map(|variant| {
@@ -854,29 +925,38 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 	// Both batches replace everything this source wrote before, not only the
 	// variants in them: a variant that read last time and not this time must not
 	// keep last time's rows.
-	let codes = timed("faults (sqlite)", || vag_data_db::put_all_faults(&project.cache(), &source, fault_rows))
-		.map_err(|e| anyhow::anyhow!("writing the fault codes to {}: {e}", project.cache().display()))?;
-	let channels = timed("readings (sqlite)", || {
+	let codes = timed("odis faults (sqlite)", || {
+		vag_data_db::put_all_faults(&project.cache(), &source, fault_rows)
+	})
+	.map_err(|e| anyhow::anyhow!("writing the fault codes to {}: {e}", project.cache().display()))?;
+	let channels = timed("odis readings (sqlite)", || {
 		vag_data_db::put_all_readings(&project.cache(), &source, channel_rows)
 	})
 	.map_err(|e| anyhow::anyhow!("writing the channels to {}: {e}", project.cache().display()))?;
-	let units = Step::Wrote {
-		what: "the control units this project describes",
-		path: project.cache(),
-		detail: format!(
-			"{with_channels} of {} variants, {channels} channels{}; {with_faults} with fault text, {codes} codes{}",
+	let units = Step::new(
+		vag_data_db::ODIS,
+		"channels",
+		State::Wrote,
+		format!(
+			"{channels} channels, {with_channels} of {} variants{}",
 			variants.len(),
-			chain_skipped.note(),
-			fault_skipped.note()
+			chain_skipped.note()
 		),
-	};
+	)
+	.at(project.cache());
+	let faults = Step::new(
+		vag_data_db::ODIS,
+		"faults",
+		State::Wrote,
+		format!("{codes} codes, {with_faults} variants{}", fault_skipped.note()),
+	)
+	.at(project.cache());
 
-	println!("[2/2] Names — every object in every pool, for the (text id, name)\n      pairs they carry.");
 	let names = {
 		let _spinner = crate::progress::Spinner::new("reading every object in the project".to_string());
-		timed("names (walk)", || odis.names()).with_context(|| format!("reading the names of {}", dir.display()))?
+		timed("odis names (walk)", || odis.names()).with_context(|| format!("reading the names of {}", dir.display()))?
 	};
-	let merged = timed("names (merge + write)", || merge_names(&project.odis_names(), names))?;
+	let merged = timed("odis names (merge + write)", || merge_names(&project.odis_names(), names))?;
 
 	crate::project::record_source(
 		project,
@@ -889,11 +969,8 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 	)?;
 	Ok(vec![
 		units,
-		Step::Wrote {
-			what: "the measurement names",
-			path: project.odis_names(),
-			detail: format!("{merged} names"),
-		},
+		faults,
+		Step::new(vag_data_db::ODIS, "names", State::Wrote, format!("{merged} names")).at(project.odis_names()),
 	])
 }
 
@@ -953,18 +1030,11 @@ fn merge_names(path: &Path, incoming: std::collections::BTreeMap<String, String>
 /// name this tool does not know, and step [2/5] needs the same file to read
 /// the build's language off its name. Looking twice asked twice.
 fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<(Step, Option<PathBuf>)> {
-	println!(
-		"[1/5] Raw files — copying the .rod files and the fault text into the\n      \
-         shared pool, which every car command reads instead of the installation."
-	);
 	// What a copy cut short left behind, before anything is copied: one staging
 	// file per kill, each under its pid, and nothing reads them.
 	let stale = crate::datadir::remove_stale_copies(target);
 	if stale > 0 {
-		println!(
-			"      {stale} staging file{} of a copy cut short removed",
-			if stale == 1 { "" } else { "s" }
-		);
+		vag_cli_core::note!("vcds copy: {stale} staging file{} of a copy cut short removed", plural(stale));
 	}
 	let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
 	let odx = root.join(ODX_DIR);
@@ -972,7 +1042,7 @@ fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<(Step, 
 		true => collect_rod_files(&odx, target, &mut plan)?,
 		// A stripped or partial installation still yields whatever it has; a
 		// missing input is reported, not fatal.
-		false => println!("      {ODX_DIR}: not in this installation, skipped"),
+		false => vag_cli_core::note!("vcds copy: no {ODX_DIR}/ in this installation, skipped"),
 	}
 	// The fault text, under whichever name this language build gives it. Copied
 	// under that same name: `faultnames` looks for the whole list too, so the
@@ -980,20 +1050,16 @@ fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<(Step, 
 	let found = locate(root, CODES_FILES, "fault text file", ".dat")?;
 	match &found {
 		Some(codes) => {
+			vag_cli_core::wire!("vcds copy: the fault text is {}", codes.display());
 			let name = codes.file_name().unwrap_or_default();
 			plan.push((codes.clone(), target.join(name)));
 		}
-		None => println!(
-			"      the fault text file: not in this installation, skipped\n      \
-             — faults will read as numbers"
-		),
+		None => vag_cli_core::note!("vcds copy: no fault text file in this installation, skipped: faults read as numbers"),
 	}
 	if plan.is_empty() {
 		return Ok((
-			Step::Missing {
-				what: "the raw files",
-				why: format!("no {ODX_DIR}/ and no fault text under {}", root.display()),
-			},
+			Step::new(vag_data_db::VCDS, "copy", State::Missing, format!("no {ODX_DIR}/ and no fault text"))
+				.because(format!("no {ODX_DIR}/ and no fault text under {}", root.display())),
 			found,
 		));
 	}
@@ -1032,6 +1098,7 @@ fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<(Step, 
 	plan.retain(|_| kept.next().unwrap_or(false));
 	let total = plan.len();
 	let (copied, skipped, done) = (AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0));
+	let bytes = std::sync::atomic::AtomicU64::new(0);
 	let mut progress = crate::progress::Line::new();
 	let reporter = progress.reporter();
 	// Four workers, not one per core: the file system, not the CPU, is what the
@@ -1053,21 +1120,42 @@ fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<(Step, 
 			// Staged and renamed into place: a copy cut short by Ctrl-C must not
 			// leave a truncated file under the final name, newer than its source and
 			// so skipped as current by the next run (see `datadir::copy_file`).
+			vag_cli_core::wire!("vcds copy: {} → {}", src.display(), dst.display());
 			crate::datadir::copy_file(src, dst)?;
+			bytes.fetch_add(std::fs::metadata(dst).map_or(0, |m| m.len()), Ordering::Relaxed);
 			copied.fetch_add(1, Ordering::Relaxed);
 			Ok(())
 		})
 	})?;
 	progress.finish();
-	let (copied, skipped) = (copied.into_inner(), skipped.into_inner());
-	Ok((
-		Step::Wrote {
-			what: "the raw files",
-			path: target.to_path_buf(),
-			detail: format!("{copied} files copied, {skipped} already current"),
-		},
-		found,
-	))
+	let (copied, skipped, bytes) = (copied.into_inner(), skipped.into_inner(), bytes.into_inner());
+	let (state, detail) = match copied {
+		0 => (State::Current, format!("{total} files, all current")),
+		_ => (
+			State::Wrote,
+			format!("{total} files, {copied} copied ({}), {skipped} current", size(bytes)),
+		),
+	};
+	Ok((Step::new(vag_data_db::VCDS, "copy", state, detail).at(target), found))
+}
+
+/// A byte count the way a person reads one: `512 B`, `14.2 KB`, `122.4 MB`, `1.2 GB`.
+fn size(bytes: u64) -> String {
+	const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+	let mut value = bytes as f64;
+	let mut unit = 0;
+	while value >= 1000.0 && unit + 1 < UNITS.len() {
+		value /= 1000.0;
+		unit += 1;
+	}
+	match unit {
+		0 => format!("{bytes} B"),
+		_ => format!("{value:.1} {}", UNITS[unit]),
+	}
+}
+
+fn plural(n: usize) -> &'static str {
+	if n == 1 { "" } else { "s" }
 }
 
 /// Every `.rod` under `src`, wherever it sits, landing flat in `dst`.
@@ -1102,7 +1190,6 @@ fn collect_rod_files(src: &Path, dst: &Path, plan: &mut Vec<(PathBuf, PathBuf)>)
 /// looked for again — [`locate`] can ask the person which file it is, and one
 /// setup run asks that once.
 fn label_cache(root: &Path, codes: Option<&Path>, project: &crate::project::Project, refresh: bool) -> Result<Step> {
-	println!("[2/5] Label files — parsing every .lbl and decrypting every .clb.");
 	let db = crate::labels::load_cached(root, &project.cache(), refresh)?;
 	// This installation is the project's VCDS installation now: a second one replaces
 	// the first in a project, and the first one's source goes with what it held. Said
@@ -1118,11 +1205,7 @@ fn label_cache(root: &Path, codes: Option<&Path>, project: &crate::project::Proj
 		vag_data_db::record_language(&project.cache(), vag_data_db::VCDS, &labels.to_string_lossy(), language)
 			.map_err(|e| anyhow::anyhow!("recording the language of {} in {}: {e}", root.display(), project.cache().display()))?;
 	}
-	Ok(Step::Wrote {
-		what: "the label files",
-		path: project.cache(),
-		detail: format!("{} label files", db.len()),
-	})
+	Ok(Step::new(vag_data_db::VCDS, "labels", State::Wrote, format!("{} label files", db.len())).at(project.cache()))
 }
 
 /// Step 3: read the names out of the global text table.
@@ -1150,11 +1233,11 @@ fn names(pool: &Path, project: &crate::project::Project) -> Result<Step> {
 	let odx = pool.to_path_buf();
 	let (out, ids) = (project.names(), project.odx_ids());
 	let Some(source) = locate(&odx, TEXT_TABLES, "measurement text table", ".rod")? else {
-		return Ok(Step::Missing {
-			what: "the measurement names",
-			why: format!("none of {TEXT_TABLES:?} is under {}", odx.display()),
-		});
+		return Ok(
+			Step::new(vag_data_db::VCDS, "names", State::Missing, "no text table").because(format!("none of {TEXT_TABLES:?} is under {}", odx.display())),
+		);
 	};
+	vag_cli_core::wire!("vcds names: the text table is {}", source.display());
 	// How long it takes is the spinner's job to say, and it says it in elapsed
 	// seconds rather than in a sentence nobody can act on.
 	// Ask what opening it would cost before starting, because the two cases look
@@ -1163,19 +1246,16 @@ fn names(pool: &Path, project: &crate::project::Project) -> Result<Step> {
 	// will not stop today is indistinguishable from one that stops in ninety
 	// seconds. The Russian build ships exactly such a table.
 	let name = source.file_name().unwrap_or_default().to_string_lossy().into_owned();
-	if !keyed_already(&source, project)?
+	let keyed = keyed_already(&source, project)?;
+	vag_cli_core::wire!("vcds names: its key is {}", if keyed { "cached" } else { "not cached" });
+	if !keyed
 		&& let Ok(bytes) = std::fs::read(&source)
 		&& vag_data_labels::rod::key_cost(&bytes, "TXT") == Some(vag_data_labels::rod::KeyCost::AnchorSweep)
 	{
 		// Why, for the next reader of this code: `.archive/research/labels/tttext2.md`
 		// §3.3. The person running `setup` is owed what it costs them and what to do.
-		println!("[3/5] Measurement names — skipped: {name} opens only inside VCDS itself.");
-		return Ok(Step::Missing {
-			what: "the measurement names",
-			why: names_only_in_vcds(&name),
-		});
+		return Ok(Step::new(vag_data_db::VCDS, "names", State::Missing, format!("{name} opens only inside VCDS")).because(names_only_in_vcds()));
 	}
-	println!("[3/5] Measurement names — opening {name}, then reading every record under its own key.");
 	let scratch = out.with_file_name("tttext-scratch");
 	let _ = std::fs::remove_dir_all(&scratch);
 	// `Classic`: a shifted table is reported, never swept for hours.
@@ -1191,11 +1271,10 @@ fn names(pool: &Path, project: &crate::project::Project) -> Result<Step> {
 		let shut = sections.iter().find(|s| s.tag == "TXT").map_or("there is no such section", |s| {
 			crate::vcds::rod::why_shut(s).unwrap_or("it opened, and nothing was written")
 		});
-		let why = format!("the [TXT] section of {} did not open: {shut}", source.display());
-		return Ok(Step::Missing {
-			what: "the measurement names",
-			why,
-		});
+		return Ok(
+			Step::new(vag_data_db::VCDS, "names", State::Missing, format!("[TXT] of {name} did not open"))
+				.because(format!("the [TXT] section of {} did not open: {shut}", source.display())),
+		);
 	}
 	let table = crate::vcds::tttext::read_file(&text, text_page(&name));
 	let _ = std::fs::remove_dir_all(&scratch);
@@ -1214,22 +1293,21 @@ fn written_names(table: &vag_data_labels::tttext::Table, source: &Path, out: &Pa
 			Some((id, plain)) => format!(", e.g. {id:06} {plain:?}"),
 			None => String::new(),
 		};
-		return Ok(Step::Missing {
-			what: "the measurement names",
-			why: format!(
-				"the [TXT] section of {} read into no name: {} records of neither shape{example},\n    \
-                 {} lines that were not records. The names already here are left as they were",
+		return Ok(
+			Step::new(vag_data_db::VCDS, "names", State::Missing, "the text table read into no name").because(format!(
+				"the [TXT] section of {} read into no name: {} records of neither shape{example}, {} lines that were not records; \
+			 the names already here are left as they were",
 				source.display(),
 				table.malformed.len(),
 				table.not_records
-			),
-		});
+			)),
+		);
 	}
 	let (names_text, count) = crate::vcds::tttext::names_json(table)?;
 	let (ids_text, with_ids) = crate::vcds::tttext::odx_ids_json(table)?;
 	let names_changed = write_if_changed(out, &names_text)?;
 	let ids_changed = write_if_changed(ids, &ids_text)?;
-	let detail = format!("{count} names, {with_ids} of them naming an IDE or MAS id (odx-ids.json)");
+	let detail = format!("{count} names, {with_ids} naming an IDE or MAS id");
 	// Nothing is withheld for doubt any more — every record reads under its
 	// own key — so the one way to fall short is a line of neither shape. The
 	// 26.3 table has none; one here says the table or its key is not the one
@@ -1240,30 +1318,29 @@ fn written_names(table: &vag_data_labels::tttext::Table, source: &Path, out: &Pa
 			true => String::new(),
 			false => format!(" — e.g. {}", shown.join(", ")),
 		};
-		return Ok(Step::Partial {
-			what: "the measurement names",
-			path: out.to_path_buf(),
-			detail,
-			why: format!(
-				"{} records read as neither `<name>,` nor `<name>,<kind>,<value>`, and {} lines\n    \
-                 were not records; both are left out rather than guessed at{example}",
+		let left_out = table.malformed.len() + table.not_records;
+		return Ok(
+			Step::new(
+				vag_data_db::VCDS,
+				"names",
+				State::Partial,
+				format!("{detail}; {left_out} records left out"),
+			)
+			.because(format!(
+				"{} records read as neither `<name>,` nor `<name>,<kind>,<value>`, and {} lines were not records; \
+				 both are left out rather than guessed at{example}",
 				table.malformed.len(),
 				table.not_records
-			),
-		});
+			))
+			.at(out),
+		);
 	}
-	if !names_changed && !ids_changed {
-		return Ok(Step::Skipped {
-			what: "the measurement names",
-			path: out.to_path_buf(),
-			why: "the text table reads as it did last time",
-		});
-	}
-	Ok(Step::Wrote {
-		what: "the measurement names",
-		path: out.to_path_buf(),
-		detail,
-	})
+	// The one file the names step writes, at `-v`; `odx-ids.json` is beside it.
+	let state = match names_changed || ids_changed {
+		true => State::Wrote,
+		false => State::Current,
+	};
+	Ok(Step::new(vag_data_db::VCDS, "names", state, detail).at(out))
 }
 
 /// Write `text` to `path` unless the file holds exactly that already, and say
@@ -1288,12 +1365,16 @@ fn rod_keys(pool: &Path, project: &crate::project::Project) -> Result<Step> {
 	let cache = project.rod_keys();
 	let present: Vec<PathBuf> = SHARED_ROD_FILES.iter().map(|name| pool.join(name)).filter(|p| p.is_file()).collect();
 	if present.is_empty() {
-		return Ok(Step::Missing {
-			what: "the .rod section keys",
-			why: format!("none of {SHARED_ROD_FILES:?} is in {}", pool.display()),
-		});
+		return Ok(
+			Step::new(
+				vag_data_db::VCDS,
+				"keys",
+				State::Missing,
+				format!("none of {}", SHARED_ROD_FILES.join(", ")),
+			)
+			.because(format!("none of {SHARED_ROD_FILES:?} is in {}", pool.display())),
+		);
 	}
-	println!("[4/5] .rod section keys — opening the shared tables.");
 	let mut shut = Vec::new();
 	for file in &present {
 		for section in crate::vcds::rod::open(
@@ -1302,7 +1383,9 @@ fn rod_keys(pool: &Path, project: &crate::project::Project) -> Result<Step> {
 			Some(&cache.to_string_lossy()),
 			None,
 		)? {
-			if let Some(why) = crate::vcds::rod::why_shut(&section) {
+			let why = crate::vcds::rod::why_shut(&section);
+			vag_cli_core::wire!("vcds keys: [{}] in {}: {}", section.tag, file.display(), why.unwrap_or("open"));
+			if let Some(why) = why {
 				shut.push(format!("[{}] in {} did not open: {why}", section.tag, file.display()));
 			}
 		}
@@ -1319,33 +1402,28 @@ fn rod_keys(pool: &Path, project: &crate::project::Project) -> Result<Step> {
 		(n, _) => format!("{n} keys"),
 	};
 	Ok(match shut.is_empty() {
-		true => Step::Wrote {
-			what: "the .rod section keys",
-			path: cache,
-			detail,
-		},
-		false => Step::Partial {
-			what: "the .rod section keys",
-			path: cache,
-			detail,
-			why: shut.join("\n    "),
-		},
+		true => Step::new(vag_data_db::VCDS, "keys", State::Wrote, detail).at(cache),
+		false => Step::new(
+			vag_data_db::VCDS,
+			"keys",
+			State::Partial,
+			format!("{detail}; {} section{} shut", shut.len(), plural(shut.len())),
+		)
+		.because(shut.join("\n    "))
+		.at(cache),
 	})
 }
 
-/// The report's line for a text table only VCDS itself opens: what it costs
-/// the reader, and what to do about it.
+/// What a text table only VCDS itself opens costs the reader, and what to do
+/// about it — the `-v` half of the names row that says it did not open.
 ///
 /// "Instead", not "too": a second VCDS installation replaces the first in a
 /// project. The English build is the one [`vendor`] fetches, and its text table
 /// opens.
-fn names_only_in_vcds(name: &str) -> String {
-	format!(
-		"{name} opens only inside VCDS itself.\n    \
-         `vagcan watch` shows this installation's channels by reading id, not by name.\n    \
-         For the names, read an English VCDS instead: `vagcan setup` with no path,\n    \
-         then pick \"Download VCDS\"."
-	)
+fn names_only_in_vcds() -> String {
+	"`vagcan watch` shows this installation's channels by reading id, not by name; for the names, \
+	 read an English VCDS instead: `vagcan setup` with no path, then \"Download VCDS\""
+		.to_string()
 }
 
 /// Whether `out` was written after `source` last changed.
@@ -1363,115 +1441,124 @@ fn is_newer(out: &Path, source: &Path) -> bool {
 	}
 }
 
-/// What to say about scalings when the project has none.
+/// What `-v` says about scalings when the project has none.
 ///
 /// A VCDS installation's label files carry names and no numbers
 /// (`.archive/research/labels/rod-labels.md` §4.0c); its registry carries them
-/// for the units of the cars this machine has met, and the registry step says
+/// for the units of the cars this machine has met, and the registry row says
 /// itself why it brought none — no car yet, or units the installation cannot
-/// open. So this names only what that step cannot, and says nothing that would
+/// open. So this names only what that row cannot, and says nothing that would
 /// send somebody whose units are already on record back to the car.
-const SCALINGS_ARE_MEASURED: &str = "No scalings yet. An ODIS project brings them for every unit it describes.";
+const SCALINGS_ARE_MEASURED: &str = "scalings: none yet; an ODIS project brings them for every unit it describes";
 
-/// The same, when the registry step is still to come: the last word of a VCDS
-/// setup with no car yet is the command that finishes it, not the other source.
-/// Wrapped by hand, as everything `setup` prints is: eighty columns.
-const SCALINGS_WAIT_FOR_THE_CAR: &str = "No scalings yet. An ODIS project brings them for every unit it describes; this\n\
-                                        installation brings them for the units it has files for, once `vagcan watch`\n\
-                                        has run with the car.";
+/// The same, when the registry step is still to come: what finishes it is a
+/// command with the car, not the other source.
+const SCALINGS_WAIT_FOR_THE_CAR: &str = "scalings: none yet; an ODIS project brings them for every unit it describes, this \
+                                         installation for the units it has files for once `vagcan watch` has run with the car";
 
-/// The command that turns a pending registry step into channels, for the
-/// closing "Next:" — with what it does, since a reader who has just been told
-/// "not yet" needs to see which line is the one that changes that.
-const NEXT_WITH_THE_CAR: &str = "vagcan watch        with the car: records its units, reads their channels";
+/// The command that turns a pending registry step into channels: the pending
+/// row's detail, since a reader told "not yet" needs to see what changes that.
+const NEXT_WITH_THE_CAR: &str = "no car recorded: run `vagcan watch` with the car";
 
-/// The last word when step 5 did not complete: what to do, not the other source.
-const AFTER_A_FAILED_STEP: &str = "Step 5 did not complete: move the file it names aside, then re-run\n\
-                                  vagcan setup <VCDS installation>.";
+/// The last word when the registry step did not complete: what to do. Level 0 —
+/// the run is short of something, and this is the one line that says how to fix it.
+const AFTER_A_FAILED_STEP: &str = "move the file the failed row names aside, then re-run `vagcan setup <VCDS installation>`";
 
-/// The closing report: what is on disk now, and what to do with it.
-///
-/// Every line names a file. Somebody who has just waited several minutes is
-/// owed the paths, not a count of successes — and somebody whose run was short
-/// of one artefact needs to see which one without re-reading the scroll.
-///
-/// `scalings` is whether the project now holds per-variant scalings — the one
-/// fact the closing sentence turns on, and asked of the store rather than of
-/// which branch ran, so a VCDS run into a project that already has them does not
-/// tell its reader they have none.
-fn report(steps: &[Step], scalings: bool, fault_labels: bool) -> String {
-	use std::fmt::Write as _;
-
-	// "Done." on its own reads as full success; when an artefact is missing the
-	// header has to say so, or a reader takes the fast finish for a complete one.
-	// A partial artefact counts as a gap too: a run that recovered 63 % of the
-	// names finished successfully and is still not what "Done." promises.
-	let any_gap = steps
-		.iter()
-		.any(|s| matches!(s, Step::Missing { .. } | Step::Partial { .. } | Step::Failed { .. }));
-	let mut out = String::from(if any_gap { "Done, with gaps.\n\n" } else { "Done.\n\n" });
-	for step in steps {
-		match step {
-			Step::Wrote { what, path, detail } => {
-				let _ = writeln!(out, "  {what}: {detail}\n    {}", path.display());
-			}
-			Step::Skipped { what, path, why } => {
-				let _ = writeln!(out, "  {what}: unchanged, {why}\n    {}", path.display());
-			}
-			Step::Partial { what, path, detail, why } => {
-				let _ = writeln!(out, "  {what}: {detail} — PARTIAL\n    {why}\n    {}", path.display());
-			}
-			Step::Missing { what, why } => {
-				let _ = writeln!(out, "  {what}: NOT recovered — {why}");
-			}
-			Step::Pending { what, why } => {
-				let _ = writeln!(out, "  {what}: not yet — {why}");
-			}
-			Step::Failed { what, why } => {
-				let _ = writeln!(out, "  {what}: NOT done\n    {why}");
-			}
-		}
-	}
-	if steps.iter().any(|s| matches!(s, Step::Missing { .. })) {
-		let _ = writeln!(out, "\nThe rest is usable.");
-	}
-	// The fault line is conditional because it was a lie on the ODIS-only path:
-	// it announced that the labels are copied in after a run that copied
-	// nothing. `fault_labels` is whether either source can name a code now —
-	// VCDS's label files, or the fault text an ODIS project carries — so the
-	// line promises names only when `vagcan faults` will print them.
-	let faults = match fault_labels {
-		true => "vagcan faults       stored faults, named",
-		false => "vagcan faults       stored faults, as numbers — no fault text read",
-	};
-	let _ = write!(
-		out,
-		"\nNext:  vagcan devices      is the adapter connected?\n       \
-         vagcan info         which car is this?\n       \
-         {faults}"
-	);
-	// A registry step still to come is finished by a command with the car, and
-	// that command is the next step — named here, or a VCDS-only owner is left
-	// with three commands that read the car and none that says which one
-	// brings the channels.
-	let pending = steps.iter().any(|s| matches!(s, Step::Pending { .. }));
-	if pending {
-		let _ = write!(out, "\n       {NEXT_WITH_THE_CAR}");
-	}
-	// Said only where it is true. An ODIS project declares a scaling per variant,
-	// so "they must be measured" would be false there; the paragraph that once
-	// replaced it was more noise than use (owner, 2026-09-13), so an ODIS run
-	// closes on the commands. A VCDS run with no car yet closes on the car.
-	if !scalings {
-		let _ = write!(out, "\n\n{}", if pending { SCALINGS_WAIT_FOR_THE_CAR } else { SCALINGS_ARE_MEASURED });
-	}
-	// A step that did not complete closes on what to do about it.
-	if steps.iter().any(|s| matches!(s, Step::Failed { .. })) {
-		let _ = write!(out, "\n\n{AFTER_A_FAILED_STEP}");
-	}
-	out
+/// What the closing line says beside the steps.
+struct Closing<'a> {
+	/// The project the run wrote into.
+	project: &'a str,
+	/// What landing on it meant for the source read.
+	landing: source::Landing,
+	/// Whether the project now holds per-variant scalings — asked of the store
+	/// rather than of which branch ran, so a VCDS run into a project that already
+	/// has them does not tell its reader they have none.
+	scalings: bool,
+	/// Whether `vagcan faults` will name a code: VCDS's fault labels, or the fault
+	/// text an ODIS project carries.
+	fault_labels: bool,
 }
 
+/// The closing report, as [`run_with`] writes it.
+#[derive(Debug, Default)]
+struct Report {
+	/// `-v`, before the table: what each step wrote into, and every gap's reason.
+	notes: Vec<String>,
+	/// The table and its summary line: the run's data.
+	data: String,
+	/// After the table, at their level: what to do next.
+	after: Vec<(u8, String)>,
+}
+
+/// The closing report: one row per step, one summary line, and at `-v` the paths
+/// and the reasons.
+///
+/// Every row is one line with its counts. Somebody who has just waited several
+/// minutes is owed what each step came to, and somebody whose run was short of
+/// one artefact needs to see which one without re-reading the scroll — the
+/// `state` column, and `gaps` in the summary.
+fn report(steps: &[Step], closing: &Closing<'_>) -> Report {
+	let mut table = vag_cli_core::table::Table::new(&["source", "step", "state", "detail"]);
+	let mut notes = Vec::new();
+	for step in steps {
+		table.row(vec![
+			step.source.to_string(),
+			step.name.to_string(),
+			step.state.word().to_string(),
+			step.detail.clone(),
+		]);
+		if let Some(path) = &step.path {
+			notes.push(format!("{} {}  {}", step.source, step.name, path.display()));
+		}
+		if let Some(why) = &step.why {
+			notes.push(format!("{} {}: {why}", step.source, step.name));
+		}
+	}
+	let gaps = steps.iter().filter(|s| s.state.gap()).count();
+	let landing = match closing.landing {
+		source::Landing::New => "new project",
+		source::Landing::Adds => "source added",
+		source::Landing::Rereads => "source read again",
+	};
+	let summary = format!(
+		"{}: {landing} · {} step{} · {gaps} gap{} · {} · {}",
+		closing.project,
+		steps.len(),
+		plural(steps.len()),
+		plural(gaps),
+		if closing.fault_labels { "fault text" } else { "no fault text" },
+		if closing.scalings { "scalings" } else { "no scalings" },
+	);
+	let mut data = String::new();
+	if !table.is_empty() {
+		data.push_str(&table.render(vag_cli_core::table::terminal_width()));
+		data.push('\n');
+	}
+	data.push_str(&summary);
+	data.push('\n');
+
+	let mut after = Vec::new();
+	let pending = steps.iter().any(|s| s.state == State::Pending);
+	// Where to go from here, at `-v`. The fault line promises names only when
+	// `vagcan faults` will print them: it once announced labels copied in after an
+	// ODIS-only run that copied nothing.
+	let faults = match closing.fault_labels {
+		true => "vagcan faults (stored faults, named)",
+		false => "vagcan faults (stored faults, as numbers)",
+	};
+	after.push((vag_cli_core::verbosity::NOTES, format!("next: vagcan devices, vagcan info, {faults}")));
+	// Said only where it is true. An ODIS project declares a scaling per variant,
+	// so "none yet" would be false there.
+	if !closing.scalings {
+		let scalings = if pending { SCALINGS_WAIT_FOR_THE_CAR } else { SCALINGS_ARE_MEASURED };
+		after.push((vag_cli_core::verbosity::NOTES, scalings.to_string()));
+	}
+	// A step that did not complete closes on what to do about it, at every level.
+	if steps.iter().any(|s| s.state == State::Failed) {
+		after.push((0, AFTER_A_FAILED_STEP.to_string()));
+	}
+	Report { notes, data, after }
+}
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -1485,52 +1572,21 @@ mod tests {
 	}
 
 	#[test]
-	fn the_report_names_every_file_it_wrote() {
-		// Somebody who has just waited several minutes is owed the paths. A
-		// count of successes tells them nothing they can open.
-		let steps = vec![
-			Step::Wrote {
-				what: "the label files",
-				path: PathBuf::from("/home/x/.vagcan/data/SK37X/cache.sqlite"),
-				detail: "3035 label files".to_string(),
-			},
-			Step::Skipped {
-				what: "the measurement names",
-				path: PathBuf::from("/home/x/.vagcan/data/SK37X/names.json"),
-				why: "newer than the text table it came from",
-			},
-		];
-		let r = report(&steps, false, true);
-		assert!(r.contains("/home/x/.vagcan/data/SK37X/cache.sqlite"), "{r}");
-		assert!(r.contains("3035 label files"), "{r}");
-		// A skipped step is reported, not silently absent: a run that took a
-		// second when minutes were expected reads as a failure otherwise.
-		assert!(r.contains("unchanged"), "{r}");
-		assert!(r.contains("names.json"), "{r}");
-	}
-
-	#[test]
 	fn a_project_that_names_itself_beats_the_folder_it_was_unzipped_into() {
 		// D7, and the failure it prevents: an unzip produces `SK37X (1)`, the
 		// picker cleans that to `SK-37X-copy`, and the project inside still
 		// calls itself `SK37X`. Filing it under the folder's name would put one
 		// car in two stores — the two-directory bug `datadir::existing_folder`
 		// was written to undo, arriving by a different door.
-		let mut io = crate::ui::menu::Scripted::new(vec![]);
-		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-copy", &[], &[]).unwrap(), "SK37X");
-		let said = io.all_said();
-		assert!(said.contains("SK37X"), "{said}");
-		assert!(said.contains("One car, one store"), "it says why: {said}");
-
-		// Agreement is silent — there is nothing to explain.
-		let mut io = crate::ui::menu::Scripted::new(vec![]);
-		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK37X", &[], &[]).unwrap(), "SK37X");
-		assert!(io.said.is_empty(), "{:?}", io.said);
-
+		assert_eq!(prefer_its_own_name("SK37X", "SK-37X-copy", &[], &[]), "SK37X");
+		// It says why at -v: both names.
+		let said = renamed("SK-37X-copy", "SK37X", source::Landing::New);
+		assert!(said.contains("`SK37X` (its index.xml)") && said.contains("`SK-37X-copy`"), "{said}");
+		// Agreement keeps the name.
+		assert_eq!(prefer_its_own_name("SK37X", "SK37X", &[], &[]), "SK37X");
 		// A `<SHORT-NAME>` that could not be a directory falls back rather than
 		// being sanitised: a mangled name files a car where nothing looks for it.
-		let mut io = crate::ui::menu::Scripted::new(vec![]);
-		assert_eq!(prefer_its_own_name(&mut io, "../escape", "SK37X", &[], &[]).unwrap(), "SK37X");
+		assert_eq!(prefer_its_own_name("../escape", "SK37X", &[], &[]), "SK37X");
 	}
 
 	#[tokio::test]
@@ -1553,6 +1609,7 @@ mod tests {
 				archive_base: vendor::ARCHIVE_BASE,
 				download: false,
 			},
+			Data::Stdout,
 		)
 		.await;
 		assert!(outcome.is_err(), "a run that asked nobody anything reported success");
@@ -1561,28 +1618,25 @@ mod tests {
 	#[test]
 	fn a_name_swap_onto_a_project_that_exists_says_it_is_a_merge_after_all() {
 		// The ordinary re-run, and the one case where the swap changes the
-		// answer somebody was already given: a second download unzips to
-		// `SK37X (1)`, which cleans to a name no project has, so
-		// `source::project_id` says "New — nothing has been read into it yet".
-		// Then `<SHORT-NAME>` files it into the `SK37X` that has been there all
-		// along. Design §5 makes that a merge, and nobody has been told.
-		let mut io = crate::ui::menu::Scripted::new(vec![]);
+		// answer: a second download unzips to `SK37X (1)`, which cleans to a name
+		// no project has, so `source::project_id` found it new. Then
+		// `<SHORT-NAME>` files it into the `SK37X` that has been there all along.
+		// Design §5 makes that a merge, and the closing line asks the landing of
+		// the name filed under (`choose`); the swap says it at -v.
 		let existing = ["SK37X".to_string()];
-		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-1", &existing, &[]).unwrap(), "SK37X");
-		let said = io.all_said();
+		assert_eq!(prefer_its_own_name("SK37X", "SK-37X-1", &existing, &[]), "SK37X");
+		assert_eq!(source::landing("SK37X", &existing, &[]), source::Landing::Adds);
+		let said = renamed("SK-37X-1", "SK37X", source::Landing::Adds);
 		assert!(said.contains("already here"), "{said}");
 		assert!(said.contains("what other sources put there stays"), "{said}");
 
 		// A swap onto a name nothing holds is still new, and says nothing extra.
-		let mut io = crate::ui::menu::Scripted::new(vec![]);
-		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-1", &[], &[]).unwrap(), "SK37X");
-		assert!(!io.all_said().contains("already here"), "{:?}", io.said);
+		assert!(!renamed("SK-37X-1", "SK37X", source::Landing::New).contains("already here"));
 
 		// The same folder set up a second time lands on a project that has read
 		// it: that is a reread, not a merge.
-		let mut io = crate::ui::menu::Scripted::new(vec![]);
-		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-1", &existing, &existing).unwrap(), "SK37X");
-		let said = io.all_said();
+		assert_eq!(source::landing("SK37X", &existing, &existing), source::Landing::Rereads);
+		let said = renamed("SK-37X-1", "SK37X", source::Landing::Rereads);
 		assert!(said.contains("reading it again replaces"), "{said}");
 		assert!(!said.contains("is added to it"), "{said}");
 	}
@@ -1610,21 +1664,27 @@ mod tests {
 	}
 
 	#[test]
-	fn nothing_setup_prints_about_a_project_runs_past_eighty_columns() {
-		// Caught three times on real terminals now. A path's width is unknown
-		// when the sentence is written, so the rule is that the sentence ends
-		// with it — and the fixed text around it still has to fit.
-		use crate::ui::menu::Asker as _;
-		let mut io = crate::ui::menu::Scripted::new(vec![]);
+	fn what_setup_says_about_a_project_at_v_is_one_line_each() {
+		// Caught three times on real terminals when this was wrapped prose. A
+		// note is one line now, its path or name last, so its width is the
+		// terminal's business and nothing is wrapped by hand.
 		let long = Path::new("/Users/somebody/Downloads/an-odis-project-with-a-long-name/SK37X");
-		let here = ["SK37X".to_string()];
-		prefer_its_own_name(&mut io, "SK37X", "SK-37X-copy", &here, &[]).unwrap();
-		prefer_its_own_name(&mut io, "SK37X", "SK-37X-copy", &here, &here).unwrap();
-		open_odis(&mut io, long).ok();
-		io.say(&format!("Writing into {}", long.display())).unwrap();
-		for line in io.all_said().lines() {
-			assert!(line.chars().count() <= 80, "{} columns: {line:?}", line.chars().count());
+		for said in [
+			renamed("SK-37X-copy", "SK37X", source::Landing::Adds),
+			renamed("SK-37X-copy", "SK37X", source::Landing::Rereads),
+			opened_odis(long, 230, Some("2610.2.688")),
+			timing("odis names (walk)", std::time::Duration::from_millis(32_590)),
+		] {
+			assert!(!said.contains('\n'), "{said:?}");
 		}
+		assert_eq!(
+			opened_odis(long, 230, Some("2610.2.688")),
+			format!("odis  {}  230 pools, version 2610.2.688", long.display())
+		);
+		assert_eq!(
+			timing("odis names (walk)", std::time::Duration::from_millis(32_590)),
+			"timing  odis names (walk)  32.59s"
+		);
 	}
 
 	#[test]
@@ -1686,15 +1746,17 @@ mod tests {
 		let (out, ids, source) = (here.0.join("names.json"), here.0.join("odx-ids.json"), here.0.join("TTTEXT.ROD"));
 		let table = text_table(&[(17, "Invented flap position,2,90001"), (13, "Pump 2,")]);
 		let first = written_names(&table, &source, &out, &ids).unwrap();
-		assert!(matches!(first, Step::Wrote { .. }), "{first:?}");
+		assert_eq!(first.state, State::Wrote, "{first:?}");
+		assert_eq!(first.detail, "2 names, 1 naming an IDE or MAS id");
 		assert!(std::fs::read_to_string(&ids).unwrap().contains("\"IDE90001\""));
 		let again = written_names(&table, &source, &out, &ids).unwrap();
-		assert!(matches!(again, Step::Skipped { .. }), "the same read rewrote the files: {again:?}");
+		assert_eq!(again.state, State::Current, "the same read rewrote the files: {again:?}");
+		assert_eq!(again.detail, first.detail, "a current row still says what it holds");
 		// Another build's table is written whatever the files' times say — the
 		// times are what used to let one pass for the other.
 		let other = text_table(&[(17, "Invented flap position,2,90001"), (13, "Pump 3,")]);
 		let step = written_names(&other, &source, &out, &ids).unwrap();
-		assert!(matches!(step, Step::Wrote { .. }), "{step:?}");
+		assert_eq!(step.state, State::Wrote, "{step:?}");
 		assert!(std::fs::read_to_string(&out).unwrap().contains("Pump 3"));
 	}
 
@@ -1707,14 +1769,13 @@ mod tests {
 		let (ids, source) = (here.0.join("odx-ids.json"), here.0.join("TTTEXT.ROD"));
 		let table = vag_data_labels::tttext::read(b"not a record\r\nnor this\r\n", vag_data_labels::codes::CodePage::Windows1252);
 		let step = written_names(&table, &source, &out, &ids).unwrap();
-		assert!(matches!(step, Step::Missing { .. }), "{step:?}");
+		assert_eq!(step.state, State::Missing, "{step:?}");
 		assert_eq!(std::fs::read(&out).unwrap(), before);
 		assert!(!ids.exists());
-		// Records of neither shape and nothing else: the same, and it shows one.
-		match written_names(&text_table(&[(5, "no separator")]), &source, &out, &ids).unwrap() {
-			Step::Missing { why, .. } => assert!(why.contains("000005"), "{why}"),
-			other => panic!("not missing: {other:?}"),
-		}
+		// Records of neither shape and nothing else: the same, and it shows one at -v.
+		let step = written_names(&text_table(&[(5, "no separator")]), &source, &out, &ids).unwrap();
+		assert_eq!(step.state, State::Missing, "{step:?}");
+		assert!(step.why.as_deref().is_some_and(|why| why.contains("000005")), "{step:?}");
 		assert_eq!(std::fs::read(&out).unwrap(), before);
 	}
 
@@ -1723,45 +1784,123 @@ mod tests {
 		let here = TempDir::new("names-partial");
 		let (out, ids, source) = (here.0.join("names.json"), here.0.join("odx-ids.json"), here.0.join("TTTEXT.ROD"));
 		let table = text_table(&[(17, "Invented flap position,2,90001"), (5, "no separator")]);
-		match written_names(&table, &source, &out, &ids).unwrap() {
-			Step::Partial { detail, why, .. } => {
-				assert!(detail.starts_with("1 names"), "{detail}");
-				assert!(why.contains("000005"), "the record left out is named: {why}");
-			}
-			other => panic!("not partial: {other:?}"),
-		}
+		let step = written_names(&table, &source, &out, &ids).unwrap();
+		assert_eq!(step.state, State::Partial, "{step:?}");
+		assert!(step.detail.starts_with("1 names"), "{}", step.detail);
+		assert!(
+			step.detail.ends_with("1 records left out"),
+			"the row counts what it left out: {}",
+			step.detail
+		);
+		let why = step.why.as_deref().unwrap_or_default();
+		assert!(why.contains("000005"), "the record left out is named at -v: {why}");
 		assert!(std::fs::read_to_string(&out).unwrap().contains("000017"));
+	}
+
+	/// What the closing line says beside the steps, for a report under test.
+	fn closing(scalings: bool, fault_labels: bool) -> Closing<'static> {
+		Closing {
+			project: "SK37X",
+			landing: source::Landing::New,
+			scalings,
+			fault_labels,
+		}
+	}
+
+	/// What `-v` adds after the table, as one blob.
+	fn after(r: &Report, level: u8) -> String {
+		r.after
+			.iter()
+			.filter(|(at, _)| *at == level)
+			.map(|(_, line)| line.as_str())
+			.collect::<Vec<_>>()
+			.join("\n")
+	}
+
+	#[test]
+	fn the_report_is_one_row_per_step_and_one_summary_line() {
+		// The level-0 shape, pinned: a table with one line per step — its source,
+		// its name, how it ended and its counts — then the summary line.
+		let steps = vec![
+			Step::new(vag_data_db::VCDS, "copy", State::Wrote, "16577 files, 16577 copied (122.4 MB), 0 current").at("/x/rod"),
+			Step::new(vag_data_db::VCDS, "labels", State::Wrote, "3035 label files").at("/x/cache.sqlite"),
+			Step::new(vag_data_db::VCDS, "names", State::Current, "195910 names, 30521 naming an IDE or MAS id").at("/x/names.json"),
+			Step::new(
+				vag_data_db::ODIS,
+				"channels",
+				State::Wrote,
+				"399283 channels, 669 of 717 variants, 0 refused, 4 unreadable",
+			),
+		];
+		let r = report(&steps, &closing(true, true));
+		assert_eq!(
+			r.data,
+			"source  step      state    detail\n\
+			 vcds    copy      wrote    16577 files, 16577 copied (122.4 MB), 0 current\n\
+			 vcds    labels    wrote    3035 label files\n\
+			 vcds    names     current  195910 names, 30521 naming an IDE or MAS id\n\
+			 odis    channels  wrote    399283 channels, 669 of 717 variants, 0 refused, 4 unreadable\n\
+			 \n\
+			 SK37X: new project · 4 steps · 0 gaps · fault text · scalings\n"
+		);
+	}
+
+	#[test]
+	fn the_report_names_every_file_it_wrote_at_v() {
+		// Somebody who has just waited several minutes is owed the paths. They
+		// are at `-v`; the row says what each step came to.
+		let steps = vec![
+			Step::new(vag_data_db::VCDS, "labels", State::Wrote, "3035 label files").at("/home/x/.vagcan/data/SK37X/cache.sqlite"),
+			Step::new(vag_data_db::VCDS, "names", State::Current, "2 names, 1 naming an IDE or MAS id").at("/home/x/.vagcan/data/SK37X/names.json"),
+		];
+		let r = report(&steps, &closing(false, true));
+		assert!(r.data.contains("3035 label files"), "{}", r.data);
+		// A step with nothing to do is a row, not silently absent: a run that took
+		// a second when minutes were expected reads as a failure otherwise.
+		assert!(r.data.contains("vcds    names   current"), "{}", r.data);
+		assert!(!r.data.contains("/home/x"), "paths are -v: {}", r.data);
+		let notes = r.notes.join("\n");
+		assert!(notes.contains("vcds labels  /home/x/.vagcan/data/SK37X/cache.sqlite"), "{notes}");
+		assert!(notes.contains("vcds names  /home/x/.vagcan/data/SK37X/names.json"), "{notes}");
 	}
 
 	#[test]
 	fn a_step_that_could_not_run_says_so_without_condemning_the_rest() {
-		let steps = vec![Step::Missing {
-			what: "the .rod section keys",
-			why: "none of them is in this installation".to_string(),
-		}];
-		let r = report(&steps, false, true);
-		assert!(r.contains("NOT recovered"), "{r}");
-		assert!(r.contains("The rest is usable"), "{r}");
+		let steps = vec![
+			Step::new(vag_data_db::VCDS, "labels", State::Wrote, "3035 label files"),
+			Step::new(vag_data_db::VCDS, "keys", State::Missing, "none of RD.rod, MUX.rod").because("none of them is in this installation"),
+		];
+		let r = report(&steps, &closing(false, true));
+		assert!(r.data.contains("vcds    keys    missing  none of RD.rod, MUX.rod\n"), "{}", r.data);
+		assert!(r.data.contains("vcds    labels  wrote"), "the rest stands: {}", r.data);
+		assert!(r.data.contains("· 1 gap ·"), "{}", r.data);
+		assert!(
+			r.notes.contains(&"vcds keys: none of them is in this installation".to_string()),
+			"{:?}",
+			r.notes
+		);
 	}
 
 	#[test]
 	fn a_text_table_only_vcds_opens_is_reported_as_its_cost_and_its_remedy() {
 		// The Russian build's table: the report once spent seven lines on why
-		// (containers, anchors, a research file). The reader is owed what it
-		// costs them and what to type.
-		let steps = [Step::Missing {
-			what: "the measurement names",
-			why: names_only_in_vcds("TTText-RUS.rod"),
-		}];
-		let r = report(&steps, false, true);
+		// (containers, anchors, a research file). The row says what did not
+		// open; `-v` what it costs the reader and what to type.
+		let steps = [Step::new(vag_data_db::VCDS, "names", State::Missing, "TTText-RUS.rod opens only inside VCDS").because(names_only_in_vcds())];
+		let r = report(&steps, &closing(false, true));
 		assert!(
-			r.contains("the measurement names: NOT recovered — TTText-RUS.rod opens only inside VCDS itself."),
-			"{r}"
+			r.data.contains("vcds    names  missing  TTText-RUS.rod opens only inside VCDS\n"),
+			"{}",
+			r.data
 		);
-		assert!(r.contains("by reading id, not by name"), "{r}");
-		assert!(r.contains("read an English VCDS instead") && r.contains("\"Download VCDS\""), "{r}");
+		let notes = r.notes.join("\n");
+		assert!(notes.contains("by reading id, not by name"), "{notes}");
+		assert!(
+			notes.contains("read an English VCDS instead") && notes.contains("\"Download VCDS\""),
+			"{notes}"
+		);
 		for jargon in ["shifted", "anchor", ".archive", "masks"] {
-			assert!(!r.contains(jargon), "{jargon}: {r}");
+			assert!(!r.data.contains(jargon) && !notes.contains(jargon), "{jargon}: {}", r.data);
 		}
 	}
 
@@ -1770,15 +1909,16 @@ mod tests {
 		// The closing lines are the last chance to say what a run did not bring.
 		// It used to be "no VCDS installation carries them"; since 2026-09-28 one
 		// does, through its registry, for the units of the cars this machine has
-		// met — and the registry step says so itself, with the reason it has
-		// none. The close names only what that step cannot: an ODIS project.
-		// Telling somebody whose units are on record but whose files the install
-		// cannot open to connect the car again would send them back for nothing.
-		let r = report(&[], false, true);
-		assert!(r.contains("No scalings yet"), "{r}");
-		assert!(r.contains("ODIS project"), "{r}");
-		assert!(!r.contains("survey"), "{r}");
-		assert!(!r.contains("no VCDS installation carries them"), "the old claim is false now: {r}");
+		// met — and the registry row says so itself, with the reason it has none.
+		// The close names only what that row cannot: an ODIS project. The summary
+		// says it at level 0, the remedy is `-v`.
+		let r = report(&[], &closing(false, true));
+		assert!(r.data.ends_with("· no scalings\n"), "{}", r.data);
+		let v = after(&r, vag_cli_core::verbosity::NOTES);
+		assert!(v.contains("scalings: none yet"), "{v}");
+		assert!(v.contains("ODIS project"), "{v}");
+		assert!(!v.contains("survey"), "{v}");
+		assert!(!v.contains("no VCDS installation carries them"), "the old claim is false now: {v}");
 	}
 
 	#[test]
@@ -1796,93 +1936,101 @@ mod tests {
 	#[test]
 	fn a_car_not_connected_yet_is_the_next_step_and_not_a_gap_in_the_installation() {
 		// With no car recorded there is no list of units to read. That is a step
-		// still to take, not something the installation lacks: "Done, with gaps"
-		// and "a newer VCDS may have it" sent people to the wrong place.
-		let steps = vec![Step::Pending {
-			what: "channels from the VCDS registry",
-			why: registry::PENDING_WHY.to_string(),
-		}];
-		let r = report(&steps, false, true);
-		assert!(r.starts_with("Done.\n"), "{r}");
-		assert!(r.contains("channels from the VCDS registry: not yet — no car"), "{r}");
-		assert!(!r.contains("newer VCDS"), "{r}");
-		// And the closing names the command that finishes the step, as the next
-		// step: "Next:" listed devices, info and faults and left a VCDS-only owner
-		// with no car to work out which one reads the channels, and the last
-		// word sent them to ODIS (found in review, 2026-09-28).
-		let next = r.split("Next:").nth(1).expect("a Next: block");
-		assert!(next.contains("vagcan watch"), "{r}");
-		assert!(next.contains("records its units, reads their channels"), "{r}");
-		assert!(r.trim_end().ends_with("has run with the car."), "{r}");
-		// Without a pending step, the closing is what it was.
-		let r = report(&[], false, true);
-		assert!(!r.contains("vagcan watch"), "{r}");
-		assert!(r.trim_end().ends_with(SCALINGS_ARE_MEASURED), "{r}");
+		// still to take, not something the installation lacks: "with gaps" and "a
+		// newer VCDS may have it" sent people to the wrong place.
+		let steps = vec![Step::new(vag_data_db::VCDS, registry::NAME, State::Pending, NEXT_WITH_THE_CAR).because(registry::PENDING_WHY)];
+		let r = report(&steps, &closing(false, true));
+		assert!(r.data.contains("· 0 gaps ·"), "{}", r.data);
+		assert!(!r.data.contains("newer VCDS"), "{}", r.data);
+		// The row names the command that finishes the step: a VCDS-only owner with
+		// no car was left to work out which command reads the channels, and the
+		// last word sent them to ODIS (found in review, 2026-09-28).
+		assert!(
+			r.data
+				.contains("vcds    registry  pending  no car recorded: run `vagcan watch` with the car\n"),
+			"{}",
+			r.data
+		);
+		assert!(
+			r.notes.iter().any(|n| n.starts_with("vcds registry: no car recorded on this machine")),
+			"{:?}",
+			r.notes
+		);
+		// And the scalings note waits for the car rather than for the other source.
+		assert!(
+			after(&r, vag_cli_core::verbosity::NOTES).ends_with(SCALINGS_WAIT_FOR_THE_CAR),
+			"{:?}",
+			r.after
+		);
+		// Without a pending step, the scalings note is the plain one.
+		let r = report(&[], &closing(false, true));
+		assert!(
+			after(&r, vag_cli_core::verbosity::NOTES).ends_with(SCALINGS_ARE_MEASURED),
+			"{:?}",
+			r.after
+		);
 	}
 
 	#[test]
 	fn a_record_that_does_not_read_is_a_step_that_did_not_complete_and_the_report_still_comes() {
 		// One unreadable `units.json` aborted `setup` at step 5 with no report,
 		// after steps 1–4 had written their files (found in review, 2026-09-28).
-		// It is a gap now, with the path and what to do about it — and the
-		// closing word is that, not the other source.
+		// It is a gap now: the row names the file, `-v` the cause, and the last
+		// word at every level is what to do about it.
 		let bad = anyhow::Error::new(crate::units::NotARecord {
 			path: PathBuf::from("/home/x/.vagcan/cars/BAD/units.json"),
 			cause: "expected ident at line 1 column 2".into(),
 		});
 		let steps = vec![
-			Step::Wrote {
-				what: "the label files",
-				path: PathBuf::from("/home/x/.vagcan/data/SK37X/cache.sqlite"),
-				detail: "3035 label files".to_string(),
-			},
+			Step::new(vag_data_db::VCDS, "labels", State::Wrote, "3035 label files"),
 			registry::failed(&bad),
 		];
-		let r = report(&steps, false, true);
-		assert!(r.starts_with("Done, with gaps.\n"), "{r}");
+		let r = report(&steps, &closing(false, true));
 		assert!(
-			r.contains(
-				"channels from the VCDS registry: NOT done\n    a car's record on this machine is not one this tool wrote:\n    /home/x/.vagcan/cars/BAD/units.json\n    (expected ident at line 1 column 2)\n"
-			),
-			"{r}"
+			r.data
+				.contains("vcds    registry  failed  not a record this tool wrote: /home/x/.vagcan/cars/BAD/units.json\n"),
+			"{}",
+			r.data
 		);
-		assert!(r.contains("3035 label files"), "the steps before it are still reported: {r}");
-		assert!(!r.contains("newer VCDS"), "not a gap in the installation: {r}");
-		assert!(r.trim_end().ends_with(AFTER_A_FAILED_STEP), "the last word is what to do: {r}");
-		assert_eq!(r.matches("aside").count(), 1, "said once, at the close: {r}");
+		assert!(r.data.contains("· 1 gap ·"), "{}", r.data);
+		assert!(r.data.contains("3035 label files"), "the steps before it are still reported: {}", r.data);
+		assert!(!r.data.contains("newer VCDS"), "not a gap in the installation: {}", r.data);
+		assert!(
+			r.notes.iter().any(|n| n.contains("(expected ident at line 1 column 2)")),
+			"the cause is at -v: {:?}",
+			r.notes
+		);
+		assert_eq!(after(&r, 0), AFTER_A_FAILED_STEP, "the last word is what to do, at level 0");
 		// An error that is not a record's — the directory would not read — is laid out too.
 		let other = registry::failed(&anyhow::anyhow!("reading /x/cars: permission denied"));
-		let Step::Failed { why, .. } = &other else { panic!("{other:?}") };
+		assert_eq!(other.state, State::Failed);
+		let why = other.why.as_deref().unwrap_or_default();
 		assert!(
-			why.starts_with("the records of the cars on this machine could not be read:\n    reading /x/cars"),
+			why.starts_with("the records of the cars on this machine could not be read: reading /x/cars"),
 			"{why}"
 		);
 	}
 
 	#[test]
-	fn the_closing_report_keeps_to_eighty_columns_whatever_its_steps() {
-		// The module's rule, applied to the report with every kind of step and
-		// both closings (found in review, 2026-09-28: two closing lines ran to 88
-		// and 177 columns). Paths are short here; a real one may run a line
-		// over, and the rule for those is that the line ends with it.
+	fn every_row_and_note_is_one_line_and_the_rows_keep_to_eighty_columns_with_short_paths() {
+		// The old rule was eighty columns of hand-wrapped prose. A row now is one
+		// line, cut to the terminal by the table; with short paths it still fits
+		// the terminal to write for.
 		let steps = vec![
-			Step::Wrote {
-				what: "the label files",
-				path: PathBuf::from("/x/cache.sqlite"),
-				detail: "3035 label files".to_string(),
-			},
-			Step::Pending {
-				what: registry::WHAT,
-				why: registry::PENDING_WHY.to_string(),
-			},
+			Step::new(vag_data_db::VCDS, "labels", State::Wrote, "3035 label files").at("/x/cache.sqlite"),
+			Step::new(vag_data_db::VCDS, registry::NAME, State::Pending, NEXT_WITH_THE_CAR).because(registry::PENDING_WHY),
 			registry::failed(&anyhow::Error::new(crate::units::NotARecord {
 				path: PathBuf::from("/x/units.json"),
 				cause: "expected ident at line 1 column 2".into(),
 			})),
 		];
 		for (scalings, fault_labels) in [(false, false), (false, true), (true, true)] {
-			for line in report(&steps, scalings, fault_labels).lines() {
+			let r = report(&steps, &closing(scalings, fault_labels));
+			for line in r.data.lines() {
 				assert!(line.chars().count() <= 80, "{} columns: {line:?}", line.chars().count());
+			}
+			for note in r.notes.iter().chain(r.after.iter().map(|(_, line)| line)) {
+				assert!(!note.contains('\n'), "a note on two lines: {note:?}");
 			}
 		}
 	}
@@ -1893,11 +2041,12 @@ mod tests {
 		// "633 of 717 variants, 310734 channels" and then, two lines later,
 		// that no installation carries scalings and they must be measured. A
 		// reader who believes the footer goes and drives the car to establish
-		// rows the tool already has. It now closes on the commands.
-		let r = report(&[], true, true);
-		assert!(!r.contains("No scalings yet"), "{r}");
-		assert!(!r.contains("carries scalings"), "the paragraph the owner dropped is gone: {r}");
-		assert!(r.trim_end().ends_with("stored faults, named"), "{r}");
+		// rows the tool already has.
+		let r = report(&[], &closing(true, true));
+		assert!(r.data.ends_with("· fault text · scalings\n"), "{}", r.data);
+		let v = after(&r, vag_cli_core::verbosity::NOTES);
+		assert!(!v.contains("scalings: none yet"), "{v}");
+		assert!(!v.contains("carries scalings"), "the paragraph the owner dropped is gone: {v}");
 	}
 
 	#[test]
@@ -1906,27 +2055,40 @@ mod tests {
 		// which copies nothing — finished by announcing that the labels are in.
 		// Naming a code still reads those files off disk, so the reader was told
 		// the opposite of what they had.
-		let without = report(&[], true, false);
-		assert!(without.contains("as numbers"), "{without}");
-		assert!(!without.contains("copied in"), "{without}");
+		let without = report(&[], &closing(true, false));
+		assert!(without.data.contains("· no fault text ·"), "{}", without.data);
+		let v = after(&without, vag_cli_core::verbosity::NOTES);
+		assert!(v.contains("as numbers"), "{v}");
+		assert!(!v.contains("copied in"), "{v}");
 		// And it must not teach the wrong lesson on the way past: neither
 		// source is named as the only place fault text can come from.
-		assert!(!without.contains("VCDS"), "{without}");
+		assert!(!v.contains("VCDS") && !without.data.contains("VCDS"), "{v}");
 
-		let with = report(&[], true, true);
-		assert!(with.contains("stored faults, named"), "{with}");
-		assert!(!with.contains("as numbers"), "{with}");
+		let with = report(&[], &closing(true, true));
+		assert!(with.data.contains("· fault text ·"), "{}", with.data);
+		let v = after(&with, vag_cli_core::verbosity::NOTES);
+		assert!(v.contains("stored faults, named"), "{v}");
+		assert!(!v.contains("as numbers"), "{v}");
 	}
 
 	#[test]
-	fn no_line_of_either_closing_footer_runs_past_eighty_columns() {
-		// Caught twice on real terminals: a sentence written against a short
-		// test path wraps on a real one. Neither of these interpolates
-		// anything, so their width is knowable here and worth pinning.
-		for r in [report(&[], false, true), report(&[], true, true), report(&[], true, false)] {
-			for line in r.lines() {
-				assert!(line.chars().count() <= 80, "{} columns: {line:?}", line.chars().count());
-			}
+	fn the_summary_says_what_landing_on_the_project_meant() {
+		// Spec §5 adds a second source to a project rather than replacing it, and
+		// somebody who believes they are starting fresh would otherwise find out
+		// from the data: the merge is said at level 0, in the summary.
+		for (landing, said) in [
+			(source::Landing::New, "SK37X: new project ·"),
+			(source::Landing::Adds, "SK37X: source added ·"),
+			(source::Landing::Rereads, "SK37X: source read again ·"),
+		] {
+			let r = report(
+				&[],
+				&Closing {
+					landing,
+					..closing(true, true)
+				},
+			);
+			assert!(r.data.starts_with(said), "{}", r.data);
 		}
 	}
 
@@ -1942,6 +2104,7 @@ mod tests {
 				archive_base: vendor::ARCHIVE_BASE,
 				download: false,
 			},
+			Data::Stdout,
 		)
 		.await
 		.unwrap_err();
@@ -2030,6 +2193,7 @@ mod tests {
 				dir: here.path().join("project"),
 			},
 			odis: None,
+			landing: source::Landing::New,
 		};
 		assert_eq!(
 			this_run_reads(&chosen),
@@ -2076,9 +2240,9 @@ mod tests {
 	}
 
 	fn detail(step: &Step) -> String {
-		match step {
-			Step::Wrote { detail, .. } => detail.clone(),
-			other => panic!("expected a written step, got {other:?}"),
+		match step.state {
+			State::Wrote | State::Current => step.detail.clone(),
+			_ => panic!("expected a written step, got {step:?}"),
 		}
 	}
 
@@ -2092,7 +2256,8 @@ mod tests {
 		let install = synthetic_install("layout");
 		let target = TempDir::new("layout-out");
 		let step = copy_label_files(&install.0, &target.0, false).unwrap().0;
-		assert!(detail(&step).starts_with("3 files copied"), "{}", detail(&step));
+		assert!(detail(&step).starts_with("3 files, 3 copied"), "{}", detail(&step));
+		assert_eq!(step.path.as_deref(), Some(target.0.as_path()), "the pool is named at -v");
 		for name in ["RD.rod", "EV_ECM.rod", "Codes.dat"] {
 			assert!(target.0.join(name).is_file(), "{name} did not land in the pool");
 		}
@@ -2108,21 +2273,31 @@ mod tests {
 		let target = TempDir::new("fresh-out");
 
 		let first = copy_label_files(&install.0, &target.0, false).unwrap().0;
-		assert_eq!(detail(&first), "3 files copied, 0 already current");
+		assert_eq!(first.state, State::Wrote);
+		assert_eq!(detail(&first), "3 files, 3 copied (30 B), 0 current");
 
 		let second = copy_label_files(&install.0, &target.0, false).unwrap().0;
-		assert_eq!(detail(&second), "0 files copied, 3 already current", "a no-op rerun");
+		assert_eq!(second.state, State::Current, "a no-op rerun");
+		assert_eq!(detail(&second), "3 files, all current");
 
 		// One destination made to look stale: only it is copied again.
 		let stale = target.0.join("Codes.dat");
 		let past = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
 		std::fs::File::options().write(true).open(&stale).unwrap().set_modified(past).unwrap();
 		let third = copy_label_files(&install.0, &target.0, false).unwrap().0;
-		assert_eq!(detail(&third), "1 files copied, 2 already current");
+		assert_eq!(detail(&third), "3 files, 1 copied (5 B), 2 current");
 
 		// --refresh copies everything regardless of mtimes.
 		let forced = copy_label_files(&install.0, &target.0, true).unwrap().0;
-		assert_eq!(detail(&forced), "3 files copied, 0 already current");
+		assert_eq!(detail(&forced), "3 files, 3 copied (30 B), 0 current");
+	}
+
+	#[test]
+	fn a_size_reads_in_the_unit_a_person_uses() {
+		assert_eq!(size(512), "512 B");
+		assert_eq!(size(14_200), "14.2 KB");
+		assert_eq!(size(122_400_000), "122.4 MB");
+		assert_eq!(size(1_200_000_000), "1.2 GB");
 	}
 
 	#[test]
@@ -2137,7 +2312,7 @@ mod tests {
 		std::fs::File::options().write(true).open(&older).unwrap().set_modified(past).unwrap();
 		let target = TempDir::new("twice-out");
 		let step = copy_label_files(&install.0, &target.0, false).unwrap().0;
-		assert_eq!(detail(&step), "1 files copied, 0 already current");
+		assert_eq!(detail(&step), "1 files, 1 copied (5 B), 0 current");
 		let landed: Vec<_> = std::fs::read_dir(&target.0).unwrap().flatten().map(|e| e.path()).collect();
 		assert_eq!(landed.len(), 1, "{landed:?}");
 		assert_eq!(std::fs::read(&landed[0]).unwrap(), b"newer");
@@ -2148,10 +2323,12 @@ mod tests {
 		let empty = TempDir::new("empty");
 		let target = TempDir::new("empty-out");
 		let step = copy_label_files(&empty.0, &target.0, false).unwrap().0;
-		match step {
-			Step::Missing { why, .. } => assert!(why.contains(ODX_DIR), "{why}"),
-			other => panic!("expected Missing, got {other:?}"),
-		}
+		assert_eq!(step.state, State::Missing, "{step:?}");
+		assert!(step.detail.contains(ODX_DIR), "{step:?}");
+		assert!(
+			step.why.as_deref().is_some_and(|why| why.contains(&empty.0.display().to_string())),
+			"{step:?}"
+		);
 	}
 
 	#[test]
