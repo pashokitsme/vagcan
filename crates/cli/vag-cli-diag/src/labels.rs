@@ -17,6 +17,7 @@
 use std::path::Path;
 
 use anyhow::Context;
+use vag_cli_core::table::{self, Table};
 use vag_data_labels::{LabelDb, LabelScan, Measurement, scan_label_files};
 
 // The label directory locator is `core`'s now: the registry read keys its rows
@@ -37,16 +38,30 @@ fn cache_is_current(cache: &Path, dir: &Path) -> bool {
 	// In the spelling the cache keys sources by: a directory typed relative, or with a
 	// trailing slash, is still the one the cache was built from.
 	let wanted = vag_data_db::normalise_dir(&dir.to_string_lossy());
-	if vag_data_db::source_of(cache).as_deref() != Some(wanted.as_str()) {
+	let source = vag_data_db::source_of(cache);
+	if source.as_deref() != Some(wanted.as_str()) {
+		vag_cli_core::wire!(
+			"label cache {}: built from {}, not from {}",
+			cache.display(),
+			source.as_deref().unwrap_or("no recorded directory"),
+			wanted
+		);
 		return false;
 	}
-	match (std::fs::metadata(cache), std::fs::metadata(dir)) {
+	let newer = match (std::fs::metadata(cache), std::fs::metadata(dir)) {
 		(Ok(c), Ok(d)) => match (c.modified(), d.modified()) {
 			(Ok(c), Ok(d)) => c >= d,
 			_ => false,
 		},
 		_ => false,
-	}
+	};
+	vag_cli_core::wire!(
+		"label cache {}: built from {}, {}",
+		cache.display(),
+		dir.display(),
+		if newer { "newer than it" } else { "older than it" }
+	);
+	newer
 }
 
 /// Load a project's label rows out of its cache, with nothing to rebuild from.
@@ -95,12 +110,20 @@ pub fn load_cached(dir: &Path, cache: &Path, refresh: bool) -> anyhow::Result<La
 	let fresh = !refresh && cache_is_current(cache, dir);
 	if fresh {
 		match vag_data_db::load_db(cache) {
-			Ok(db) => return Ok(db),
+			Ok(db) => {
+				vag_cli_core::note!(
+					"label cache {} ({} label files), current for {}",
+					cache.display(),
+					db.len(),
+					dir.display()
+				);
+				return Ok(db);
+			}
 			// Rebuilding would meet the same refusal: say what to run instead.
 			Err(e @ (vag_data_db::Error::OlderCache { .. } | vag_data_db::Error::NotACache { .. })) => anyhow::bail!("{e}"),
 			// A corrupt or half-written cache is a reason to rebuild, not to
 			// fail the command.
-			Err(e) => eprintln!("cache {} unusable ({e}) — rebuilding", cache.display()),
+			Err(e) => vag_cli_core::note!("label cache {} unusable ({e}): rebuilding", cache.display()),
 		}
 	}
 
@@ -113,11 +136,12 @@ pub fn load_cached(dir: &Path, cache: &Path, refresh: bool) -> anyhow::Result<La
 		let _spinner = crate::progress::Spinner::new(format!("parsing the label files in {}", dir.display()));
 		vag_data_db::build_db(dir, cache).map_err(|e| anyhow::anyhow!("building the label cache from {}: {e}", dir.display()))?
 	};
-	eprintln!(
-		"cached {} label files ({} measurements) in {}",
+	vag_cli_core::note!(
+		"label cache {} rebuilt from {}: {} label files, {} measurements",
+		cache.display(),
+		dir.display(),
 		stats.files,
-		stats.measurements,
-		cache.display()
+		stats.measurements
 	);
 	vag_data_db::load_db(cache).map_err(|e| anyhow::anyhow!("reading the label cache: {e}"))
 }
@@ -219,91 +243,103 @@ pub fn labels_cmd(dir: &str, part: Option<&str>, block: Option<u16>, field: Opti
 	// the command line it is six lines of noise before the answer.
 	if part.is_none() && block.is_none() {
 		let scan = scan_label_files(Path::new(dir)).with_context(|| format!("scanning label files under {dir:?}"))?;
-		print!("{}", render_summary(&scan));
+		vag_cli_core::out!("{}", render_summary(&scan));
+		vag_cli_core::note!("scanned {dir}: .clb decrypted (TEA-CBC); .rod counted, not parsed (`vagcan dev vcds rod` opens one)");
+		return Ok(());
 	}
 
-	if part.is_some() || block.is_some() {
-		let db = look_into(Path::new(dir), crate::project::current().ok().as_ref(), refresh)?;
-		install_unit_numbers(&db);
-		if let Some(part_no) = part {
-			print!("\n{}", render_part_lookup(&db, part_no));
-		}
-		if let Some(b) = block {
-			print!("\n{}", render_block_lookup(&db, b, field));
-		}
+	let db = look_into(Path::new(dir), crate::project::current().ok().as_ref(), refresh)?;
+	install_unit_numbers(&db);
+	let mut answers = Vec::new();
+	if let Some(part_no) = part {
+		answers.push(render_part_lookup(&db, part_no));
+		vag_cli_core::note!("part {part_no}: resolved through the REDIRECT chains of {} label files", db.len());
 	}
+	if let Some(b) = block {
+		answers.push(render_block_lookup(&db, b, field));
+		vag_cli_core::note!("block {b}: looked up in all {} label files", db.len());
+	}
+	vag_cli_core::out!("{}", answers.join("\n"));
 	Ok(())
 }
 
-/// Render the file-count summary (`.lbl` / `.clb` / `.rod` + parsed records).
+/// The file counts (`.lbl` / `.clb` / `.rod`) and one summary line.
 fn render_summary(scan: &LabelScan) -> String {
-	let mut out = String::new();
-	let total_files = scan.lbl_count + scan.clb_count + scan.rod_count;
-	out.push_str("== VCDS label files ==\n");
-	out.push_str(&format!("  .lbl (plaintext)          : {}\n", scan.lbl_count));
-	out.push_str(&format!("  .clb (TEA-CBC decrypted)  : {}\n", scan.clb_count));
-	out.push_str(&format!("  .rod (ODX, counted only)  : {}\n", scan.rod_count));
-	out.push_str(&format!("  total label/ODX files     : {total_files}\n"));
+	let mut table = Table::new(&["kind", "files"]).right(1);
+	for (kind, n) in [(".lbl", scan.lbl_count), (".clb", scan.clb_count), (".rod", scan.rod_count)] {
+		table.row(vec![kind.to_string(), n.to_string()]);
+	}
+	let mut out = table.render(table::terminal_width());
+	let total = scan.lbl_count + scan.clb_count + scan.rod_count;
+	let mut summary = format!("{total} files · {} .lbl/.clb parsed", scan.files.len());
 	if scan.read_errors > 0 {
-		out.push_str(&format!("  read errors (skipped)     : {}\n", scan.read_errors));
+		summary.push_str(&format!(" · {} unreadable", scan.read_errors));
 	}
-	out.push_str(&format!(
-		"Parsed {} .lbl/.clb file(s) into measurement definition sets.\n",
-		scan.files.len()
-	));
+	out.push_str(&summary);
+	out.push('\n');
 	out
 }
 
-/// Render `--part <PART_NO>`: resolved file + its measurements.
+/// `--part <PART_NO>`: the part, the file it resolves to and the unit it is, then that
+/// file's measurements.
 fn render_part_lookup(db: &LabelDb, part_no: &str) -> String {
-	let mut out = format!("== Lookup part {part_no} ==\n");
-	match db.resolve(part_no) {
-		Some(file) => {
-			out.push_str(&format!("Resolved file: {}\n", file.source));
-			// Which unit this part number *is*, in the label files' own numbering —
-			// the answer `vagcan units --identify` needs to name a unit `44`
-			// rather than `712`.
-			if let Some(unit) = db.unit_for_part(part_no) {
-				out.push_str(&format!("Control unit: {:02X}  {}\n", unit.address, unit.name));
-			}
-			let ms = db.measurements(part_no);
-			if ms.is_empty() {
-				out.push_str("(no measurements in resolved file)\n");
-			} else {
-				out.push_str(&format!("Measurements ({}):\n", ms.len()));
-				for m in ms {
-					out.push_str(&render_measurement_row(m));
-				}
-			}
-		}
-		None => out.push_str(&format!("no match in {} parsed label file(s)\n", db.len())),
+	let Some(file) = db.resolve(part_no) else {
+		return table::pairs(&[("part", part_no.to_string()), ("file", "none".to_string())]);
+	};
+	let mut rows = vec![("part", part_no.to_string()), ("file", file.source.clone())];
+	// Which unit this part number *is*, in the label files' own numbering — the
+	// answer `vagcan units --identify` needs to name a unit `44` rather than `712`.
+	if let Some(unit) = db.unit_for_part(part_no) {
+		rows.push(("unit", format!("{:02X}  {}", unit.address, unit.name)));
 	}
+	let mut out = table::pairs(&rows);
+	let ms = db.measurements(part_no);
+	if !ms.is_empty() {
+		out.push('\n');
+		let mut table = measurement_table(&[]);
+		for m in &ms {
+			table.row(measurement_cells(&[], m));
+		}
+		out.push_str(&table.render(table::terminal_width()));
+	}
+	out.push_str(&format!("{} measurements\n", ms.len()));
 	out
 }
 
-/// Render `--block <N> [--field <F>]`: every file defining that block.
+/// `--block <N> [--field <F>]`: every file defining that block, and a summary line.
 fn render_block_lookup(db: &LabelDb, block: u16, field: Option<u8>) -> String {
 	let scope = match field {
 		Some(f) => format!("block {block} field {f}"),
 		None => format!("block {block}"),
 	};
-	let mut out = format!("== Lookup {scope} (whole label_files) ==\n");
 	let hits = db.measurements_by_block(block, field);
-	if hits.is_empty() {
-		out.push_str("no label file defines this block\n");
-		return out;
+	let mut out = String::new();
+	if !hits.is_empty() {
+		let mut table = measurement_table(&["file"]);
+		for (source, m) in &hits {
+			table.row(measurement_cells(&[source], m));
+		}
+		out.push_str(&table.render(table::terminal_width()));
 	}
-	out.push_str(&format!("{} definition(s):\n", hits.len()));
-	for (source, m) in hits {
-		out.push_str(&format!("  {:<24} {}", source, render_measurement_row(m)));
-	}
+	out.push_str(&format!("{} definitions · {scope}\n", hits.len()));
 	out
 }
 
-/// One measurement line: `NNN.F  Name  [unit]` (+ trailing newline).
-fn render_measurement_row(m: &Measurement) -> String {
-	let unit = m.unit.as_deref().unwrap_or("");
-	format!("{:>4}.{:<3} {}  [{}]\n", m.block, m.field, m.name, unit)
+/// The measurement columns, after `leading`: block and field right-aligned, the name last.
+fn measurement_table(leading: &[&str]) -> Table {
+	let headers: Vec<&str> = leading.iter().copied().chain(["block", "field", "unit", "name"]).collect();
+	Table::new(&headers).right(leading.len()).right(leading.len() + 1)
+}
+
+fn measurement_cells(leading: &[&str], m: &Measurement) -> Vec<String> {
+	let mut cells: Vec<String> = leading.iter().map(|s| s.to_string()).collect();
+	cells.extend([
+		m.block.to_string(),
+		m.field.to_string(),
+		m.unit.clone().unwrap_or_default(),
+		m.name.clone(),
+	]);
+	cells
 }
 
 /// Resolve the label file a control unit names for itself.
@@ -314,15 +350,15 @@ fn render_measurement_row(m: &Measurement) -> String {
 /// file contains, marking sections whose payload did not decode rather than
 /// implying the whole file was read.
 pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Result<()> {
-	use vag_data_labels::rod::{IvCache, RodStatus, decode_rod_recover};
+	use vag_data_labels::rod::{IvCache, decode_rod_recover};
 
 	let hits = vag_data_labels::find_rod_by_odx_name(std::path::Path::new(dir), odx_name)?;
+	vag_cli_core::note!("{} file(s) named {odx_name}.rod under {dir}", hits.len());
 	if hits.is_empty() {
-		println!(
-			"No label file named {odx_name:?} under {dir}.\n\n\
-             The control unit names this file itself, so the label files are either incomplete or \
-             pointed at the wrong directory — pass the VCDS install root."
-		);
+		vag_cli_core::out!("{}", table::pairs(&[("odx", odx_name.to_string()), ("file", "none".to_string())]));
+		// The control unit names this file itself, so the label files are either
+		// incomplete or this is the wrong directory.
+		vag_cli_core::say!("pass the VCDS install root, or a directory above its .rod files");
 		return Ok(());
 	}
 
@@ -331,46 +367,70 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Resu
 	// (`vagcan dev vcds rod --cache <this cache> <file.rod>`), so a lookup
 	// never starts one.
 	let mut cache = IvCache::load(cache_path);
+	vag_cli_core::note!("{} keys in {}", cache.len(), cache_path.display());
+	let mut table = Table::new(&["file", "section", "bytes", "state"]).right(2);
+	let (mut open, mut total) = (0usize, 0usize);
+	let mut sealed_files = Vec::new();
 	for path in &hits {
-		println!("{}", path.display());
+		let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+		vag_cli_core::note!("reading {}", path.display());
 		let bytes = match std::fs::read(path) {
 			Ok(b) => b,
 			Err(e) => {
-				println!("  cannot read: {e}");
+				table.row(vec![name.to_string(), String::new(), String::new(), format!("unreadable: {e}")]);
 				continue;
 			}
 		};
-		let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
 		let sections = decode_rod_recover(&bytes, name, &mut cache, false);
 		if sections.is_empty() {
-			println!("  no sections found");
+			table.row(vec![name.to_string(), String::new(), String::new(), "no sections".to_string()]);
 			continue;
 		}
 		for section in &sections {
-			let state = match section.status {
-				RodStatus::Tea => "decrypted",
-				RodStatus::Zlib => "decrypted + inflated",
-				// No vector in the cache for this section, and a lookup does
-				// not search for one.
-				RodStatus::Undecodable => &format!(
-					"encrypted (recover with: vagcan dev vcds rod --cache {} {})",
-					cache_path.display(),
-					path.display()
-				),
-				// Pointing at the recovery command here would waste an hour of
-				// every core: the search cannot start on this file at all.
-				RodStatus::SearchDeclined => {
-					"encrypted, and the key search has no crib on this file \
-                     (see .archive/research/labels/tttext2.md) — not damaged, not yet openable"
+			let state = crate::vcds::rod::state(section);
+			vag_cli_core::wire!(
+				"{name} [{}]: {:?}, {}",
+				section.tag,
+				section.status,
+				match cache.get(name, &section.tag) {
+					Some(key) => format!("key {} from the cache", vag_cli_core::verbosity::hex(&key)),
+					None => "no key in the cache".to_string(),
 				}
-			};
+			);
+			match state {
+				// No vector in the cache for this section, and a lookup does not search
+				// for one: `rod` does.
+				"sealed" => {
+					if !sealed_files.contains(path) {
+						sealed_files.push(path.clone());
+					}
+				}
+				// Pointing at the recovery command here would waste an hour of every
+				// core: the search cannot start on this file at all.
+				"no crib" => vag_cli_core::note!(
+					"{name} [{}] no crib: the key search cannot start on this file; not damaged, not yet openable \
+					 (.archive/research/labels/tttext2.md)",
+					section.tag
+				),
+				_ => {}
+			}
 			let size = section.text.as_ref().map(|t| t.len()).unwrap_or(0);
-			println!("  [{}]  {state}, {size} bytes", section.tag);
+			open += usize::from(section.text.is_some());
+			total += 1;
+			table.row(vec![name.to_string(), section.tag.clone(), size.to_string(), state.to_string()]);
 		}
+	}
+	vag_cli_core::out!("{}", table.render(table::terminal_width()));
+	vag_cli_core::outln!("{open}/{total} sections open · {} files", hits.len());
+	for path in sealed_files {
+		vag_cli_core::say!(
+			"to open its sealed sections: vagcan dev vcds rod --cache {} {}",
+			cache_path.display(),
+			path.display()
+		);
 	}
 	Ok(())
 }
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -484,28 +544,40 @@ mod tests {
 	#[test]
 	fn summary_reports_all_three_file_kinds_and_total() {
 		let scan = scan_with(vec![], 1181, 1854, 16578);
-		let s = render_summary(&scan);
-		assert!(s.contains(".lbl (plaintext)          : 1181"));
-		assert!(s.contains(".clb (TEA-CBC decrypted)  : 1854"));
-		assert!(s.contains(".rod (ODX, counted only)  : 16578"));
-		assert!(s.contains("total label/ODX files     : 19613"));
+		assert_eq!(
+			render_summary(&scan),
+			"kind  files\n\
+			 .lbl   1181\n\
+			 .clb   1854\n\
+			 .rod  16578\n\
+			 19613 files · 0 .lbl/.clb parsed\n"
+		);
+		let broken = LabelScan {
+			read_errors: 2,
+			..scan_with(vec![], 1, 0, 0)
+		};
+		assert!(render_summary(&broken).ends_with("1 files · 0 .lbl/.clb parsed · 2 unreadable\n"));
 	}
 
 	#[test]
 	fn part_lookup_lists_measurements_of_resolved_file() {
 		let file = parse_label("022-906-032-C.LBL", b"001,1,Engine Speed,,Range: 0...6500 RPM");
 		let db = LabelDb::new(vec![file]);
-		let s = render_part_lookup(&db, "022-906-032-C");
-		assert!(s.contains("Resolved file: 022-906-032-C.LBL"));
-		assert!(s.contains("Engine Speed"));
-		assert!(s.contains("[RPM]"));
+		assert_eq!(
+			render_part_lookup(&db, "022-906-032-C"),
+			"part  022-906-032-C\n\
+			 file  022-906-032-C.LBL\n\
+			 \n\
+			 block  field  unit  name\n\
+			 \x20   1      1  RPM   Engine Speed\n\
+			 1 measurements\n"
+		);
 	}
 
 	#[test]
 	fn part_lookup_reports_miss() {
 		let db = LabelDb::new(vec![parse_label("X.LBL", b"001,1,Irrelevant,,")]);
-		let s = render_part_lookup(&db, "999-999-999-Z");
-		assert!(s.contains("no match"));
+		assert_eq!(render_part_lookup(&db, "999-999-999-Z"), "part  999-999-999-Z\nfile  none\n");
 	}
 
 	#[test]
@@ -515,18 +587,19 @@ mod tests {
 		let db = LabelDb::new(vec![a, b]);
 
 		let all = render_block_lookup(&db, 2, None);
-		assert!(all.contains("3 definition(s):"));
-		assert!(all.contains("AAA.LBL"));
-		assert!(all.contains("BBB.LBL"));
-		assert!(all.contains("Engine Speed"));
-		assert!(all.contains("Coolant"));
+		assert_eq!(
+			all,
+			"file     block  field  unit  name\n\
+			 AAA.LBL      2      1  RPM   Engine Speed\n\
+			 BBB.LBL      2      1  km/h  Vehicle Speed\n\
+			 BBB.LBL      2      2        Coolant\n\
+			 3 definitions · block 2\n"
+		);
 
 		let f1 = render_block_lookup(&db, 2, Some(1));
-		assert!(f1.contains("2 definition(s):"));
-		assert!(f1.contains("field 1"));
+		assert!(f1.ends_with("2 definitions · block 2 field 1\n"), "{f1}");
 		assert!(!f1.contains("Coolant"));
 
-		let none = render_block_lookup(&db, 42, None);
-		assert!(none.contains("no label file defines this block"));
+		assert_eq!(render_block_lookup(&db, 42, None), "0 definitions · block 42\n");
 	}
 }
