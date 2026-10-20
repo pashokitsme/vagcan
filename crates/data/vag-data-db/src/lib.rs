@@ -272,6 +272,56 @@ CREATE TABLE IF NOT EXISTS reading_level (
 );
 CREATE INDEX IF NOT EXISTS idx_reading_lookup ON reading(variant, did);
 CREATE INDEX IF NOT EXISTS idx_reading_level  ON reading_level(reading_id);
+-- One row a VCDS unit selects from a global registry other than RM.rod:
+-- adaptations (ADP, RA.rod), basic settings (GES, RG.rod), output tests (SOT,
+-- RS.rod), freeze-frame fields (FFMUX, RF.rod), XPL bits (RX.rod), and the MUX.rod
+-- cases a row of type 6 defers to (MUX). `vag_data_labels::registries` reads them;
+-- research/vcds-registry/README.md §9 says what each column was established
+-- against. Stored, not acted on: basic settings and output tests are names only,
+-- since their services (0x31, 0x2F) are outside the allowlist for good.
+--
+-- `variant` is the unit's .rod file stem, as in `reading`. `line` is the row's
+-- 1-based number in its registry and `key` its key there. `identifier` is the
+-- DID (ADP), routine id (GES) or input/output DID (SOT). For a MUX case,
+-- `identifier` is the MUX key and `case_lower`/`case_upper` its raw range, both
+-- NULL for the default case. `table_id` is the TTDOP table of a type-3 row and
+-- the MUX key of a type-6 row. `raw` is every field deciphered, comma-joined:
+-- the columns nobody established a meaning for live there and nowhere else.
+CREATE TABLE IF NOT EXISTS registry_row (
+    id            INTEGER PRIMARY KEY,
+    source_id     INTEGER NOT NULL REFERENCES source(id),
+    variant       TEXT NOT NULL,
+    section       TEXT NOT NULL,
+    line          INTEGER NOT NULL,
+    key           INTEGER NOT NULL,
+    identifier    INTEGER,
+    ordinal       INTEGER,
+    record_length INTEGER,
+    case_lower    INTEGER,
+    case_upper    INTEGER,
+    kind          INTEGER,
+    signed        INTEGER NOT NULL,
+    big_endian    INTEGER NOT NULL,
+    bit_offset    INTEGER,
+    bit_length    INTEGER,
+    factor        REAL,
+    offset        REAL,
+    table_id      INTEGER,
+    constant      TEXT,
+    unit          TEXT,
+    name          TEXT,
+    text_id       TEXT,
+    raw           TEXT NOT NULL
+);
+-- A type-3 registry row's states, as `reading_level` holds a channel's.
+CREATE TABLE IF NOT EXISTS registry_level (
+    registry_row_id INTEGER NOT NULL REFERENCES registry_row(id),
+    raw             INTEGER NOT NULL,
+    upper           INTEGER NOT NULL,
+    meaning         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_registry_row_lookup ON registry_row(variant, section, identifier);
+CREATE INDEX IF NOT EXISTS idx_registry_level      ON registry_level(registry_row_id);
 "#;
 
 /// Create what [`SCHEMA`] makes, in one transaction: a batch that fails part way leaves no
@@ -292,7 +342,16 @@ fn create_schema(conn: &Connection, db_path: &Path) -> Result<(), Error> {
 /// files name their source, and a source is one row per directory.
 /// 2 (2026-10-20): a source row that owns no row at all goes. A cache upgraded to 1 is
 /// brought to 2 by the same [`migrate`]: every step of it is a no-op where done.
-const SCHEMA_VERSION: i64 = 2;
+/// 3 (2026-10-20): `registry_row` and `registry_level`, the rows of VCDS's other
+/// registries ([`MIGRATED_TABLES`]), created empty; the next read of a VCDS
+/// installation fills them.
+const SCHEMA_VERSION: i64 = 3;
+
+/// The tables [`migrate`] creates in a cache that predates them. Nothing in them is
+/// derived from what the cache holds, so a missing one is made, empty, rather than the
+/// cache refused: the registry read that fills them runs with the next read of the
+/// installation.
+const MIGRATED_TABLES: &[&str] = &["registry_row", "registry_level"];
 
 /// The columns [`migrate`] adds to a cache of the shape before [`SCHEMA_VERSION`] 1. A
 /// cache lacking only these is upgraded rather than refused.
@@ -321,10 +380,9 @@ fn refuse_older(conn: &Connection, db_path: &Path) -> Result<(), Error> {
 		Err(e) if not_a_database(&e) => return Err(Error::NotACache { cache: cache() }),
 		Err(e) => return Err(e.into()),
 	};
-	let migratable = |(table, column): &(String, Option<String>)| {
-		column
-			.as_deref()
-			.is_some_and(|column| MIGRATED.iter().any(|(t, c)| t == table && *c == column))
+	let migratable = |(table, column): &(String, Option<String>)| match column.as_deref() {
+		Some(column) => MIGRATED.iter().any(|(t, c)| t == table && *c == column),
+		None => MIGRATED_TABLES.contains(&table.as_str()),
 	};
 	if let Some(older) = missing.iter().find(|item| !migratable(item)) {
 		return Err(Error::OlderCache {
@@ -354,7 +412,7 @@ fn missing_everything(conn: &Connection) -> rusqlite::Result<bool> {
 
 /// Bring a cache of the shape before [`SCHEMA_VERSION`] 1 up to it, in one transaction:
 ///
-/// - the [`MIGRATED`] columns are added;
+/// - the [`MIGRATED`] columns are added, and the [`MIGRATED_TABLES`] created;
 /// - two source rows naming one directory are made one ([`collapse_duplicates`]);
 /// - the label files are given their owner: the one source their measurements name, or
 ///   the one VCDS source there is. Neither — no measurement names one, and more than one
@@ -382,6 +440,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 			tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
 		}
 	}
+	// Every statement of the schema is `IF NOT EXISTS`: this makes the tables a cache
+	// lacks, and their indexes, and leaves the rest as they are.
+	tx.execute_batch(SCHEMA)?;
 	collapse_duplicates(&tx)?;
 	let measured: Vec<i64> = {
 		let mut stmt = tx.prepare("SELECT DISTINCT source_id FROM measurement WHERE source_id IS NOT NULL")?;
@@ -1451,6 +1512,101 @@ fn write_into<'a>(
 	Ok(Some(written))
 }
 
+/// Every row a VCDS install's other registries give the units read, in one
+/// transaction, replacing what **any** VCDS install wrote there before — the rule
+/// [`put_all_vcds_readings`] follows, for the same reason. `variant` is the unit's
+/// `.rod` file stem. Returns how many rows landed.
+pub fn put_all_vcds_registry_rows<'a>(
+	db_path: &Path,
+	install_dir: &str,
+	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::registries::Described])>,
+) -> Result<usize, Error> {
+	use vag_data_labels::registries::Case;
+	let mut conn = Connection::open(db_path)?;
+	create_schema(&conn, db_path)?;
+	conn.pragma_update(None, "synchronous", "FULL")?;
+	conn.pragma_update(None, "cache_size", -65536)?;
+	let tx = conn.transaction()?;
+	let source = source_id(&tx, VCDS, install_dir)?;
+	let of_kind = "SELECT id FROM registry_row WHERE source_id IN (SELECT id FROM source WHERE kind = ?1)";
+	tx.execute(&format!("DELETE FROM registry_level WHERE registry_row_id IN ({of_kind})"), params![VCDS])?;
+	tx.execute(&format!("DELETE FROM registry_row WHERE id IN ({of_kind})"), params![VCDS])?;
+	let mut written = 0usize;
+	{
+		let mut insert = tx.prepare(
+			"INSERT INTO registry_row \
+                (source_id, variant, section, line, key, identifier, ordinal, record_length, case_lower, case_upper, \
+                 kind, signed, big_endian, bit_offset, bit_length, factor, offset, table_id, constant, unit, name, text_id, raw) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+		)?;
+		let mut insert_level = tx.prepare("INSERT INTO registry_level (registry_row_id, raw, upper, meaning) VALUES (?1, ?2, ?3, ?4)")?;
+		for (variant, rows) in variants {
+			for d in rows {
+				let (e, v) = (&d.entry, &d.entry.value);
+				let (lower, upper) = match e.case {
+					Some(Case::Range { lower, upper }) => (Some(lower), Some(upper)),
+					_ => (None, None),
+				};
+				insert.execute(params![
+					source,
+					variant,
+					d.section,
+					e.row as i64,
+					e.key,
+					e.identifier,
+					e.ordinal,
+					e.record_length,
+					lower,
+					upper,
+					v.kind,
+					v.signed,
+					v.big_endian,
+					v.bit_offset,
+					v.bit_length,
+					v.scale.map(|s| s.0),
+					v.scale.map(|s| s.1),
+					v.table,
+					v.constant,
+					d.unit,
+					d.name,
+					d.text_id,
+					e.raw
+				])?;
+				let id = tx.last_insert_rowid();
+				for level in &d.levels {
+					insert_level.execute(params![id, level.lower(), level.upper(), level.name()])?;
+				}
+				written += 1;
+			}
+		}
+	}
+	tx.commit()?;
+	Ok(written)
+}
+
+/// How many registry rows each section holds, by section tag, in tag order.
+pub fn registry_row_counts(db_path: &Path) -> Result<Vec<(String, u64)>, Error> {
+	let conn = open_existing(db_path)?;
+	let mut stmt = conn.prepare("SELECT section, COUNT(*) FROM registry_row GROUP BY section ORDER BY section")?;
+	let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?.max(0) as u64)))?;
+	Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// One variant's rows of one section, as `(identifier, ordinal, name, raw, levels)` — for tests.
+#[cfg(test)]
+#[allow(clippy::type_complexity)]
+fn registry_rows_of(db_path: &Path, variant: &str, section: &str) -> Result<Vec<(Option<u32>, Option<u32>, Option<String>, String, usize)>, Error> {
+	let conn = open_existing(db_path)?;
+	let mut stmt = conn.prepare(
+		"SELECT identifier, ordinal, name, r.raw, (SELECT COUNT(*) FROM registry_level l WHERE l.registry_row_id = r.id) \
+         FROM registry_row r WHERE variant = ?1 AND section = ?2 ORDER BY r.id",
+	)?;
+	let rows = stmt.query_map(params![variant, section], |row| {
+		Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get::<_, i64>(4)? as usize))
+	})?;
+	Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Record the language a source declares for itself, on its `source` row.
 ///
 /// Makes the row if this is the first thing written for the source, so it can
@@ -1820,7 +1976,15 @@ pub fn load_files(db_path: &Path) -> Result<Vec<LabelFile>, Error> {
 /// are this crate's schema: a binary that spelled them out itself would keep
 /// compiling after a rename and fail only when run.
 pub fn row_counts(db_path: &Path) -> Result<Vec<(&'static str, i64)>, Error> {
-	const TABLES: [&str; 5] = ["label_file", "measurement", "redirect", "adaptation", "long_coding"];
+	const TABLES: [&str; 7] = [
+		"label_file",
+		"measurement",
+		"redirect",
+		"adaptation",
+		"long_coding",
+		"registry_row",
+		"registry_level",
+	];
 	let conn = open_existing(db_path)?;
 	let mut out = Vec::with_capacity(TABLES.len());
 	for table in TABLES {
@@ -2717,6 +2881,150 @@ mod tests {
 		assert!(columns(&conn, "reading").unwrap().is_empty(), "the batch left `reading` behind");
 	}
 
+	/// A registry row as `vag_data_labels::registries` hands it over. Invented.
+	fn described(section: &'static str, identifier: u32, levels: usize) -> vag_data_labels::registries::Described {
+		use vag_data_labels::registries::{Described, Entry, Value};
+		Described {
+			section,
+			entry: Entry {
+				row: 7,
+				key: 930_001,
+				identifier: Some(identifier),
+				ordinal: Some(1),
+				record_length: None,
+				case: None,
+				value: Value {
+					kind: Some(3),
+					big_endian: true,
+					bit_offset: Some(0),
+					bit_length: Some(8),
+					table: Some(51),
+					..Default::default()
+				},
+				raw: format!("1,{identifier},51,3,,,,,0,0,8,,,40ABCD,0033"),
+			},
+			name: Some("invented".into()),
+			text_id: Some("IDE90001".into()),
+			unit: None,
+			levels: (0..levels).map(|n| Level::point(n as i32, format!("state {n}"))).collect(),
+		}
+	}
+
+	#[test]
+	fn registry_rows_are_written_with_their_states_and_a_vcds_read_replaces_every_vcds_installs() {
+		let ws = TempWorkspace::new("registry-rows");
+		let a = [described("ADP", 0x1075, 2), described("GES", 0x0317, 0)];
+		let b = [described("ADP", 0x1076, 0)];
+		assert_eq!(
+			put_all_vcds_registry_rows(&ws.db_path, "/x/vcds-en", [("EV_UnitA", &a[..]), ("EV_UnitB", &b[..])]).unwrap(),
+			3
+		);
+		assert_eq!(
+			registry_rows_of(&ws.db_path, "EV_UnitA", "ADP").unwrap(),
+			vec![(
+				Some(0x1075),
+				Some(1),
+				Some("invented".to_string()),
+				"1,4213,51,3,,,,,0,0,8,,,40ABCD,0033".to_string(),
+				2
+			)]
+		);
+		assert_eq!(
+			registry_row_counts(&ws.db_path).unwrap(),
+			vec![("ADP".to_string(), 2), ("GES".to_string(), 1)]
+		);
+		// An ODIS write beside it touches none of them.
+		put_readings(&ws.db_path, "/x/SK37X", "EV_ECM", &[]).unwrap();
+		assert_eq!(registry_row_counts(&ws.db_path).unwrap().len(), 2);
+		// Another install's read replaces every VCDS row, its states included.
+		put_all_vcds_registry_rows(&ws.db_path, "/y/vcds-ru", [("EV_UnitB", &b[..])]).unwrap();
+		assert_eq!(registry_row_counts(&ws.db_path).unwrap(), vec![("ADP".to_string(), 1)]);
+		assert!(registry_rows_of(&ws.db_path, "EV_UnitA", "ADP").unwrap().is_empty());
+		let conn = Connection::open(&ws.db_path).unwrap();
+		let levels: i64 = conn.query_row("SELECT COUNT(*) FROM registry_level", [], |r| r.get(0)).unwrap();
+		assert_eq!(levels, 0, "the replaced rows' states went with them");
+	}
+
+	#[test]
+	fn a_source_merged_into_another_hands_over_its_registry_rows_or_drops_a_second_copy() {
+		let ws = TempWorkspace::new("registry-merge");
+		let rows = [described("ADP", 0x1075, 1)];
+		put_all_vcds_registry_rows(&ws.db_path, "/x/vcds-en", [("EV_UnitA", &rows[..])]).unwrap();
+		let count = |conn: &Connection, source: i64| -> (i64, i64) {
+			conn
+				.query_row(
+					"SELECT (SELECT COUNT(*) FROM registry_row WHERE source_id = ?1), \
+				        (SELECT COUNT(*) FROM registry_level l JOIN registry_row r ON r.id = l.registry_row_id WHERE r.source_id = ?1)",
+					params![source],
+					|r| Ok((r.get(0)?, r.get(1)?)),
+				)
+				.unwrap()
+		};
+		let conn = Connection::open(&ws.db_path).unwrap();
+		let first: i64 = conn.query_row("SELECT id FROM source", [], |r| r.get(0)).unwrap();
+		// A second row for the same directory that holds nothing: the first's rows move to it.
+		conn.execute("INSERT INTO source (kind, dir) VALUES ('vcds', '/x/vcds-en/')", []).unwrap();
+		let keep = conn.last_insert_rowid();
+		merge_into(&conn, keep, first).unwrap();
+		assert_eq!(count(&conn, keep), (1, 1), "the only copy moved, its state with it");
+		// A third that holds a copy of its own: that copy goes, with its state.
+		conn
+			.execute("INSERT INTO source (kind, dir) VALUES ('vcds', '/x/./vcds-en')", [])
+			.unwrap();
+		let other = conn.last_insert_rowid();
+		conn
+			.execute_batch(&format!(
+				"INSERT INTO registry_row (source_id, variant, section, line, key, signed, big_endian, raw) VALUES ({other}, 'EV_UnitA', 'ADP', 7, 1, 0, 1, '');\
+			 INSERT INTO registry_level (registry_row_id, raw, upper, meaning) VALUES (last_insert_rowid(), 0, 0, 'x');"
+			))
+			.unwrap();
+		merge_into(&conn, keep, other).unwrap();
+		assert_eq!(count(&conn, keep), (1, 1), "the second copy was dropped, not added");
+		let total: (i64, i64) = conn
+			.query_row(
+				"SELECT (SELECT COUNT(*) FROM registry_row), (SELECT COUNT(*) FROM registry_level)",
+				[],
+				|r| Ok((r.get(0)?, r.get(1)?)),
+			)
+			.unwrap();
+		assert_eq!(total, (1, 1), "nothing left behind");
+		drop(conn);
+		assert_no_orphans(&ws.db_path, "merged");
+	}
+
+	#[test]
+	fn a_cache_from_before_the_registry_tables_is_upgraded_in_place_not_refused() {
+		// Schema version 2: today's shape without `registry_row` and `registry_level`.
+		let ws = TempWorkspace::new("before-registry-rows");
+		let rows = [reading(
+			0x380A,
+			"a",
+			Scaling::Linear(vag_data_labels::LinearScale { factor: 1.0, offset: 0.0 }),
+		)];
+		put_readings(&ws.db_path, "/x/SK37X", "EV_ECM", &rows).unwrap();
+		{
+			let conn = Connection::open(&ws.db_path).unwrap();
+			conn
+				.execute_batch("DROP TABLE registry_level; DROP TABLE registry_row; PRAGMA user_version = 2;")
+				.unwrap();
+			assert!(columns(&conn, "registry_row").unwrap().is_empty());
+		}
+		// Every reader opens it as it is, upgrading it on the way, and loses nothing.
+		assert!(check(&ws.db_path).is_ok(), "not refused");
+		assert_eq!(readings_of(&ws.db_path, "EV_ECM").unwrap().len(), 1);
+		let conn = Connection::open(&ws.db_path).unwrap();
+		assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
+		assert!(!columns(&conn, "registry_row").unwrap().is_empty());
+		assert!(!columns(&conn, "registry_level").unwrap().is_empty());
+		drop(conn);
+		assert_eq!(registry_row_counts(&ws.db_path).unwrap(), vec![]);
+		assert_eq!(remove_if_older(&ws.db_path).unwrap(), None, "and --refresh has nothing to remove");
+		// The tables take rows.
+		let a = [described("ADP", 0x1075, 1)];
+		put_all_vcds_registry_rows(&ws.db_path, "/x/vcds-en", [("EV_UnitA", &a[..])]).unwrap();
+		assert_eq!(registry_row_counts(&ws.db_path).unwrap(), vec![("ADP".to_string(), 1)]);
+	}
+
 	#[test]
 	fn a_cache_not_written_yet_is_not_an_older_one() {
 		let ws = TempWorkspace::new("not-yet");
@@ -3154,6 +3462,7 @@ mod tests {
 		build_db(&ws.labels_dir, &ws.db_path).unwrap();
 		let labels = sources(&ws.db_path).unwrap()[0].dir.clone();
 		put_all_vcds_readings(&ws.db_path, &labels, [("EV_Brake1", &[unit_scale(0x1822, "vcds")][..])]).unwrap();
+		put_all_vcds_registry_rows(&ws.db_path, &labels, [("EV_Brake1", &[described("ADP", 0x1075, 1)][..])]).unwrap();
 		put_all_readings(&ws.db_path, "/x/SK37X", [("EV_Brake1", &[banded(0x1000)][..])]).unwrap();
 		put_all_faults(&ws.db_path, "/x/SK37X", [("EV_Brake1", &[fault(297, "Fehler")][..])]).unwrap();
 		let all = sources(&ws.db_path).unwrap();
@@ -3182,6 +3491,11 @@ mod tests {
 			.unwrap();
 		assert_eq!(levels, 0, "the dropped channel's levels stayed");
 		assert_no_orphans(&ws.db_path, "ODIS dropped");
+		assert_eq!(
+			registry_row_counts(&ws.db_path).unwrap(),
+			vec![("ADP".to_string(), 1)],
+			"the VCDS registry rows stay with their source"
+		);
 
 		// The VCDS installation, from the same starting point: every label table empties,
 		// and the ODIS rows stay.
@@ -3193,6 +3507,7 @@ mod tests {
 		assert!(source_of(&ws.db_path).is_none());
 		assert_eq!(faults_of(&ws.db_path, "EV_Brake1").unwrap().len(), 1);
 		assert_eq!(readings_of_kind(&ws.db_path, ODIS, "EV_Brake1").unwrap().len(), 1);
+		assert!(registry_row_counts(&ws.db_path).unwrap().is_empty(), "the registry rows went with it");
 		assert_no_orphans(&ws.db_path, "VCDS dropped");
 
 		// An id that is not there is said as one.
