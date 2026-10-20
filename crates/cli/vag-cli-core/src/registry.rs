@@ -285,7 +285,11 @@ pub struct Log {
 ///
 /// 2 (2026-10-20): each lookup logs the stem its rows are stored under ([`Tried::stem`]),
 /// which a car joins by; a version-1 log has none, and its cars would join by rank.
-pub const READ_VERSION: u32 = 2;
+///
+/// 3 (2026-10-20): the other registries — every unit's adaptation, basic-setting,
+/// output-test, freeze-frame and XPL rows, and their MUX cases, read with its channels
+/// (`registry_row`) and stored under the same stem. A read of 2 wrote none.
+pub const READ_VERSION: u32 = 3;
 
 impl Log {
 	/// The project's log, or `None` when no read has been made into it — an
@@ -796,8 +800,14 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 			stem: None,
 		});
 		// Whatever came of its measurement list: a unit whose `[MWB]` is shut may
-		// still list adaptations.
-		others.absorb(other, &words, &units_of, &tables);
+		// still list adaptations. Its rows go under the name its channels would, and a
+		// unit with no channels logs that name, so a car joins its other rows by it too.
+		let other_stem = others.absorb(other, &words, &units_of, &tables);
+		if !matches!(found, UnitMeasurements::Found { .. })
+			&& let Some(tried) = log.units.last_mut()
+		{
+			tried.stem = other_stem;
+		}
 		let UnitMeasurements::Found { file, rows, via, .. } = found else {
 			if !extracted.for_unit_from(vag_data_db::ODIS, Some(odx), Some(version)).is_empty() {
 				progress.done(&format!("{odx}: {}; the ODIS project describes it", unit_gap(&found)));
@@ -1918,6 +1928,39 @@ mod tests {
 		let old: Log = serde_json::from_str(r#"{"installation": "/vcds", "units": []}"#).unwrap();
 		assert!(!old.is_current());
 		assert!(Log::new(PathBuf::new()).is_current());
+	}
+
+	#[test]
+	fn a_log_written_before_the_other_registries_brings_one_more_read_and_then_none() {
+		// Version 2 read channels and no `registry_row`. Every unit of the car, read and
+		// ODIS-described as they are, is read once more; the log that read writes is
+		// current, and the next `ensure` reads nothing — whatever the installation has
+		// of the other registries, so one with none of them is not read forever.
+		assert_eq!(READ_VERSION, 3, "the other registries are version 3");
+		let dir = tempfile::tempdir().unwrap();
+		let project = project(dir.path());
+		std::fs::create_dir_all(&project.dir).unwrap();
+		let root = install_at(dir.path());
+		let identities = [unit(0x7E0, Some("EV_Engine"), Some("001")), unit(0x713, Some("EV_Brake"), Some("002"))];
+		let mut log = Log {
+			units: vec![tried("EV_Engine", "001", "read"), tried("EV_Brake", "002", "read")],
+			..Log::new(root.clone())
+		};
+		log.read_version = 2;
+		log.save(&project).unwrap();
+		let all: BTreeSet<(String, String)> = [("EV_Brake".to_string(), "002".to_string()), ("EV_Engine".to_string(), "001".to_string())].into();
+		// Outdated, not unread: a build goes ahead on the rows the cache has (#43), and
+		// `ensure` reads them once.
+		assert_eq!(
+			unread(&project, &identities, |_, _| true).unwrap(),
+			Unread::Outdated {
+				units: all,
+				root: root.clone()
+			}
+		);
+		log.read_version = READ_VERSION;
+		log.save(&project).unwrap();
+		assert_eq!(unread(&project, &identities, |_, _| true).unwrap(), Unread::Nothing);
 	}
 
 	/// A directory that passes for an installation: `UDS_EV` in place, nothing in it.

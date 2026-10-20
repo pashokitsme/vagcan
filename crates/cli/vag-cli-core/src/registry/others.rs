@@ -180,12 +180,16 @@ impl Others {
 	}
 
 	/// Take one unit's rows, in the order the units are said: put to words, with
-	/// their MUX cases, under the unit's file stem. Two units that come to one file
-	/// are written once.
-	pub(super) fn absorb(&mut self, unit: Unit, words: &Words, units: &UnitStrings, tables: &TextTables) {
+	/// their MUX cases, under the name the unit's channels go by — the file stem, or
+	/// the redirect's source. Two units that come to one file are written once.
+	///
+	/// Returns that name when the cache holds rows of this unit under it, so the
+	/// caller logs it as the stem a car joins by ([`super::Tried::stem`]) for a unit
+	/// whose measurement list did not open but whose other lists did.
+	pub(super) fn absorb(&mut self, unit: Unit, words: &Words, units: &UnitStrings, tables: &TextTables) -> Option<String> {
 		self.unread += unit.unread;
 		self.shut += unit.shut;
-		let Some(stem) = unit.stem else { return };
+		let stem = unit.stem?;
 		for (section, entries) in unit.sections {
 			if self.rows.get(&stem).is_some_and(|rows| rows.iter().any(|d| d.section == section.tag())) {
 				continue;
@@ -195,19 +199,21 @@ impl Others {
 				.map(|entry| registries::describe(section.tag(), entry, section.key_is_a_record(), words, units, tables));
 			self.rows.entry(stem.clone()).or_default().extend(described);
 		}
-		let Some(mux) = &self.mux else { return };
-		for key in unit.muxes {
-			if !self.muxed.insert((stem.clone(), key)) {
-				continue;
+		if let Some(mux) = &self.mux {
+			for key in unit.muxes {
+				if !self.muxed.insert((stem.clone(), key)) {
+					continue;
+				}
+				let (cases, unread) = mux.cases(key);
+				self.unread += unread;
+				let rows = self.rows.entry(stem.clone()).or_default();
+				rows.extend(cases.into_iter().map(|mut case| {
+					case.identifier = Some(key);
+					registries::describe(registries::MUX_SECTION, case, false, words, units, tables)
+				}));
 			}
-			let (cases, unread) = mux.cases(key);
-			self.unread += unread;
-			let rows = self.rows.entry(stem.clone()).or_default();
-			rows.extend(cases.into_iter().map(|mut case| {
-				case.identifier = Some(key);
-				registries::describe(registries::MUX_SECTION, case, false, words, units, tables)
-			}));
 		}
+		self.rows.get(&stem).is_some_and(|rows| !rows.is_empty()).then_some(stem)
 	}
 }
 
@@ -227,5 +233,57 @@ fn lost(section: Section) -> &'static str {
 		Section::OutputTest => "no output-test names",
 		Section::FreezeFrame => "no freeze-frame fields",
 		Section::Xpl => "no XPL rows",
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn entry(identifier: u32) -> Entry {
+		Entry {
+			row: 1,
+			key: 930_001,
+			identifier: Some(identifier),
+			ordinal: None,
+			record_length: None,
+			case: None,
+			value: Default::default(),
+			raw: String::new(),
+		}
+	}
+
+	#[test]
+	fn a_units_rows_go_under_its_name_once_and_the_name_is_handed_back_only_with_rows() {
+		let (words, units, tables) = (Words::default(), UnitStrings::default(), TextTables::default());
+		let mut others = Others::default();
+		let unit = |stem: Option<&str>, sections: Vec<(Section, Vec<Entry>)>| Unit {
+			stem: stem.map(str::to_string),
+			sections,
+			..Default::default()
+		};
+		// The name the channels go by — a redirect's source here — carries the rows.
+		let named = others.absorb(
+			unit(Some("EV_Unit_017"), vec![(Section::Adaptation, vec![entry(0x1075)])]),
+			&words,
+			&units,
+			&tables,
+		);
+		assert_eq!(named.as_deref(), Some("EV_Unit_017"));
+		// A second unit that comes to the same name adds nothing to a section already there.
+		let again = others.absorb(
+			unit(Some("EV_Unit_017"), vec![(Section::Adaptation, vec![entry(0x1076)])]),
+			&words,
+			&units,
+			&tables,
+		);
+		assert_eq!(again.as_deref(), Some("EV_Unit_017"));
+		assert_eq!(others.rows["EV_Unit_017"].len(), 1);
+		// A unit whose lists hold nothing has no name to log, and one with no file none either.
+		assert_eq!(
+			others.absorb(unit(Some("EV_Empty"), vec![(Section::Xpl, vec![])]), &words, &units, &tables),
+			None
+		);
+		assert_eq!(others.absorb(unit(None, vec![]), &words, &units, &tables), None);
 	}
 }

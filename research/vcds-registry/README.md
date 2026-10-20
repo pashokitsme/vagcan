@@ -435,5 +435,11 @@ row alone names a key of 327 cases).
 - XPL: which bytes the bits describe.
 - RA/RG/RS f12, every 6-hex and 4-hex field, MUX f0–f3: stored in `registry_row.raw` only.
 - No reader. A cache from before the two tables is upgraded in place (schema version 3,
-  `vag_data_db::migrate`): they are created empty, and the next registry read — `setup`, or
-  `ensure` meeting a unit not read yet — fills them. Units already read are not re-read for it.
+  `vag_data_db::migrate`): they are created empty, and the next `ensure` fills them —
+  `registry.json`'s `READ_VERSION` is 3 for "the other registries", so a log an older read
+  wrote has every unit read once more (`vag_cli_core::registry::READ_VERSION`; outdated, so
+  no build is refused meanwhile). The rows go under the stem the unit's channels go by, the
+  one `Tried::stem` logs and a car joins by; a unit with no channels but other rows logs that
+  stem too. Cost on the reference car (15 units, warm file cache):
+  `setup`'s channel step 0.5–0.6 s on master, 1.0–1.3 s with these rows; a whole cold `setup`
+  3.2–3.4 s against 4.4–4.5 s.
