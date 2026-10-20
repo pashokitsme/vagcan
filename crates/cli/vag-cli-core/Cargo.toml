@@ -39,6 +39,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 serde.workspace = true
 serde_json.workspace = true
 toml_edit.workspace = true
+# The other registries' lists, read per unit side by side, as the measurement lists are.
+rayon.workspace = true
 ratatui = "0.29"
 crossterm = "0.28"
 dirs = "6"

@@ -1515,19 +1515,27 @@ fn write_into<'a>(
 /// Every row a VCDS install's other registries give the units read, in one
 /// transaction, replacing what **any** VCDS install wrote there before — the rule
 /// [`put_all_vcds_readings`] follows, for the same reason. `variant` is the unit's
-/// `.rod` file stem. Returns how many rows landed.
+/// `.rod` file stem. Returns how many rows landed — or `None`, writing nothing, when the
+/// project holds no source for this installation: like the channels, these rows never
+/// make a source again that `setup --drop` removed while the read ran.
 pub fn put_all_vcds_registry_rows<'a>(
 	db_path: &Path,
 	install_dir: &str,
 	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::registries::Described])>,
-) -> Result<usize, Error> {
+) -> Result<Option<usize>, Error> {
 	use vag_data_labels::registries::Case;
+	if !db_path.is_file() {
+		return Ok(None);
+	}
 	let mut conn = Connection::open(db_path)?;
 	create_schema(&conn, db_path)?;
 	conn.pragma_update(None, "synchronous", "FULL")?;
 	conn.pragma_update(None, "cache_size", -65536)?;
-	let tx = conn.transaction()?;
-	let source = source_id(&tx, VCDS, install_dir)?;
+	// Immediate, so the check below and the write are one: a drop cannot commit between.
+	let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+	let Some(source) = held_source_id(&tx, VCDS, install_dir)? else {
+		return Ok(None);
+	};
 	let of_kind = "SELECT id FROM registry_row WHERE source_id IN (SELECT id FROM source WHERE kind = ?1)";
 	tx.execute(&format!("DELETE FROM registry_level WHERE registry_row_id IN ({of_kind})"), params![VCDS])?;
 	tx.execute(&format!("DELETE FROM registry_row WHERE id IN ({of_kind})"), params![VCDS])?;
@@ -1581,7 +1589,7 @@ pub fn put_all_vcds_registry_rows<'a>(
 		}
 	}
 	tx.commit()?;
-	Ok(written)
+	Ok(Some(written))
 }
 
 /// How many registry rows each section holds, by section tag, in tag order.
@@ -2915,9 +2923,19 @@ mod tests {
 		let ws = TempWorkspace::new("registry-rows");
 		let a = [described("ADP", 0x1075, 2), described("GES", 0x0317, 0)];
 		let b = [described("ADP", 0x1076, 0)];
+		// No cache, then no source for the installation: nothing is written, nothing made.
+		assert_eq!(
+			put_all_vcds_registry_rows(&ws.db_path, "/x/vcds-en", [("EV_UnitA", &a[..])]).unwrap(),
+			None
+		);
+		assert!(!ws.db_path.exists());
+		record_language(&ws.db_path, VCDS, "/x/vcds-en", "eng").unwrap();
+		record_language(&ws.db_path, VCDS, "/y/vcds-ru", "rus").unwrap();
+		assert_eq!(put_all_vcds_registry_rows(&ws.db_path, "/z/gone", [("EV_UnitA", &a[..])]).unwrap(), None);
+		assert_eq!(sources(&ws.db_path).unwrap().len(), 2, "the write made a source");
 		assert_eq!(
 			put_all_vcds_registry_rows(&ws.db_path, "/x/vcds-en", [("EV_UnitA", &a[..]), ("EV_UnitB", &b[..])]).unwrap(),
-			3
+			Some(3)
 		);
 		assert_eq!(
 			registry_rows_of(&ws.db_path, "EV_UnitA", "ADP").unwrap(),
@@ -2949,6 +2967,7 @@ mod tests {
 	fn a_source_merged_into_another_hands_over_its_registry_rows_or_drops_a_second_copy() {
 		let ws = TempWorkspace::new("registry-merge");
 		let rows = [described("ADP", 0x1075, 1)];
+		record_language(&ws.db_path, VCDS, "/x/vcds-en", "eng").unwrap();
 		put_all_vcds_registry_rows(&ws.db_path, "/x/vcds-en", [("EV_UnitA", &rows[..])]).unwrap();
 		let count = |conn: &Connection, source: i64| -> (i64, i64) {
 			conn
@@ -3021,6 +3040,7 @@ mod tests {
 		assert_eq!(remove_if_older(&ws.db_path).unwrap(), None, "and --refresh has nothing to remove");
 		// The tables take rows.
 		let a = [described("ADP", 0x1075, 1)];
+		record_language(&ws.db_path, VCDS, "/x/vcds-en", "eng").unwrap();
 		put_all_vcds_registry_rows(&ws.db_path, "/x/vcds-en", [("EV_UnitA", &a[..])]).unwrap();
 		assert_eq!(registry_row_counts(&ws.db_path).unwrap(), vec![("ADP".to_string(), 1)]);
 	}

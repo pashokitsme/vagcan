@@ -50,6 +50,8 @@ use vag_data_labels::unit_strings::{self, UnitsLoad};
 use crate::plan::UnitIdentity;
 use crate::project::Project;
 
+mod others;
+
 /// Where a VCDS installation keeps the ODX files, relative to its root.
 ///
 /// A property of Ross-Tech's layout, not of any car. Its presence is what says an
@@ -486,6 +488,9 @@ pub struct Summary {
 	pub not_channels: usize,
 	/// Listed rows that did not read.
 	pub unread: usize,
+	/// Rows written from the other registries — adaptations, basic settings,
+	/// output tests, freeze frames, XPL bits, MUX cases ([`others`]).
+	pub other_rows: usize,
 	/// Keys this run searched for and found.
 	pub keys_found: usize,
 	/// Whether the keys found were saved — `None` when they were.
@@ -517,6 +522,12 @@ impl Summary {
 		}
 		if self.unread > 0 {
 			detail.push_str(&format!("; {} listed row{} did not read", self.unread, plural(self.unread)));
+		}
+		if self.other_rows > 0 {
+			detail.push_str(&format!(
+				"; {} rows of adaptations, basic settings, output tests and freeze frames",
+				self.other_rows
+			));
 		}
 		if self.keys_found > 0 {
 			let kept = match self.keys_unsaved {
@@ -555,6 +566,9 @@ pub fn clear(root: &Path, project: &Project) -> Result<Option<String>> {
 	if vag_data_db::put_all_vcds_readings(&project.cache(), &source_of(root), std::iter::empty())?.is_none() {
 		return Ok(None);
 	}
+	// The other registries' rows go with the channels: they are the same
+	// installation's, read in the same run.
+	vag_data_db::put_all_vcds_registry_rows(&project.cache(), &source_of(root), std::iter::empty())?;
 	Ok(Some(match held {
 		0 => String::new(),
 		n => format!(
@@ -697,6 +711,8 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 		.iter()
 		.flat_map(|(odx, version)| projects_of(&projects, odx, version).into_iter().map(move |car| (odx, version, car)))
 		.collect();
+	// The other registries, read for the same units in the same run.
+	let mut others = others::Others::open(root, &mut keys, &mut notes, progress);
 
 	// A unit the project's ODIS rows describe is not a gap when this
 	// installation has nothing for it: its channels are there already.
@@ -739,7 +755,27 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 		}
 	});
 	keys.save();
-	for (at, ((odx, version, car), found)) in lookups.iter().zip(lists).enumerate() {
+	// The rest of each unit's work, side by side again: its other lists, from the
+	// file its measurement list was found in. Keys saved as each unit finishes.
+	progress.waiting(&format!("reading the other registries — 0 of {} units", lookups.len()));
+	let line = progress.reporter();
+	let base = keys.cache.clone();
+	let done = std::sync::atomic::AtomicUsize::new(0);
+	let shared = std::sync::Mutex::new(&mut keys);
+	let other_lists = others.read_units(root, &wanted, &lists, &registry, &base, &|found| {
+		let finished = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+		if !found.is_empty()
+			&& let Ok(mut keys) = shared.lock()
+		{
+			keys.cache.absorb(found);
+			keys.save();
+		}
+		if let Some(line) = &line {
+			line.set(&format!("reading the other registries — {finished} of {} units", lookups.len()));
+		}
+	});
+	keys.save();
+	for (at, (((odx, version, car), found), other)) in lookups.iter().zip(lists).zip(other_lists).enumerate() {
 		let (odx, version) = (*odx, *version);
 		// The list is found already; this numbers the unit's line.
 		progress.unit(at, lookups.len(), odx);
@@ -759,6 +795,9 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 			project: car.clone(),
 			stem: None,
 		});
+		// Whatever came of its measurement list: a unit whose `[MWB]` is shut may
+		// still list adaptations.
+		others.absorb(other, &words, &units_of, &tables);
 		let UnitMeasurements::Found { file, rows, via, .. } = found else {
 			if !extracted.for_unit_from(vag_data_db::ODIS, Some(odx), Some(version)).is_empty() {
 				progress.done(&format!("{odx}: {}; the ODIS project describes it", unit_gap(&found)));
@@ -832,26 +871,47 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 			if dropped == 1 { "its" } else { "their" }
 		));
 	}
+	if others.unread > 0 {
+		notes.push(format!(
+			"{} listed row{} of the other registries did not read",
+			others.unread,
+			plural(others.unread)
+		));
+	}
+	if others.shut > 0 {
+		notes.push(format!(
+			"{} list{} of adaptations, basic settings, output tests, freeze frames or XPL bits did not open: \
+			 a key not found, or a file only VCDS itself opens",
+			others.shut,
+			plural(others.shut)
+		));
+	}
 	if let Some(unsaved) = &keys.unsaved {
 		notes.push(format!("{unsaved} ({})", keys.path.display()));
 	}
 
 	let batch: Vec<(&str, &[vag_data_labels::odis::Reading])> = variants.iter().map(|(v, r)| (v.as_str(), r.as_slice())).collect();
-	// Into the project's VCDS source, checked inside the write: a source dropped while
-	// this read ran is not made again, and the log is not written for it either.
-	let written = match vag_data_db::put_all_vcds_readings(&project.cache(), &source_of(root), batch)? {
+	let (written, other_rows) = match vag_data_db::put_all_vcds_readings(&project.cache(), &source_of(root), batch)? {
 		Some(written) => {
+			// Into the same source, under the same rule: `None` is a source dropped
+			// between the two writes, and its rows went with it.
+			let other_rows = vag_data_db::put_all_vcds_registry_rows(
+				&project.cache(),
+				&source_of(root),
+				others.rows.iter().map(|(v, r)| (v.as_str(), r.as_slice())),
+			)?
+			.unwrap_or(0);
 			// After the rows and never before: see `Log`.
 			if let Err(e) = log.save(project) {
 				notes.push(format!(
 					"what was tried was not written down ({e:#}): the next run tries every unit again"
 				));
 			}
-			written
+			(written, other_rows)
 		}
 		None => {
 			notes.push(SOURCE_GONE.to_string());
-			0
+			(0, 0)
 		}
 	};
 	Ok(Read::Done(Summary {
@@ -860,6 +920,7 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 		written,
 		not_channels,
 		unread,
+		other_rows,
 		keys_found: keys.found(),
 		keys_unsaved: keys.unsaved.clone(),
 		notes,
@@ -1684,7 +1745,7 @@ mod tests {
 		// Up to the unit loop, and no further: past it the text runs on into
 		// this test, whose own list names every load again, and the last
 		// table's search would then reach the per-unit saves and pass on them.
-		let read = &read[..read.find("for (at, ((odx, version, car), found))").expect("the unit loop")];
+		let read = &read[..read.find("for (at, (((odx, version, car), found), other))").expect("the unit loop")];
 		let loads = ["load_registry(", "load_text_tables(", "= words(", "load_unit_strings("];
 		let mut from = 0;
 		for load in loads {
@@ -2081,6 +2142,7 @@ mod tests {
 			written: 2310,
 			not_channels: 0,
 			unread: 0,
+			other_rows: 0,
 			keys_found: 0,
 			keys_unsaved: None,
 			notes: Vec::new(),
@@ -2096,6 +2158,14 @@ mod tests {
 		assert!(detail.ends_with("1 key found, cached"), "{detail}");
 		summary.keys_unsaved = Some("not saved".into());
 		assert!(summary.detail().ends_with("1 key found, not saved"));
+		summary.other_rows = 412;
+		assert!(
+			summary
+				.detail()
+				.contains("; 412 rows of adaptations, basic settings, output tests and freeze frames"),
+			"{}",
+			summary.detail()
+		);
 	}
 
 	#[test]

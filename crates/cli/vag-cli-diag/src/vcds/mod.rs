@@ -258,7 +258,8 @@ pub enum Tool {
 		catalog: Option<String>,
 	},
 
-	/// Count what the label cache holds, table by table.
+	/// Count what the label cache holds, table by table, and the rows of VCDS's
+	/// other registries by section (ADP, FFMUX, GES, MUX, SOT, XPL).
 	///
 	/// FOR: telling "setup wrote nothing" apart from "setup wrote something I
 	/// cannot find", which are the same screenful of missing names otherwise.
@@ -414,6 +415,13 @@ fn stats(db_path: &std::path::Path, named: bool) -> Result<()> {
 		anyhow::bail!(crate::missing::NoLabelData::new("There is no label cache to count.").looked_for(db_path));
 	}
 	let counts = vag_data_db::row_counts(db_path)?;
+	// The other registries' rows, by the section a unit selects them with.
+	let sections: Vec<(String, i64)> = vag_data_db::registry_row_counts(db_path)?
+		.into_iter()
+		.map(|(section, n)| (format!("registry_row {section}"), i64::try_from(n).unwrap_or(i64::MAX)))
+		.collect();
+	let mut counts: Vec<(&str, i64)> = counts;
+	counts.extend(sections.iter().map(|(name, n)| (name.as_str(), *n)));
 	vag_cli_core::out!("{}", render_stats(&counts));
 	vag_cli_core::note!("label cache {}", db_path.display());
 	for (kind, dir) in vag_data_db::sources_of(db_path).unwrap_or_default() {
