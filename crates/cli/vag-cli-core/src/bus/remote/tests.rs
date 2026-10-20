@@ -227,6 +227,18 @@ fn a_refusal_by_the_board_is_spelled_one_way_everywhere() {
 	);
 }
 
+/// A read the board refused is said when the bus closes, with no `-v` needed: `faults
+/// --ble` on a moving car must not print empty units with nothing to say why.
+#[test]
+fn a_refusal_by_the_board_is_said_at_level_0() {
+	let note = super::once_refused(PEER, ENGINE, 0xF40D, "the car is moving");
+	let capture = crate::verbosity::Capture::start(0);
+	super::say_notes(std::slice::from_ref(&note));
+	let said = capture.finish();
+	assert_eq!(said.stderr, format!("{note}\n"));
+	assert!(said.stdout.is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_one_shot_read_is_a_request_of_that_one_identifier() {
 	let (bus, mut board) = start();

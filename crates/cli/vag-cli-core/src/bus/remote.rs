@@ -155,9 +155,15 @@ impl Drop for Remote {
 	/// Said once, when the bus closes: in the middle of a run it would land on top of
 	/// whatever the screen is drawing.
 	fn drop(&mut self) {
-		for line in &self.notes {
-			crate::note!("{line}");
-		}
+		say_notes(&self.notes);
+	}
+}
+
+/// The closing notes, at level 0: each is a read the board refused — the car moving, a
+/// sweep limit, the allowlist — and without it a unit comes out empty with no reason.
+fn say_notes(notes: &[String]) {
+	for line in notes {
+		crate::say!("{line}");
 	}
 }
 

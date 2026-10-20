@@ -270,7 +270,11 @@ async fn talk<L: UnitLink>(slot: &mut Option<L>, unit: Unit, pdu: &[u8], timeout
 	};
 	let stale = link.discard_stale().await;
 	if stale > 0 {
-		crate::wire!("   {:03X}  {stale} stale frame(s) dropped before the request", unit.request);
+		crate::wire!(
+			"   {:03X}  {stale} stale {} dropped before the request",
+			unit.request,
+			crate::table::plural(stale, "answer")
+		);
 	}
 	let mut channel = link.to_unit(CanId::Standard(unit.request), CanId::Standard(unit.response));
 	let heard = exchange(&mut channel, unit, pdu, timeout).await;
@@ -288,6 +292,11 @@ async fn talk<L: UnitLink>(slot: &mut Option<L>, unit: Unit, pdu: &[u8], timeout
 /// At `-vv` each step is a line on stderr ([`crate::wire!`]): what went out, what came
 /// back and after how long, every `78`, every late answer thrown away, and how it ended
 /// when it ended without an answer. Nothing it sends depends on the level.
+///
+/// Those lines are written as they happen, between the send and the receive, and the write
+/// blocks: a stderr that stops taking bytes — a terminal paused with XOFF, a pipe nobody
+/// reads — holds the exchange up, and a unit past its deadline reads as no answer. For a
+/// long `-vv` trace, send stderr to a file (`2>trace.log`).
 async fn exchange<C: AsyncIsoTpTransport>(channel: &mut C, unit: Unit, pdu: &[u8], timeout: Duration) -> Heard {
 	let mut discarded = 0;
 	// A request that suppressed its positive response is answered only by a refusal, so
