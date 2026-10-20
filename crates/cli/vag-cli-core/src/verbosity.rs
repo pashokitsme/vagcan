@@ -78,16 +78,24 @@ pub struct Captured {
 }
 
 /// Where writes go while a [`Capture`] is running: `None` is the real stdout and stderr.
-static SINK: Mutex<Option<Captured>> = Mutex::new(None);
+static SINK: Mutex<Option<Sink>> = Mutex::new(None);
+
+/// A running capture: what it holds, and whose writes it takes — one thread's, or with
+/// `None` every thread's.
+struct Sink {
+	captured: Captured,
+	owner: Option<std::thread::ThreadId>,
+}
 
 /// Write `text` to `stream` as it is (no newline added), past any spinner on screen.
 fn write(stream: Stream, text: &str) {
 	if let Ok(mut sink) = SINK.lock()
-		&& let Some(captured) = sink.as_mut()
+		&& let Some(sink) = sink.as_mut()
+		&& sink.owner.is_none_or(|owner| owner == std::thread::current().id())
 	{
 		match stream {
-			Stream::Out => captured.stdout.push_str(text),
-			Stream::Err => captured.stderr.push_str(text),
+			Stream::Out => sink.captured.stdout.push_str(text),
+			Stream::Err => sink.captured.stderr.push_str(text),
 		}
 		return;
 	}
@@ -226,8 +234,12 @@ pub fn hex(bytes: &[u8]) -> String {
 }
 
 /// Everything written, at `level`, between [`Capture::start`] and [`Capture::finish`] —
-/// from any thread — kept instead of written. One at a time in the process: a second
-/// start waits for the first to finish.
+/// on this thread, or from any thread with [`Capture::start_all`] — kept instead of
+/// written. One at a time in the process: a second start waits for the first to finish.
+///
+/// The level is the process's, so another test running beside a capture writes at its
+/// level too — to the real stderr, never into the capture, unless the capture takes every
+/// thread: `start_all` is for a test binary of one test.
 #[cfg(any(test, feature = "test-util"))]
 pub struct Capture {
 	_one: std::sync::MutexGuard<'static, ()>,
@@ -239,16 +251,34 @@ static ONE_CAPTURE: Mutex<()> = Mutex::new(());
 
 #[cfg(any(test, feature = "test-util"))]
 impl Capture {
+	/// What this thread writes.
 	pub fn start(level: u8) -> Capture {
+		Capture::begin(level, Some(std::thread::current().id()))
+	}
+
+	/// What every thread writes: a bus task's `-vv` lines too.
+	pub fn start_all(level: u8) -> Capture {
+		Capture::begin(level, None)
+	}
+
+	fn begin(level: u8, owner: Option<std::thread::ThreadId>) -> Capture {
 		let one = ONE_CAPTURE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 		let before = self::level();
 		set(level);
-		*SINK.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Captured::default());
+		*SINK.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Sink {
+			captured: Captured::default(),
+			owner,
+		});
 		Capture { _one: one, before }
 	}
 
 	pub fn finish(self) -> Captured {
-		SINK.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take().unwrap_or_default()
+		SINK
+			.lock()
+			.unwrap_or_else(|poisoned| poisoned.into_inner())
+			.take()
+			.map(|sink| sink.captured)
+			.unwrap_or_default()
 	}
 }
 

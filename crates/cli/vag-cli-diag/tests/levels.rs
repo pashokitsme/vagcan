@@ -174,7 +174,7 @@ macro_rules! levels {
 	($what:expr, $run:expr) => {{
 		let mut runs: Vec<Captured> = Vec::new();
 		for level in 0..=2u8 {
-			let capture = Capture::start(level);
+			let capture = Capture::start_all(level);
 			let result: anyhow::Result<()> = $run;
 			let captured = capture.finish();
 			result.unwrap_or_else(|e| panic!("{} at level {level}: {e:#}\n{captured:?}", $what));
