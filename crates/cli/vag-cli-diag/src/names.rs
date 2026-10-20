@@ -15,6 +15,7 @@
 //! on the car. The pairing still has to be earned by making the value move.
 
 use anyhow::{Context, Result};
+use vag_cli_core::table::{self, Table};
 
 /// Every name whose text contains `needle`, case-insensitively, with its text
 /// id.
@@ -73,46 +74,62 @@ pub fn run(needle: &str, limit: usize, files: &[NamesFile]) -> Result<()> {
 			_ => missing.looked_in(files.first().and_then(|f| f.path.parent()).unwrap_or(std::path::Path::new("."))),
 		});
 	}
+	for file in files.iter().filter(|f| !f.path.is_file()) {
+		vag_cli_core::note!("not there: {}", file.path.display());
+	}
 	let mut catalogs = Vec::new();
 	for file in &present {
 		let text = std::fs::read_to_string(&file.path).with_context(|| format!("reading the names file {}", file.path.display()))?;
 		let catalog: serde_json::Value = serde_json::from_str(&text).with_context(|| format!("parsing the names file {}", file.path.display()))?;
-		catalogs.push((file.source, catalog));
+		catalogs.push((*file, catalog));
 	}
 	let tagged = catalogs.len() > 1;
-	let hits: Vec<(&str, &str, &str)> = catalogs
-		.iter()
-		.flat_map(|(source, catalog)| search(catalog, needle).into_iter().map(move |(id, text)| (*source, id, text)))
-		.collect();
+	let mut hits: Vec<(&str, &str, &str)> = Vec::new();
+	for (file, catalog) in &catalogs {
+		let found = search(catalog, needle);
+		let size = catalog.as_object().map_or(0, |m| m.len());
+		vag_cli_core::note!("searched {} ({size} names)", file.path.display());
+		vag_cli_core::wire!("{}: {} of {size} match {needle:?}", file.path.display(), found.len());
+		hits.extend(found.into_iter().map(|(id, text)| (file.source, id, text)));
+	}
 	let total: usize = catalogs.iter().map(|(_, c)| c.as_object().map_or(0, |m| m.len())).sum();
 
+	vag_cli_core::out!("{}", render(&hits, total, limit, tagged));
+	vag_cli_core::note!("names are keyed by text id, not by data identifier: a match is a guess to test on the car");
 	if hits.is_empty() {
-		println!(
-			"No name contains {needle:?}.\n\n\
-             The names are those of the VCDS installation or ODIS project this project was\n\
-             set up from. Another build may have a name this one lacks."
+		vag_cli_core::note!(
+			"the names are those of the VCDS installation or ODIS project this project was set up from; another build may have a name this one lacks"
 		);
-		return Ok(());
 	}
-
-	let shown = hits.len().min(limit);
-	for (source, id, text) in hits.iter().take(shown) {
-		if tagged {
-			println!("  {source}  {id}  {text}");
-		} else {
-			println!("  {id}  {text}");
-		}
-	}
-	if hits.len() > shown {
-		println!("\n… {} more — showing {shown}, raise it with --limit", hits.len() - shown);
-	}
-	println!(
-		"\n{} of {total} names matched.\n\n\
-         These are names, not addresses: this list does not say which data\n\
-         identifier carries which name, so a match is a guess to test on the car.",
-		hits.len(),
-	);
 	Ok(())
+}
+
+/// What `names` prints on stdout: a table of the first `limit` hits — `source` only when
+/// more than one file was searched — and the summary line.
+fn render(hits: &[(&str, &str, &str)], total: usize, limit: usize, tagged: bool) -> String {
+	let shown = hits.len().min(limit);
+	let mut out = String::new();
+	if shown > 0 {
+		let mut table = match tagged {
+			true => Table::new(&["source", "id", "name"]),
+			false => Table::new(&["id", "name"]),
+		};
+		for (source, id, text) in hits.iter().take(shown) {
+			let mut row = Vec::with_capacity(3);
+			if tagged {
+				row.push(source.to_string());
+			}
+			row.extend([id.to_string(), text.to_string()]);
+			table.row(row);
+		}
+		out.push_str(&table.render(table::terminal_width()));
+	}
+	out.push_str(&format!("{} of {total} names match", hits.len()));
+	if hits.len() > shown {
+		out.push_str(&format!(" · first {shown} shown (--limit)"));
+	}
+	out.push('\n');
+	out
 }
 
 #[cfg(test)]
@@ -166,6 +183,8 @@ mod tests {
 	fn a_project_set_up_from_odis_alone_is_searched_through_its_odis_names() {
 		// `setup` from an ODIS project writes `names-odis.json` and no
 		// `names.json`; the search used to refuse such a project.
+		// Held so the hits are not written into another test's capture.
+		let _quiet = vag_cli_core::verbosity::Capture::start(0);
 		let dir = std::env::temp_dir().join(format!("vagcan-names-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&dir);
 		std::fs::create_dir_all(&dir).unwrap();
@@ -182,5 +201,22 @@ mod tests {
 		std::fs::write(project.names(), catalog().to_string()).unwrap();
 		run("manifold", 40, &project_files(&project)).expect("both files are searched");
 		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn the_answer_is_a_table_and_one_summary_line() {
+		let hits = [
+			("VCDS", "000017", "Synthetic manifold pressure"),
+			("ODIS", "000097", "Cruise target distance"),
+		];
+		assert_eq!(
+			render(&hits[..1], 3, 40, false),
+			"id      name\n000017  Synthetic manifold pressure\n1 of 3 names match\n"
+		);
+		assert_eq!(
+			render(&hits, 6, 1, true),
+			"source  id      name\nVCDS    000017  Synthetic manifold pressure\n2 of 6 names match · first 1 shown (--limit)\n"
+		);
+		assert_eq!(render(&[], 3, 40, false), "0 of 3 names match\n");
 	}
 }
