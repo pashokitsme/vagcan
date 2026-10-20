@@ -118,6 +118,23 @@ pub fn outln(text: &str) {
 	write(Stream::Out, &line);
 }
 
+/// Stdout as an [`std::io::Write`], through [`out`]: the sink for a writer of data that
+/// takes one (a CSV a command streams), so it is the same stdout every other data line
+/// goes to — past the spinner, and captured in a test.
+pub struct Stdout;
+
+impl std::io::Write for Stdout {
+	fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+		// `fmt` hands a writer whole `str` pieces, so a character is never split here.
+		out(&String::from_utf8_lossy(buf));
+		Ok(buf.len())
+	}
+
+	fn flush(&mut self) -> std::io::Result<()> {
+		Ok(())
+	}
+}
+
 /// A line on stderr at `level`: 0 for what every run says (the adapter used, a refusal, a
 /// question), [`NOTES`] and [`WIRE`] for the rest. Dropped while a full-screen view holds
 /// the terminal ([`hold`]), unless stderr is not that terminal.
