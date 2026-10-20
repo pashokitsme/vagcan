@@ -233,41 +233,31 @@ pub fn offer_to_unseal(files: &[PathBuf], cache: &Path) -> Result<()> {
 		return Ok(());
 	}
 	let n = files.len();
-	let each = crate::render::plural(n, "catalogue");
-	println!("\n{n} fault {each} on this car {} sealed.", if n == 1 { "is" } else { "are" });
-	for file in files {
-		println!("    {}", file.file_name().and_then(|f| f.to_str()).unwrap_or_default());
-	}
-	println!(
-		"Opening them recovers the words behind the numbers above. It is a key search:\n\
-         about three minutes each, once — the result is cached and every later run reads it."
+	let names: Vec<&str> = files.iter().map(|f| f.file_name().and_then(|f| f.to_str()).unwrap_or_default()).collect();
+	// What is sealed and the command that opens it, on stderr: a hint, not data.
+	vag_cli_core::say!(
+		"sealed   {} — `vagcan dev vcds rod --cache {} <file>` (~3 min each)",
+		names.join(", "),
+		cache.display()
 	);
+	vag_cli_core::note!("opening a sealed catalogue recovers the words for its codes: a key search, once — the key is cached");
 	if !crate::ui::can_ask() {
-		println!(
-			"\nTo do it:\n    vagcan dev vcds rod --cache {} <file>   (once per file above)",
-			cache.display()
-		);
 		return Ok(());
 	}
-	println!();
 	if !unseal_now(&mut crate::ui::Console::new(String::new())) {
-		println!(
-			"Left sealed. When you want them:\n    vagcan dev vcds rod --cache {} <file>   (once per file above)",
-			cache.display()
-		);
 		return Ok(());
 	}
-	for (at, file) in files.iter().enumerate() {
-		println!("\n[{}/{n}] {}", at + 1, file.file_name().and_then(|f| f.to_str()).unwrap_or_default());
+	for (at, (file, name)) in files.iter().zip(&names).enumerate() {
+		vag_cli_core::say!("[{}/{n}] {name}", at + 1);
 		crate::vcds::rod::run(&file.to_string_lossy(), true, Some(&cache.to_string_lossy()), None)?;
 	}
-	println!("\nDone. Run `vagcan faults` again and those codes will read in words.");
+	vag_cli_core::say!("unsealed: `vagcan faults` names those codes now");
 	Ok(())
 }
 
 /// The question, as the person reads it. `[y/N]` in the text: the answer is a
 /// letter and the default is the empty line.
-const UNSEAL_QUESTION: &str = "Recover them now? [y/N]";
+const UNSEAL_QUESTION: &str = "Unseal them now? [y/N]";
 
 /// Ask whether to start the key search. Anything short of a clear yes is a no —
 /// an empty line, Ctrl-D, a read that failed — because the price is minutes.

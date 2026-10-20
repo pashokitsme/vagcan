@@ -161,7 +161,7 @@ impl Naming {
 	/// family match, or several matching variants, is a choice — the row is
 	/// still shown, because it is the project's answer and the alternative is
 	/// no name at all, but the line never presents it as settled.
-	fn provenance(&self) -> Option<String> {
+	pub fn provenance(&self) -> Option<String> {
 		if self.confirmed && self.matched < 2 {
 			return None;
 		}
@@ -276,6 +276,26 @@ impl OdisFaults {
 	}
 
 	/// One line saying where the names come from, for the top of a listing.
+	/// The project's fault sources in a few words for the `names` line: `ODIS SK37X (deu)`.
+	pub fn short(&self) -> String {
+		let odis: Vec<String> = self
+			.sources
+			.iter()
+			.filter(|(kind, _, _)| kind == vag_data_db::ODIS)
+			.map(|(_, dir, language)| {
+				let name = std::path::Path::new(dir)
+					.file_name()
+					.map(|n| n.to_string_lossy().into_owned())
+					.unwrap_or_else(|| dir.clone());
+				match language {
+					Some(language) => format!("{name} ({language})"),
+					None => name,
+				}
+			})
+			.collect();
+		format!("ODIS {}", odis.join(", "))
+	}
+
 	pub fn describe(&self) -> String {
 		let (variants, codes) = vag_data_db::fault_counts(&self.cache).unwrap_or_default();
 		let odis: Vec<String> = self
