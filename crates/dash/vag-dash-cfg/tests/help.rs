@@ -10,7 +10,15 @@ use std::process::Command;
 #[test]
 fn help_is_printed_without_touching_bluetooth() {
 	for flag in ["--help", "-h"] {
-		let out = Command::new(env!("CARGO_BIN_EXE_dashcfg")).arg(flag).output().expect("dashcfg runs");
+		// HOME and `VAGCAN_HOME` at a directory of its own: a process a test starts never
+		// reads the person's `~/.vagcan`.
+		let home = std::env::temp_dir().join(format!("dashcfg-help-{}", std::process::id()));
+		let out = Command::new(env!("CARGO_BIN_EXE_dashcfg"))
+			.arg(flag)
+			.env("HOME", &home)
+			.env("VAGCAN_HOME", home.join(".vagcan"))
+			.output()
+			.expect("dashcfg runs");
 		let stdout = String::from_utf8_lossy(&out.stdout);
 		assert!(
 			out.status.success(),

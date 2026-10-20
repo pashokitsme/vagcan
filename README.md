@@ -416,3 +416,5 @@ Everything is in `~/.vagcan/`. Nothing is written to the checkout.
 ```
 
 - **Safe to delete:** `rod/` and everything in `data/<project id>/` except `measurements/`. `vagcan setup` rebuilds them.
+- **Another location:** `VAGCAN_HOME=/absolute/path` is used instead of `~/.vagcan`.
+- **Tests never use `~/.vagcan`.** A test build's is a temporary directory.

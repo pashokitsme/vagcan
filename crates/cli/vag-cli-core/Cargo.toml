@@ -14,6 +14,10 @@ rust-version.workspace = true
 # crate's tests need. `#[cfg(test)]` reaches only this crate's own tests, and
 # `diag`'s setup tests drive this menu.
 test-util = []
+# A test build's `~/.vagcan` is a temporary directory, never HOME's (`datadir::vagcan_dir`).
+# Turned on by every crate's dev-dependency on this one: opening a cache can upgrade it, and
+# a test that reached the person's own was writing their data. Never a normal dependency.
+test-root = []
 
 [dependencies]
 vag-uds-client = { path = "../../uds/vag-uds-client" }

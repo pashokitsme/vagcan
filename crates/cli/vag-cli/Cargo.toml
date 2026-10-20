@@ -46,3 +46,8 @@ anyhow = "1"
 # Synthetic catalog fixtures for the poll-scheduler tests write to a temp dir,
 # now that the proven rows they used to read live under ~/.vagcan, not the repo.
 tempfile = "3"
+# A test build never reads HOME's ~/.vagcan (`datadir::vagcan_dir`).
+vag-cli-core = { path = "../vag-cli-core", features = ["test-root"] }
+# `tests/no_real_home.rs`: a canary cache of the shape an upgrade rewrites. The version
+# `vag-data-db` locks, so nothing new is fetched.
+rusqlite = { version = "0.31", features = ["bundled"] }

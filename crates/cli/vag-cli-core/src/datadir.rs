@@ -79,8 +79,63 @@ pub const CAR_FILE: &str = "car.json";
 /// on a vehicle; the label files provably cannot supply those
 /// (`.archive/research/labels/rod-labels.md` §4.0c) and nothing but a car can recreate
 /// them. That is the one distinction a reader of the tree needs.
+///
+/// ## Overrides: [`ROOT_ENV`], and a test build
+///
+/// `VAGCAN_HOME`, when set, **is** that directory — what `~/.vagcan` holds, under
+/// another name — and HOME is not asked. It must be absolute: a relative one would
+/// follow the shell, as a relative HOME would. For a second set of data on one
+/// machine, and for a process a test starts (`.env(ROOT_ENV, …)`), which must never
+/// read the person's own.
+///
+/// **A test build never looks at HOME.** Built for tests — this crate's own, or another
+/// crate's through the `test-root` feature its dev-dependency turns on — the default is
+/// one temporary directory per process ([`test_root`]). Since `cache.sqlite` is upgraded
+/// in place when it is opened, a test that reached `~/.vagcan` was writing the person's
+/// data: `cargo test --workspace` upgraded the reference machine's cache (2026-10-20).
+/// One switch here covers every test, including the ones nobody thought reached it.
 pub fn vagcan_dir() -> anyhow::Result<PathBuf> {
+	if let Some(root) = std::env::var_os(ROOT_ENV).filter(|root| !root.is_empty()) {
+		let root = PathBuf::from(root);
+		anyhow::ensure!(
+			root.is_absolute(),
+			"{ROOT_ENV}={} is not an absolute path — it would mean another directory from every folder",
+			root.display()
+		);
+		return Ok(root);
+	}
+	default_root()
+}
+
+/// `~/.vagcan`, out of HOME.
+#[cfg(not(any(test, feature = "test-root")))]
+fn default_root() -> anyhow::Result<PathBuf> {
 	vagcan_dir_in(dirs::home_dir())
+}
+
+/// A test build's, which is never HOME's ([`test_root`]).
+#[cfg(any(test, feature = "test-root"))]
+fn default_root() -> anyhow::Result<PathBuf> {
+	Ok(test_root().to_path_buf())
+}
+
+/// The environment variable that names the directory `~/.vagcan` stands for.
+pub const ROOT_ENV: &str = "VAGCAN_HOME";
+
+/// A test build's `~/.vagcan`: one empty temporary directory for the life of the process,
+/// created on first use. Every test in one binary shares it, as they shared HOME before;
+/// a test that needs its own data writes it into a directory of its own.
+#[cfg(any(test, feature = "test-root"))]
+pub fn test_root() -> &'static Path {
+	static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+	ROOT.get_or_init(|| {
+		let root = std::env::temp_dir()
+			.join(format!("vagcan-test-root-{}", std::process::id()))
+			.join(".vagcan");
+		let _ = std::fs::remove_dir_all(&root);
+		std::fs::create_dir_all(&root).expect("a temporary directory for a test build's ~/.vagcan");
+		root
+	})
 }
 
 /// Where the projects live — `~/.vagcan/data/`, one directory per platform.
@@ -304,6 +359,8 @@ fn car_folder(vin: &str) -> anyhow::Result<String> {
 
 /// The rule behind [`vagcan_dir`], with the home directory passed in so it can
 /// be tested without a process-wide `set_var` that the other tests would race.
+/// Unused in another crate's test build, whose default is [`test_root`].
+#[cfg_attr(all(feature = "test-root", not(test)), allow(dead_code))]
 fn vagcan_dir_in(home: Option<PathBuf>) -> anyhow::Result<PathBuf> {
 	let home = home
 		.filter(|p| p.is_absolute())
@@ -474,6 +531,24 @@ mod tests {
 		assert_eq!(reads, 2000);
 		let left = std::fs::read_dir(&dir.0).unwrap().flatten().count();
 		assert_eq!(left, 1, "temporary files were left behind");
+	}
+
+	#[test]
+	fn a_test_build_never_resolves_to_the_vagcan_dir_home_points_at() {
+		// Opening a cache can upgrade it: a test that resolved HOME's `~/.vagcan` wrote into
+		// the person's data (2026-10-20). Unless `VAGCAN_HOME` names one, a test build's is
+		// a temporary directory of its own.
+		if std::env::var_os(ROOT_ENV).is_some() {
+			return;
+		}
+		let dir = vagcan_dir().unwrap();
+		assert_eq!(dir, test_root());
+		assert!(dir.is_dir());
+		assert!(dir.starts_with(std::env::temp_dir()), "{dir:?}");
+		if let Some(home) = dirs::home_dir() {
+			assert!(!dir.starts_with(home.join(".vagcan")), "{dir:?} is the person's own");
+		}
+		assert!(projects_dir().unwrap().starts_with(&dir));
 	}
 
 	#[test]

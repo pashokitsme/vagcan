@@ -1784,6 +1784,25 @@ mod tests {
 	}
 
 	#[test]
+	fn the_tests_here_never_reach_the_data_dir_home_points_at() {
+		// `arguments_are_checked_before_the_device_is_resolved` and
+		// `a_unit_that_does_not_parse_is_named_by_the_flag_typed` resolve a unit from the
+		// project's label cache, and opening it upgraded the reference machine's cache
+		// (2026-10-20). The dev-dependency's `test-root` is what keeps them off it.
+		if std::env::var_os(vag_cli_core::datadir::ROOT_ENV).is_some() {
+			return;
+		}
+		let dir = vag_cli_core::datadir::vagcan_dir().unwrap();
+		assert!(dir.starts_with(std::env::temp_dir()), "{dir:?}");
+		if let Some(home) = std::env::var_os("HOME") {
+			assert!(
+				!dir.starts_with(std::path::Path::new(&home).join(".vagcan")),
+				"{dir:?} is the person's own"
+			);
+		}
+	}
+
+	#[test]
 	fn the_top_level_is_only_what_needs_a_car() {
 		// The whole point of the `dev` group: a top level crowded with the
 		// workshop cannot be scanned while standing at an open driver's door.
