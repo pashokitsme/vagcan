@@ -34,7 +34,10 @@ pub(crate) use vag_cli_core::registry::label_dir_under;
 fn cache_is_current(cache: &Path, dir: &Path) -> bool {
 	// A cache that does not say what it holds cannot be vouched for — that is
 	// every cache written before this was recorded, and it rebuilds once.
-	if vag_data_db::source_of(cache).as_deref() != Some(dir.to_string_lossy().as_ref()) {
+	// In the spelling the cache keys sources by: a directory typed relative, or with a
+	// trailing slash, is still the one the cache was built from.
+	let wanted = vag_data_db::normalise_dir(&dir.to_string_lossy());
+	if vag_data_db::source_of(cache).as_deref() != Some(wanted.as_str()) {
 		return false;
 	}
 	match (std::fs::metadata(cache), std::fs::metadata(dir)) {

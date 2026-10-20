@@ -229,7 +229,8 @@ enum Command {
 	/// source wrote before and leaves every other source's data where it is,
 	/// and a second VCDS installation replaces the first. A VCDS run skips the
 	/// copy and the label files when they are newer than what they read, and
-	/// `--refresh` redoes them.
+	/// `--refresh` redoes them. `--list` shows what the project was read from, and
+	/// `--drop` removes one source with everything it wrote.
 	///
 	/// No VCDS installation: https://www.ross-tech.com/vcds/download/
 	Setup {
@@ -242,6 +243,16 @@ enum Command {
 		/// Redo every step, whatever is already in the project.
 		#[arg(long)]
 		refresh: bool,
+		/// List the project's sources: id, kind, language, when read, rows per kind, path.
+		#[arg(long, conflicts_with_all = ["dir", "refresh", "drop"])]
+		list: bool,
+		/// Remove one source and every row it wrote: `odis`, `vcds`, or an id from `--list`.
+		/// Asks first.
+		#[arg(long, value_name = "SOURCE", conflicts_with_all = ["dir", "refresh"])]
+		drop: Option<String>,
+		/// With `--drop`: do not ask. Needed without a terminal.
+		#[arg(long, requires = "drop")]
+		yes: bool,
 	},
 
 	/// Lists USB-CAN adapters and dash boards on USB.
@@ -666,7 +677,11 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 	match command {
 		// Awaited on this very thread, never spawned: the folder panel it may
 		// open needs the main thread (see `setup::run`).
-		Command::Setup { dir, refresh } => {
+		Command::Setup { list: true, .. } => setup::sources::list(),
+		Command::Setup {
+			drop: Some(selector), yes, ..
+		} => setup::sources::drop_source(&selector, yes),
+		Command::Setup { dir, refresh, .. } => {
 			setup::run(setup::Options {
 				dir: dir.as_deref(),
 				refresh,

@@ -46,9 +46,22 @@ So there are four sources and they are not interchangeable:
 
 The first three land in a **project** — `~/.vagcan/data/<project id>/`, holding
 `cache.sqlite`, `names.json`, `odx-ids.json`, `rod-keys.json`, `registry.json` (which VCDS
-installation the channels were read from, and what came of each unit) and `sources.json`, with the raw `.rod`
+installation the channels were read from, and what came of each unit), with the raw `.rod`
 files and the fault text in a shared `~/.vagcan/rod/` because those are a property of a
 VCDS *build* rather than of any car. The last lands in that project's `measurements/`.
+
+**Which sources a project holds is the `source` table in `cache.sqlite`, and nothing
+else.** One row per folder read: kind, the directory its rows are keyed by (an ODIS
+project's folder, a VCDS installation's `Labels`), the root `setup` was pointed at, the
+language, version and time read. Every row of `fault`, `reading`, `measurement` and
+`label_file` names its source. A `sources.json` beside the cache used to keep a second list;
+the two disagreed (an entry deleted there left its rows here, still read), so it was folded
+into the table by a schema migration (2026-10-20): read once into the rows it matches, then
+removed. `vagcan setup --list` prints the table; `--drop` deletes a source and every row
+that names it in one transaction, and the rules that rank one source over another then rank
+what is left. One folder is one row: paths are canonicalised before they become a key, the
+migration folds rows that name one directory, and a relative path an older vagcan stored is
+never resolved against the working directory — `--list` shows it as `stale`.
 `setup` fills the project, and with a VCDS installation alone the car's channels arrive with the
 first `watch`, `measure` or `units --identify` after it (or `dev dash build`, offline); the
 messages a short tool prints say whether it lacks label data or scalings.
@@ -345,7 +358,7 @@ The same read runs from `watch`, `measure` and `units --identify` with the car, 
 them that the installation has not been tried for — the first time, with a line, a spinner and a
 line per unit — and the project's `registry.json` records the installation and what came of each
 unit, so a unit VCDS has no file for is not searched for again. A project set up before that log
-existed is read from the installation its `sources.json` names, when that path is absolute and
+existed is read from the installation its VCDS source names, when that path is absolute and
 still holds `UDS_EV`. The firmware's build never reads: a plan that uses a unit whose channels
 have not been read is refused, and the refusal names `dev dash build` — or `setup`, when the
 installation is no longer where `setup` read it. A recorded unit the plan does not use is a note,

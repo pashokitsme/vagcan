@@ -21,7 +21,7 @@
 //! installation, and for each unit what came of it — read, no file, shifted, key not found.
 //! A unit the installation has no file for is not searched for again on every run, and
 //! [`ensure`] knows where the installation is without asking — or, for a project set up
-//! before the log existed, from the VCDS entry of its `sources.json` ([`Installation`]).
+//! before the log existed, from its VCDS source in the cache ([`Installation`]).
 //! Every read is over every recorded unit at once, because the rows are replaced per kind
 //! ([`vag_data_db::put_all_vcds_readings`], `Replace::Kind`): with the keys cached the known
 //! units cost seconds, and the last installation read is the one whose rows the project holds.
@@ -165,11 +165,18 @@ pub fn label_dir_under(given: &Path) -> Result<PathBuf> {
 /// Where an install's registry rows are written: under the source its label
 /// files were written under, so an install is one source with one language,
 /// whichever of its files a row came from.
-fn source_of(root: &Path) -> String {
+pub(crate) fn source_of(root: &Path) -> String {
 	label_dir_under(root)
 		.unwrap_or_else(|_| root.to_path_buf())
 		.to_string_lossy()
 		.into_owned()
+}
+
+/// The VCDS installation root a recorded label directory sits in: the directory itself or
+/// one of its two parents, whichever holds [`ODX_DIR`] — the root `setup` takes, two levels
+/// at most, as [`label_dir_under`] looks down. `None` when none is on disk.
+pub fn installation_holding(labels: &Path) -> Option<PathBuf> {
+	labels.ancestors().take(3).find(|dir| dir.join(ODX_DIR).is_dir()).map(Path::to_path_buf)
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +273,7 @@ pub fn note_installation(project: &Project, root: &Path) -> Result<()> {
 
 /// The installation as the log names it: resolved, so a path typed relative to
 /// where `setup` ran still means the same directory from wherever `watch` runs
-/// — as `sources.json` keeps it. One that cannot be resolved is kept as given.
+/// — as the cache keeps a source. One that cannot be resolved is kept as given.
 fn installation_path(root: &Path) -> PathBuf {
 	std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
 }
@@ -760,9 +767,9 @@ const RERUN_SETUP: &str = "re-run `vagcan setup <VCDS installation>`";
 ///
 /// The log names it once a read has been made. A project set up **before the log
 /// existed** has none, and with nothing else to go on `ensure` did nothing and
-/// said nothing (found in review, 2026-09-28) — so `sources.json`, which every
-/// `setup` has written, is the fallback: its VCDS entry is the installation when
-/// its path is absolute and holds `UDS_EV`. Absolute, because a relative path in
+/// said nothing (found in review, 2026-09-28) — so the project's VCDS source in the
+/// cache, which every `setup` has written, is the fallback: it is the installation
+/// when its path is absolute and holds `UDS_EV`. Absolute, because a relative path in
 /// there was true in the directory `setup` ran in and nowhere else, and this tool
 /// resolves nothing against the working directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -777,7 +784,7 @@ pub enum Installation {
 }
 
 /// The rule behind [`Installation`], on the log (if any) and the project's
-/// `sources.json` VCDS entries, **newest first** ([`crate::project::sources_of_kind`]).
+/// VCDS sources in the cache, **newest first** ([`crate::project::sources_of_kind`]).
 /// Only the newest counts: its rows are the ones the project holds, and an older
 /// entry is an installation whose rows they replaced.
 fn installation(log: Option<&Log>, vcds_sources: &[String]) -> Installation {
@@ -1294,7 +1301,7 @@ mod tests {
 	fn the_installation_is_the_logs_or_else_the_absolute_vcds_source_holding_udsev() {
 		// Found in review (2026-09-28): a project set up before `registry.json`
 		// existed has no log, and `ensure` did nothing and said nothing — so
-		// `sources.json`'s VCDS entry stands in when it can be used, and when
+		// the VCDS source in the cache stands in when it can be used, and when
 		// it cannot the line says what to type.
 		let dir = tempfile::tempdir().unwrap();
 		let root = install_at(dir.path());
@@ -1430,7 +1437,7 @@ mod tests {
 		assert!(why.contains("RM.rod"), "{why}");
 		assert_eq!(removed, "", "nothing had been read before");
 		let log = Log::load(&project).unwrap().expect("the log is written");
-		assert_eq!(log.installation, root.canonicalize().unwrap(), "resolved, as sources.json keeps a path");
+		assert_eq!(log.installation, root.canonicalize().unwrap(), "resolved, as the cache keeps a source");
 		assert_eq!(
 			log.units,
 			vec![tried("EV_A", "001", "registry: no file"), tried("EV_B", "", "registry: no file")]

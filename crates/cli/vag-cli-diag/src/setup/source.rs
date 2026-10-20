@@ -867,9 +867,9 @@ fn unescape(text: &str) -> String {
 /// a store at `SK37X-1` holding data that calls itself `SK37X` is one platform in
 /// two places. Nothing here reads `index.xml` itself: one rule with two
 /// implementations that can disagree is worse than one that is asked twice.
-/// `rereads` are the projects in `existing` whose `sources.json` already records
-/// this source: landing on one of those reads the source again rather than
-/// adding it, and says so.
+/// `rereads` are the projects in `existing` whose cache already holds this source
+/// ([`crate::project::records_source`]): landing on one of those reads the source
+/// again rather than adding it, and says so.
 pub fn project_id(io: &mut impl Asker, source: &Source, existing: &[String], rereads: &[String]) -> Result<String> {
 	let folder = match source {
 		Source::Odis { dir } => dir.file_name().map(|name| name.to_string_lossy().into_owned()),
@@ -1678,7 +1678,7 @@ mod tests {
 
 	#[test]
 	fn a_source_read_into_this_project_before_is_said_to_be_read_again() {
-		// e2e79a7 made a reread replace the source's `sources.json` entry, and the
+		// e2e79a7 made a reread replace the source's entry (its cache row now), and the
 		// rows it wrote go with it. "Added; what other sources put there stays"
 		// describes a second source, not the same one a second time.
 		let here = tempfile::tempdir().unwrap();

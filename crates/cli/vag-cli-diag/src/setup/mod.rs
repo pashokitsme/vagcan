@@ -70,6 +70,7 @@
 
 mod registry;
 pub mod source;
+pub mod sources;
 pub mod vendor;
 
 use std::path::{Path, PathBuf};
@@ -584,7 +585,7 @@ fn prepare_cache(cache: &Path, refresh: bool, reads: &[(&str, String)]) -> Resul
 				format!("  vagcan setup --refresh {}", crate::missing::shell_word(dir))
 			}
 			vag_data_db::ODIS => format!("  {dir} — an ODIS project, not on this machine any more"),
-			vag_data_db::VCDS => match installation_holding(Path::new(dir)) {
+			vag_data_db::VCDS => match crate::registry::installation_holding(Path::new(dir)) {
 				Some(root) => format!("  vagcan setup --refresh {}", crate::missing::shell_word(&root.display().to_string())),
 				None => format!(
 					"  {dir} — a VCDS installation's labels, not on this machine any more \
@@ -602,13 +603,6 @@ fn prepare_cache(cache: &Path, refresh: bool, reads: &[(&str, String)]) -> Resul
 		said.push_str(&format!("\n{READ_AGAIN}\n{}", again.join("\n")));
 	}
 	Ok(Some(said))
-}
-
-/// The VCDS installation root a recorded label directory sits in: the directory itself or
-/// one of its two parents, whichever holds `UDS_EV/` — the root `setup` takes, two levels
-/// at most, as [`crate::labels::label_dir_under`] looks down. `None` when none is on disk.
-fn installation_holding(labels: &Path) -> Option<PathBuf> {
-	labels.ancestors().take(3).find(|dir| dir.join("UDS_EV").is_dir()).map(Path::to_path_buf)
 }
 
 /// Whether `vagcan faults` will be able to name a code once this run is done:

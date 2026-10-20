@@ -15,14 +15,14 @@
 //!                           every project parsed from it.
 //!   data/
 //!     SK37X/
-//!       cache.sqlite        the label/ODIS rows, queryable
+//!       cache.sqlite        the label/ODIS rows, queryable, and the sources they
+//!                           came from (its `source` table)
 //!       names.json          text id -> name
 //!       odx-ids.json        text id -> the IDE/MAS id that text names
 //!       rod-keys.json       recovered .rod section keys — per project, because a
 //!                           key is a property of one file's *bytes* and two VCDS
 //!                           builds ship a same-named .rod with different content
 //!       measurements/       proven-on-car rows, one file per part number
-//!       sources.json        where this project's data came from
 //!   config.toml             which project a bare command means
 //! ```
 //!
@@ -112,8 +112,10 @@ impl Project {
 		self.dir.join("measurements")
 	}
 
-	/// The provenance log (design §4.4).
-	pub fn sources(&self) -> PathBuf {
+	/// The provenance log older vagcans kept beside the cache. The `source` table in
+	/// [`Project::cache`] is the list of sources now; this file is read once, into it,
+	/// and removed ([`sources`]).
+	fn legacy_sources(&self) -> PathBuf {
 		self.dir.join("sources.json")
 	}
 
@@ -137,17 +139,18 @@ impl Project {
 	}
 }
 
-/// One line of a project's provenance log.
+/// What `setup` records about one source it read, on that source's row in the
+/// cache ([`record_source`]).
 ///
-/// Read by nothing at run time. It exists so a person can answer "where did this
-/// project's data come from", the way `git log` answers it for code — which is a
-/// real question once two sources have merged into one `cache.sqlite` and the
-/// rows no longer say which run put them there.
+/// So a person can answer "where did this project's data come from", the way
+/// `git log` answers it for code (`vagcan setup --list`), and so a command can ask
+/// which kinds of source a project holds ([`has_source`]).
 #[derive(Debug, Clone)]
 pub struct SourceEntry {
 	/// `"vcds"` or `"odis"`.
 	pub kind: &'static str,
-	/// The directory it was read from, as it was on the day.
+	/// The folder `setup` was pointed at: a VCDS installation's root, an ODIS
+	/// project's folder.
 	pub path: String,
 	/// Whatever the source calls its own version: a VCDS build's fault-text file
 	/// name, or `VWMCD_ProjectVersionInfo` out of `DatabaseVersionInfo.txt`.
@@ -323,131 +326,167 @@ pub fn rod_pool() -> Result<PathBuf> {
 	Ok(dir)
 }
 
-/// Record one source in a project's provenance log.
+/// Record one source on its row in the project's cache: where `setup` was pointed,
+/// what the source calls its version, one line more, and the time — the row is made
+/// if this is the first thing written for it.
 ///
-/// One entry per source, not one per run. Two *different* sources merge into
-/// one project, and a log that kept only the last would answer the question it
-/// exists for with half the truth — so another source's entry is kept. The
-/// *same* source read again is a reread: its entry is replaced where it stands,
-/// with this run's version and time, rather than a copy appended per run. "The
-/// same" is the kind and the directory under the spelling rule `cache.sqlite`
-/// keys sources by ([`vag_data_db::normalise_dir`]), so `SK37X` and `SK37X/`
-/// are one entry here as they are one source there.
-///
-/// An unreadable existing file is started over rather than failing the
-/// run — nothing reads this at run time, and losing a `setup` to a corrupt note
-/// about a previous one would be the wrong trade.
+/// One row per source, not one per run: the *same* source read again is a reread,
+/// and its row is restamped where it stands. "The same" is the kind and the
+/// directory under the spelling rule the cache keys sources by
+/// ([`vag_data_db::normalise_dir`]), so `SK37X` and `SK37X/` are one source. A VCDS
+/// installation is keyed by its `Labels` directory, as its rows are
+/// ([`crate::registry::label_dir_under`]); `path` is kept as its root.
 pub fn record_source(p: &Project, entry: SourceEntry) -> Result<()> {
-	let path = p.sources();
-	let mut sources = std::fs::read_to_string(&path)
+	adopt_legacy(p);
+	let root = vag_data_db::normalise_dir(&entry.path);
+	let meta = vag_data_db::Meta {
+		// Stored resolved, as the cache stores a directory: a path as typed is only
+		// true in the directory it was typed in.
+		root: Some(root.clone()),
+		version: entry.version,
+		detail: entry.detail,
+		parsed_at: None,
+	};
+	std::fs::create_dir_all(&p.dir).with_context(|| format!("creating {}", p.dir.display()))?;
+	vag_data_db::record_meta(&p.cache(), entry.kind, &cache_dir(entry.kind, &root), &meta)
+		.map_err(|e| anyhow::anyhow!("recording {} in {}: {e}", entry.path, p.cache().display()))
+}
+
+/// The directory the cache keys a source of `kind` at `path` by: a VCDS
+/// installation's `Labels`, anything else as given.
+fn cache_dir(kind: &str, path: &str) -> String {
+	match kind {
+		vag_data_db::VCDS => crate::registry::source_of(Path::new(path)),
+		_ => path.to_string(),
+	}
+}
+
+/// Every source this project holds, oldest first: the `source` table of its cache.
+///
+/// Empty when there is no cache — a project nothing has been read into. A cache that
+/// will not open is an error, said by the caller.
+///
+/// A `sources.json` an older vagcan left beside the cache is read into it first,
+/// once ([`adopt_legacy`]).
+pub fn sources(project: &Project) -> Result<Vec<vag_data_db::Source>> {
+	let cache = project.cache();
+	if !cache.is_file() {
+		return Ok(Vec::new());
+	}
+	adopt_legacy(project);
+	vag_data_db::sources(&cache).map_err(|e| anyhow::anyhow!("reading the sources of {}: {e}", cache.display()))
+}
+
+/// The project's sources, or none when they cannot be read — for the questions that
+/// take the cautious answer to a cache that cannot say.
+fn sources_or_none(project: &Project) -> Vec<vag_data_db::Source> {
+	sources(project).unwrap_or_default()
+}
+
+/// Whether this very source — this kind, this directory under any spelling — is
+/// already in the project. Reading it again is then a reread: its rows are
+/// replaced, and [`record_source`] restamps its row.
+pub fn records_source(project: &Project, kind: &str, path: &str) -> bool {
+	let root = vag_data_db::normalise_dir(path);
+	let dir = cache_dir(kind, &root);
+	sources_or_none(project)
+		.iter()
+		.any(|s| s.kind == kind && (s.dir == dir || s.meta.root.as_deref() == Some(root.as_str())))
+}
+
+/// Whether a source of this kind has been read into this project.
+///
+/// A file's *content* cannot say which parser produced it, and `names.json` on a
+/// project that has only ever seen ODIS runs is ODIS wording under a name that
+/// promises VCDS's. The `source` table is what knows. `false` when the cache is
+/// missing or will not open — a project that cannot say where its data came from
+/// gets the cautious answer, which is to trust nothing it did not have to.
+pub fn has_source(project: &Project, kind: &str) -> bool {
+	sources_or_none(project).iter().any(|s| s.kind == kind)
+}
+
+/// Where every source of this kind was read from, **newest read first** — for a
+/// VCDS installation its root, which `crate::registry::Installation` reads a unit's
+/// channels from when the project's `registry.json` does not name one.
+///
+/// By `parsed_at`, then by id: a row with no stamp — one an older vagcan wrote and
+/// no note of it said when — counts as the oldest. A VCDS row with no root recorded
+/// names the installation holding its `Labels` directory
+/// ([`crate::registry::installation_holding`]), or the directory itself; a relative
+/// one is given as it is, and nothing resolves it.
+pub fn sources_of_kind(project: &Project, kind: &str) -> Vec<String> {
+	let mut rows: Vec<vag_data_db::Source> = sources_or_none(project).into_iter().filter(|s| s.kind == kind).collect();
+	rows.sort_by(|a, b| b.meta.parsed_at.cmp(&a.meta.parsed_at).then(b.id.cmp(&a.id)));
+	rows
+		.into_iter()
+		.map(|s| match (&s.meta.root, s.is_stale()) {
+			(Some(root), _) => root.clone(),
+			(None, false) if kind == vag_data_db::VCDS => crate::registry::installation_holding(Path::new(&s.dir))
+				.map(|root| root.display().to_string())
+				.unwrap_or(s.dir),
+			(None, _) => s.dir,
+		})
+		.collect()
+}
+
+/// Read a `sources.json` an older vagcan left beside the cache into the cache's
+/// `source` table, and remove the file.
+///
+/// The file was a second list of the same sources and the two disagreed: an entry
+/// deleted from it left the source's rows in the cache, still read. So the table
+/// wins on *which* sources there are, and the file only fills in what a row does not
+/// say yet — where `setup` was pointed, the version, the time
+/// ([`vag_data_db::adopt_meta`]). An entry with no row is a source the cache does not
+/// hold, and adds none. Entries under a relative path, or for a VCDS installation
+/// whose `Labels` row is not under it, match nothing.
+///
+/// Best effort, and said on stderr when it happened: a file that does not read is
+/// removed all the same, since nothing reads it any more — but a cache that will not
+/// take the write keeps the file for the next run.
+fn adopt_legacy(project: &Project) {
+	let path = project.legacy_sources();
+	if !path.is_file() || !project.cache().is_file() {
+		return;
+	}
+	let entries = std::fs::read_to_string(&path)
 		.ok()
 		.and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
 		.and_then(|value| value.get("sources").and_then(|s| s.as_array()).cloned())
 		.unwrap_or_default();
-
-	let wanted = vag_data_db::normalise_dir(&entry.path);
-	let same = |row: &serde_json::Value| same_source(row, entry.kind, &wanted);
-	let at = sources.iter().position(same);
-	sources.retain(|row| !same(row));
-
-	let mut row = serde_json::Map::new();
-	row.insert("kind".into(), entry.kind.into());
-	// Stored resolved, as `cache.sqlite` stores it: a path as typed is only
-	// true in the directory it was typed in.
-	row.insert("path".into(), wanted.clone().into());
-	if let Some(version) = entry.version {
-		row.insert("version".into(), version.into());
+	let Ok(rows) = vag_data_db::sources(&project.cache()) else {
+		return;
+	};
+	for entry in &entries {
+		let (Some(kind), Some(given)) = (entry["kind"].as_str(), entry["path"].as_str()) else {
+			continue;
+		};
+		if !Path::new(given).is_absolute() {
+			continue;
+		}
+		let root = vag_data_db::normalise_dir(given);
+		let row = rows.iter().find(|s| {
+			s.kind == kind
+				&& !s.is_stale()
+				&& match kind {
+					vag_data_db::VCDS => Path::new(&s.dir).starts_with(&root),
+					_ => s.dir == root,
+				}
+		});
+		let Some(row) = row else { continue };
+		let text = |key: &str| entry[key].as_str().map(str::to_string);
+		let meta = vag_data_db::Meta {
+			root: Some(root.clone()),
+			version: text("version"),
+			detail: text("detail"),
+			parsed_at: text("parsed_at"),
+		};
+		if vag_data_db::adopt_meta(&project.cache(), row.id, &meta).is_err() {
+			return;
+		}
 	}
-	if let Some(detail) = entry.detail {
-		row.insert("detail".into(), detail.into());
+	if std::fs::remove_file(&path).is_ok() {
+		eprintln!("note: {} read into {} and removed", path.display(), project.cache().display());
 	}
-	row.insert("parsed_at".into(), chrono::Utc::now().to_rfc3339().into());
-	match at {
-		Some(at) => sources.insert(at, serde_json::Value::Object(row)),
-		None => sources.push(serde_json::Value::Object(row)),
-	}
-
-	let document = serde_json::json!({ "sources": sources });
-	std::fs::create_dir_all(&p.dir).with_context(|| format!("creating {}", p.dir.display()))?;
-	std::fs::write(&path, serde_json::to_string_pretty(&document)?).with_context(|| format!("writing {}", path.display()))?;
-	Ok(())
-}
-
-/// Whether a `sources.json` row is the source `kind` at `wanted`, a directory
-/// already through [`vag_data_db::normalise_dir`] — the one test both
-/// [`record_source`] and [`records_source`] use, so they cannot disagree.
-fn same_source(row: &serde_json::Value, kind: &str, wanted: &str) -> bool {
-	row["kind"].as_str() == Some(kind) && row["path"].as_str().is_some_and(|path| vag_data_db::normalise_dir(path) == wanted)
-}
-
-/// Whether this very source — this kind, this directory under any spelling —
-/// is already recorded in the project. Reading it again is then a reread:
-/// [`record_source`] replaces its entry, and what it wrote is written again.
-///
-/// `false` when the log is missing or unreadable, as for [`has_source`].
-pub fn records_source(project: &Project, kind: &str, path: &str) -> bool {
-	let Ok(text) = std::fs::read_to_string(project.sources()) else {
-		return false;
-	};
-	let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-		return false;
-	};
-	let wanted = vag_data_db::normalise_dir(path);
-	value["sources"]
-		.as_array()
-		.is_some_and(|rows| rows.iter().any(|row| same_source(row, kind, &wanted)))
-}
-
-/// Whether a source of this kind has ever been read into this project.
-///
-/// Asked of `sources.json`, which is why that log exists — design §4.4 says
-/// nothing reads it at run time, and this is the exception that earned itself:
-/// a file's *content* cannot say which parser produced it, and `names.json` on
-/// a project that has only ever seen ODIS runs is ODIS wording under a name
-/// that promises VCDS's. The log is the only thing on disk that knows.
-///
-/// `false` when the log is missing or unreadable — a project that cannot say
-/// where its data came from gets the cautious answer, which is to trust nothing
-/// it did not have to.
-pub fn has_source(project: &Project, kind: &str) -> bool {
-	!sources_of_kind(project, kind).is_empty()
-}
-
-/// The directories every source of this kind was read from, as `sources.json`
-/// records them, **newest read first** — the second exception to §4.4, for the
-/// same reason as [`has_source`]: a project set up from a VCDS installation
-/// before `registry.json` existed has this as its only note of where the
-/// installation is (`crate::registry::Installation`), and the installation is
-/// the one read last, whose rows the project holds.
-///
-/// By `parsed_at`, not by position: [`record_source`] puts a reread back where
-/// its entry was, so the file's order is the order sources were first read in.
-/// An entry with no stamp counts as the oldest. Empty when the log is missing
-/// or unreadable.
-pub fn sources_of_kind(project: &Project, kind: &str) -> Vec<String> {
-	let Ok(text) = std::fs::read_to_string(project.sources()) else {
-		return Vec::new();
-	};
-	let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-		return Vec::new();
-	};
-	let mut rows: Vec<(String, String)> = value["sources"]
-		.as_array()
-		.map(|rows| {
-			rows
-				.iter()
-				.filter(|row| row["kind"].as_str() == Some(kind))
-				.filter_map(|row| {
-					let path = row["path"].as_str()?.to_string();
-					Some((row["parsed_at"].as_str().unwrap_or_default().to_string(), path))
-				})
-				.collect()
-		})
-		.unwrap_or_default();
-	// RFC 3339 in one zone sorts as text; a stable sort keeps the file's order
-	// between equal stamps.
-	rows.sort_by(|a, b| b.0.cmp(&a.0));
-	rows.into_iter().map(|(_, path)| path).collect()
 }
 
 /// What `config.toml` says this machine's project is, if it says.
@@ -521,7 +560,7 @@ mod tests {
 		let p = open_or_create_in(here.path(), "SK37X").unwrap();
 		assert_eq!(p.id, "SK37X");
 		assert!(p.dir.is_dir(), "the directory is created on first open");
-		for path in [p.cache(), p.names(), p.odx_ids(), p.rod_keys(), p.measurements_dir(), p.sources()] {
+		for path in [p.cache(), p.names(), p.odx_ids(), p.rod_keys(), p.measurements_dir(), p.registry_log()] {
 			assert_eq!(path.parent(), Some(p.dir.as_path()), "{path:?} is not in the project");
 		}
 	}
@@ -716,13 +755,13 @@ mod tests {
 		)
 		.unwrap();
 
-		let text = std::fs::read_to_string(p.sources()).unwrap();
-		let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-		let rows = value["sources"].as_array().unwrap();
-		assert_eq!(rows.len(), 2, "{text}");
-		assert_eq!(rows[0]["kind"], "vcds");
-		assert_eq!(rows[1]["version"], "2610.2.688");
-		assert!(rows[1]["parsed_at"].as_str().is_some_and(|t| t.contains('T')), "{text}");
+		let rows = sources(&p).unwrap();
+		assert_eq!(rows.len(), 2, "{rows:?}");
+		assert_eq!(rows[0].kind, "vcds");
+		assert_eq!(rows[1].meta.version.as_deref(), Some("2610.2.688"));
+		assert_eq!(rows[1].meta.detail.as_deref(), Some("54 variants"));
+		assert!(rows[1].meta.parsed_at.as_deref().is_some_and(|t| t.contains('T')), "{rows:?}");
+		assert!(!p.legacy_sources().exists(), "no second list is written beside the cache");
 	}
 
 	#[test]
@@ -751,14 +790,12 @@ mod tests {
 		record_source(&p, vcds).unwrap();
 		record_source(&p, entry(format!("{}/", project_dir.display()), "2610.2.700")).unwrap();
 
-		let text = std::fs::read_to_string(p.sources()).unwrap();
-		let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-		let rows = value["sources"].as_array().unwrap();
-		assert_eq!(rows.len(), 2, "one folder read twice is one source:\n{text}");
-		let odis: Vec<&serde_json::Value> = rows.iter().filter(|row| row["kind"] == "odis").collect();
-		assert_eq!(odis.len(), 1, "{text}");
-		assert_eq!(odis[0]["version"], "2610.2.700", "the entry is the latest read:\n{text}");
-		assert!(rows.iter().any(|row| row["kind"] == "vcds"), "another source's entry stays:\n{text}");
+		let rows = sources(&p).unwrap();
+		assert_eq!(rows.len(), 2, "one folder read twice is one source: {rows:?}");
+		let odis: Vec<&vag_data_db::Source> = rows.iter().filter(|row| row.kind == "odis").collect();
+		assert_eq!(odis.len(), 1, "{rows:?}");
+		assert_eq!(odis[0].meta.version.as_deref(), Some("2610.2.700"), "the row is the latest read");
+		assert!(rows.iter().any(|row| row.kind == "vcds"), "another source's row stays");
 
 		// And it is known to be there before it is read a third time.
 		assert!(records_source(&p, "odis", &format!("{}/", project_dir.display())));
@@ -811,10 +848,78 @@ mod tests {
 			},
 		)
 		.unwrap();
-		let text = std::fs::read_to_string(p.sources()).unwrap();
-		let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-		let stored = value["sources"][0]["path"].as_str().unwrap();
-		assert!(std::path::Path::new(stored).is_absolute(), "stored as typed: {text}");
+		let rows = sources(&p).unwrap();
+		assert!(!rows[0].is_stale(), "stored as typed: {rows:?}");
+		assert!(Path::new(rows[0].path()).is_absolute(), "{rows:?}");
+	}
+
+	/// A project as an older vagcan left it: a cache, and a `sources.json` beside it
+	/// naming the VCDS installation by its root while the cache keys it by `Labels`.
+	fn with_legacy_log(here: &Path) -> (Project, PathBuf, PathBuf) {
+		let p = open_or_create_in(here, "SK37X").unwrap();
+		let install = here.join("vcds-en");
+		let odis = here.join("Downloads").join("SK37X");
+		std::fs::create_dir_all(install.join("Labels")).unwrap();
+		std::fs::write(install.join("Labels").join("index.lbl"), b"001,1,x,,").unwrap();
+		std::fs::create_dir_all(&odis).unwrap();
+		let (install, odis) = (install.canonicalize().unwrap(), odis.canonicalize().unwrap());
+		vag_data_db::record_language(&p.cache(), vag_data_db::VCDS, &install.join("Labels").to_string_lossy(), "eng").unwrap();
+		vag_data_db::record_language(&p.cache(), vag_data_db::ODIS, &odis.to_string_lossy(), "deu").unwrap();
+		let log = serde_json::json!({ "sources": [
+			{ "kind": "vcds", "path": install, "version": "Codes.dat", "parsed_at": "2026-10-20T07:26:16.756324+00:00" },
+			{ "kind": "odis", "path": "/nowhere/else", "version": "2610.2.688" },
+			{ "kind": "vcds", "path": "vendor/vcds-en" },
+		]});
+		std::fs::write(p.legacy_sources(), log.to_string()).unwrap();
+		(p, install, odis)
+	}
+
+	#[test]
+	fn a_sources_json_left_beside_the_cache_is_read_into_it_once_and_removed() {
+		// The defect this replaces: the owner deleted the ODIS entry from `sources.json`
+		// and `faults` went on naming codes from ODIS, because the rows were in the
+		// cache. The cache's table is the list now; the file only fills in what a row
+		// does not say, and a source it names that the cache does not hold adds none.
+		let here = temp();
+		let (p, install, odis) = with_legacy_log(here.path());
+		let rows = sources(&p).unwrap();
+		assert!(!p.legacy_sources().exists(), "read once and removed");
+		assert_eq!(rows.len(), 2, "the file adds no source and removes none: {rows:?}");
+		let vcds = rows.iter().find(|s| s.kind == "vcds").unwrap();
+		assert_eq!(
+			vcds.path(),
+			install.to_string_lossy(),
+			"the root the file kept, beside the cache's Labels"
+		);
+		assert_eq!(vcds.meta.version.as_deref(), Some("Codes.dat"));
+		assert_eq!(vcds.meta.parsed_at.as_deref(), Some("2026-10-20T07:26:16.756324+00:00"));
+		let odis_row = rows.iter().find(|s| s.kind == "odis").unwrap();
+		assert_eq!(odis_row.dir, odis.to_string_lossy(), "the ODIS source the file had lost is still there");
+		assert_eq!(
+			odis_row.meta,
+			vag_data_db::Meta::default(),
+			"and nothing of another folder's entry is put on it"
+		);
+		assert!(has_source(&p, "odis") && has_source(&p, "vcds"));
+		// The installation the registry falls back on is the root, from the table alone.
+		assert_eq!(sources_of_kind(&p, "vcds"), vec![install.display().to_string()]);
+	}
+
+	#[test]
+	fn a_vcds_source_with_no_root_recorded_names_the_installation_holding_its_labels() {
+		// A cache whose `sources.json` was deleted by hand: the row has only `Labels`.
+		let here = temp();
+		let p = open_or_create_in(here.path(), "SK37X").unwrap();
+		let install = here.path().join("vcds-en");
+		std::fs::create_dir_all(install.join(crate::registry::ODX_DIR)).unwrap();
+		std::fs::create_dir_all(install.join("Labels")).unwrap();
+		let install = install.canonicalize().unwrap();
+		let labels = install.join("Labels");
+		vag_data_db::record_language(&p.cache(), vag_data_db::VCDS, &labels.to_string_lossy(), "eng").unwrap();
+		assert_eq!(sources_of_kind(&p, "vcds"), vec![install.display().to_string()]);
+		// And one under a relative path is given as it is, for the caller to refuse.
+		vag_data_db::record_language(&p.cache(), vag_data_db::ODIS, "vendor/odis", "deu").unwrap();
+		assert_eq!(sources_of_kind(&p, "odis"), vec!["vendor/odis".to_string()]);
 	}
 
 	// The two tests that used to sit here — that remembering a project leaves

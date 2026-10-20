@@ -29,15 +29,15 @@ pub const CAR_FILE: &str = "car.json";
 ///                                     this build's fault text
 ///   data/
 ///     SK37X/                          one directory per *platform* — `crate::project`
-///       cache.sqlite                    the label and ODIS rows, queryable
-///       names.json                      text id -> name, from a VCDS installation
+///       cache.sqlite                    the label and ODIS rows, queryable, and the
+///                                       sources they came from (`source` table)
+///       names.json                     text id -> name, from a VCDS installation
 ///       names-odis.json                 text id -> name, from an ODIS project
 ///       odx-ids.json                    text id -> the IDE/MAS id that text names
 ///       rod-keys.json                   recovered .rod section keys
 ///       registry.json                   which VCDS installation the channels were read
 ///                                       from, and what came of each unit — `crate::registry`
 ///       measurements/                   proven-on-car rows, one file per part number
-///       sources.json                    where this project's data came from
 ///   config.toml                       settings, and the marks `watch` keeps:
 ///                                     which project a bare command means, which
 ///                                     language names are shown in, favourites by VIN
