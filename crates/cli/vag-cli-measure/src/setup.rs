@@ -207,6 +207,16 @@ pub fn prompt_line(prompt: &str, default: Option<&str>) -> String {
 	}
 }
 
+/// Why the interview will not start, if it will not: a person at the keyboard (stdin a
+/// terminal) and the questions going somewhere else (stderr not one). Answers piped in on
+/// stdin are a script, and a script is asked whatever stderr is.
+pub fn interview_refusal(stdin_is_terminal: bool, stderr_is_terminal: bool) -> Option<&'static str> {
+	(stdin_is_terminal && !stderr_is_terminal).then_some(
+		"`measure setup` asks its questions on stderr, and stderr is not the terminal\n\
+		 Fix: run it without redirecting stderr (`2>`), or pipe the answers in on stdin",
+	)
+}
+
 /// The interview as a person has it: the questions and everything said on stderr, the
 /// answers off `input` — stdin, or a script in a test — and the data on stdout.
 pub struct Console<R = std::io::BufReader<std::io::Stdin>> {
@@ -823,6 +833,14 @@ pub fn still_valid(passes: Vec<KeptPass>, rho: f64, mass_kg: f64) -> (Vec<KeptPa
 ///
 /// `open` takes the bus to the car.
 pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opts: Options<'_>) -> Result<()> {
+	// Before the car is opened: the questions go to stderr, and with stderr away from the
+	// terminal a person at it would wait on questions nobody shows.
+	if let Some(why) = interview_refusal(
+		std::io::IsTerminal::is_terminal(&std::io::stdin()),
+		std::io::IsTerminal::is_terminal(&std::io::stderr()),
+	) {
+		bail!("{why}");
+	}
 	let today = today();
 	let store = vag_data_labels::catalog::CatalogStore::open(opts.catalogs);
 	let bus = open().await?;
@@ -1595,6 +1613,17 @@ mod screens {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn the_interview_is_refused_only_to_a_person_whose_questions_go_elsewhere() {
+		// `measure setup 2>log`: the questions went into the log while the terminal
+		// waited (review of PR #38). A script on stdin keeps working.
+		let refused = interview_refusal(true, false).expect("a person, stderr in a file");
+		assert!(refused.lines().nth(1).is_some_and(|l| l.starts_with("Fix: ")), "{refused}");
+		assert_eq!(interview_refusal(true, true), None, "a person at a terminal");
+		assert_eq!(interview_refusal(false, false), None, "a script, stderr in a file");
+		assert_eq!(interview_refusal(false, true), None, "a script on stdin");
+	}
 
 	/// A unique-per-test temp dir, cleaned up on drop — the shape the rest of
 	/// this crate's file tests use. Nothing here may write inside a checkout.
