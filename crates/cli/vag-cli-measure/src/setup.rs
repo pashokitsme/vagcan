@@ -32,13 +32,13 @@
 //! either.
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
+use vag_cli_core::table::pairs;
+use vag_cli_core::verbosity::NOTES;
 
 use crate::carfile::{CarFile, FitConditions, Mass, Source, Sourced, UnitRef, rolling_radius_m};
 use crate::channels::{self, Resolved, Set};
@@ -168,8 +168,30 @@ pub trait Interview {
 	/// invalid answer, which is re-asked instead.
 	fn ask(&mut self, prompt: &str, default: Option<&str>) -> Result<String>;
 
-	/// Say something that needs no answer.
-	fn say(&mut self, text: &str);
+	/// Say something that needs no answer, on stderr, at `level`: 0 for what every
+	/// setup says, [`NOTES`] for the reasoning and the costs behind it.
+	fn say_at(&mut self, level: u8, text: &str);
+
+	/// The command's data, on stdout: the car file and what the fit found.
+	fn out(&mut self, text: &str);
+
+	/// Say something every setup says.
+	fn say(&mut self, text: &str) {
+		self.say_at(0, text);
+	}
+
+	/// Say something at `-v`.
+	fn note(&mut self, text: &str) {
+		self.say_at(NOTES, text);
+	}
+
+	/// A message's text, then its detail at `-v`.
+	fn tell(&mut self, message: &messages::Message) {
+		self.say(&message.text);
+		if !message.detail.is_empty() {
+			self.note(message.detail.trim_end());
+		}
+	}
 }
 
 /// The line a person actually sees: the question, and the default in brackets.
@@ -185,21 +207,39 @@ pub fn prompt_line(prompt: &str, default: Option<&str>) -> String {
 	}
 }
 
-/// The interview as a person has it: stdout and stdin.
-pub struct Console;
+/// The interview as a person has it: the questions and everything said on stderr, the
+/// answers off `input` — stdin, or a script in a test — and the data on stdout.
+pub struct Console<R = std::io::BufReader<std::io::Stdin>> {
+	input: R,
+}
 
-impl Interview for Console {
+impl Console {
+	/// The interview over this process's stdin — the one reader of it, so what the
+	/// buffer reads ahead is the next answer's.
+	pub fn stdin() -> Console {
+		Console {
+			input: std::io::BufReader::new(std::io::stdin()),
+		}
+	}
+}
+
+impl<R: std::io::BufRead> Console<R> {
+	/// The interview with its answers read from `input`.
+	pub fn reading(input: R) -> Console<R> {
+		Console { input }
+	}
+}
+
+impl<R: std::io::BufRead> Interview for Console<R> {
 	fn ask(&mut self, prompt: &str, default: Option<&str>) -> Result<String> {
 		// No progress line may tick over the question (`crate::progress::hold`).
 		let _held = crate::progress::hold();
-		let mut out = std::io::stdout();
-		write!(out, "{}", prompt_line(prompt, default))?;
-		out.flush()?;
+		vag_cli_core::verbosity::ask(&prompt_line(prompt, default));
 		let mut line = String::new();
 		// Zero bytes read is the end of input, which is not an empty answer: a
 		// script that was piped in and ran out must not be taken for agreement
 		// with every remaining default.
-		if std::io::stdin().read_line(&mut line)? == 0 {
+		if self.input.read_line(&mut line)? == 0 {
 			bail!("stdin ended in the middle of the questions — nothing further was written");
 		}
 		let answer = line.trim();
@@ -209,8 +249,12 @@ impl Interview for Console {
 		})
 	}
 
-	fn say(&mut self, text: &str) {
-		println!("{text}");
+	fn say_at(&mut self, level: u8, text: &str) {
+		vag_cli_core::verbosity::say(level, text);
+	}
+
+	fn out(&mut self, text: &str) {
+		vag_cli_core::verbosity::outln(text.trim_end());
 	}
 }
 
@@ -272,7 +316,7 @@ fn ask_yes_no(io: &mut impl Interview, question: &str, default: bool) -> Result<
 /// the nearest thing to a name anything on the bus offers.
 pub fn interview(io: &mut impl Interview, car: &mut CarFile, today: &str) -> Result<()> {
 	if car.mass.is_none() {
-		io.say(&screens::mass_intro());
+		io.note(&screens::mass_intro());
 		// Three questions and one sum, rather than one question and a sum the
 		// owner has to do: a mass in running order already includes a 75 kg
 		// driver, so "kerb mass plus yourself" double-counts about 150 kg — and
@@ -307,7 +351,7 @@ pub fn interview(io: &mut impl Interview, car: &mut CarFile, today: &str) -> Res
 	}
 
 	if car.tyre.is_none() {
-		io.say(&screens::tyre_intro());
+		io.note(&screens::tyre_intro());
 		loop {
 			let answer = io.ask(screens::TYRE_QUESTION, None)?;
 			let Some(radius) = rolling_radius_m(&answer) else {
@@ -364,6 +408,9 @@ pub fn interview(io: &mut impl Interview, car: &mut CarFile, today: &str) -> Res
 /// `stated` is whatever a flag supplied and skips the questions entirely.
 pub fn air_density(io: &mut impl Interview, measured: Option<f64>, stated: Option<f64>) -> Result<Sourced<f64>> {
 	if let Some(rho) = measured {
+		io.note(&format!(
+			"air density  {rho:.4} kg/m³, measured: the car's barometer and outside air temperature"
+		));
 		return Ok(Sourced::new(rho, Source::Measured));
 	}
 	if let Some(rho) = stated {
@@ -371,7 +418,7 @@ pub fn air_density(io: &mut impl Interview, measured: Option<f64>, stated: Optio
 		return Ok(Sourced::new(rho, Source::Stated));
 	}
 
-	io.say(&messages::no_barometer());
+	io.tell(&messages::no_barometer());
 	let hpa = ask_number(
 		io,
 		"air pressure now, as a forecast or a weather app gives it",
@@ -399,7 +446,7 @@ pub fn air_density(io: &mut impl Interview, measured: Option<f64>, stated: Optio
 	};
 	let rho = power::air_density(hpa_to_kpa(hpa), celsius);
 	let answer = Sourced::new(rho, source);
-	io.say(&screens::air_density_settled(&answer));
+	io.tell(&screens::air_density_settled(&answer));
 	Ok(answer)
 }
 
@@ -453,6 +500,8 @@ pub enum Note {
 	/// Printed and kept — a pass accepted, a pass rejected, the way out of a road
 	/// that will not do the speed.
 	Said(String),
+	/// What a [`Note::Said`] costs or rests on, said at `-v`.
+	Detail(String),
 	/// Enough passes. The caller stops polling and fits.
 	Done,
 }
@@ -603,7 +652,9 @@ impl Coastdown {
 		// way out is offered rather than merely documented.
 		if !self.open && !self.hinted && self.accepted.is_empty() && s.t - began > HINT_AFTER_S && self.fastest_kmh < self.from_kmh {
 			self.hinted = true;
-			notes.push(Note::Said(screens::narrower_range(self.from_kmh, self.fastest_kmh)));
+			let hint = screens::narrower_range(self.from_kmh, self.fastest_kmh);
+			notes.push(Note::Said(hint.text));
+			notes.push(Note::Detail(hint.detail));
 		}
 
 		notes.push(Note::Waiting(if self.open {
@@ -752,7 +803,7 @@ pub fn save_passes(path: &Path, passes: &[KeptPass]) -> Result<()> {
 /// a warm afternoon is not a two-pass measurement of anything, so the mismatched
 /// ones are dropped — with the reason on screen, because a driver who was told
 /// they owed one pass and is now asked for two deserves to know why.
-pub fn still_valid(passes: Vec<KeptPass>, rho: f64, mass_kg: f64) -> (Vec<KeptPass>, Option<String>) {
+pub fn still_valid(passes: Vec<KeptPass>, rho: f64, mass_kg: f64) -> (Vec<KeptPass>, Option<messages::Message>) {
 	let matches = |p: &KeptPass| (p.rho - rho).abs() <= RHO_TOLERANCE * rho && (p.mass_kg - mass_kg).abs() <= 1.0;
 	if passes.iter().all(matches) {
 		return (passes, None);
@@ -797,7 +848,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 	// the project was set up from — before the channel check below reads the
 	// project's rows.
 	crate::registry::ensure_async(identities.clone()).await;
-	let mut io = Console;
+	let mut io = Console::stdin();
 
 	// 2. The channel check, at a standstill, so a missing channel is found with
 	//    the handbrake on rather than at a green light. Resolved as `full`
@@ -807,25 +858,18 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 	let set = match channels::resolve(&store, &crate::extracted::current(), &identities, true) {
 		Ok(set) => set,
 		Err(missing) => {
-			let rows: Vec<ChannelFound> = missing
-				.iter()
-				.map(|m| ChannelFound {
-					unit: "—".into(),
-					part_number: "—".into(),
-					key: m.key,
-					ok: false,
-				})
-				.collect();
+			let rows: Vec<ChannelFound> = crate::found_report(&identities, &missing);
 			let missing: Vec<MissingChannel> = missing.into_iter().map(|m| MissingChannel { key: m.key, tried: m.tried }).collect();
-			io.say(&screens::units_answered(&identities));
-			io.say(&messages::missing_channels(&rows, &missing));
-			bail!("this car's catalogs are missing a channel the coastdown needs");
+			io.note(screens::units_answered(&identities).trim_end());
+			let refusal = messages::missing_channels(&rows, &missing);
+			io.note(refusal.detail.trim_end());
+			bail!("{}", refusal.text);
 		}
 	};
-	io.say(&screens::channel_check(&set, &identities));
+	io.tell(&screens::channel_check(&set, &identities));
 	if let Some(refusal) = screens::coast_impossible(&set) {
-		io.say(&refusal);
-		bail!("a coastdown pass could not be recognised from this car's channels");
+		io.note(&refusal.detail);
+		bail!("{}", refusal.text);
 	}
 
 	// 3. The car file, and where it stands. A file for a different car is refused
@@ -837,8 +881,8 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 	let mut car = if path.exists() {
 		let existing = CarFile::load(&path)?;
 		if existing.vin != vin {
-			io.say(&messages::wrong_car(&existing.vin, &vin));
-			bail!("that car file is for another car");
+			io.note("a car file is not applied to another car: mass and road load belong to one car");
+			bail!("{}", messages::wrong_car(&existing.vin, &vin));
 		}
 		existing
 	} else {
@@ -855,7 +899,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 		.collect();
 	let mut kept = load_passes(&passes_path(&path));
 	if car.mass.is_some() || car.tyre.is_some() || !kept.is_empty() {
-		io.say(&screens::resuming(&car, &kept));
+		io.tell(&screens::resuming(&car, &kept));
 		// The old prompt asked "keep or discard?" and then acted on the letter
 		// `r` alone — a question with an unguessable answer, which is the same
 		// fault the format hints above exist to fix. Both words work now, and
@@ -881,13 +925,13 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 	let delta1 = delta1(&car).context("the car file describes this car by now")?;
 	let (kept, dropped) = still_valid(kept, rho.value, mass_kg);
 	if let Some(note) = dropped {
-		io.say(&note);
+		io.tell(&note);
 	}
 	save_passes(&passes_path(&path), &kept)?;
 
 	// 6. The road part, explained while the car is still parked, because none of
 	//    it can be explained at 120 km/h.
-	io.say(&screens::road_briefing(opts.coast_from_kmh, opts.coast_to_kmh, &rho));
+	io.tell(&screens::road_briefing(opts.coast_from_kmh, opts.coast_to_kmh, &rho));
 	io.ask(screens::READY_QUESTION, Some(""))?;
 
 	// 7. The drive. Nothing below this line asks the driver anything.
@@ -908,11 +952,12 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 						Note::Waiting(text) => line.update(&text),
 						Note::Said(text) => {
 							line.finish();
-							println!("\n{text}\n");
+							io.say(&text);
 							// Every accepted pass is on disk before the next one
 							// is asked for.
 							save_passes(&passes_path(&path), stage.accepted())?;
 						}
+						Note::Detail(text) => io.note(&text),
 						Note::Done => break,
 					}
 				}
@@ -924,11 +969,21 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 	let kept = stage.accepted().to_vec();
 
 	// 8. The fit, and what the car is now known to be.
-	match finish(&mut car, &kept, delta1, &today) {
+	conclude(&mut io, &mut car, &path, &kept, delta1, &today)
+}
+
+/// Fit the passes, write the car file when the fit holds, and say what came of it:
+/// the car file and the fit as a `key  value` block on stdout, what it unlocks at
+/// level 0, how the fit was judged and what it rests on at `-v`. A fit that does not
+/// hold writes nothing and says why, with the passes' own figures as the data.
+pub fn conclude(io: &mut impl Interview, car: &mut CarFile, path: &Path, kept: &[KeptPass], delta1: f64, today: &str) -> Result<()> {
+	match finish(car, kept, delta1, today) {
 		Ok(result) => {
-			car.save(&path)?;
-			let _ = std::fs::remove_file(passes_path(&path));
-			io.say(&screens::complete(&car, &path, &result));
+			car.save(path)?;
+			let _ = std::fs::remove_file(passes_path(path));
+			let complete = screens::complete(car, path, &result, kept);
+			io.out(&complete.data);
+			io.tell(&complete.said);
 		}
 		Err(Reject::Disagreement {
 			crr_percent,
@@ -937,15 +992,11 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 			implied_wind_ms,
 		}) => {
 			let per_pass: Vec<(f64, f64)> = kept.iter().map(|p| (p.fit.cda, p.fit.crr)).collect();
-			io.say(&messages::fit_rejected(
-				crr_percent,
-				limit,
-				&per_pass,
-				implied_grade_percent,
-				implied_wind_ms,
-			));
+			let rejected = messages::fit_rejected(crr_percent, limit, &per_pass, implied_grade_percent, implied_wind_ms);
+			io.out(&rejected.data);
+			io.tell(&rejected.refusal);
 		}
-		Err(other) => io.say(&screens::fit_not_possible(&other, kept.len())),
+		Err(other) => io.tell(&screens::fit_not_possible(&other, kept.len())),
 	}
 	Ok(())
 }
@@ -1111,6 +1162,7 @@ fn unit_of(request: u16) -> Option<vag_cli_core::bus::Unit> {
 /// road briefing, the resumed-setup banner and the closing screen.
 mod screens {
 	use super::*;
+	use crate::messages::Message;
 
 	/// One numeric question as a person reads it: what is wanted, in what unit,
 	/// shaped like what, and what will be accepted.
@@ -1144,8 +1196,7 @@ mod screens {
 		// ends up typing the same thing twice.
 		format!(
 			"  {answer:?} is not a number I can read. Write it the way {example} is written: \
-             digits\n  only, without the {unit}, a point or a comma for the decimal, and between \
-             {} and\n  {}.",
+             digits only, without the {unit}, a point or a comma for the decimal, between {} and {}.",
 			trim_zeros(*range.start()),
 			trim_zeros(*range.end())
 		)
@@ -1155,14 +1206,12 @@ mod screens {
 		format!("  {answer:?} is not yes or no. Type y or n, or press Enter for {default}.")
 	}
 
-	/// What a tyre size looks like, said before it is asked for rather than only
-	/// after a wrong answer. This is the question the owner could not answer.
+	/// What a tyre size looks like, said at `-v` before it is asked for; the question
+	/// itself carries the shape at every level.
 	pub fn tyre_intro() -> String {
-		"\nThe tyre size is moulded into the sidewall: the section width in mm, a slash,\n\
-         the aspect ratio, then the construction letter and the rim in inches. Copy it as\n\
-         it is written there — 205/55R16, 225/40ZR18, 195/65 R15 all read the same to me.\n\
-         It is the front tyres that matter, and it is the only thing here that describes\n\
-         the car's hardware."
+		"the tyre size is moulded into the sidewall: the section width in mm, a slash, the aspect ratio, \
+         then the construction letter and the rim in inches — 205/55R16, 225/40ZR18 and 195/65 R15 all read \
+         the same; the front tyres, as written there"
 			.to_string()
 	}
 
@@ -1176,11 +1225,11 @@ mod screens {
 	pub const READY_QUESTION: &str = "press Enter when you have read that and are ready to set off (nothing else is \
          needed here)";
 
+	/// Why the mass is asked in parts, at `-v`.
 	pub fn mass_intro() -> String {
-		"\nThe mass, in two parts, so the arithmetic is mine rather than yours. A\n\
-         registration document's mass in running order already includes a 75 kg driver\n\
-         and a nearly full tank, so adding yourself to it counts you twice — about\n\
-         150 kg on a 1400 kg car, and mass is most of the power figure."
+		"the mass in two parts, so the arithmetic is mine: a registration document's mass in running order \
+         already includes a 75 kg driver and a nearly full tank, so adding yourself to it counts you twice — \
+         about 150 kg on a 1400 kg car, and mass is most of the power figure"
 			.to_string()
 	}
 
@@ -1201,48 +1250,37 @@ mod screens {
 	}
 
 	pub fn not_a_tyre(answer: &str) -> String {
-		format!(
-			"  {answer:?} is not a tyre size I can turn into a wheel radius. It is written\n  \
-             on the sidewall as width/aspect then the rim — 205/55R16, 225/40ZR18."
-		)
+		format!("  {answer:?} is not a tyre size I can turn into a wheel radius: width/aspect then the rim, as on the sidewall — 205/55R16, 225/40ZR18.")
 	}
 
-	/// What answered, before anything is said about what is missing.
+	/// What answered, at `-v`, beside a refusal of what is missing.
 	pub fn units_answered(identities: &[UnitIdentity]) -> String {
-		let mut out = format!("\n{} control units answered:\n", identities.len());
+		let mut table = vag_cli_core::table::Table::new(&["unit", "part", "component"]);
 		for unit in identities {
-			let _ = writeln!(
-				out,
-				"    {:03X}  {:<14} {}",
-				unit.request,
-				unit.part_number.as_deref().unwrap_or("—"),
-				unit.component.as_deref().unwrap_or("")
-			);
+			table.row(vec![
+				format!("{:03X}", unit.request),
+				unit.part_number.clone().unwrap_or_else(|| "—".to_string()),
+				unit.component.clone().unwrap_or_default(),
+			]);
 		}
-		out
+		table.render(None)
 	}
 
-	/// The pre-flight check, at a standstill.
-	pub fn channel_check(set: &Set, identities: &[UnitIdentity]) -> String {
-		let part = |request: u16| {
-			identities
-				.iter()
-				.find(|i| i.request == request)
-				.and_then(|i| i.part_number.clone())
-				.unwrap_or_else(|| "—".to_string())
-		};
-		let mut out = String::from("\nchannel check — read now, parked, and not at a green light:\n\n");
-		for channel in set.all() {
-			let _ = writeln!(
-				out,
-				"    {:03X}  {:<14} {:<18} {}",
-				channel.request,
-				part(channel.request),
-				channel.key,
-				channel.def.name
-			);
+	/// The pre-flight check, at a standstill: one line, and where every channel came
+	/// from at `-v`.
+	pub fn channel_check(set: &Set, identities: &[UnitIdentity]) -> Message {
+		let part = |request: u16| identities.iter().find(|i| i.request == request).and_then(|i| i.part_number.clone());
+		let channels = set.all().count();
+		let units = identities.len();
+		Message {
+			text: format!(
+				"{channels} channel{} on {units} control unit{} · timing from {}",
+				if channels == 1 { "" } else { "s" },
+				if units == 1 { "" } else { "s" },
+				set.leading.source()
+			),
+			detail: set.provenance(part),
 		}
-		out
 	}
 
 	/// The two channels without which no pass can ever be recognised.
@@ -1250,28 +1288,27 @@ mod screens {
 	/// A manual car with no selector channel is the real case: the coast would
 	/// never open, and the driver would discover that after a kilometre of clear
 	/// road rather than on the drive.
-	pub fn coast_impossible(set: &Set) -> Option<String> {
+	pub fn coast_impossible(set: &Set) -> Option<Message> {
 		let has = |key: &str| set.all().any(|c| c.key == key);
 		let missing: Vec<&str> = ["pedal", "selector"].into_iter().filter(|k| !has(k)).collect();
 		if missing.is_empty() {
 			return None;
 		}
-		Some(format!(
-			"\nA coastdown pass is recognised from the bus — the speed falling with the pedal\n\
-             at zero and the selector in N — and this car publishes no {}.\n\n\
-             Without it no pass can open, so the road part would never start, and nothing is\n\
-             asked of you at speed to make up for it. Everything answered so far is saved.\n\
-             A source that describes the channel brings it: vagcan setup <ODIS project>",
-			missing.join(" and ")
-		))
+		Some(Message {
+			text: format!(
+				"no {} channel on this car: a coastdown pass cannot be recognised\n\
+                 a source that describes the channel brings it: vagcan setup <ODIS project>",
+				missing.join(" and ")
+			),
+			detail: "a pass is recognised from the bus — the speed falling with the pedal at zero and the selector \
+                     in N — so without it no pass could open, and nothing is asked at speed to make up for it"
+				.to_string(),
+		})
 	}
 
 	/// A density that arrived from a flag rather than from the car.
 	pub fn air_density_stated(rho: f64) -> String {
-		format!(
-			"\nusing the air density you gave: {rho:.3} kg/m³. Recorded as stated, not as\n\
-             measured — the car was not asked."
-		)
+		format!("air density  {rho:.3} kg/m³, stated: recorded as stated, not as measured — the car was not asked")
 	}
 
 	/// What the two questions settled on, and which kind of number it is.
@@ -1279,29 +1316,30 @@ mod screens {
 	/// The distinction is the point: a `CdA` is `½·ρ·CdA` divided by this, so a
 	/// figure that later rests on a standard atmosphere has to be able to say so
 	/// years afterwards.
-	pub fn air_density_settled(rho: &Sourced<f64>) -> String {
-		let what = match rho.source {
-			Source::StandardAtmosphere => {
-				"the ISO 2533 standard atmosphere — not\n  \
-                 this day's air. The car file records it as standard-atmosphere, so nothing\n  \
-                 downstream can read it as a measurement."
-			}
-			_ => {
-				"what you stated. Recorded as stated: a\n  \
-                 weaker claim than a reading off the car, and a much stronger one than a\n  \
-                 standard."
-			}
+	pub fn air_density_settled(rho: &Sourced<f64>) -> Message {
+		let (what, detail) = match rho.source {
+			Source::StandardAtmosphere => (
+				"the ISO 2533 standard atmosphere, not this day's air",
+				"the car file records it as standard-atmosphere, so nothing downstream can read it as a measurement",
+			),
+			_ => (
+				"stated",
+				"recorded as stated: a weaker claim than a reading off the car, and a much stronger one than a standard",
+			),
 		};
-		format!("\n  air density {:.4} kg/m³, from {what}", rho.value)
+		Message {
+			text: format!("air density  {:.4} kg/m³, {what}", rho.value),
+			detail: detail.to_string(),
+		}
 	}
 
 	pub fn answers_saved(path: &Path) -> String {
-		format!("\nanswers saved — {}", path.display())
+		format!("answers saved  {}", path.display())
 	}
 
 	/// Where a resumed setup stands, rather than starting over.
-	pub fn resuming(car: &CarFile, kept: &[KeptPass]) -> String {
-		let mut out = format!("\nresuming setup for {}\n", car.vin);
+	pub fn resuming(car: &CarFile, kept: &[KeptPass]) -> Message {
+		let mut rows: Vec<(&str, String)> = vec![("resuming", car.vin.clone())];
 		let answered: Vec<&str> = [car.mass.as_ref().map(|_| "mass"), car.tyre.as_ref().map(|_| "tyre")]
 			.into_iter()
 			.flatten()
@@ -1313,82 +1351,83 @@ mod screens {
 				.and_then(|m| m.at.clone())
 				.or_else(|| car.tyre.as_ref().and_then(|t| t.at.clone()))
 				.unwrap_or_else(|| "earlier".to_string());
-			let _ = writeln!(out, "    {:<16}answered {at}", answered.join(", "));
+			rows.push(("answered", format!("{} ({at})", answered.join(", "))));
 		}
+		let mut detail = String::new();
 		if let Some(first) = kept.first() {
-			let _ = writeln!(
-				out,
-				"    {:<16}{} of {WANTED_PASSES} passes done ({}, {:.1} s)",
+			rows.push((
 				"coastdown",
-				kept.len(),
-				first.at,
-				first.seconds
-			);
+				format!("{} of {WANTED_PASSES} passes done ({}, {:.1} s)", kept.len(), first.at, first.seconds),
+			));
 			// The tool cannot see which way the car was pointing, and a pair
 			// driven the same way is undetectable from the bus and silently
 			// wrong. So the way out is offered here, parked, where it is free.
-			let _ = writeln!(
-				out,
-				"  Drive the return pass on the same stretch. If you no longer know which way\n  \
-                 the first pass went, answer discard to the next question and drive both again."
-			);
+			rows.push((
+				"next",
+				"the return pass, the other way on the same stretch; unsure which way the first went: answer discard to the next question".to_string(),
+			));
+			detail = "the bus says nothing about which way the car points, so a pair driven the same way is silently wrong".to_string();
 		}
-		out
+		Message {
+			text: pairs(&rows).trim_end().to_string(),
+			detail,
+		}
 	}
 
 	/// The kept passes no longer describe today's drive.
-	pub fn conditions_moved(had: usize) -> String {
-		format!(
-			"\nthe air density or the load has moved since {had} pass{} driven earlier, and a\n\
-             CdA fitted at one density does not average with one fitted at another.\n\
-             Discarding it: both passes have to be the same car in the same air.",
-			if had == 1 { " was" } else { "es were" }
-		)
+	pub fn conditions_moved(had: usize) -> Message {
+		Message {
+			text: format!(
+				"{had} kept pass{} dropped: the air density or the load has moved since",
+				if had == 1 { "" } else { "es" }
+			),
+			detail: "a CdA fitted at one density does not average with one fitted at another: both passes have to be \
+                     the same car in the same air"
+				.to_string(),
+		}
 	}
 
 	/// The road part, explained while the car is still parked, because none of it
 	/// can be explained at 120 km/h.
-	pub fn road_briefing(from_kmh: f64, to_kmh: f64, rho: &Sourced<f64>) -> String {
-		// Where the air came from belongs in the last line rather than in a
-		// footnote: it is the one number in this briefing the driver could still
-		// improve, and after this screen nothing is asked of him again.
+	pub fn road_briefing(from_kmh: f64, to_kmh: f64, rho: &Sourced<f64>) -> Message {
+		// Where the air came from is in the block rather than in a footnote: it is
+		// the one number in this briefing the driver could still improve, and after
+		// this screen nothing is asked of him again.
 		let air = match rho.source {
-			Source::Measured => {
-				format!("The air is {:.3} kg/m³ by this car's own barometer.", rho.value)
-			}
-			Source::Stated => {
-				format!("The air is {:.3} kg/m³, from what you stated.", rho.value)
-			}
+			Source::Measured => format!("{:.3} kg/m³, by this car's own barometer", rho.value),
+			Source::Stated => format!("{:.3} kg/m³, from what you stated", rho.value),
 			_ => format!(
-				"The air is taken as {:.3} kg/m³ — the ISO 2533 standard, not\n\
-                 today's, because this car publishes no barometer.",
+				"{:.3} kg/m³, the ISO 2533 standard, not today's: this car publishes no barometer",
 				rho.value
 			),
 		};
-		let rho = format!("{air} Wind is the one thing");
-		format!(
-			"\nThe road part needs about a kilometre of clear, flat, dry road with no traffic\n\
-             behind you — twice, once in each direction. Coasting from {from_kmh:.0} to \
-             {to_kmh:.0} km/h takes\n\
-             30 to 45 seconds; the car does not slow quickly in neutral. Find the road\n\
-             before you set off.\n\n\
-             Each pass: get to {from_kmh:.0}, select N, take your foot off, let it roll to \
-             {to_kmh:.0}, then\n\
-             drive normally. Nothing here touches the car — it is coasting and this tool is\n\
-             reading its speed. Decide about neutral before the pass, not during it: I will\n\
-             not ask you anything while you are moving.\n\n\
-             You can stop at any point. Everything answered and every accepted pass is kept.\n\n\
-             {rho}\n\
-             that does not cancel between the two directions: above about 2 m/s it puts 2 %\n\
-             on the rolling resistance whichever way you drive."
-		)
+		let rows = [
+			(
+				"road",
+				"about a kilometre of clear, flat, dry road with no traffic behind, twice: once in each direction".to_string(),
+			),
+			(
+				"each pass",
+				format!("get to {from_kmh:.0} km/h, select N, foot off, roll to {to_kmh:.0} km/h (30 to 45 seconds), then drive on"),
+			),
+			(
+				"moving",
+				"I will not ask you anything while you are moving; stop at any point, every accepted pass is kept".to_string(),
+			),
+			("air", air),
+		];
+		Message {
+			text: pairs(&rows).trim_end().to_string(),
+			detail: "nothing here touches the car: it coasts and this tool reads its speed; decide about neutral \
+                     before the pass, not during it\n\
+                     wind is the one thing that does not cancel between the two directions: above about 2 m/s it \
+                     puts 2 % on the rolling resistance whichever way you drive"
+				.to_string(),
+		}
 	}
 
 	pub fn pass_opened(index: usize, wanted: usize, to_kmh: f64) -> String {
-		format!(
-			"pass {index} of {wanted} — coasting. Foot off, N selected; let it roll to \
-             {to_kmh:.0} km/h."
-		)
+		format!("pass {index} of {wanted}: coasting, foot off and N selected; let it roll to {to_kmh:.0} km/h")
 	}
 
 	pub fn coasting(speed_kmh: f64, to_kmh: f64, index: usize, wanted: usize) -> String {
@@ -1407,16 +1446,16 @@ mod screens {
 	/// The suggested range is the design's own arithmetic: the nearest ten below
 	/// what this road has actually managed, and the same 60 km/h of span
 	/// underneath it, so a road that reached 96 is offered 90 → 30.
-	pub fn narrower_range(from_kmh: f64, fastest_kmh: f64) -> String {
+	pub fn narrower_range(from_kmh: f64, fastest_kmh: f64) -> Message {
 		let suggested_from = ((fastest_kmh / 10.0).floor() * 10.0).max(50.0);
 		let suggested_to = (suggested_from - 60.0).max(20.0);
-		format!(
-			"still waiting for {from_kmh:.0} km/h — the fastest so far is {fastest_kmh:.0}.\n\
-             If this road will not do it, press Ctrl-C and start again with a lower range:\n    \
-             vagcan measure setup --coast-from {suggested_from:.0} --coast-to {suggested_to:.0}\n\
-             A narrower range separates drag from rolling resistance less well, and the fit\n\
-             will say by how much rather than hiding it."
-		)
+		Message {
+			text: format!(
+				"still waiting for {from_kmh:.0} km/h — the fastest so far is {fastest_kmh:.0}\n\
+                 if this road will not do it: Ctrl-C, then vagcan measure setup --coast-from {suggested_from:.0} --coast-to {suggested_to:.0}"
+			),
+			detail: "a narrower range separates drag from rolling resistance less well, and the fit says by how much rather than hiding it".to_string(),
+		}
 	}
 
 	pub fn not_answering() -> String {
@@ -1444,82 +1483,99 @@ mod screens {
 	}
 
 	/// A fit that never got as far as comparing two passes.
-	pub fn fit_not_possible(reject: &Reject, passes: usize) -> String {
-		format!(
-			"no road load was written — {}.\n\n\
-             {passes} pass{} kept, so re-running vagcan measure setup asks only for the rest.\n\
-             Mass and tyre size are saved either way, and --full stays unavailable until both\n\
-             directions have been driven — which is the right answer, not a failure.",
-			reject_reason(reject),
-			if passes == 1 { " is" } else { "es are" }
-		)
+	pub fn fit_not_possible(reject: &Reject, passes: usize) -> Message {
+		Message {
+			text: format!(
+				"no road load written: {}\n\
+                 {passes} pass{} kept: re-running vagcan measure setup asks only for the rest",
+				reject_reason(reject),
+				if passes == 1 { "" } else { "es" }
+			),
+			detail: "mass and tyre size are saved either way, and --full stays unavailable until both directions \
+                     have been driven — the right answer, not a failure"
+				.to_string(),
+		}
+	}
+
+	/// What a finished setup says: the car file and what it now holds, as data, and
+	/// what that unlocks.
+	pub struct Complete {
+		/// The car file and every figure in it with where it came from: stdout.
+		pub data: String,
+		/// What it unlocks at level 0; how the fit was judged and what it rests on at `-v`.
+		pub said: Message,
 	}
 
 	/// What the car is now known to be, and what that unlocks.
-	pub fn complete(car: &CarFile, path: &Path, result: &RoadLoadResult) -> String {
-		let mut out = format!("\nSetup complete — {}\n\n", path.display());
+	pub fn complete(car: &CarFile, path: &Path, result: &RoadLoadResult, kept: &[KeptPass]) -> Complete {
+		let sourced = |value: String, from: String| format!("{value:<12} {from}");
+		let mut rows: Vec<(&str, String)> = vec![("car file", path.display().to_string())];
 		if let Some(mass) = &car.mass {
-			let _ = writeln!(
-				out,
-				"  mass    {:<14} {}",
-				format!("{:.0} kg", mass.value.total()),
-				provenance(mass.source, mass.at.as_deref(), None)
-			);
+			rows.push((
+				"mass",
+				sourced(format!("{:.0} kg", mass.value.total()), provenance(mass.source, mass.at.as_deref(), None)),
+			));
 		}
 		if let Some(tyre) = &car.tyre {
-			let _ = writeln!(out, "  tyre    {:<14} {}", tyre.value, provenance(tyre.source, tyre.at.as_deref(), None));
+			rows.push(("tyre", sourced(tyre.value.clone(), provenance(tyre.source, tyre.at.as_deref(), None))));
 		}
 		let passes = car.fit.as_ref().map(|f| f.passes);
 		if let Some(cda) = &car.cda {
-			let _ = writeln!(
-				out,
-				"  CdA     {:<14} {}",
-				format!("{:.2} m²", cda.value),
-				provenance(cda.source, None, passes)
-			);
+			rows.push(("CdA", sourced(format!("{:.2} m²", cda.value), provenance(cda.source, None, passes))));
 		}
 		if let Some(crr) = &car.crr {
-			let _ = writeln!(
-				out,
-				"  Crr     {:<14} {}",
-				format!("{:.4}", crr.value),
-				provenance(crr.source, None, None)
-			);
+			rows.push(("Crr", sourced(format!("{:.4}", crr.value), provenance(crr.source, None, None))));
 		}
+		let mut detail: Vec<String> = Vec::new();
 		if let Some(fit) = &car.fit {
 			// Without these the CdA above is not a number: the fit returns
 			// ½·ρ·CdA, and it scales with the mass it was fitted at.
-			let _ = writeln!(
-				out,
-				"  ρ {:.3} kg/m³ ({}) and {:.0} kg at fit time, wind ≈ {:.1} m/s, \
-                 slope ≈ {:.1} %",
-				fit.rho_at_fit,
-				fit.rho_source.as_str(),
-				fit.mass_at_fit_kg,
+			rows.push((
+				"ρ at fit",
+				sourced(format!("{:.3} kg/m³", fit.rho_at_fit), fit.rho_source.as_str().to_string()),
+			));
+			rows.push(("mass at fit", format!("{:.0} kg", fit.mass_at_fit_kg)));
+			// How the fit was judged: each pass against its own curve, then the two
+			// against each other, whose difference is the wind and the slope.
+			for (at, pass) in kept.iter().enumerate() {
+				detail.push(format!(
+					"pass {}  {:.1} s, {:.2} km/h rms off its curve, CdA {:.2} m², Crr {:.4}",
+					at + 1,
+					pass.seconds,
+					pass.fit.rms_kmh,
+					pass.fit.cda,
+					pass.fit.crr
+				));
+			}
+			detail.push(format!(
+				"between the passes: wind ≈ {:.1} m/s, slope ≈ {:.1} %",
 				result.implied_wind_ms.abs(),
 				result.implied_grade_percent.abs()
-			);
+			));
 			// A CdA divided by a standard atmosphere is a CdA with a several-per-cent
 			// offset baked into it, and this is the last screen anybody reads.
 			if fit.rho_source == Source::StandardAtmosphere {
-				let _ = writeln!(
-					out,
-					"  The density was the ISO 2533 standard, not this day's air, so this CdA\n  \
-                     carries whatever the real air differed by — about 3 % per 30 hPa and 3 %\n  \
-                     per 10 °C, linearly, and every power figure resting on it inherits that."
+				detail.push(
+					"the density was the ISO 2533 standard, not this day's air, so this CdA carries whatever the real air \
+                     differed by — about 3 % per 30 hPa and 3 % per 10 °C, linearly, and every power figure resting on it \
+                     inherits that"
+						.to_string(),
 				);
 			}
 		}
-		let _ = writeln!(
-			out,
-			"\n  Power is now available:   vagcan measure --full\n\n\
-             \x20 Two things worth doing once, neither of which needs this tool:\n\
-             \x20   • run out and back on the same stretch and average at matched speeds — slope\n\
-             \x20     and steady wind reverse sign between the two and cancel\n\
-             \x20   • compare one run against GPS to see whether this car's bus speed carries the\n\
-             \x20     speedometer's optimism, then pass --speed-scale"
+		detail.push(
+			"worth doing once, without this tool: run out and back on the same stretch and average at matched speeds \
+             (slope and steady wind reverse sign and cancel); compare one run against GPS to see whether this car's bus \
+             speed carries the speedometer's optimism, then pass --speed-scale"
+				.to_string(),
 		);
-		out
+		Complete {
+			data: pairs(&rows),
+			said: Message {
+				text: "power is available now: vagcan measure --full".to_string(),
+				detail: detail.join("\n"),
+			},
+		}
 	}
 
 	/// Where a figure came from, in the words the owner was asked in.
@@ -1563,7 +1619,12 @@ mod tests {
 	struct Scripted {
 		answers: std::collections::VecDeque<String>,
 		asked: Vec<String>,
+		/// What every setup says, at level 0.
 		said: Vec<String>,
+		/// What it says at `-v`.
+		noted: Vec<String>,
+		/// What it writes on stdout.
+		data: Vec<String>,
 	}
 
 	impl Scripted {
@@ -1572,12 +1633,16 @@ mod tests {
 				answers: answers.into_iter().map(str::to_string).collect(),
 				asked: Vec::new(),
 				said: Vec::new(),
+				noted: Vec::new(),
+				data: Vec::new(),
 			}
 		}
 
-		/// Everything the interview put on screen, questions included.
+		/// Everything the interview put on screen at any level, questions included.
 		fn transcript(&self) -> String {
-			format!("{}\n{}", self.asked.join("\n"), self.said.join("\n"))
+			[&self.asked, &self.said, &self.noted, &self.data]
+				.map(|lines| lines.join("\n"))
+				.join("\n")
 		}
 	}
 
@@ -1594,8 +1659,15 @@ mod tests {
 			})
 		}
 
-		fn say(&mut self, text: &str) {
-			self.said.push(text.to_string());
+		fn say_at(&mut self, level: u8, text: &str) {
+			match level {
+				0 => self.said.push(text.to_string()),
+				_ => self.noted.push(text.to_string()),
+			}
+		}
+
+		fn out(&mut self, text: &str) {
+			self.data.push(text.to_string());
 		}
 	}
 
@@ -1794,8 +1866,8 @@ mod tests {
 		assert!(tyre.contains("width/aspect then the rim"), "{tyre}");
 		assert!(tyre.contains("205/55R16"), "{tyre}");
 		// And the intro said it too, before the question.
-		assert!(io.said.iter().any(|s| s.contains("moulded into the sidewall")), "{:?}", io.said);
-		assert!(io.said.iter().any(|s| s.contains("225/40ZR18")), "{:?}", io.said);
+		assert!(io.noted.iter().any(|s| s.contains("moulded into the sidewall")), "{:?}", io.noted);
+		assert!(io.noted.iter().any(|s| s.contains("225/40ZR18")), "{:?}", io.noted);
 	}
 
 	#[test]
@@ -1867,16 +1939,20 @@ mod tests {
 
 	#[test]
 	fn a_resumed_setup_says_where_it_stands() {
-		let text = screens::resuming(&a_described_car(), &[a_kept_pass(TRUE_CRR)]);
-		assert!(text.contains("resuming setup for XW8AD4NE9JH008917"), "{text}");
-		assert!(text.contains("mass, tyre"), "{text}");
-		assert!(text.contains("answered 2026-08-03"), "{text}");
-		assert!(text.contains("1 of 2 passes done (2026-08-04, 38.2 s)"), "{text}");
+		let said = screens::resuming(&a_described_car(), &[a_kept_pass(TRUE_CRR)]);
+		assert_eq!(
+			said.text,
+			"resuming   XW8AD4NE9JH008917\n\
+             answered   mass, tyre (2026-08-03)\n\
+             coastdown  1 of 2 passes done (2026-08-04, 38.2 s)\n\
+             next       the return pass, the other way on the same stretch; unsure which way the first went: \
+             answer discard to the next question"
+		);
 		// The tool cannot see direction, so a driver who has lost track of which
 		// way the first pass went has to be given a way out — in the word the
 		// next question will actually accept.
-		assert!(text.contains("answer discard to the next question"), "{text}");
 		assert!(discards("discard"), "the banner names a word the question refuses");
+		assert!(said.detail.contains("which way the car points"), "{}", said.detail);
 	}
 
 	// -- the road stage ---------------------------------------------------
@@ -1889,7 +1965,7 @@ mod tests {
 
 		let first = drive(&mut stage, TRUE_CDA, TRUE_CRR, 0.0, d1);
 		assert_eq!(stage.accepted().len(), 1, "{}", said(&first));
-		assert!(said(&first).contains("Turn around"), "{}", said(&first));
+		assert!(said(&first).contains("turn around"), "{}", said(&first));
 		assert!(!stage.is_done());
 
 		let second = drive(&mut stage, TRUE_CDA, TRUE_CRR, 600.0, d1);
@@ -1955,9 +2031,13 @@ mod tests {
 		assert!(car.cda.is_none());
 		// And what is said about it ends with something to do, and with what
 		// survived.
-		let text = screens::fit_not_possible(&Reject::OnlyOnePass, 1);
-		assert!(text.contains("vagcan measure setup"), "{text}");
-		assert!(text.contains("1 pass is kept"), "{text}");
+		let said = screens::fit_not_possible(&Reject::OnlyOnePass, 1);
+		assert_eq!(
+			said.text,
+			"no road load written: one pass on its own cannot tell a slope from a Crr\n\
+             1 pass kept: re-running vagcan measure setup asks only for the rest"
+		);
+		assert!(said.detail.contains("--full stays unavailable"), "{}", said.detail);
 	}
 
 	#[test]
@@ -2001,7 +2081,7 @@ mod tests {
 		let text = said(&notes);
 		assert!(stage.accepted().is_empty(), "{text}");
 		assert!(text.contains("the pedal moved"), "{text}");
-		assert!(text.contains("Stay pointing the way you are now"), "{text}");
+		assert!(text.contains("stay pointing the way you are now"), "{text}");
 	}
 
 	#[test]
@@ -2091,7 +2171,7 @@ mod tests {
 		assert!((rho.value - power::air_density(100.4, 27.0)).abs() < 1e-12);
 		assert!(rho.value < 1.2250 * 0.96, "a warm low is not the standard atmosphere");
 		assert_eq!(rho.source, Source::Stated);
-		assert!(io.transcript().contains("Recorded as stated"), "{}", io.transcript());
+		assert!(io.transcript().contains("recorded as stated"), "{}", io.transcript());
 	}
 
 	#[test]
@@ -2130,7 +2210,7 @@ mod tests {
 		assert_eq!(rho.value, 1.19);
 		assert_eq!(rho.source, Source::Stated);
 		assert!(io.asked.is_empty(), "asked anyway: {:?}", io.asked);
-		assert!(io.transcript().contains("not as\nmeasured"), "{}", io.transcript());
+		assert!(io.transcript().contains("not as measured"), "{}", io.transcript());
 	}
 
 	#[test]
@@ -2195,19 +2275,23 @@ mod tests {
 			implied_grade_percent: 0.3,
 			implied_wind_ms: 0.8,
 		};
-		let text = screens::complete(&car, Path::new("/tmp/cars/x/car.json"), &result);
-		assert!(text.contains("(standard-atmosphere)"), "{text}");
-		assert!(text.contains("not this day's air"), "{text}");
-		assert!(text.contains("3 % per 30 hPa"), "{text}");
+		let complete = screens::complete(&car, Path::new("/tmp/cars/x/car.json"), &result, &[]);
+		assert!(
+			complete.data.contains("ρ at fit     1.225 kg/m³  standard-atmosphere\n"),
+			"{}",
+			complete.data
+		);
+		assert!(complete.said.detail.contains("not this day's air"), "{}", complete.said.detail);
+		assert!(complete.said.detail.contains("3 % per 30 hPa"), "{}", complete.said.detail);
 	}
 
 	#[test]
 	fn the_briefing_says_which_air_the_fit_will_be_divided_by() {
 		let measured = screens::road_briefing(120.0, 40.0, &Sourced::new(1.183, Source::Measured));
-		assert!(measured.contains("by this car's own barometer"), "{measured}");
+		assert!(measured.text.contains("by this car's own barometer"), "{}", measured.text);
 		let standard = screens::road_briefing(120.0, 40.0, &Sourced::new(1.2250, Source::StandardAtmosphere));
-		assert!(standard.contains("the ISO 2533 standard, not"), "{standard}");
-		assert!(standard.contains("publishes no barometer"), "{standard}");
+		assert!(standard.text.contains("the ISO 2533 standard, not"), "{}", standard.text);
+		assert!(standard.text.contains("publishes no barometer"), "{}", standard.text);
 	}
 
 	#[test]
@@ -2218,7 +2302,7 @@ mod tests {
 
 		let (kept, note) = still_valid(vec![a_kept_pass(TRUE_CRR)], RHO * 1.10, MASS_KG);
 		assert!(kept.is_empty(), "a CdA fitted at another density was averaged in");
-		assert!(note.unwrap().contains("density"));
+		assert!(note.unwrap().text.contains("density"));
 
 		let (kept, _) = still_valid(vec![a_kept_pass(TRUE_CRR)], RHO, MASS_KG + 200.0);
 		assert!(kept.is_empty(), "a pass fitted at another load was averaged in");
@@ -2237,7 +2321,7 @@ mod tests {
 			"not ask you anything while you are moving",
 			"every accepted pass is kept",
 		] {
-			assert!(text.contains(promise), "missing {promise:?}:\n{text}");
+			assert!(text.text.contains(promise), "missing {promise:?}:\n{}", text.text);
 		}
 	}
 
@@ -2260,20 +2344,34 @@ mod tests {
 			implied_grade_percent: 0.3,
 			implied_wind_ms: 0.8,
 		};
-		let text = screens::complete(&car, Path::new("/tmp/cars/x/car.json"), &result);
-		assert!(text.contains("Setup complete — /tmp/cars/x/car.json"), "{text}");
-		assert!(text.contains("1475 kg"), "{text}");
-		assert!(text.contains("205/55R16"), "{text}");
-		assert!(text.contains("0.63 m²"), "{text}");
-		// Every figure says which kind of claim it is.
-		assert!(text.contains("you, 2026-08-03"), "{text}");
-		assert!(text.contains("measured on this car, 2 passes"), "{text}");
-		// The fit's own conditions, without which a CdA means nothing.
-		assert!(text.contains("1.183 kg/m³"), "{text}");
-		assert!(text.contains("1385 kg at fit time"), "{text}");
-		// What it unlocks, and the two things worth doing once.
-		assert!(text.contains("vagcan measure --full"), "{text}");
-		assert!(text.contains("--speed-scale"), "{text}");
+		let complete = screens::complete(
+			&car,
+			Path::new("/tmp/cars/x/car.json"),
+			&result,
+			&[a_kept_pass(TRUE_CRR), a_kept_pass(TRUE_CRR)],
+		);
+		// The data: every figure with which kind of claim it is, and the fit's own
+		// conditions, without which a CdA means nothing.
+		assert_eq!(
+			complete.data,
+			"car file     /tmp/cars/x/car.json\n\
+             mass         1475 kg      you, 2026-08-03\n\
+             tyre         205/55R16    you, 2026-08-03\n\
+             CdA          0.63 m²      measured on this car, 2 passes\n\
+             Crr          0.0114       measured on this car\n\
+             ρ at fit     1.183 kg/m³  measured\n\
+             mass at fit  1385 kg\n"
+		);
+		// What it unlocks, every time; how the fit was judged and the two things worth
+		// doing once, at -v.
+		assert_eq!(complete.said.text, "power is available now: vagcan measure --full");
+		let detail = &complete.said.detail;
+		assert!(
+			detail.starts_with("pass 1  38.2 s, 0.21 km/h rms off its curve, CdA 0.63 m², Crr 0.0114\n"),
+			"{detail}"
+		);
+		assert!(detail.contains("between the passes: wind ≈ 0.8 m/s, slope ≈ 0.3 %"), "{detail}");
+		assert!(detail.contains("--speed-scale"), "{detail}");
 	}
 
 	#[test]
@@ -2283,10 +2381,13 @@ mod tests {
 		// parked check exists to prevent.
 		let speed = a_channel("speed", 0x7E1, 0xF40D);
 		let with_neither = a_set(vec![speed.clone()]);
-		let text = screens::coast_impossible(&with_neither).expect("refused");
-		assert!(text.contains("pedal and selector"), "{text}");
-		assert!(text.contains("vagcan setup"), "{text}");
-		assert!(!text.contains("survey"), "that command is gone: {text}");
+		let refusal = screens::coast_impossible(&with_neither).expect("refused");
+		assert_eq!(
+			refusal.text,
+			"no pedal and selector channel on this car: a coastdown pass cannot be recognised\n\
+			 a source that describes the channel brings it: vagcan setup <ODIS project>"
+		);
+		assert!(!refusal.detail.contains("survey"), "that command is gone: {}", refusal.detail);
 
 		let complete = a_set(vec![speed, a_channel("pedal", 0x7E0, 0xF449), a_channel("selector", 0x7E1, 0x1234)]);
 		assert!(screens::coast_impossible(&complete).is_none());
@@ -2298,6 +2399,7 @@ mod tests {
 			leading_unit: channels,
 			background: Vec::new(),
 			cross_check_speeds: Vec::new(),
+			absent: Vec::new(),
 		}
 	}
 
@@ -2315,6 +2417,7 @@ mod tests {
 				raw_form: RawForm::U8First,
 				scaling: Scaling::Linear(LinearScale { factor: 1.0, offset: 0.0 }),
 			},
+			origin: crate::channels::Origin::Words,
 		}
 	}
 }
