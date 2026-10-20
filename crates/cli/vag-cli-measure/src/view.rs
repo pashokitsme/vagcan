@@ -26,6 +26,38 @@ const PAGE: &str = include_str!("view.html");
 /// The hole. A JavaScript comment, so `view.html` stays valid on its own.
 const MARKER: &str = "/*{{SESSION}}*/";
 
+/// The unit the page draws every speed in: its speed axis, its marks and its
+/// crossings are all km/h, as the marks themselves are.
+const PAGE_SPEED_UNIT: &str = "km/h";
+
+/// Put a session's leading speed into the page's units, in place.
+///
+/// The file holds it in m/s ([`crate::SPEED_SERIES_UNIT`]) and the page in km/h.
+/// Converted unconditionally, not by the descriptor's label: every writer since
+/// the first stored m/s, and until 2026-10-21 labelled it km/h, so the label on a
+/// file already on disk says nothing about its values. The descriptor is set to
+/// what the page is now handed, so the legend and the tooltip say km/h.
+///
+/// Only the series the page is handed: the file is not rewritten.
+pub fn in_page_units(session: &mut serde_json::Value) {
+	use serde_json::Value;
+	for run in session.get_mut("runs").and_then(Value::as_array_mut).into_iter().flatten() {
+		let Some(values) = run.pointer_mut("/series/speed/v").and_then(Value::as_array_mut) else {
+			continue;
+		};
+		for value in values {
+			if let Some(ms) = value.as_f64() {
+				*value = Value::from(ms * crate::power::KMH_PER_MS);
+			}
+		}
+	}
+	for channel in session.get_mut("channels").and_then(Value::as_array_mut).into_iter().flatten() {
+		if channel["key"] == "speed" {
+			channel["unit"] = Value::from(PAGE_SPEED_UNIT);
+		}
+	}
+}
+
 /// The page with this session in it.
 pub fn render(session: &serde_json::Value) -> String {
 	// The session rides inside a `<script type="application/json">` block, so a
@@ -70,7 +102,9 @@ mod tests {
 	/// A session with three runs on it — a launch, three upshifts, marks that
 	/// closed and one run aborted at 82 km/h. It is a fixture rather than a
 	/// recording: no car was driven for it, and the numbers come from a road-
-	/// load simulation written to the shape the design's §5 describes.
+	/// load simulation written to the shape the design's §5 describes. Its leading
+	/// speed is in m/s, as the writer stores it (it was km/h until 2026-10-21, which
+	/// no writer ever produced).
 	const SAMPLE: &str = include_str!("view_sample.json");
 
 	fn sample() -> serde_json::Value {

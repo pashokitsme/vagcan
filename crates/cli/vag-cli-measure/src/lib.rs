@@ -501,14 +501,24 @@ pub(crate) fn speed_to_ms(unit: &str, value: f64) -> Option<f64> {
 /// one shared track, so the file, the table and the chart say km/h for it.
 const CROSS_CHECK_UNIT: &str = "km/h";
 
-/// The unit a channel is recorded under in the file, the table and the chart:
-/// the cross-check speeds' one track is in [`CROSS_CHECK_UNIT`], converted on
-/// the way in; every other channel carries its catalog's own spelling — the
-/// leading speed included, although its series is stored in m/s (`session.rs`,
-/// `run_json`). That mislabel predates this rule and is
-/// `todo/measure/03-speed-series-unit.md`.
+/// The unit the leading speed's series is written in: [`sample_set`] converts it
+/// through [`speed_to_ms`] and the stopwatch keeps it so ([`session::Samples`]),
+/// whatever unit its row was written in.
+///
+/// Every session on disk holds m/s there, and the ones written before 2026-10-21
+/// say the catalog's unit — km/h on every car read so far — in its descriptor. So
+/// `measure view` converts the series to km/h without asking the label
+/// ([`view::in_page_units`]).
+pub(crate) const SPEED_SERIES_UNIT: &str = "m/s";
+
+/// The unit a channel is recorded under in the file: the unit its series holds.
+/// The cross-check speeds' one track is in [`CROSS_CHECK_UNIT`] and the leading
+/// speed in [`SPEED_SERIES_UNIT`], each converted on the way in; every other
+/// channel carries its catalog's own spelling, because its values are the
+/// catalog's.
 fn recorded_unit(channel: &Resolved) -> &str {
 	match channel.key {
+		"speed" => SPEED_SERIES_UNIT,
 		"cross-check speed" => CROSS_CHECK_UNIT,
 		_ => &channel.def.unit,
 	}
@@ -947,7 +957,7 @@ pub fn write_view(path: &str) -> Result<std::path::PathBuf> {
 		None => anyhow::bail!("{path} carries no `schema` field: not a session this tool wrote"),
 	}
 	let mut session = session;
-	let reread = refresh_derived(&mut session);
+	let reread = for_the_page(&mut session);
 	let page = view::write_beside(std::path::Path::new(path), &session)?;
 	vag_cli_core::verbosity::out(&vag_cli_core::table::pairs(&[
 		("session", path.to_string()),
@@ -978,6 +988,17 @@ pub fn write_view(path: &str) -> Result<std::path::PathBuf> {
 		say(WIRE, &format!("run {index}  {what}"));
 	}
 	Ok(page)
+}
+
+/// The session as the page takes it: re-derived from its own samples by this build,
+/// then in the page's units.
+///
+/// In that order: the re-derivation reads the file's own m/s ([`reread`]), and the
+/// page draws km/h. Hands back what [`refresh_derived`] did, run by run.
+fn for_the_page(session: &mut Value) -> Vec<(u64, bool)> {
+	let reread = refresh_derived(session);
+	view::in_page_units(session);
+	reread
 }
 
 /// Re-derive every run from its own samples, so an old file is read by today's
@@ -3506,6 +3527,90 @@ mod tests {
 		// The test is worthless if it found nothing to check.
 		assert!(written.contains("bracket_s"), "{written:?}");
 		assert!(config.contains_key("speed_source"), "{config:?}");
+	}
+
+	/// The page's own crossing arithmetic (`crossingTime` in `view.html`): the first
+	/// upward crossing of `kmh`, interpolated between the two samples either side.
+	/// Ported so a test can ask where the page puts a mark.
+	fn page_crossing(speed: &Value, kmh: f64) -> Option<f64> {
+		let (t, v) = (speed["t"].as_array()?, speed["v"].as_array()?);
+		(1..v.len()).find_map(|i| {
+			let (a, b) = (v[i - 1].as_f64()?, v[i].as_f64()?);
+			let (ta, tb) = (t[i - 1].as_f64()?, t[i].as_f64()?);
+			(a < kmh && b >= kmh).then(|| ta + (kmh - a) / (b - a) * (tb - ta))
+		})
+	}
+
+	fn peak(track: &Value) -> f64 {
+		track["v"].as_array().unwrap().iter().filter_map(Value::as_f64).fold(f64::MIN, f64::max)
+	}
+
+	fn speed_unit(session: &Value) -> Value {
+		let channels = session["channels"].as_array().expect("channels");
+		channels.iter().find(|c| c["key"] == "speed").expect("a speed descriptor")["unit"].clone()
+	}
+
+	/// A written session with the reference fixture's descriptors: 4 m/s² from a
+	/// standstill for 8 s, so 32 m/s (115.2 km/h) at the end, 0–100 closed at
+	/// 6.944 s and 50–100 in 3.472 s.
+	fn written_session() -> Value {
+		let (mut meta, recorded) = recorded_session();
+		meta.channels = channel_descriptors(&plan_for(false, false), false, meta.accel_window_s);
+		document(&meta, &recorded, false, Some(21.3), Some(0.047))
+	}
+
+	#[test]
+	fn the_file_labels_the_leading_speed_in_the_unit_its_series_is_written_in() {
+		// The series holds m/s (`Samples::speed`); the descriptor said km/h, the
+		// catalog's unit, and `measure view` believed it (measure/03).
+		let session = written_session();
+		assert_eq!(speed_unit(&session), "m/s");
+		assert!((peak(&session["runs"][0]["series"]["speed"]) - 32.0).abs() < 1e-6);
+	}
+
+	#[test]
+	fn the_page_draws_the_speed_in_kmh_and_crosses_the_marks_the_stopwatch_closed() {
+		let mut session = written_session();
+		for_the_page(&mut session);
+		let run = &session["runs"][0];
+		let speed = &run["series"]["speed"];
+		assert_eq!(speed_unit(&session), "km/h", "the page's speed axis is km/h");
+		assert!((peak(speed) - 115.2).abs() < 1e-6, "peak {} is not 32 m/s in km/h", peak(speed));
+
+		// A launch mark is drawn at its own time; the page finds 100 km/h there.
+		let full = page_crossing(speed, 100.0).expect("the page sees 100 km/h crossed");
+		assert!((full - 6.944).abs() < 0.01, "100 km/h at {full}, the stopwatch said 6.944");
+		// A rolling mark is a band from its lower crossing, as long as its time: with
+		// the series peaking at "32 km/h", 50 was never crossed and the band never drawn.
+		let lower = page_crossing(speed, 50.0).expect("the page sees 50 km/h crossed");
+		let rolling = run["marks"].as_array().unwrap().iter().find(|m| m["from"] == 50).unwrap();
+		let upper = lower + rolling["seconds"].as_f64().unwrap();
+		assert!((upper - full).abs() < 0.01, "the 50–100 band ends at {upper}, not at 100 km/h ({full})");
+
+		// The conversion is the page's alone: what is re-derived from the samples is
+		// re-derived in m/s. ∫ 4t dt over 8 s is 128 m.
+		let distance = run["derived"]["distance_m"].as_f64().unwrap();
+		assert!((distance - 128.0).abs() < 0.5, "distance {distance} m");
+		assert!((peak(&run["series"]["distance"]) - distance).abs() < 0.5);
+	}
+
+	#[test]
+	fn a_session_written_before_the_label_was_fixed_draws_the_same() {
+		// Every writer since the first (2026-08-04) stored the leading speed in m/s
+		// and, until 2026-10-21, labelled it km/h: the 2026-09-26 session peaks at 6.59
+		// under "km/h" while its own km/h cross-check peaks at 23.7. A label on disk is
+		// not evidence of the unit, so the page converts whatever it says.
+		let mut old = written_session();
+		for channel in old["channels"].as_array_mut().unwrap() {
+			if channel["key"] == "speed" {
+				channel["unit"] = json!("km/h");
+			}
+		}
+		let mut new = written_session();
+		for_the_page(&mut old);
+		for_the_page(&mut new);
+		assert_eq!(old["runs"], new["runs"]);
+		assert_eq!(speed_unit(&old), "km/h");
 	}
 
 	/// Every `<object>.<field>` the page reads, for one object name.

@@ -119,11 +119,12 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
    socket's rim, the ESP's clip, the face's teeth).
 3. **Runs in flash** — [`dash/21`](dash/21-runs-in-flash.md): how many runs, and when LIMIT
    writes; the owner set both aside on 2026-09-27.
-4. **`measure view`'s speed** — [`measure/03`](measure/03-speed-series-unit.md): the saved speed
-   series is m/s drawn as km/h, so the chart is 3.6 times low and a rolling mark is never drawn —
-   visible on the owner's own 2026-09-26 session. Then [`measure/02`](measure/02-cross-check-tracks.md)
-   (every unit's cross-check speed in one track) and [`measure/01`](measure/01-pedal-at-rest.md)
-   (the pedal at rest; the owner's call).
+4. **`measure`'s cross-check speeds** — [`measure/02`](measure/02-cross-check-tracks.md): every
+   unit's cross-check speed lands in one track. Two fixes on file: a track per unit, or one unit's
+   cross-check and the rest not polled; the second changes what is read on the car, so it is the
+   owner's call. Then [`measure/01`](measure/01-pedal-at-rest.md) (the pedal at rest; the owner's
+   call). `measure/03`, `measure view`'s speed drawn 3.6 times low, is fixed (2026-10-21,
+   [`.archive/tasks/done/measure/03`](../.archive/tasks/done/measure/03-speed-series-unit.md)).
 5. **The VCDS follow-ups** — [`label-lookup/04`](label-lookup/04-vcds-follow-ups.md): three for
    the owner to decide (the gateway's reads, a plain list's first row, a witness), then the
    platform file's choice and the Russian fallback.
@@ -199,12 +200,12 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 | [`label-lookup/04-vcds-follow-ups.md`](label-lookup/04-vcds-follow-ups.md) | what `label-lookup/02` and `03` left open — filed 2026-09-28; three items for the owner to decide |
 | [`measure/01-pedal-at-rest.md`](measure/01-pedal-at-rest.md) | the engine's absolute pedal reads 15 % at rest and the coastdown waits for 1 % — found in review 2026-09-28; the owner's call |
 | [`measure/02-cross-check-tracks.md`](measure/02-cross-check-tracks.md) | every unit's cross-check speed lands in one track — found in review 2026-09-28; open |
-| [`measure/03-speed-series-unit.md`](measure/03-speed-series-unit.md) | the saved speed is in m/s, labelled and drawn as km/h: `measure view` shows it 3.6 times low and never draws a rolling mark — found in review 2026-09-28; open |
 
 Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, moved there on
 2026-09-15 — its car check is `dash/17` §4; `label-lookup/02` and `03`, merged as PRs #15 and
 #18, moved there on 2026-09-28; `dash/26` and `dash/27`, merged as PR #30, moved there on
-2026-10-19 — `dash/26`'s car check is Next item 9a); superseded designs in
+2026-10-19 — `dash/26`'s car check is Next item 9a; `measure/03`, moved there on
+2026-10-21); superseded designs in
 `.archive/specs/`.
 
 ## Command names in older documents
