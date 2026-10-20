@@ -83,7 +83,7 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 
 ## Roadmap
 
-Updated 2026-10-20.
+Updated 2026-10-21.
 
 **Done**
 - [x] Read the car: identity, units, faults, OBD-II sensors, live values, acceleration timing with html-report
@@ -104,6 +104,7 @@ Updated 2026-10-20.
 - [x] 0–60 and 0–100 km/h stopwatch on the dash (works on the car, 2026-09-30; not yet compared with `vagcan measure`)
 - [x] Dash counts the car's stored fault codes once after start and shows the number with a warning triangle
 - [x] A project's sources listed and removed: `setup --list`, `setup --drop` (2026-10-20)
+- [x] `measure view` draws the speed in km/h, on old sessions too; it was 3.6 times low (2026-10-21)
 - [ ] Page the dash with buttons on its pins
 - [ ] Dash status strip: the page's title, the battery voltage, the link icons and the fault badge across the top (built 2026-10-19, waiting for the car)
 - [ ] Alarms as keys of a channel: a maximum, a minimum and an off value for each, any number of them, an explicit priority; `[[alarm]]` removed (built 2026-10-19, waiting for the car)

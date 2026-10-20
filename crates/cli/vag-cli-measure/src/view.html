@@ -422,7 +422,9 @@ function norm(k) {
 var CH = {};                       /* normalised key -> channel declaration   */
 (SESSION.channels || []).forEach(function (c) { if (c && c.key) CH[norm(c.key)] = c; });
 
-/* Each run's series, re-keyed the same way. */
+/* Each run's series, re-keyed the same way. The leading speed arrives in km/h,
+   as every speed on this page is: the file holds it in m/s and `measure view`
+   converts it before the page is written (`in_page_units` in view.rs). */
 RUNS.forEach(function (r) {
   var s = {};
   Object.keys(r.series || {}).forEach(function (k) {

@@ -25,3 +25,21 @@ Found by review on `feat/measure-roles-by-id` (2026-09-28). Present on `master` 
 
 Either way a test that writes a run and reads it back through the viewer's arithmetic (or the
 report) with a known speed.
+
+## Done (2026-10-21) — fix 2: the file says m/s, the page converts
+
+- Why not 1: every session on disk is schema 1 with the speed in m/s under a km/h label.
+  Writing km/h under the same label and schema would leave nothing in a file to tell an old one
+  from a new one; a new schema would make `measure view` refuse the old ones.
+- The file: the leading speed's descriptor says `m/s` (`lib.rs`, `SPEED_SERIES_UNIT`,
+  `recorded_unit`). The series is unchanged.
+- The page: `measure view` re-derives from the m/s samples, then `view::in_page_units` multiplies
+  the series by 3.6 and labels it km/h. It converts whatever the label says, because the label on
+  an old file is wrong. `view.html` is unchanged apart from a comment.
+- `view_sample.json` had its speed in km/h, which no writer produced. It is now m/s, labelled m/s.
+- Tests (`lib.rs`): `the_file_labels_the_leading_speed_in_the_unit_its_series_is_written_in`;
+  `the_page_draws_the_speed_in_kmh_and_crosses_the_marks_the_stopwatch_closed` (the page's
+  `crossingTime` ported: 100 km/h at the 0–100 time, the 50–100 band ends at 100 km/h, distance
+  still from m/s); `a_session_written_before_the_label_was_fixed_draws_the_same`.
+- The 2026-09-26 session through `vagcan measure view`: speed peak 6.59 → 23.71 km/h (its km/h
+  cross-check: 23.70); 10 km/h first crossed never → 2.185 s, the time the stopwatch closed 0–10.
