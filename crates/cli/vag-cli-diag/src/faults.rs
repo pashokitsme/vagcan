@@ -191,7 +191,21 @@ pub struct Named {
 	pub note: Option<String>,
 	/// Whether there are words: the run's tally counts names, not rows.
 	pub named: bool,
+	/// Whose words the row shows, in the table's `src` column: [`ODIS`], [`ODIS_GUESSED`]
+	/// when the variant is not settled, [`VCDS`]; empty with no words.
+	pub src: &'static str,
+	/// The variant was picked by family, not by the car's own F1A2: recording F1A2 settles it.
+	pub needs_f1a2: bool,
 }
+
+/// The project's words, its variant settled by the car.
+pub const ODIS: &str = "odis";
+/// The project's words from a variant the car's identifiers did not settle — one of
+/// several, or picked by family. The table never presents such a row as settled
+/// (`odisfaults::Naming::provenance`).
+pub const ODIS_GUESSED: &str = "odis?";
+/// The VCDS labels' words.
+pub const VCDS: &str = "vcds";
 
 impl Namers {
 	/// Open whatever this machine has. Never fails for a shortage of data —
@@ -373,6 +387,8 @@ fn vcds_named(naming: &crate::faultnames::Naming) -> Named {
 			text: Some(text.replace('\n', " / ")),
 			note: None,
 			named: true,
+			src: VCDS,
+			needs_f1a2: false,
 		},
 		other => Named {
 			note: other.line(),
@@ -415,24 +431,26 @@ fn compose(
 		if let Some(provenance) = naming.provenance() {
 			notes.push(provenance);
 		}
-		let (text, named) = match (text, vcds.as_ref().and_then(|v| v.text.clone())) {
+		let odis_src = if naming.provenance().is_none() { ODIS } else { ODIS_GUESSED };
+		// Whose words these are is the `src` column's, at level 0: a borrowed or a
+		// fallen-back text is another source's words, likely in another language.
+		let (text, named, src) = match (text, vcds.as_ref().and_then(|v| v.text.clone())) {
 			// VCDS was asked first, for its language, and had nothing: these are the
-			// project's words, likely in another language, and the note says so — as a
-			// borrowed VCDS text says whose it is below.
+			// project's words, likely in another language.
 			(Some(text), _) if prefer_vcds => {
 				notes.push("text from the ODIS project".to_string());
-				(Some(text), true)
+				(Some(text), true, odis_src)
 			}
-			(Some(text), _) => (Some(text), true),
+			(Some(text), _) => (Some(text), true, odis_src),
 			(None, Some(borrowed)) => {
 				notes.push("text from the VCDS labels".to_string());
-				(Some(borrowed), true)
+				(Some(borrowed), true, VCDS)
 			}
 			// A code without words anywhere is not a named code, whatever else the
 			// row carries.
 			(None, None) => {
 				notes.push("no text in the project".to_string());
-				(None, false)
+				(None, false, "")
 			}
 		};
 		return Some(Named {
@@ -440,6 +458,10 @@ fn compose(
 			text,
 			note: (!notes.is_empty()).then(|| notes.join("; ")),
 			named,
+			src,
+			// Only a family match leaves F1A2 to be recorded; several variants of the
+			// car's own F1A2 disagreeing is a fact of the project, not a missing read.
+			needs_f1a2: src == ODIS_GUESSED && !naming.confirmed,
 		});
 	}
 	if let Some(named) = vcds {
@@ -485,12 +507,14 @@ pub struct Row {
 	/// From the first extended-data record that reads as a fault context.
 	pub context: Option<FaultContext>,
 	pub text: String,
+	/// Whose words `text` is: [`ODIS`], [`ODIS_GUESSED`], [`VCDS`], or empty.
+	pub src: &'static str,
 }
 
 /// The fault table, as `faults` prints it on stdout. `width`: the terminal's, when known —
 /// the text column is cut to it.
 pub fn render_rows(rows: &[Row], width: Option<usize>) -> String {
-	let mut table = Table::new(&["unit", "id", "name", "code", "dtc", "status", "km", "count", "last seen", "text"])
+	let mut table = Table::new(&["unit", "id", "name", "code", "dtc", "status", "km", "count", "last seen", "src", "text"])
 		.right(6)
 		.right(7);
 	for row in rows {
@@ -515,10 +539,37 @@ pub fn render_rows(rows: &[Row], width: Option<usize>) -> String {
 			km,
 			count,
 			when,
+			row.src.to_string(),
 			row.text.clone(),
 		]);
 	}
 	table.render(width)
+}
+
+/// The one stderr line under a table with guessed rows (`src` [`ODIS_GUESSED`]): which
+/// units, and where the variant was picked by family, what F1A2 did — the identifier that
+/// settles it. `by_family`: those units, and whether each answered F1A2. `None` when every
+/// row's source is settled.
+pub fn guessed_line(rows: &[Row], by_family: &[(u16, bool)]) -> Option<String> {
+	let mut guessed: Vec<u16> = rows.iter().filter(|r| r.src == ODIS_GUESSED).map(|r| r.request).collect();
+	guessed.dedup();
+	if guessed.is_empty() {
+		return None;
+	}
+	let ids = |ids: &[u16]| ids.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(" ");
+	let mut line = format!("{ODIS_GUESSED}    {}: the ODIS variant is a guess", ids(&guessed));
+	let silent: Vec<u16> = by_family.iter().filter(|(_, read)| !read).map(|(r, _)| *r).collect();
+	let unmatched: Vec<u16> = by_family.iter().filter(|(_, read)| *read).map(|(r, _)| *r).collect();
+	if !silent.is_empty() {
+		line.push_str(&format!(
+			"; F1A2 not read from {} — read again with the unit awake to settle it",
+			ids(&silent)
+		));
+	}
+	if !unmatched.is_empty() {
+		line.push_str(&format!("; F1A2 of {} matches no variant in the project", ids(&unmatched)));
+	}
+	Some(line)
 }
 
 /// The summary line under the table.
@@ -616,6 +667,8 @@ pub async fn run<L: UnitLink>(
 	let mut supported_total = 0usize;
 	let mut raw_table = Table::new(&["id", "code", "record", "bytes"]);
 	let mut sealed: Vec<std::path::PathBuf> = Vec::new();
+	// Units with a row whose ODIS variant was picked by family, and whether they answered F1A2.
+	let mut guessed_by_family: Vec<(u16, bool)> = Vec::new();
 	let mut read = 0usize;
 	let count = order.len();
 	let mut progress = crate::progress::Line::new();
@@ -640,8 +693,11 @@ pub async fn run<L: UnitLink>(
 			.map(|b| String::from_utf8_lossy(&b).trim_end_matches(['\0', ' ']).to_string())
 			.filter(|s| !s.is_empty());
 		let listing = uds.read_dtcs_by_status_mask(0xFF).await;
-		if listing.is_ok() {
-			read += 1;
+		// A list that did not come back is not a clean unit: said at level 0, and the unit
+		// is not counted as read in the summary.
+		match &listing {
+			Ok(_) => read += 1,
+			Err(e) => say!("{request:03X}  fault list not read: {e}"),
 		}
 		let unit = UnitFaults {
 			component,
@@ -656,10 +712,7 @@ pub async fn run<L: UnitLink>(
 			.and_then(|data| UnitStamp::parse(&data));
 		// A unit with no short number shows a dash rather than repeating
 		// its id, which reads as a rendering fault.
-		let number = match vag_uds_client::address::short_number(request) {
-			Some(n) => format!("{n:02X}"),
-			None => "--".to_string(),
-		};
+		let number = crate::car::unit_number(vag_uds_client::address::short_number(request));
 		let name = unit.component.clone().unwrap_or_default();
 
 		if supported {
@@ -701,6 +754,8 @@ pub async fn run<L: UnitLink>(
 		if !show.is_empty() {
 			// The unit names its own variant and description file, so they are
 			// read only once something has to be named out of them.
+			// What the unit answered for F1A2, for the line a guessed variant gets.
+			let mut f1a2 = String::new();
 			let lookup = match namers.is_empty() {
 				true => None,
 				false => {
@@ -708,6 +763,7 @@ pub async fn run<L: UnitLink>(
 					let odx = read(uds.read_data_by_identifier(ODX_NAME).await.ok());
 					let version = read(uds.read_data_by_identifier(ODX_VERSION).await.ok());
 					vag_cli_core::wire!("   {request:03X}  names looked up by F19E {odx:?} F1A2 {version:?}");
+					f1a2 = version.clone();
 					Some(namers.unit(&odx, &version))
 				}
 			};
@@ -758,7 +814,11 @@ pub async fn run<L: UnitLink>(
 					status: dtc.status,
 					context,
 					text: named.text.unwrap_or_default(),
+					src: named.src,
 				});
+				if named.needs_f1a2 && !guessed_by_family.iter().any(|(r, _)| *r == request) {
+					guessed_by_family.push((request, !f1a2.is_empty()));
+				}
 			}
 		}
 		backend = L::release(uds.into_transport());
@@ -782,6 +842,10 @@ pub async fn run<L: UnitLink>(
 	let failing = rows.iter().filter(|r| r.status & FAILED_NOW != 0).count();
 	if !rows.is_empty() {
 		out!("{}\n", render_rows(&rows, width));
+	}
+	// A guessed variant is marked in the table; what settles it, once, here.
+	if let Some(line) = guessed_line(&rows, &guessed_by_family) {
+		say!("{line}");
 	}
 	if details && !raw_table.is_empty() {
 		out!("{}\n", raw_table.render(width));
@@ -933,6 +997,8 @@ mod tests {
 				text: Some("Steering angle sensor".into()),
 				note: Some("text from the VCDS labels".into()),
 				named: true,
+				src: VCDS,
+				needs_f1a2: false,
 			},
 			"a borrowed name is still a name, under the project's own code"
 		);
@@ -968,6 +1034,38 @@ mod tests {
 		// With the project first, as usual, its own words need no marker.
 		let named = compose(Some(german), None, false, true).unwrap();
 		assert_eq!((named.text.as_deref(), named.note), (Some("Lenkwinkelsensor"), None));
+	}
+
+	#[test]
+	fn a_row_whose_variant_is_not_settled_is_marked_in_the_table_itself() {
+		// `odisfaults::Naming::provenance`: the line never presents a guessed variant as
+		// settled. The guess and whose words a row has are the `src` column's, at level 0.
+		let text = |naming: crate::odisfaults::Naming| crate::odisfaults::Naming {
+			text: Some("Lenkwinkelsensor".into()),
+			..naming
+		};
+		let settled = compose(Some(text(textless_odis_row())), None, false, true).unwrap();
+		assert_eq!((settled.src, settled.needs_f1a2), (ODIS, false));
+		let by_family = crate::odisfaults::Naming {
+			confirmed: false,
+			..text(textless_odis_row())
+		};
+		let guessed = compose(Some(by_family), None, false, true).unwrap();
+		assert_eq!((guessed.src, guessed.needs_f1a2), (ODIS_GUESSED, true));
+		let of_two = crate::odisfaults::Naming {
+			matched: 2,
+			disagrees: true,
+			..text(textless_odis_row())
+		};
+		let guessed = compose(Some(of_two), None, false, true).unwrap();
+		assert_eq!((guessed.src, guessed.needs_f1a2), (ODIS_GUESSED, false), "the car's own F1A2 picked two");
+		// A borrowed text is the other source's, said in the same column.
+		let vcds = crate::faultnames::Naming::Named {
+			text: "Steering angle sensor".into(),
+			sae: None,
+			failure_type: None,
+		};
+		assert_eq!(compose(Some(textless_odis_row()), Some(vcds), false, true).unwrap().src, VCDS);
 	}
 
 	#[test]
@@ -1141,6 +1239,7 @@ mod tests {
 				status: 0x08,
 				context: context(214_592, 254, 0x69F6_0003),
 				text: "Unterbrechung des Signalpfades \"Init\"".into(),
+				src: ODIS,
 			},
 			Row {
 				unit: "17".into(),
@@ -1151,18 +1250,40 @@ mod tests {
 				status: 0x09,
 				context: context(214_634, 13, 0x69F9_7C82),
 				text: "BAP_TEL_0x28 keine Kommunikation".into(),
+				src: ODIS_GUESSED,
 			},
 		];
 		assert_eq!(
 			render_rows(&rows, None),
-			"unit  id   name         code    dtc      status         km  count  last seen            text\n\
-			 16    70C  Lenks.Modul  047120  B145501  confirmed  214592    254  2026-07-27 00:00:03  Unterbrechung des Signalpfades \"Init\"\n\
-			 17    714  KOMBI        FFFF3C  U111000  failing    214634     13  2026-07-28 23:50:02  BAP_TEL_0x28 keine Kommunikation\n"
+			"unit  id   name         code    dtc      status         km  count  last seen            src    text\n\
+			 16    70C  Lenks.Modul  047120  B145501  confirmed  214592    254  2026-07-27 00:00:03  odis   Unterbrechung des Signalpfades \"Init\"\n\
+			 17    714  KOMBI        FFFF3C  U111000  failing    214634     13  2026-07-28 23:50:02  odis?  BAP_TEL_0x28 keine Kommunikation\n"
 		);
-		// Cut to a known width only, the text column last.
-		let cut = render_rows(&rows, Some(100));
-		assert!(cut.lines().all(|l| l.chars().count() <= 100), "{cut}");
-		assert!(cut.contains('…'), "{cut}");
+		// With room for 30 columns of text, only the text is cut, to a known width only.
+		let cut = render_rows(&rows, Some(125));
+		assert!(cut.lines().all(|l| l.chars().count() <= 125), "{cut}");
+		assert!(cut.contains("2026-07-27 00:00:03  odis   Unterbrechung des Signalpfade…"), "{cut}");
+		// On an 80-column terminal the text goes whole under its row, never cut inside the
+		// columns before it (both reviews of PR #38).
+		assert_eq!(
+			render_rows(&rows, Some(80)),
+			"unit  id   name         code    dtc      status         km  count  last seen            src\n\
+			 16    70C  Lenks.Modul  047120  B145501  confirmed  214592    254  2026-07-27 00:00:03  odis\n\
+			 \x20     Unterbrechung des Signalpfades \"Init\"\n\
+			 17    714  KOMBI        FFFF3C  U111000  failing    214634     13  2026-07-28 23:50:02  odis?\n\
+			 \x20     BAP_TEL_0x28 keine Kommunikation\n"
+		);
+		// A guessed variant is said under the table, with what F1A2 did.
+		assert_eq!(
+			guessed_line(&rows, &[(0x714, false)]).as_deref(),
+			Some("odis?    714: the ODIS variant is a guess; F1A2 not read from 714 — read again with the unit awake to settle it")
+		);
+		assert_eq!(
+			guessed_line(&rows, &[]).as_deref(),
+			Some("odis?    714: the ODIS variant is a guess"),
+			"several variants of the car's own F1A2: nothing to read again"
+		);
+		assert_eq!(guessed_line(&rows[..1], &[]), None, "every row settled: no line");
 		assert_eq!(summary(2, 1, 18, false), "2 stored · 1 failing now · 18 units read");
 		assert_eq!(summary(0, 0, 1, true), "0 listed · 0 failing now · 1 unit read");
 	}

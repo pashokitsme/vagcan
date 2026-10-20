@@ -235,21 +235,21 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	assert!(wire[2].stderr.contains("←  7E8  7F 22 31"), "a refusal: {:?}", wire[2].stderr);
 
 	let units = levels!("units", car::units(open, false).await);
-	assert_eq!(units[0].stdout, "id   unit  part  name\n70E  09\n713\n\n2 units\n");
+	assert_eq!(units[0].stdout, "unit  id   part  name\n09    70E\n--    713\n\n2 units\n");
 
 	// `--identify` records the units under this HOME, so the plain listing after it has
 	// their part numbers.
 	let identify = levels!("units --identify", car::units(open, true).await);
 	assert_eq!(
 		identify[0].stdout,
-		"id   unit  part          component     name\n\
-		 70E  09                                (no answer)\n\
-		 710        PART-GATEWAY  GATEWAY SELF\n\
-		 713        PART-ESC      ESC SELF\n\
-		 7E0  01    PART-ENGINE   ENGINE SELF\n\
-		 7E1  02    PART-GEAR     GEAR SELF\n\
+		"unit  id   part          component     name\n\
+		 09    70E                              (no answer)\n\
+		 --    710  PART-GATEWAY  GATEWAY SELF\n\
+		 --    713  PART-ESC      ESC SELF\n\
+		 01    7E0  PART-ENGINE   ENGINE SELF\n\
+		 02    7E1  PART-GEAR     GEAR SELF\n\
 		 \n\
-		 2 listed · 5 asked · 4 answered\n"
+		 5 asked · 4 answered · 2 on the gateway's list\n"
 	);
 	assert!(
 		home
@@ -263,7 +263,7 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	// The record does not cover 70E, which never answered, so it is not taken for this
 	// car's: the listing is what it was.
 	let units = levels!("units after --identify", car::units(open, false).await);
-	assert_eq!(units[0].stdout, "id   unit  part  name\n70E  09\n713\n\n2 units\n");
+	assert_eq!(units[0].stdout, "unit  id   part  name\n09    70E\n--    713\n\n2 units\n");
 
 	let block = levels!("units --identify 01", car::identification(open, "01", false).await);
 	assert!(block[0].stdout.starts_with("unit  01\n\ndid   name"), "{}", block[0].stdout);
@@ -272,16 +272,16 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	let sensors = levels!("sensors", car::sensors(open, "01").await);
 	assert_eq!(
 		sensors[0].stdout,
-		"did     value  unit  name\n\
-		 F405    40.00  °C    Coolant temperature\n\
-		 F40C  1000.00  /min  Engine speed\n\
-		 F40D     0.00  km/h  Vehicle speed\n\
+		"did          value  name\n\
+		 F405      40.00 °C  Coolant temperature\n\
+		 F40C  1000.00 /min  Engine speed\n\
+		 F40D     0.00 km/h  Vehicle speed\n\
 		 \n\
 		 3 of 3 converted · unit 01\n"
 	);
 	let gearbox = levels!("sensors --unit 02", car::sensors(open, "02").await);
 	assert!(
-		gearbox[0].stdout.contains("F40D  9C 02  raw   not J1979: 2 bytes, standard 1"),
+		gearbox[0].stdout.contains("F40D  9C 02 raw  not J1979: 2 bytes, standard 1"),
 		"{}",
 		gearbox[0].stdout
 	);
@@ -296,12 +296,15 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	let faults = levels!("faults", faults::run(open, None, false, false, false, false, None).await);
 	assert_eq!(
 		faults[0].stdout,
-		"unit  id   name         code    dtc  status         km  count  last seen            text\n\
+		"unit  id   name         code    dtc  status         km  count  last seen            src  text\n\
 		 01    7E0  ENGINE SELF  000129       failing    123456      3  2026-07-27 00:00:03\n\
 		 --    713  ESC SELF     047120       confirmed  123456      3  2026-07-27 00:00:03\n\
 		 \n\
 		 2 stored · 1 failing now · 4 units read\n"
 	);
+	// A unit whose fault list did not come back is said at level 0, and not counted as
+	// read: 70E is on the gateway's list and never answers (review of PR #38).
+	assert!(faults[0].stderr.contains("70E  fault list not read: "), "{:?}", faults[0].stderr);
 	// The caveat that used to head the listing is a -v note now.
 	assert!(!faults[0].stderr.contains("not a diagnosis"), "{:?}", faults[0].stderr);
 	assert!(faults[1].stderr.contains("not a diagnosis"), "{:?}", faults[1].stderr);

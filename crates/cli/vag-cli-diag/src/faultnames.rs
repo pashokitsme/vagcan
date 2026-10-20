@@ -232,11 +232,10 @@ pub fn offer_to_unseal(files: &[PathBuf], cache: &Path) -> Result<()> {
 	if files.is_empty() {
 		return Ok(());
 	}
-	let n = files.len();
 	let names: Vec<&str> = files.iter().map(|f| f.file_name().and_then(|f| f.to_str()).unwrap_or_default()).collect();
 	// What is sealed and the command that opens it, on stderr: a hint, not data.
 	vag_cli_core::say!(
-		"sealed   {} — `vagcan dev vcds rod --cache {} <file>` (~3 min each)",
+		"sealed   {} — `vagcan dev vcds rod --cache {} <file>` (about 3 min per file)",
 		names.join(", "),
 		cache.display()
 	);
@@ -247,11 +246,21 @@ pub fn offer_to_unseal(files: &[PathBuf], cache: &Path) -> Result<()> {
 	if !unseal_now(&mut crate::ui::Console::new(String::new())) {
 		return Ok(());
 	}
-	for (at, (file, name)) in files.iter().zip(&names).enumerate() {
-		vag_cli_core::say!("[{}/{n}] {name}", at + 1);
-		crate::vcds::rod::run(&file.to_string_lossy(), true, Some(&cache.to_string_lossy()), None)?;
-	}
+	unseal_each(files, |file| {
+		crate::vcds::rod::run(&file.to_string_lossy(), true, Some(&cache.to_string_lossy()), None)
+	})?;
 	vag_cli_core::say!("unsealed: `vagcan faults` names those codes now");
+	Ok(())
+}
+
+/// Open each catalogue with `open` — `dev vcds rod`, whose tables are its data — with what
+/// it prints sent to stderr: `faults > out.txt` holds the fault table alone.
+fn unseal_each(files: &[PathBuf], mut open: impl FnMut(&Path) -> Result<()>) -> Result<()> {
+	let n = files.len();
+	for (at, file) in files.iter().enumerate() {
+		vag_cli_core::say!("[{}/{n}] {}", at + 1, file.file_name().and_then(|f| f.to_str()).unwrap_or_default());
+		vag_cli_core::verbosity::data_on_stderr(|| open(file))?;
+	}
 	Ok(())
 }
 
@@ -277,6 +286,22 @@ fn unseal_now(io: &mut impl crate::ui::menu::Asker) -> bool {
 mod tests {
 	use super::*;
 	use crate::ui::menu::{Answer, Scripted};
+
+	#[test]
+	fn what_unsealing_prints_stays_off_the_fault_tables_stdout() {
+		// `faults > out.txt`, the offer taken: `dev vcds rod`'s tables went into the file
+		// after the fault table (review of PR #38).
+		let capture = vag_cli_core::verbosity::Capture::start(0);
+		unseal_each(&[PathBuf::from("EV_X.rod")], |_| {
+			vag_cli_core::outln!("tag  state  bytes");
+			Ok(())
+		})
+		.unwrap();
+		vag_cli_core::outln!("the command's own data");
+		let said = capture.finish();
+		assert_eq!(said.stdout, "the command's own data\n");
+		assert!(said.stderr.contains("[1/1] EV_X.rod\ntag  state  bytes\n"), "{said:?}");
+	}
 
 	#[test]
 	fn the_offer_to_unseal_is_asked_through_the_one_question_helper() {

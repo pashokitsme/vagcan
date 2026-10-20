@@ -129,9 +129,10 @@ pub struct Naming {
 }
 
 impl Naming {
-	/// One line for the console: the display code, the text with its line
-	/// breaks flattened — a fault text is one row on a screen — the level, and
-	/// where the row came from when that was not settled by the car.
+	/// One line: the display code, the text with its line breaks flattened, the level,
+	/// and where the row came from when that was not settled by the car — what this
+	/// module's tests read a row by. `faults` takes the fields apart for its table.
+	#[cfg(test)]
 	pub fn line(&self) -> String {
 		let text = self.text.as_deref().map(|t| t.replace('\n', " / "));
 		let mut line = match (self.display_code.as_deref(), text) {
@@ -275,8 +276,8 @@ impl OdisFaults {
 		english.then_some(ENGLISH)
 	}
 
-	/// One line saying where the names come from, for the top of a listing.
 	/// The project's fault sources in a few words for the `names` line: `ODIS SK37X (deu)`.
+	/// A cache with fault rows and no source row names the project it is in instead.
 	pub fn short(&self) -> String {
 		let odis: Vec<String> = self
 			.sources
@@ -293,9 +294,14 @@ impl OdisFaults {
 				}
 			})
 			.collect();
+		if odis.is_empty() {
+			let project = self.cache.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned());
+			return format!("ODIS {}", project.unwrap_or_else(|| "project".to_string()));
+		}
 		format!("ODIS {}", odis.join(", "))
 	}
 
+	/// One line saying where the names come from, for the top of a listing.
 	pub fn describe(&self) -> String {
 		let (variants, codes) = vag_data_db::fault_counts(&self.cache).unwrap_or_default();
 		let odis: Vec<String> = self
@@ -529,6 +535,16 @@ mod tests {
 			language: language.map(str::to_owned),
 			source_dir: dir.into(),
 		}
+	}
+
+	#[test]
+	fn the_names_line_says_the_project_when_no_source_row_names_one() {
+		let r = resolver(None, &[(vag_data_db::ODIS, "/x/Projects/SK37X", Some("deu"))]);
+		assert_eq!(r.short(), "ODIS SK37X (deu)");
+		// Fault rows and no source row: `ODIS ` with nothing after it, before (review of
+		// PR #38). The project the cache is in, instead.
+		let bare = OdisFaults::new(PathBuf::from("/h/.vagcan/data/SK37X/cache.sqlite"), Vec::new(), None, Vec::new());
+		assert_eq!(bare.short(), "ODIS SK37X");
 	}
 
 	/// A resolver over these source rows. Where there is a VCDS row the chain is
