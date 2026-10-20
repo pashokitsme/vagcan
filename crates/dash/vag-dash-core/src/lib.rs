@@ -17,6 +17,8 @@
 //!   waits.
 //! * [`input`]: the queue every input's commands go through.
 //! * [`bus_rate`]: the board's count of its own exchanges, for the console and `state`.
+//! * [`unit_check`]: one plan unit's part check — when it is polled, asked its part number
+//!   again, or taken for silent.
 //!
 //! What is the chip's — the HAL, the tasks, the radio, flash — stays in `vag-dash-fw`.
 
@@ -31,4 +33,5 @@ pub mod panel;
 pub mod saving;
 pub mod schema;
 pub mod ssd1322;
+pub mod unit_check;
 pub mod values;
