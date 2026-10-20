@@ -65,6 +65,31 @@ fn `+0x33758`) confirms the derivation:
   file** — so `product` cannot be *computed* offline. Prior work stopped here and prescribed a
   memory dump.
 
+> **OVERTURNED 2026-10-20: the product is the file name.** The "runtime buffer" is the name VCDS
+> opened the file under, cut at its first `.`, upper-cased. The reasoning above read the
+> buffer's *origin* right and its *content* wrong: a file's name is not a field of the file,
+> but it is on disk beside it. Exactly:
+>
+> ```
+> stem    = file name up to the FIRST '.', ASCII-uppercased   (EV_BCMBOSCH_017, RM, TTTEXT, REDIR)
+> product = stem[0] * ∏ stem[i] for i in 0..len               (u64 wrapping; stem[0] counts twice)
+> IV      = the construction below with product_bytes = (product & (2^40-1)).to_le_bytes()
+> ```
+>
+> Evidence: all 57 keys brute force had recovered for the reference install
+> (`~/.vagcan/data/SK37X/rod-keys.json`: TTTEXT, TTDOP, UNIT, RM, RD, MUX, RA..RX, ReDir, EV_*,
+> IV_EV_*) are reproduced 57/57, and files brute force never opened (`CRFT_*`, `GV_*`) open.
+> Census over the whole English 26.3 `UDS_EV` with the shipped decoder and an empty key cache
+> (`vagcan dev vcds rod --no-crack`, every file): **16,576 files, 66,563 sections; 10,372 files
+> open whole (40,955 sections), with no key and no search; 20,435 compressed sections open, 0 are
+> undecodable**; the 6,204 other files are exactly the shifted ones (`tttext2.md` §3.3a), whose
+> 13,084 compressed sections report `NO CRIB`. `product` is **per file**, not per section — `tttext2.md` §3.6 had measured
+> that already. The shipped decoder is `vag-data-labels::rod::name_product`; the brute force
+> stays only for what the name does not give (a shifted file, `tttext2.md` §3.3a, and a file
+> under a name not its own). `IV[3:8]` of a TEA section is now exact too, so a plain list's
+> first row is no longer lost. The text below (§1.2, §1.3) is how the keys were found before
+> this was known, kept as the record.
+
 The full IV construction (`crates/vag-data-labels/src/rod.rs::rod_block0_iv` ≡
 `.archive/research/clb-crack/decrypt_modern.py::rod_block0_iv`, identical logic):
 ```
@@ -77,7 +102,8 @@ product       = ∏ chars of a runtime "record-string"    (64-bit)
 ```
 Each `IV[i]` is an **independent** per-byte transform of one seed byte; the unknown is exactly
 the 5-byte `product_bytes` (equivalently `product` mod 2^40), and it is **per-section** (one
-`[TXT]` section ⇒ one `product`).
+`[TXT]` section ⇒ one `product`). *(Overturned 2026-10-20: per file, and not unknown — it is the
+file name's product, see the note above.)*
 
 ### 1.2 The insight — you don't need `product`, only 5 plaintext bytes
 `IV[3:8]` is 5 bytes; the corrupted plaintext is exactly `deflate[1..5]`. Two facts make brute

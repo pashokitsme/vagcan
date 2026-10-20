@@ -195,21 +195,13 @@ mod tests {
 			eprintln!("skipped: no VCDS install at {}", rod.display());
 			return;
 		};
-		let Ok(project) = crate::project::current() else {
-			eprintln!("skipped: no project on this machine");
-			return;
-		};
-		let mut keys = vag_data_labels::rod::IvCache::load(&project.rod_keys());
-		if keys.get("TTTEXT.ROD", "TXT").is_none() {
-			eprintln!("skipped: {} has no key for TTTEXT.ROD", project.rod_keys().display());
-			return;
-		}
-		let sections = vag_data_labels::rod::decode_rod_recover(&data, "TTTEXT.ROD", &mut keys, false);
-		let text = sections
-			.iter()
-			.find(|s| s.tag == "TXT")
+		// The key is the file's name: nothing cached is needed (2026-10-20).
+		let mut keys = vag_data_labels::rod::IvCache::default();
+		let section = vag_data_labels::rod::open_section(&data, "TTTEXT.ROD", "TXT", &mut keys, false);
+		let text = section
+			.as_ref()
 			.and_then(|s| s.text.as_ref())
-			.expect("the key is cached, so the section opens");
+			.expect("the section opens by its file name");
 		// The section comes back one byte per char; the reader wants the bytes.
 		let bytes: Vec<u8> = text.chars().map(|c| c as u8).collect();
 		let t = tttext::read(&bytes, CodePage::Windows1252);

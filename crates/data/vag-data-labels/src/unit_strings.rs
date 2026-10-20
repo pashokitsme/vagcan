@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use crate::codes::CodePage;
 use crate::dtc::find_named;
 use crate::glyphs::TableAlphabet;
-use crate::rod::{IvCache, KeyCost, RodStatus, decode_rod_recover, key_cost, recover_classic_key};
+use crate::rod::{IvCache, KeyCost, RodStatus, key_cost, open_section};
 
 /// The unit table's own file name, inside a VCDS install.
 pub const UNITS_FILE: &str = "UNIT.ROD";
@@ -102,12 +102,7 @@ pub fn load_unit_strings(root: &Path, cache: &mut IvCache, crack: bool, page: Co
 	};
 	let Ok(bytes) = std::fs::read(&file) else { return UnitsLoad::NoFile };
 	let name = file.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
-	if crack {
-		recover_classic_key(&bytes, &name, UNIT_SECTION, cache);
-	}
-	let section = decode_rod_recover(&bytes, &name, cache, false)
-		.into_iter()
-		.find(|s| s.tag == UNIT_SECTION);
+	let section = open_section(&bytes, &name, UNIT_SECTION, cache, crack);
 	match section {
 		Some(s) if matches!(s.status, RodStatus::Tea | RodStatus::Zlib) && s.text.is_some() => {
 			// The container reads a section one byte to one char; the code page
@@ -129,7 +124,7 @@ pub fn load_unit_strings(root: &Path, cache: &mut IvCache, crack: bool, page: Co
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::rod::testkit::section;
+	use crate::rod::testkit::{named, section};
 
 	/// A section line as VCDS writes one, the unit in the build's code page.
 	fn line(id: u32, unit: &str) -> Vec<u8> {
@@ -165,7 +160,11 @@ mod tests {
 		let _ = std::fs::remove_dir_all(&root);
 		std::fs::create_dir_all(root.join("UDS_EV")).unwrap();
 		let text = [line(902, "°C"), line(903, "/min")].concat();
-		std::fs::write(root.join("UDS_EV").join(UNITS_FILE), section(UNIT_SECTION, &text, true, None)).unwrap();
+		std::fs::write(
+			root.join("UDS_EV").join(UNITS_FILE),
+			section(UNIT_SECTION, &text, true, named(UNITS_FILE)),
+		)
+		.unwrap();
 		let opened = load_unit_strings(&root, &mut IvCache::default(), false, CodePage::Windows1252);
 		let _ = std::fs::remove_dir_all(&root);
 		let UnitsLoad::Found { units, .. } = opened else {

@@ -39,7 +39,7 @@ use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use vag_data_labels::codes::CodePage;
 use vag_data_labels::registry::{self, RegistryLoad, RowError, UnitMeasurements, Words};
-use vag_data_labels::rod::{IvCache, KeyCost, RodStatus, decode_rod_recover, key_cost, recover_classic_key};
+use vag_data_labels::rod::{IvCache, KeyCost, RodStatus, key_cost, open_section};
 use vag_data_labels::ttdop::{self, TablesLoad};
 use vag_data_labels::unit_strings::{self, UnitsLoad};
 
@@ -665,10 +665,8 @@ fn words(root: &Path, cache: &mut IvCache, notes: &mut Vec<String>) -> (Words, C
 		let file = root.join(ODX_DIR).join(name);
 		let Ok(bytes) = std::fs::read(&file) else { continue };
 		let page = text_page(name);
-		recover_classic_key(&bytes, name, "TXT", cache);
-		let text = decode_rod_recover(&bytes, name, cache, false)
-			.into_iter()
-			.find(|s| s.tag == "TXT" && matches!(s.status, RodStatus::Tea | RodStatus::Zlib))
+		let text = open_section(&bytes, name, "TXT", cache, true)
+			.filter(|s| matches!(s.status, RodStatus::Tea | RodStatus::Zlib))
 			.and_then(|s| s.text);
 		if let Some(text) = text {
 			// One byte to one char out of the container; the code page is

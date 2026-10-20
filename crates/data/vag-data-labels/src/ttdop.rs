@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use crate::dtc::find_named;
 use crate::glyphs::TableAlphabet;
-use crate::rod::{IvCache, KeyCost, RodStatus, decode_rod_recover, key_cost, recover_classic_key};
+use crate::rod::{IvCache, KeyCost, RodStatus, key_cost, open_section};
 
 /// The text tables' own file name, inside a VCDS install.
 pub const TEXT_TABLES_FILE: &str = "TTDOP.rod";
@@ -157,10 +157,7 @@ pub fn load_text_tables(root: &Path, cache: &mut IvCache, crack: bool) -> Tables
 	};
 	let Ok(bytes) = std::fs::read(&file) else { return TablesLoad::NoFile };
 	let name = file.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
-	if crack {
-		recover_classic_key(&bytes, &name, DOP_SECTION, cache);
-	}
-	let section = decode_rod_recover(&bytes, &name, cache, false).into_iter().find(|s| s.tag == DOP_SECTION);
+	let section = open_section(&bytes, &name, DOP_SECTION, cache, crack);
 	match section {
 		Some(s) if matches!(s.status, RodStatus::Tea | RodStatus::Zlib) && s.text.is_some() => TablesLoad::Found {
 			tables: TextTables::parse(s.text.as_deref().unwrap_or_default()),
@@ -177,7 +174,7 @@ pub fn load_text_tables(root: &Path, cache: &mut IvCache, crack: bool) -> Tables
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::rod::testkit::section;
+	use crate::rod::testkit::{named, section};
 
 	fn row(table: u32, fields: &str) -> String {
 		format!("{table:06},{}", TableAlphabet::for_key(table).encipher(fields))
@@ -290,7 +287,7 @@ mod tests {
 		let text = [row(6051, "1,1,7001,"), row(6051, "11,11,7003,")].join("\r\n");
 		std::fs::write(
 			root.join("UDS_EV").join(TEXT_TABLES_FILE),
-			section(DOP_SECTION, text.as_bytes(), true, None),
+			section(DOP_SECTION, text.as_bytes(), true, named(TEXT_TABLES_FILE)),
 		)
 		.unwrap();
 		let opened = load_text_tables(&root, &mut IvCache::default(), false);
