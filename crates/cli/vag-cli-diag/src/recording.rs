@@ -29,8 +29,10 @@ pub enum Tool {
 	/// IN: a `vagcan watch --out` recording, ideally one where the thing you
 	/// are looking for was deliberately operated.
 	///
-	/// OUT: every identifier sorted into never-moved, stepped between a few
-	/// values, or continuous — with the stepped ones ranked, on stdout.
+	/// OUT: on stdout, a table of the stepped ones — fewest values first — and
+	/// a line counting every column as a candidate, continuous or never moved.
+	/// With `--pairs`, a second table of candidates that changed together.
+	/// `-v` says how a column is sorted; `-vv` when each candidate changed.
 	Discover {
 		/// Recording written by `vagcan watch --out`. Left out, the recordings
 		/// in the current directory are offered as a list.
@@ -54,7 +56,8 @@ pub enum Tool {
 	/// counts for a plan channel only when it is the same unit, identifier and field.
 	///
 	/// OUT: in a terminal, the panel drawn at the recording's pace with the alarm log
-	/// under it (`q` leaves); piped, only the alarm log, at once. Nothing is written.
+	/// under it (`q` leaves); piped, only the alarm log, at once. The log ends on
+	/// stdout either way. `-v` says what the replay leaves out. Nothing is written.
 	Dash {
 		/// The car whose plan to use, as `vagcan info` reports it.
 		#[arg(value_name = "VIN")]
@@ -141,20 +144,7 @@ pub fn run(tool: Tool) -> Result<()> {
 				return Ok(());
 			};
 			let text = std::fs::read_to_string(&log).with_context(|| format!("reading the recording {log:?}"))?;
-			let columns = discover::classify(&text).map_err(|e| anyhow::anyhow!("{log}: {e}"))?;
-			print!("{}", discover::render(&columns));
-			if pairs {
-				let together = discover::co_changing(&columns, 0.5);
-				if together.is_empty() {
-					println!("\nNo two candidates changed together.");
-				} else {
-					println!("\nChanged at the same moments — probably one thing seen twice:");
-					for (a, b, overlap) in together {
-						println!("  {a} + {b}   {:.0}% of transitions coincide", overlap * 100.0);
-					}
-				}
-			}
-			Ok(())
+			discover(&log, &text, pairs)
 		}
 		Tool::Dash {
 			vin,
@@ -169,6 +159,26 @@ pub fn run(tool: Tool) -> Result<()> {
 			dashreplay::run(&vin, &log, input.as_deref(), &presses, speed)
 		}
 	}
+}
+
+/// `discover` over one recording's text: the tables on stdout, the notes on stderr.
+fn discover(log: &str, text: &str, pairs: bool) -> Result<()> {
+	use vag_cli_core::verbosity::NOTES;
+	let columns = discover::classify(text).map_err(|e| anyhow::anyhow!("{log}: {e}"))?;
+	let rows = text.lines().skip(1).filter(|l| !l.trim().is_empty()).count();
+	let mut said = vec![(NOTES, format!("recording  {log}: {rows} rows, {} columns", columns.len()))];
+	said.extend(discover::notes(&columns, discover::untimed(text)));
+	vag_cli_core::out!("{}", discover::render(&columns));
+	if pairs {
+		let window = 0.5;
+		said.insert(2, (NOTES, discover::pairs_note(window)));
+		vag_cli_core::outln!();
+		vag_cli_core::out!("{}", discover::render_pairs(&discover::co_changing(&columns, window)));
+	}
+	for (level, line) in said {
+		vag_cli_core::verbosity::say(level, &line);
+	}
+	Ok(())
 }
 
 #[cfg(test)]
@@ -194,6 +204,44 @@ mod tests {
 		let dir = a_directory_with(&["2026-08-02-1030.csv", "2026-08-04-1241.csv", "capture.jsonl", "notes.md"]);
 		let names: Vec<String> = picker::entries(&dir, &recordings()).into_iter().map(|c| c.name).collect();
 		assert_eq!(names, ["2026-08-04-1241.csv", "2026-08-02-1030.csv"]);
+	}
+
+	/// Two switches flipping together and a value that never moved, in the current layout.
+	const DRIVE: &str = "t_s,A_t_s,A,B_t_s,B,C_t_s,C\n0.0,0.0,0,0.0,0,0.0,7\n1.0,1.0,1,1.0,1,1.0,7\n2.0,2.0,0,2.0,0,2.0,7\n";
+
+	#[test]
+	fn discover_prints_its_tables_and_one_line_each_and_the_level_only_adds_notes() {
+		use vag_cli_core::verbosity::{Capture, assert_split};
+		let run = |level| {
+			let capture = Capture::start(level);
+			discover("drive.csv", DRIVE, true).unwrap();
+			capture.finish()
+		};
+		let runs = [run(0), run(1), run(2)];
+		assert_eq!(
+			runs[0].stdout,
+			"column  values  changes  reads  seen\n\
+			 A            2        2      3  0 1\n\
+			 B            2        2      3  0 1\n\
+			 3 columns · 2 candidates · 0 continuous · 1 never moved\n\
+			 \n\
+			 first  second  coincide\n\
+			 A      B           100%\n\
+			 1 pair changed together\n"
+		);
+		assert_eq!(runs[0].stderr, "", "nothing but data by default");
+		assert!(
+			runs[1].stderr.starts_with("recording  drive.csv: 3 rows, 3 columns\ncandidate: "),
+			"{}",
+			runs[1].stderr
+		);
+		assert!(
+			runs[1].stderr.contains("pair: two candidates whose changes fall within 0.5 s"),
+			"{}",
+			runs[1].stderr
+		);
+		assert!(runs[2].stderr.contains("A: changed at 1.00 2.00 s"), "{}", runs[2].stderr);
+		assert_split("dev recording discover", &runs);
 	}
 
 	#[test]

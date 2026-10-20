@@ -232,47 +232,49 @@ pub fn transition_overlap(a: &Column, b: &Column, window: f64) -> f64 {
 }
 
 use crate::render::plural;
+use vag_cli_core::table::{Table, terminal_width};
 
-/// Render the classification for a human.
-pub fn render(columns: &[Column]) -> String {
-	let mut out = String::new();
+/// How many of a stepped column's values the table shows before `…`.
+const SHOWN_VALUES: usize = 8;
+
+/// The candidates, fewest levels first — a two-state column is a switch, which is the
+/// easiest thing to confirm — then most changes first.
+fn candidates(columns: &[Column]) -> Vec<&Column> {
 	let mut candidates: Vec<&Column> = columns.iter().filter(|c| c.is_candidate()).collect();
-	// Fewest levels first: a two-state column is a switch, which is the
-	// easiest thing to confirm.
 	candidates.sort_by_key(|c| match c.behaviour {
 		Behaviour::Stepped { levels, changes } => (levels, usize::MAX - changes),
 		_ => (usize::MAX, 0),
 	});
+	candidates
+}
 
-	if candidates.is_empty() {
-		out.push_str("No identifier changed between a small set of values.\n\n");
-		out.push_str(
-			"Either nothing discrete happened while recording, or the state lives on a \
-             control unit that was not polled.\n",
-		);
-	} else {
-		out.push_str("Discrete-state candidates — changed, but between few values:\n\n");
+/// The classification as data: a table of the candidates — when there are any — and one
+/// summary line, `45 columns · 14 candidates · 21 continuous · 10 never moved`.
+pub fn render(columns: &[Column]) -> String {
+	let candidates = candidates(columns);
+	let mut out = String::new();
+	if !candidates.is_empty() {
+		let mut table = Table::new(&["column", "values", "changes", "reads", "seen"]).right(1).right(2).right(3);
 		for c in &candidates {
 			let Behaviour::Stepped { levels, changes } = c.behaviour else {
 				continue;
 			};
-			let shown: Vec<String> = c.values.iter().take(8).cloned().collect();
+			let shown: Vec<String> = c.values.iter().take(SHOWN_VALUES).cloned().collect();
 			let more = if c.values.len() > shown.len() { " …" } else { "" };
-			out.push_str(&format!(
-				"  {:<10} {levels:>2} {:<7} {changes:>4} {:<7} of {:>5} reads   [{}{more}]\n",
-				c.name,
-				format!("{},", plural(levels, "value")),
-				plural(changes, "change"),
-				c.samples,
-				shown.join(" "),
-			));
+			table.row(vec![
+				c.name.clone(),
+				levels.to_string(),
+				changes.to_string(),
+				c.samples.to_string(),
+				format!("{}{more}", shown.join(" ")),
+			]);
 		}
+		out.push_str(&table.render(terminal_width()));
 	}
-
 	let continuous = columns.iter().filter(|c| matches!(c.behaviour, Behaviour::Continuous { .. })).count();
 	let constant = columns.iter().filter(|c| c.behaviour == Behaviour::Constant).count();
 	out.push_str(&format!(
-		"\n{} {}: {} {}, {continuous} continuous, {constant} never moved\n",
+		"{} {} · {} {} · {continuous} continuous · {constant} never moved\n",
 		columns.len(),
 		plural(columns.len(), "column"),
 		candidates.len(),
@@ -280,6 +282,68 @@ pub fn render(columns: &[Column]) -> String {
 	));
 	out
 }
+
+/// What `discover` says beside its data: at `-v` how it sorts and what an empty answer means,
+/// at `-vv` when each candidate changed. `untimed`: how many columns carry no time of their
+/// own ([`untimed`]).
+pub fn notes(columns: &[Column], untimed: usize) -> Vec<(u8, String)> {
+	use vag_cli_core::verbosity::{NOTES, WIRE};
+	let candidates = candidates(columns);
+	let mut notes = vec![(
+		NOTES,
+		format!("candidate: changed between 2 and {STEPPED_MAX_LEVELS} values; more is continuous; a blank cell (no answer) is no change"),
+	)];
+	if untimed > 0 {
+		notes.push((
+			NOTES,
+			format!("columns without their own time: {untimed} (an older recording) — a change there is placed only to within a polling cycle"),
+		));
+	}
+	if candidates.is_empty() {
+		notes.push((
+			NOTES,
+			"no candidate: nothing discrete happened while recording, or the state lives on a unit that was not polled".to_string(),
+		));
+	}
+	for c in candidates {
+		let at: Vec<String> = c.transitions.iter().map(|t| format!("{t:.2}")).collect();
+		notes.push((WIRE, format!("{}: changed at {} s", c.name, at.join(" "))));
+	}
+	notes
+}
+
+/// How many value columns of a recording carry no time of their own (`<name>_t_s`).
+pub fn untimed(csv: &str) -> usize {
+	let Some(header) = csv.lines().next() else { return 0 };
+	let names = fields(header);
+	let names: Vec<&str> = names.iter().map(String::as_str).collect();
+	value_columns(&names).iter().filter(|(_, time_at, _)| time_at.is_none()).count()
+}
+
+/// The pairs [`co_changing`] found, as data: a table — when there are any — and one line.
+pub fn render_pairs(pairs: &[(String, String, f64)]) -> String {
+	let mut out = String::new();
+	if !pairs.is_empty() {
+		let mut table = Table::new(&["first", "second", "coincide"]).right(2);
+		for (a, b, overlap) in pairs {
+			table.row(vec![a.clone(), b.clone(), format!("{:.0}%", overlap * 100.0)]);
+		}
+		out.push_str(&table.render(terminal_width()));
+	}
+	out.push_str(&format!("{} {} changed together\n", pairs.len(), plural(pairs.len(), "pair")));
+	out
+}
+
+/// How [`co_changing`] pairs, at `-v`: `window` is its argument.
+pub fn pairs_note(window: f64) -> String {
+	format!(
+		"pair: two candidates whose changes fall within {window} s of each other's, {:.0}% or more both ways — probably one thing seen twice",
+		PAIR_OVERLAP * 100.0
+	)
+}
+
+/// The share of transitions two candidates must share, both ways, to be a pair.
+const PAIR_OVERLAP: f64 = 0.8;
 
 /// Group candidates that changed at the same moments — they are probably
 /// facets of one thing (a gear number and the gear-change flag, say).
@@ -289,7 +353,7 @@ pub fn co_changing(columns: &[Column], window: f64) -> Vec<(String, String, f64)
 	for (i, a) in candidates.iter().enumerate() {
 		for b in candidates.iter().skip(i + 1) {
 			let overlap = transition_overlap(a, b, window).min(transition_overlap(b, a, window));
-			if overlap >= 0.8 {
+			if overlap >= PAIR_OVERLAP {
 				pairs.push((a.name.clone(), b.name.clone(), overlap));
 			}
 		}
@@ -457,24 +521,58 @@ mod tests {
 	}
 
 	#[test]
-	fn a_recording_where_nothing_moved_says_so_instead_of_listing_nothing() {
+	fn a_recording_where_nothing_moved_is_a_summary_alone_and_a_note_says_why() {
 		let csv = "t_s,A,B\n0.0,1,7F\n1.0,1,7F\n";
-		let text = render(&classify(csv).unwrap());
-		assert!(text.contains("No identifier changed"), "{text}");
-		assert!(text.contains("2 never moved"), "{text}");
+		let columns = classify(csv).unwrap();
+		assert_eq!(render(&columns), "2 columns · 0 candidates · 0 continuous · 2 never moved\n");
+		let notes = notes(&columns, untimed(csv));
+		assert!(
+			notes
+				.iter()
+				.any(|(level, n)| *level == 1 && n.starts_with("no candidate: nothing discrete happened")),
+			"{notes:?}"
+		);
 	}
 
 	#[test]
-	fn counts_of_one_read_as_one() {
-		// A switch that flipped once is "2 values, 1 change of 3 reads", and
-		// one such column is "1 candidate" — not "1 changes" of "1 candidates".
+	fn the_candidates_are_a_table_and_counts_of_one_read_as_one() {
+		// A switch that flipped once is 2 values, 1 change of 3 reads, and one such column
+		// is "1 candidate" — not "1 candidates".
 		let csv = "t_s,A\n0.0,0\n1.0,1\n2.0,1\n";
+		assert_eq!(
+			render(&classify(csv).unwrap()),
+			"column  values  changes  reads  seen\n\
+			 A            2        1      3  0 1\n\
+			 1 column · 1 candidate · 0 continuous · 0 never moved\n"
+		);
+	}
+
+	#[test]
+	fn a_stepped_column_shows_its_first_values_and_says_there_are_more() {
+		let csv = "t_s,A\n0,1\n1,2\n2,3\n3,4\n4,5\n5,6\n6,7\n7,8\n8,9\n";
 		let text = render(&classify(csv).unwrap());
-		assert!(text.contains("2 values,"), "{text}");
-		assert!(text.contains("1 change "), "{text}");
-		assert!(!text.contains("1 changes"), "{text}");
-		assert!(text.contains("1 column:"), "{text}");
-		assert!(text.contains("1 candidate,"), "{text}");
+		assert!(text.lines().nth(1).unwrap().ends_with("  1 2 3 4 5 6 7 8 …"), "{text}");
+	}
+
+	#[test]
+	fn pairs_are_a_table_and_a_line_and_none_is_a_line() {
+		assert_eq!(render_pairs(&[]), "0 pairs changed together\n");
+		assert_eq!(
+			render_pairs(&[("A".into(), "Gear".into(), 1.0)]),
+			"first  second  coincide\n\
+			 A      Gear        100%\n\
+			 1 pair changed together\n"
+		);
+	}
+
+	#[test]
+	fn an_older_recording_is_said_to_place_a_change_within_a_cycle() {
+		assert_eq!(untimed("t_s,A_t_s,A\n0,0,1\n"), 0);
+		assert_eq!(untimed("t_s,A_t_s,A,B\n0,0,1,2\n"), 1);
+		let columns = classify("t_s,A\n0,1\n1,2\n").unwrap();
+		let said = notes(&columns, 1);
+		assert!(said.iter().any(|(_, n)| n.starts_with("columns without their own time: 1 ")), "{said:?}");
+		assert!(said.contains(&(2, "A: changed at 1.00 s".to_string())), "{said:?}");
 	}
 
 	#[test]

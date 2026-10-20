@@ -16,7 +16,9 @@ pub mod glass;
 mod view;
 
 use std::io::{IsTerminal, Write};
+
 use std::path::Path;
+use vag_cli_core::verbosity;
 
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -31,18 +33,31 @@ pub fn run(vin: &str, log: &str, input: Option<&Path>, presses: &[f64], speed: f
 	let text = std::fs::read_to_string(log).with_context(|| format!("reading the recording {log:?}"))?;
 	let recording = Recording::parse(&text).map_err(|e| anyhow!("{log}: {e}"))?;
 	let resolved = vag_cli_core::dash::resolve_for_car(vin, input)?;
-	let plan = &resolved.built.plan;
-
 	// Every channel `watch` offers this car — the names its headings were written from.
 	// The project's, for the car's recorded units: a plan channel is always one of those,
 	// since the build refuses anything the project does not describe.
 	let offered = crate::plan::available(&resolved.store, &resolved.extracted, &resolved.units);
-	let matched = columns::match_columns(&recording.columns, &offered, plan);
+	let panel = std::io::stdout().is_terminal().then_some(speed);
+	replay(log, &recording, &resolved.built.plan, &offered, presses, panel)
+}
+
+/// [`run`] once the recording is read and the plan resolved: `offered` is every channel `watch`
+/// offers the car. `panel` is the speed to draw the panel at in the terminal; without one, the
+/// log at once. The log ends on stdout either way.
+fn replay(
+	log: &str,
+	recording: &Recording,
+	plan: &vag_cli_core::dash::Plan,
+	offered: &[crate::plan::Channel],
+	presses: &[f64],
+	panel: Option<f64>,
+) -> Result<()> {
+	let matched = columns::match_columns(&recording.columns, offered, plan);
 	let mut notes = unreplayed(plan);
 	notes.extend(matched.notes);
 	// The board's plan is `'static`; this one lives until the process ends anyway.
 	let device: &'static vag_dash_render::plan::Plan = Box::leak(Box::new(plan.to_device()));
-	let series = columns::series(&recording, &matched.sources, plan, device, &mut notes);
+	let series = columns::series(recording, &matched.sources, plan, device, &mut notes);
 	if series.iter().all(Option::is_none) {
 		bail!(
 			"none of the plan's {} channels is in {log}, so there is nothing to replay\n{}",
@@ -51,13 +66,18 @@ pub fn run(vin: &str, log: &str, input: Option<&Path>, presses: &[f64], speed: f
 		);
 	}
 
+	let read = series.iter().filter(|s| s.is_some()).count();
+
 	let times = recording.samples.iter().map(|(t, _)| columns::to_ms(*t));
 	let (start, end) = (times.clone().min().unwrap_or(0), times.max().unwrap_or(0));
 	let at = presses.iter().map(|&press| columns::to_ms(press)).collect();
 	let replay = Replay::new(device, series, at, start, end).map_err(|e| anyhow!("{e}"))?;
 	let seconds = |ms: u64| ms as f64 / 1000.0;
+	// What the person typed and the replay did not do is said at every level; the rest of the
+	// notes — what the replay leaves out and why — at `-v`.
+	let mut refused = Vec::new();
 	for &(ms, why) in replay.refused() {
-		notes.push(match why {
+		refused.push(match why {
 			Refusal::Outside => format!(
 				"the press at {:.2} s is outside the recording's frames ({:.2}–{:.2} s) — not made",
 				seconds(ms),
@@ -70,23 +90,45 @@ pub fn run(vin: &str, log: &str, input: Option<&Path>, presses: &[f64], speed: f
 			),
 		});
 	}
+	let mut said: Vec<(u8, String)> = vec![(
+		verbosity::NOTES,
+		format!(
+			"recording  {log}: {} rows, {:.2}–{:.2} s; plan {:016x}, {read} of its {} channels in it",
+			recording.samples.len(),
+			seconds(start),
+			seconds(end),
+			vag_cli_core::dash::plan_id(plan),
+			plan.channels.len()
+		),
+	)];
+	said.extend(notes.iter().map(|n| (verbosity::NOTES, n.clone())));
+	said.extend(refused.iter().map(|n| (0, n.clone())));
+	notes.extend(refused);
 
-	let stdout = std::io::stdout();
-	if !stdout.is_terminal() {
-		for note in &notes {
-			eprintln!("{note}");
-		}
-		return write_log(replay, &mut stdout.lock());
-	}
+	let Some(speed) = panel else {
+		say_all(&said);
+		let mut events = Vec::new();
+		write_log(replay, &mut events)?;
+		vag_cli_core::out!("{}", String::from_utf8_lossy(&events));
+		return Ok(());
+	};
 	let title = Path::new(log)
 		.file_name()
 		.map_or_else(|| log.to_string(), |n| n.to_string_lossy().into_owned());
-	let lines = view::show(replay, &notes, &title, speed)?;
+	let events = view::show(replay, &notes, &title, speed)?;
 	// The screen is gone; what happened stays in the shell.
-	for line in lines {
-		println!("{line}");
+	say_all(&said);
+	for line in events {
+		vag_cli_core::outln!("{line}");
 	}
 	Ok(())
+}
+
+/// Each line on stderr at its level.
+fn say_all(said: &[(u8, String)]) {
+	for (level, line) in said {
+		verbosity::say(*level, line);
+	}
 }
 
 /// What the plan has that the replay does not run, said before anything else
@@ -207,6 +249,105 @@ mod tests {
 		);
 		// No panel, no terminal control: a script reads it as it is.
 		assert!(!text.contains(['▀', '▄', '█', '\x1b']), "{text}");
+	}
+
+	/// The log on stdout, the same at every level; a press the replay did not make said by
+	/// default; what the replay read and left out at `-v`.
+	#[test]
+	fn piped_the_log_is_stdout_and_a_press_not_made_is_said() {
+		use std::borrow::Cow;
+		use vag_cli_core::dash::{Alarm as PlanAlarm, AlarmRule, Bound as PlanBound, Channel as PlanChannel, Page as PlanPage, Plan as Owned, Unit};
+		use vag_cli_core::verbosity::{Capture, assert_split};
+		use vag_data_labels::catalog::{MeasurementDef, ReadId, Scaling};
+		use vag_data_labels::measure::{LinearScale, RawForm};
+
+		let plan = Owned {
+			vin: "TESTVIN0000000001".into(),
+			language: "en".into(),
+			units: vec![Unit {
+				request: 0x7E0,
+				response: 0x7E8,
+				part_number: "PART".into(),
+				odx_name: None,
+			}],
+			channels: vec![PlanChannel {
+				unit: 0x7E0,
+				did: 0x1001,
+				bit_offset: 0,
+				bit_length: 16,
+				signed: true,
+				big_endian: true,
+				factor: 1.0,
+				offset: 0.0,
+				decimals: 0,
+				unit_text: String::new(),
+				label: "A".into(),
+				proven: false,
+				hz: 10.0,
+				source: String::new(),
+				setpoint: None,
+				zero_at_rest: false,
+			}],
+			pages: vec![PlanPage::Values {
+				title: "MAIN".into(),
+				cells: vec![0],
+				volts: false,
+			}],
+			alarms: vec![PlanAlarm {
+				channel: 0,
+				page: 0,
+				rule: AlarmRule::Bounds {
+					max: Some(PlanBound { at: 10.0, off: 8.0 }),
+					min: None,
+				},
+			}],
+			stalk: None,
+			stopwatch: None,
+			buttons: vec![],
+			strip: None,
+			standstill: None,
+		};
+		let offered = [crate::plan::Channel {
+			request: 0x7E0,
+			did: 0x1001,
+			def: Some(MeasurementDef {
+				name: Cow::Borrowed("A"),
+				unit: Cow::Borrowed(""),
+				address: ReadId::Uds(0x1001),
+				raw_form: RawForm::I16Be,
+				scaling: Scaling::Linear(LinearScale { factor: 1.0, offset: 0.0 }),
+			}),
+			named: None,
+			proven: false,
+			text_id: None,
+			selected: false,
+		}];
+		let recording = Recording::parse("t_s,A\n0.0,0\n1.0,12\n2.0,0\n3.0,0\n").unwrap();
+		let run = |level| {
+			let capture = Capture::start(level);
+			replay("drive.csv", &recording, &plan, &offered, &[99.0], None).unwrap();
+			capture.finish()
+		};
+		let runs = [run(0), run(1), run(2)];
+		assert!(
+			runs[0].stdout.starts_with("     0.00 s  start on page 1 \"MAIN\"\n"),
+			"{}",
+			runs[0].stdout
+		);
+		assert!(runs[0].stdout.contains("alarm #1 took the screen"), "{}", runs[0].stdout);
+		assert_eq!(
+			runs[0].stderr,
+			"the press at 99.00 s is outside the recording's frames (0.00–3.00 s) — not made\n"
+		);
+		assert!(
+			runs[1].stderr.starts_with(&format!(
+				"recording  drive.csv: 4 rows, 0.00–3.00 s; plan {:016x}, 1 of its 1 channels in it\n",
+				vag_cli_core::dash::plan_id(&plan)
+			)),
+			"{}",
+			runs[1].stderr
+		);
+		assert_split("dev recording dash", &runs);
 	}
 
 	#[test]
