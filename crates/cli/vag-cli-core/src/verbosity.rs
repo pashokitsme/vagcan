@@ -28,8 +28,8 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 /// both, so it is taken before or after the subcommand.
 #[derive(Clone, Copy, Debug, Default, clap::Args)]
 pub struct VerboseArg {
-	/// More on stderr: -v where the data came from, why a row is unnamed or skipped, the
-	/// caveats and timings; -vv also every request and answer on the bus.
+	/// More on stderr. -v: where the data came from, why a row is unnamed or skipped,
+	/// caveats and timings; -vv: also every request and answer on the bus.
 	///
 	/// Data stays on stdout and does not change with it.
 	//
@@ -88,7 +88,14 @@ struct Sink {
 }
 
 /// Write `text` to `stream` as it is (no newline added), past any spinner on screen.
-fn write(stream: Stream, text: &str) {
+///
+/// The error is the stream's own — stdout's `BrokenPipe` when what reads it has gone
+/// (`watch … | head -3`). A failed stdout write is remembered ([`stdout_gone`]).
+fn write(stream: Stream, text: &str) -> std::io::Result<()> {
+	let stream = match stream {
+		Stream::Out if DATA_ON_STDERR.load(Ordering::Relaxed) => Stream::Err,
+		other => other,
+	};
 	if let Ok(mut sink) = SINK.lock()
 		&& let Some(sink) = sink.as_mut()
 		&& sink.owner.is_none_or(|owner| owner == std::thread::current().id())
@@ -97,25 +104,57 @@ fn write(stream: Stream, text: &str) {
 			Stream::Out => sink.captured.stdout.push_str(text),
 			Stream::Err => sink.captured.stderr.push_str(text),
 		}
-		return;
+		return Ok(());
 	}
-	crate::progress::above(|| match stream {
-		Stream::Out => {
-			let mut out = std::io::stdout().lock();
-			let _ = out.write_all(text.as_bytes());
-			let _ = out.flush();
-		}
-		Stream::Err => {
-			let mut err = std::io::stderr().lock();
-			let _ = err.write_all(text.as_bytes());
-			let _ = err.flush();
-		}
+	let mut result = Ok(());
+	crate::progress::above(|| {
+		result = match stream {
+			Stream::Out => to_stdout(&mut std::io::stdout().lock(), text),
+			Stream::Err => {
+				let mut err = std::io::stderr().lock();
+				err.write_all(text.as_bytes()).and_then(|()| err.flush())
+			}
+		};
 	});
+	result
 }
 
-/// Data, on stdout: what the command was asked for. Written as given.
+/// A data write to `out`, the process's stdout but for a test: its error is returned, and
+/// remembered for [`stdout_gone`].
+fn to_stdout(out: &mut impl std::io::Write, text: &str) -> std::io::Result<()> {
+	let result = out.write_all(text.as_bytes()).and_then(|()| out.flush());
+	if result.is_err() {
+		STDOUT_GONE.store(true, Ordering::Relaxed);
+	}
+	result
+}
+
+/// Whether a write to stdout has failed — the reader of a pipe went away. A command that
+/// streams data for as long as it runs stops on it rather than polling a car for nobody.
+pub fn stdout_gone() -> bool {
+	STDOUT_GONE.load(Ordering::Relaxed)
+}
+
+static STDOUT_GONE: AtomicBool = AtomicBool::new(false);
+
+/// While set, data goes to stderr: what another command prints inside one whose stdout is
+/// its own data (`faults` unsealing a catalogue runs `dev vcds rod`). See [`data_on_stderr`].
+static DATA_ON_STDERR: AtomicBool = AtomicBool::new(false);
+
+/// Run `f` with every data line it writes sent to stderr, so the stdout of the command
+/// around it holds that command's data alone.
+pub fn data_on_stderr<R>(f: impl FnOnce() -> R) -> R {
+	let was = DATA_ON_STDERR.swap(true, Ordering::Relaxed);
+	let result = f();
+	DATA_ON_STDERR.store(was, Ordering::Relaxed);
+	result
+}
+
+/// Data, on stdout: what the command was asked for. Written as given. A failed write is
+/// not this caller's to handle — it is remembered for [`stdout_gone`] — but a writer that
+/// streams takes [`Stdout`], which returns it.
 pub fn out(text: &str) {
-	write(Stream::Out, text);
+	let _ = write(Stream::Out, text);
 }
 
 /// Data, on stdout, and a newline.
@@ -123,18 +162,19 @@ pub fn outln(text: &str) {
 	let mut line = String::with_capacity(text.len() + 1);
 	line.push_str(text);
 	line.push('\n');
-	write(Stream::Out, &line);
+	let _ = write(Stream::Out, &line);
 }
 
-/// Stdout as an [`std::io::Write`], through [`out`]: the sink for a writer of data that
-/// takes one (a CSV a command streams), so it is the same stdout every other data line
-/// goes to — past the spinner, and captured in a test.
+/// Stdout as an [`std::io::Write`], through [`out`]'s path: the sink for a writer of data
+/// that takes one (a CSV a command streams), so it is the same stdout every other data line
+/// goes to — past the spinner, and captured in a test. Its errors are stdout's, so a
+/// `BrokenPipe` ends the stream that hit it.
 pub struct Stdout;
 
 impl std::io::Write for Stdout {
 	fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
 		// `fmt` hands a writer whole `str` pieces, so a character is never split here.
-		out(&String::from_utf8_lossy(buf));
+		write(Stream::Out, &String::from_utf8_lossy(buf))?;
 		Ok(buf.len())
 	}
 
@@ -156,12 +196,12 @@ pub fn say(level: u8, text: &str) {
 	let mut line = String::with_capacity(text.len() + 1);
 	line.push_str(text);
 	line.push('\n');
-	write(Stream::Err, &line);
+	let _ = write(Stream::Err, &line);
 }
 
 /// A question's text on stderr, with no newline: the answer is typed after it.
 pub fn ask(text: &str) {
-	write(Stream::Err, text);
+	let _ = write(Stream::Err, text);
 }
 
 /// While a full-screen view draws on the terminal, notes and wire lines are not written
@@ -365,6 +405,35 @@ mod tests {
 		let wire = run(2);
 		assert_eq!(wire.stdout, quiet.stdout);
 		assert!(wire.stderr.ends_with("→ 7E0  22 F1 87\n"), "{wire:?}");
+	}
+
+	#[test]
+	fn a_closed_pipe_is_an_error_the_streaming_writer_returns() {
+		// `watch --did … | head -3` ended on EPIPE and let go of the bus; with the error
+		// swallowed it polled the car until --for or Ctrl-C (review of PR #38).
+		struct Closed;
+		impl std::io::Write for Closed {
+			fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+				Err(std::io::ErrorKind::BrokenPipe.into())
+			}
+			fn flush(&mut self) -> std::io::Result<()> {
+				Ok(())
+			}
+		}
+		let was = stdout_gone();
+		let said = to_stdout(&mut Closed, "0.1,2,3");
+		assert_eq!(said.map_err(|e| e.kind()), Err(std::io::ErrorKind::BrokenPipe));
+		assert!(stdout_gone(), "remembered for a loop that writes through outln!");
+		STDOUT_GONE.store(was, Ordering::Relaxed);
+	}
+
+	#[test]
+	fn data_inside_another_command_goes_to_stderr() {
+		let capture = Capture::start(0);
+		data_on_stderr(|| crate::outln!("tag  state"));
+		crate::outln!("data");
+		let said = capture.finish();
+		assert_eq!((said.stdout.as_str(), said.stderr.as_str()), ("data\n", "tag  state\n"));
 	}
 
 	#[test]

@@ -1072,10 +1072,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 	// Written down for the commands that need this car's units without the car
 	// (`setup`'s registry step, the dash build); a write that fails is one line,
 	// and so is a car that gave no VIN to file it under.
-	match &vin {
-		Some(vin) => crate::units::record_quietly(vin, &identities),
-		None => vag_cli_core::note!("{}", crate::units::NOT_RECORDED_WITHOUT_A_VIN),
-	}
+	crate::units::record_for(vin.as_deref(), &identities);
 	// The channels of units nothing has read yet, out of the VCDS installation
 	// the project was set up from — before the project's rows are loaded below.
 	crate::registry::ensure_async(identities.clone()).await;
@@ -1531,7 +1528,14 @@ async fn drive_to<F: Feed>(
 				Some(terminal) => {
 					terminal.draw(|frame| ui::draw(frame, &screen))?;
 				}
-				None => print(&ui::plain_line(&screen)),
+				None => {
+					print(&ui::plain_line(&screen));
+					// Nobody reads the lines any more (`measure | head`): the run ends, and
+					// the bus with it, rather than polling the car for nobody.
+					if vag_cli_core::verbosity::stdout_gone() {
+						break Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe).into());
+					}
+				}
 			}
 		}
 

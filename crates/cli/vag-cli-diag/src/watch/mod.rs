@@ -2456,10 +2456,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 	// merged field by field into what earlier runs recorded; a write that fails
 	// is one line. A car that gave no VIN has no record to write into, and
 	// that is said, or a dash owner waits for a file that never comes.
-	match &vin {
-		Some(vin) => crate::units::record_quietly(vin, &identities),
-		None => vag_cli_core::say!("{}", crate::units::NOT_RECORDED_WITHOUT_A_VIN),
-	}
+	crate::units::record_for(vin.as_deref(), &identities);
 	// The channels of units nothing has read yet, out of the VCDS installation
 	// the project was set up from — the first time this car is seen, and before
 	// the project's rows are loaded below, so they include them.
