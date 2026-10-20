@@ -234,12 +234,25 @@ fn look_into(dir: &Path, project: Option<&crate::project::Project>, refresh: boo
 		&& cache_is_current(&project.cache(), &labels)
 		&& let Ok(db) = vag_data_db::load_db(&project.cache())
 	{
+		vag_cli_core::note!(
+			"label cache {} ({} {}), current for {}",
+			project.cache().display(),
+			db.len(),
+			plural(db.len(), "label file"),
+			labels.display()
+		);
 		return Ok(db);
 	}
 	let load = {
 		let _spinner = crate::progress::Spinner::new(format!("parsing the label files in {}", labels.display()));
 		vag_data_labels::load_label_files(&labels).with_context(|| format!("reading the label files in {}", labels.display()))?
 	};
+	vag_cli_core::note!(
+		"label cache not used for {}: {} {} parsed, nothing written",
+		labels.display(),
+		load.files.len(),
+		plural(load.files.len(), "label file")
+	);
 	Ok(LabelDb::new(load.files))
 }
 

@@ -147,10 +147,12 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 	);
 	assert_eq!(part[0].stderr, "", "the cache built on the way is a note");
 	assert!(part[1].stderr.contains("label cache"), "{}", part[1].stderr);
+	// No project here, so no cache to check (`labels::look_into`): the files are parsed and
+	// nothing is written, and -v says so.
 	assert!(
-		part[2].stderr.contains("label cache") && part[2].stderr.contains("built from"),
+		part[1].stderr.contains("label cache not used") && part[1].stderr.contains("nothing written"),
 		"{}",
-		part[2].stderr
+		part[1].stderr
 	);
 
 	let odx = levels("labels --odx", || labels(&vcds_dir, None, None, Some("EV_TEST"), &keys));

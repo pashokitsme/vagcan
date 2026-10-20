@@ -589,8 +589,9 @@ fn report(err: &anyhow::Error) {
 async fn main() -> ExitCode {
 	// A binary `cargo test` built reads a temporary data dir, never ~/.vagcan: said once,
 	// first, so one run by hand cannot quietly report a machine with no data.
+	// Through `say!`, which never panics on a stderr that takes nothing (`report`).
 	if let Some(note) = vag_cli_core::datadir::test_build_note() {
-		eprintln!("{note}");
+		vag_cli_core::say!("{note}");
 	}
 	match run().await {
 		Ok(code) => code,
