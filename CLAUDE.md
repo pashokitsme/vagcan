@@ -309,6 +309,26 @@ hedging. Formatting matters: tables for commands, one idea per bullet, fenced bl
 anything typed. `CLAUDE.md`, `todo/` and `research/` are for agents and keep their own
 style.
 
+## Command output (MANDATORY)
+
+Every command prints the way established CLI tools do — `rustc`, `cargo`, `git` — never a format
+of our own (owner, 2026-10-21: «это должно быть актуально для любого вывода»; the home-made
+`setup` step table and the wide `faults` table were rejected the same day).
+
+- **Results are grouped records, rustc-diagnostic style.** A heading line per item (a unit, a
+  source, a channel), its details indented beneath it. Free text wraps under itself and is
+  never cut. Readable at 80 columns with no width tricks.
+- **A table only for genuinely tabular data**: every row the same few short columns, no
+  free-text column, fitting 80 columns (`setup --list`, `devices`). A wide table with a text
+  column at the end is a grouped record instead.
+- **Progress and status are cargo-style lines on stderr**: a right-aligned verb (`Copying`,
+  `Reading`, `Finished`, `Failed`) and a plain clause; one `Finished` line at the end.
+- **Streams and levels:** data on stdout, notes and status on stderr; `-v` adds provenance and
+  reasons, `-vv` the per-item detail and the wire, in the same line style. Colour only on a tty.
+- **Errors:** `Error: <what failed>`, then `Fix: <what to type>`.
+- A change to a command's output is checked against the e2e goldens (`just e2e`, trycmd cases
+  under `tests/e2e/`) once they exist, and the golden diff is shown in the PR.
+
 ## Tech stack & architecture (locked)
 
 - **Rust edition 2024, MSRV 1.85. Async runtime: tokio.**
