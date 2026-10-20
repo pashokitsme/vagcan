@@ -439,9 +439,7 @@ fn choose_usb(listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) -> 
 	match (others.as_slice(), silent.as_slice()) {
 		([], []) => Ok(Found::Nothing(
 			"no USB-CAN adapter found.\n\
-             Plug one in and check it enumerated: `vagcan devices`.\n\
-             If it is plugged in but missing, unplug and replug it — the adapter can \
-             enumerate on USB without macOS attaching a serial node."
+             Plug one in; one that is in and not listed by `vagcan devices`: unplug and replug it."
 				.to_string(),
 		)),
 		([], boards) if boards.iter().any(|b| dash.contains(&b.path)) => Ok(Found::OnlyThroughTheBoard),
