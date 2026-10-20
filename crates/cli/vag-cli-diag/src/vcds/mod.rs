@@ -56,12 +56,14 @@ pub enum Tool {
 	/// IN: a VCDS install root or any directory below it, plus one of
 	/// `--part`, `--block`, `--odx`, or `--from-car` to say what to look up.
 	///
-	/// OUT, on stdout: with no lookup, the label files by kind; `--part`, the file
-	/// it resolves to and its measurements; `--block`, every file defining the
-	/// block; `--odx`, the file's sections and how each opened — `sealed` has no
-	/// key cached (`vagcan dev vcds rod` recovers it), `no crib` has no key that
-	/// can be searched for (the file is not damaged). `--part` and `--block` read
-	/// this project's label cache, built on first use.
+	/// OUT, on stdout: with no lookup, the files by kind — `.lbl`/`.clb` in the
+	/// label directory, the ones the label cache is built from, and `.rod` in the
+	/// whole tree; `--part`, the file it resolves to and its measurements;
+	/// `--block`, every file defining the block; `--odx`, the file's sections,
+	/// each `open` or `sealed`. `-v` gives the cipher of each: `tea`, `zlib`,
+	/// `no key` (`vagcan dev vcds rod` recovers it), or `no crib` (no key can be
+	/// searched for; the file is not damaged). `--part` and `--block` read this
+	/// project's label cache, built on first use.
 	#[command(mut_arg("device", |a| a.help(LABELS_DEVICE_HELP)))]
 	Labels {
 		/// VCDS install root, or any directory below it.
@@ -177,17 +179,18 @@ pub enum Tool {
 	/// `EV_ECM18TFS0208V0906264H.rod`.
 	///
 	/// OUT: the file and its key cache, then one row per section on stdout:
-	/// tag, state (`tea`, `zlib`, `sealed`, `no crib`), size, key (`new` when
-	/// recovered this run), preview. `no crib`: the file masks its IVs, so the
-	/// key cannot be searched for; the file is not damaged. Recovered keys are
-	/// added to the cache; with `--dump DIR`, each opened section is written to
-	/// `DIR/<TAG>.bin`.
+	/// section, state (`open`, `sealed`), bytes, key (`new` when recovered this
+	/// run), preview. `-v` gives the cipher of each: `tea`, `zlib`, `no key`, or
+	/// `no crib` (the file masks its IVs, so the key cannot be searched for; the
+	/// file is not damaged). Recovered keys are added to the cache; with
+	/// `--dump DIR`, each opened section is written to `DIR/<section>.bin`
+	/// (`DIR/TXT.bin`).
 	Rod {
 		/// The `.rod` file to open.
 		#[arg(value_name = "FILE")]
 		file: String,
 		/// Use only keys already in the cache; do not search for missing ones.
-		/// Searching costs about a minute of every core per blocked section.
+		/// Searching costs about 3 min per file.
 		#[arg(long)]
 		no_crack: bool,
 		/// Where recovered keys are read and written. Default: next to the
@@ -195,8 +198,8 @@ pub enum Tool {
 		/// this project's `rod-keys.json`.
 		#[arg(long, value_name = "PATH")]
 		cache: Option<String>,
-		/// Also write each decoded section to `DIR/<TAG>.bin`. This is how the
-		/// input to `vagcan dev vcds tttext` is produced.
+		/// Also write each decoded section to `DIR/<section>.bin`. This is how
+		/// the input to `vagcan dev vcds tttext` is produced.
 		#[arg(long, value_name = "DIR")]
 		dump: Option<String>,
 	},
@@ -419,9 +422,10 @@ fn stats(db_path: &std::path::Path, named: bool) -> Result<()> {
 	Ok(())
 }
 
-/// `stats`' table: rows per table, in the schema's order.
+/// `stats`' table: rows per table, in the schema's order, under `what  count` like every
+/// count table in `dev vcds`.
 fn render_stats(counts: &[(&str, i64)]) -> String {
-	let mut table = Table::new(&["table", "rows"]).right(1);
+	let mut table = Table::new(&["what", "count"]).right(1);
 	for (name, n) in counts {
 		table.row(vec![name.to_string(), n.to_string()]);
 	}
@@ -436,7 +440,7 @@ mod tests {
 	fn stats_are_one_row_per_table() {
 		assert_eq!(
 			render_stats(&[("label_file", 1), ("measurement", 101889)]),
-			"table          rows
+			"what          count
 label_file        1
 measurement  101889
 "

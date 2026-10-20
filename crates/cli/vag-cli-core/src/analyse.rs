@@ -546,14 +546,17 @@ pub fn run(capture_path: &str, log_path: &str, out: Option<&str>, limits: Thresh
 	let offset =
 		log_offset_seconds(anchor, log.started_hms).ok_or_else(|| anyhow::anyhow!("the capture's wall-clock anchor is not a valid local time"))?;
 
+	let samples = series.iter().map(|s| s.samples.len()).sum::<usize>();
 	crate::note!(
-		"capture {capture_path}: {} identifiers, {} samples",
+		"capture {capture_path}: {} {}, {samples} {}",
 		series.len(),
-		series.iter().map(|s| s.samples.len()).sum::<usize>()
+		plural(series.len(), "identifier"),
+		plural(samples, "sample")
 	);
 	crate::note!(
-		"log {log_path}: {} measurements from {}",
+		"log {log_path}: {} {} from {}",
 		log.measurements.len(),
+		plural(log.measurements.len(), "measurement"),
 		log.part_number.as_deref().unwrap_or("an unnamed control unit")
 	);
 	crate::note!("the log starts {offset:+.1} s into the capture, from the two files' wall-clock stamps");
@@ -568,7 +571,7 @@ pub fn run(capture_path: &str, log_path: &str, out: Option<&str>, limits: Thresh
 	if let Some(path) = out {
 		let catalog = to_catalog(&fits);
 		std::fs::write(path, catalog.to_json()?).with_context(|| format!("writing the catalog {path:?}"))?;
-		crate::say!("wrote {} catalog rows to {path}", catalog.len());
+		crate::say!("wrote {} {} to {path}", catalog.len(), plural(catalog.len(), "catalog row"));
 	}
 	Ok(())
 }
@@ -588,7 +591,8 @@ fn report(series: &[RawSeries], logged: &[crate::vcdslog::LoggedMeasurement], of
 fn render(logged: &[crate::vcdslog::LoggedMeasurement], fits: &[Fitted], rejected: &[Rejected], limits: Thresholds) -> String {
 	use crate::table::{self, Table};
 
-	let mut table = Table::new(&["ide", "unit", "range", "did", "form", "factor", "offset", "r2", "points", "verdict"])
+	// `phys`, the physical unit: across the tool `unit` is a control unit.
+	let mut table = Table::new(&["ide", "phys", "range", "did", "form", "factor", "offset", "r2", "points", "verdict"])
 		.right(5)
 		.right(6)
 		.right(7)
@@ -645,14 +649,21 @@ fn render(logged: &[crate::vcdslog::LoggedMeasurement], fits: &[Fitted], rejecte
 		}
 	}
 	let mut out = table.render(table::terminal_width());
+	out.push('\n');
 	let outranked = rejected.iter().filter(|r| matches!(r, Rejected::Outranked { .. })).count();
 	let proven = logged.iter().filter(|m| fits.iter().any(|f| f.ide == m.ide)).count();
-	out.push_str(&format!("{proven} of {} measurements proven", logged.len()));
+	out.push_str(&format!("{proven} of {} {} proven", logged.len(), plural(logged.len(), "measurement")));
 	if outranked > 0 {
 		out.push_str(&format!(" · {outranked} outranked"));
 	}
 	out.push('\n');
 	out
+}
+
+/// The noun for a count: `1 measurement`, `2 measurements`. `vag-cli-diag`'s
+/// `render::plural`, which this crate is below.
+fn plural(n: usize, singular: &str) -> String {
+	if n == 1 { singular.to_string() } else { format!("{singular}s") }
 }
 
 /// Why a logged measurement has no fit: the closest `R²` any identifier came, the most
@@ -1010,10 +1021,11 @@ mod tests {
 		let (fits, rejected) = fit_all(&series, &logged, 0.0, limits);
 		assert_eq!(
 			render(&logged, &fits, &rejected, limits),
-			"ide       unit  range            did       form     factor   offset       r2  points  verdict\n\
+			"ide       phys  range            did       form     factor   offset       r2  points  verdict\n\
 			 IDE00405  /min  800.00..1190.00  7E8/F40C  U16Be  0.250000  +0.0000  1.00000      40  proven\n\
 			 IDE00025  °C    70.00..74.00                                                       5  too few overlapping samples (< 20)\n\
 			 IDE00155  °     0.00..0.00                                                            never moved\n\
+			 \n\
 			 1 of 3 measurements proven\n"
 		);
 	}

@@ -12,6 +12,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use crate::render::plural;
 use vag_cli_core::verbosity::{self, NOTES, WIRE};
 use vag_data_labels::codes::CodePage;
 use vag_data_labels::tttext::{self, Table, Tail};
@@ -37,14 +38,14 @@ pub fn run(opts: Options<'_>) -> Result<()> {
 			let mut file = std::io::BufWriter::new(std::fs::File::create(path).with_context(|| format!("creating the output file {path:?}"))?);
 			file.write_all(lines.as_bytes())?;
 			file.flush()?;
-			vag_cli_core::say!("wrote {} records to {path}", table.texts.len());
+			vag_cli_core::say!("wrote {} {} to {path}", table.texts.len(), plural(table.texts.len(), "record"));
 		}
 		None => vag_cli_core::out!("{lines}"),
 	}
 
 	if let Some(path) = opts.catalog {
 		let written = write_names(&table, Path::new(path))?;
-		vag_cli_core::say!("wrote {written} names to {path}");
+		vag_cli_core::say!("wrote {written} {} to {path}", plural(written, "name"));
 	}
 	// On stderr, not after the records: on stdout it would be one more record to
 	// whatever reads the tab-separated stream.
@@ -64,12 +65,16 @@ pub fn read_file(path: &Path, page: CodePage) -> Result<Table> {
 /// What a reading holds, in one line.
 pub fn summary(table: &Table) -> String {
 	let with_ids = table.texts.iter().filter(|t| t.tail.as_ref().and_then(Tail::odx_id).is_some()).count();
-	let mut line = format!("{} records · {with_ids} name an IDE or MAS id", table.texts.len());
+	let mut line = format!(
+		"{} {} · {with_ids} with an IDE or MAS id",
+		table.texts.len(),
+		plural(table.texts.len(), "record")
+	);
 	if !table.malformed.is_empty() {
 		line.push_str(&format!(" · {} malformed, left out", table.malformed.len()));
 	}
 	if table.not_records > 0 {
-		line.push_str(&format!(" · {} lines not records", table.not_records));
+		line.push_str(&format!(" · {} {} not records", table.not_records, plural(table.not_records, "line")));
 	}
 	line
 }
@@ -181,7 +186,9 @@ mod tests {
 	#[test]
 	fn the_summary_says_what_was_left_out() {
 		let t = table(&[(17, "Invented flap position,2,90001"), (5, "no separator")]);
-		assert_eq!(summary(&t), "1 records · 1 name an IDE or MAS id · 1 malformed, left out");
+		assert_eq!(summary(&t), "1 record · 1 with an IDE or MAS id · 1 malformed, left out");
+		let two = table(&[(17, "Invented flap position,2,90001"), (18, "Invented lid,")]);
+		assert_eq!(summary(&two), "2 records · 1 with an IDE or MAS id");
 	}
 
 	/// The research's four cribs, against the owner's VCDS install when it is

@@ -3,7 +3,7 @@
 //! VW ships ODX label files with every section encrypted, and a section whose
 //! `product` field is nonzero cannot be decrypted from the file alone: five
 //! bytes of its first-block IV are missing and have to be searched for. The
-//! search costs about a minute of every core per section, which is why nothing
+//! search costs about 3 min per file, which is why nothing
 //! in the live path runs it — the live path reads the *answer* out of the
 //! project's `rod-keys.json`. This command is where that answer comes from.
 //!
@@ -13,6 +13,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+use crate::render::plural;
 use vag_cli_core::table::{self, Table};
 use vag_cli_core::verbosity::{self, NOTES, WIRE};
 use vag_data_labels::rod::{IvCache, RodSection, RodStatus, Search, decode_rod_with};
@@ -99,19 +100,36 @@ pub fn why_shut(section: &RodSection) -> Option<&'static str> {
 	}
 }
 
-/// How a section decoded, in one word, as `rod` and `labels --odx` print it: `tea`
-/// (decrypted), `zlib` (decrypted and inflated), `sealed` (no key), `no crib` (no key,
-/// and none can be searched for).
+/// Whether a section opened, as `rod` and `labels --odx` print it on stdout: `open` or
+/// `sealed`. How it opened, or why not, is [`cipher`], at `-v`.
 pub fn state(section: &RodSection) -> &'static str {
+	match section.text {
+		Some(_) => "open",
+		None => "sealed",
+	}
+}
+
+/// How a section decoded, in one word, as `rod` and `labels --odx` say it at `-v`: `tea`
+/// (decrypted), `zlib` (decrypted and inflated), `no key` (sealed: none cached, or the
+/// search found none), `no crib` (sealed: no key can be searched for).
+pub fn cipher(section: &RodSection) -> &'static str {
 	match (&section.status, &section.text) {
 		// Two different pieces of news, and printing one word for both is what left
 		// `TTTEXT2.ROD` looking unreadable for four writeups.
 		(RodStatus::SearchDeclined, _) => "no crib",
-		(RodStatus::Undecodable, _) | (_, None) => "sealed",
+		(RodStatus::Undecodable, _) | (_, None) => "no key",
 		(RodStatus::Tea, Some(_)) => "tea",
 		(RodStatus::Zlib, Some(_)) => "zlib",
 	}
 }
+
+/// The columns every listing of sections starts with — `rod`'s, and `labels --odx`'s
+/// after its `file` — so the two read alike. `bytes` is right-aligned.
+pub const SECTION_COLUMNS: [&str; 3] = ["section", "state", "bytes"];
+
+/// What `no crib` means, said once wherever a section is one.
+pub const NO_CRIB: &str = "the file XORs a per-file mask over the first-block IV after [CMP], so its key cannot be searched for; \
+                           not damaged, it opens once the key is known";
 
 /// A section's key, as the cache holds it after the run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,7 +154,7 @@ fn key_of(before: &IvCache, after: &IvCache, file: &str, tag: &str) -> Key {
 fn render(path: &str, cache: &Path, sections: &[RodSection], keys: &[Key]) -> String {
 	let mut out = table::pairs(&[("file", path.to_string()), ("cache", cache.display().to_string())]);
 	out.push('\n');
-	let mut rows = Table::new(&["tag", "state", "bytes", "key", "preview"]).right(2);
+	let mut rows = Table::new(&SECTION_COLUMNS.iter().copied().chain(["key", "preview"]).collect::<Vec<_>>()).right(2);
 	for (s, key) in sections.iter().zip(keys) {
 		let preview: String = s
 			.text
@@ -155,15 +173,15 @@ fn render(path: &str, cache: &Path, sections: &[RodSection], keys: &[Key]) -> St
 		rows.row(vec![s.tag.clone(), state(s).to_string(), bytes.to_string(), key, preview]);
 	}
 	out.push_str(&rows.render(table::terminal_width()));
+	out.push('\n');
 	let open = sections.iter().filter(|s| s.text.is_some()).count();
 	let recovered = keys.iter().filter(|k| matches!(k, Key::Recovered(_))).count();
-	let mut summary = format!("{open}/{} sections open · {recovered} keys recovered", sections.len());
-	let declined = sections.iter().filter(|s| s.status == RodStatus::SearchDeclined).count();
-	if declined > 0 {
-		summary.push_str(&format!(" · {declined} no crib"));
-	}
-	out.push_str(&summary);
-	out.push('\n');
+	out.push_str(&format!(
+		"{open}/{} {} open · {recovered} {} recovered\n",
+		sections.len(),
+		plural(sections.len(), "section"),
+		plural(recovered, "key")
+	));
 	out
 }
 
@@ -171,27 +189,30 @@ fn render(path: &str, cache: &Path, sections: &[RodSection], keys: &[Key]) -> St
 fn notes(opened: &Opened, run_crack: bool, dump: Option<&str>, keys: &[Key]) -> Vec<(u8, String)> {
 	let mut notes = vec![(
 		NOTES,
-		format!("{} keys in {} before this run", opened.before.len(), opened.cache.display()),
+		format!(
+			"{} {} in {} before this run",
+			opened.before.len(),
+			plural(opened.before.len(), "key"),
+			opened.cache.display()
+		),
 	)];
-	let sealed = opened.sections.iter().filter(|s| state(s) == "sealed").count();
-	if sealed > 0 && !run_crack {
+	// `no key` only: a `no crib` section has no key to search for.
+	let searchable = opened.sections.iter().filter(|s| cipher(s) == "no key").count();
+	if searchable > 0 && !run_crack {
 		notes.push((
 			NOTES,
-			format!("{sealed} sealed: without --no-crack the key is searched for, about 3 min per section"),
+			format!("{searchable} sealed: without --no-crack the key is searched for, about 3 min per file"),
 		));
 	}
-	if sealed > 0 && run_crack {
-		notes.push((NOTES, format!("{sealed} sealed: the key search found nothing")));
+	if searchable > 0 && run_crack {
+		notes.push((NOTES, format!("{searchable} sealed: the key search found nothing")));
 	}
-	for s in opened.sections.iter().filter(|s| s.status == RodStatus::SearchDeclined) {
-		notes.push((
-			NOTES,
-			format!(
-				"[{}] no crib: the file XORs a per-file mask over the first-block IV after [CMP], so its key cannot be searched for; \
-				 not damaged, it opens once the key is known (.archive/research/labels/tttext2.md)",
-				s.tag
-			),
-		));
+	for s in &opened.sections {
+		let line = match cipher(s) {
+			"no crib" => format!("[{}] no crib: {NO_CRIB}", s.tag),
+			cipher => format!("[{}] {cipher}", s.tag),
+		};
+		notes.push((NOTES, line));
 	}
 	for (s, key) in opened.sections.iter().zip(keys) {
 		let key = match key {
@@ -202,10 +223,19 @@ fn notes(opened: &Opened, run_crack: bool, dump: Option<&str>, keys: &[Key]) -> 
 		notes.push((WIRE, format!("{} [{}] {:?}, {key}", opened.file_name, s.tag, s.status)));
 	}
 	if let Some(dir) = dump {
-		let written = opened.sections.iter().filter(|s| s.text.is_some()).count();
-		notes.push((0, format!("wrote {written} sections to {dir}/<TAG>.bin")));
+		notes.push((0, wrote(&opened.sections, dir)));
 	}
 	notes
+}
+
+/// The `--dump` line: how many sections went to `dir`, and the file each is in.
+fn wrote(sections: &[RodSection], dir: &str) -> String {
+	let files: Vec<String> = sections.iter().filter(|s| s.text.is_some()).map(|s| format!("{}.bin", s.tag)).collect();
+	let mut line = format!("wrote {} {} to {dir}", files.len(), plural(files.len(), "section"));
+	if !files.is_empty() {
+		line.push_str(&format!(": {}", files.join(", ")));
+	}
+	line
 }
 
 /// `vagcan dev vcds rod`: open a file and list its sections.
@@ -254,13 +284,55 @@ mod tests {
 			"file   X.rod\n\
 			 cache  /k/rod-keys.json\n\
 			 \n\
-			 tag  state    bytes  key                 preview\n\
-			 CMP  tea          6                      9377.4\n\
-			 TXT  zlib        10  18 BE F0 88 21 new  000003,abc\n\
-			 INC  sealed       0\n\
-			 MWB  no crib      0\n\
-			 2/4 sections open · 1 keys recovered · 1 no crib\n"
+			 section  state   bytes  key                 preview\n\
+			 CMP      open        6                      9377.4\n\
+			 TXT      open       10  18 BE F0 88 21 new  000003,abc\n\
+			 INC      sealed      0\n\
+			 MWB      sealed      0\n\
+			 \n\
+			 2/4 sections open · 1 key recovered\n"
 		);
+		let one = render("X.rod", Path::new("/k"), &sections[..1], &[Key::None]);
+		assert!(one.ends_with("\n\n1/1 section open · 0 keys recovered\n"), "{one}");
+	}
+
+	/// The cipher is a note: `tea`/`zlib` for an open section, `no key`/`no crib` for a
+	/// sealed one. Nothing points into the checkout, which an installed tool has not got.
+	#[test]
+	fn the_cipher_of_each_section_is_said_at_v_and_names_no_checkout_path() {
+		let sections = vec![
+			section("CMP", RodStatus::Tea, Some("x")),
+			section("TXT", RodStatus::Zlib, Some("y")),
+			section("INC", RodStatus::Undecodable, None),
+			section("MWB", RodStatus::SearchDeclined, None),
+		];
+		let mut before = IvCache::default();
+		before.insert("X.rod", "TXT", [1; 5]);
+		let opened = Opened {
+			sections,
+			after: before.clone(),
+			before,
+			file_name: "X.rod".into(),
+			cache: PathBuf::from("/k/rod-keys.json"),
+		};
+		let keys = [Key::None, Key::Cached([1; 5]), Key::None, Key::None];
+		let notes = notes(&opened, false, Some("out"), &keys);
+		let at = |level: u8| notes.iter().filter(|(l, _)| *l == level).map(|(_, t)| t.as_str()).collect::<Vec<_>>();
+		assert_eq!(
+			at(NOTES),
+			vec![
+				"1 key in /k/rod-keys.json before this run",
+				"1 sealed: without --no-crack the key is searched for, about 3 min per file",
+				"[CMP] tea",
+				"[TXT] zlib",
+				"[INC] no key",
+				&format!("[MWB] no crib: {NO_CRIB}"),
+			]
+		);
+		assert_eq!(at(0), vec!["wrote 2 sections to out: CMP.bin, TXT.bin"]);
+		assert!(notes.iter().all(|(_, t)| !t.contains(".archive")), "{notes:?}");
+		assert_eq!(wrote(&opened.sections[2..], "out"), "wrote 0 sections to out");
+		assert_eq!(wrote(&opened.sections[..1], "out"), "wrote 1 section to out: CMP.bin");
 	}
 
 	#[test]

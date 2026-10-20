@@ -1,14 +1,15 @@
 //! `vagcan dev vcds labels` — inventory + lookup over a VCDS label/ODX directory tree.
 //!
-//! Points at a VCDS install root (or any subtree), recursively counts the
-//! `.lbl` / `.clb` / `.rod` files it holds, and answers two lookups:
+//! Points at a VCDS install root (or any subtree), counts the `.lbl` / `.clb`
+//! files of its label directory and the `.rod` files of the whole tree, and
+//! answers two lookups:
 //!
 //! - `--part <PART_NO>` — resolve an ECU part number through the `REDIRECT`
 //!   chain to its terminal label file and list that file's measurements
 //!   (the same resolution `vagcan info`'s label path uses).
 //! - `--block <N> [--field <F>]` — a cross-label-file scan: every label file that
 //!   defines measuring block `N` (optionally narrowed to field `F`), with the
-//!   measurement's name and unit.
+//!   measurement's name and physical unit (`phys`).
 //!
 //! No brand/model dimension: VCDS label files are keyed by part number, not by
 //! vehicle make/model, so there is nothing to group by. Rendering is factored
@@ -18,7 +19,10 @@ use std::path::Path;
 
 use anyhow::Context;
 use vag_cli_core::table::{self, Table};
-use vag_data_labels::{LabelDb, LabelScan, Measurement, scan_label_files};
+use vag_cli_core::verbosity::{self, NOTES, WIRE};
+use vag_data_labels::{LabelDb, Measurement, load_label_files};
+
+use crate::render::plural;
 
 // The label directory locator is `core`'s now: the registry read keys its rows
 // by it, and that read runs from `watch` and `measure` as well as from `setup`.
@@ -112,9 +116,10 @@ pub fn load_cached(dir: &Path, cache: &Path, refresh: bool) -> anyhow::Result<La
 		match vag_data_db::load_db(cache) {
 			Ok(db) => {
 				vag_cli_core::note!(
-					"label cache {} ({} label files), current for {}",
+					"label cache {} ({} {}), current for {}",
 					cache.display(),
 					db.len(),
+					plural(db.len(), "label file"),
 					dir.display()
 				);
 				return Ok(db);
@@ -137,11 +142,13 @@ pub fn load_cached(dir: &Path, cache: &Path, refresh: bool) -> anyhow::Result<La
 		vag_data_db::build_db(dir, cache).map_err(|e| anyhow::anyhow!("building the label cache from {}: {e}", dir.display()))?
 	};
 	vag_cli_core::note!(
-		"label cache {} rebuilt from {}: {} label files, {} measurements",
+		"label cache {} rebuilt from {}: {} {}, {} {}",
 		cache.display(),
 		dir.display(),
 		stats.files,
-		stats.measurements
+		plural(stats.files, "label file"),
+		stats.measurements,
+		plural(stats.measurements, "measurement")
 	);
 	vag_data_db::load_db(cache).map_err(|e| anyhow::anyhow!("reading the label cache: {e}"))
 }
@@ -242,9 +249,22 @@ pub fn labels_cmd(dir: &str, part: Option<&str>, block: Option<u16>, field: Opti
 	// The inventory is what someone asking *nothing* wants; with a lookup on
 	// the command line it is six lines of noise before the answer.
 	if part.is_none() && block.is_none() {
-		let scan = scan_label_files(Path::new(dir)).with_context(|| format!("scanning label files under {dir:?}"))?;
-		vag_cli_core::out!("{}", render_summary(&scan));
-		vag_cli_core::note!("scanned {dir}: .clb decrypted (TEA-CBC); .rod counted, not parsed (`vagcan dev vcds rod` opens one)");
+		let inventory = inventory(Path::new(dir))?;
+		vag_cli_core::out!("{}", render_summary(&inventory));
+		match &inventory.label_dir {
+			Some(labels) => vag_cli_core::note!(
+				".lbl/.clb counted and parsed in {}, the directory `dump` reads and the label cache is built from; .clb decrypted (TEA-CBC)",
+				labels.display()
+			),
+			None => vag_cli_core::note!("no directory of .lbl/.clb files under {dir}"),
+		}
+		vag_cli_core::note!(".rod counted everywhere under {dir}, not parsed (`vagcan dev vcds rod` opens one)");
+		for (at, stray) in inventory.strays.iter().enumerate() {
+			verbosity::say(
+				if at < 10 { NOTES } else { WIRE },
+				&format!("not counted: {}, outside the label directory", stray.display()),
+			);
+		}
 		return Ok(());
 	}
 
@@ -253,27 +273,94 @@ pub fn labels_cmd(dir: &str, part: Option<&str>, block: Option<u16>, field: Opti
 	let mut answers = Vec::new();
 	if let Some(part_no) = part {
 		answers.push(render_part_lookup(&db, part_no));
-		vag_cli_core::note!("part {part_no}: resolved through the REDIRECT chains of {} label files", db.len());
+		vag_cli_core::note!(
+			"part {part_no}: resolved through the REDIRECT chains of {} {}",
+			db.len(),
+			plural(db.len(), "label file")
+		);
 	}
 	if let Some(b) = block {
 		answers.push(render_block_lookup(&db, b, field));
-		vag_cli_core::note!("block {b}: looked up in all {} label files", db.len());
+		vag_cli_core::note!("block {b}: looked up in {} {}", db.len(), plural(db.len(), "label file"));
 	}
 	vag_cli_core::out!("{}", answers.join("\n"));
 	Ok(())
 }
 
+/// What the inventory counts under a directory.
+///
+/// `.lbl`/`.clb` in the label directory alone ([`label_dir_under`]), the set `dump` parses
+/// and the label cache is built from, so the three print one figure. A VCDS install keeps
+/// a label file outside it too (`UDS_EV/` holds one `.clb`); counting the whole tree gave
+/// one `.clb` more here than `dump` and `stats` print. Those are `strays`, named at `-v`.
+/// `.rod` everywhere under the directory: they live in `UDS_EV/`, not with the labels.
+#[derive(Debug, Default, PartialEq)]
+struct Inventory {
+	label_dir: Option<std::path::PathBuf>,
+	lbl: usize,
+	clb: usize,
+	parsed: usize,
+	rod: usize,
+	strays: Vec<std::path::PathBuf>,
+	read_errors: usize,
+}
+
+fn inventory(dir: &Path) -> anyhow::Result<Inventory> {
+	anyhow::ensure!(dir.is_dir(), "{} is not a directory", dir.display());
+	let mut found = Inventory {
+		label_dir: label_dir_under(dir).ok(),
+		..Inventory::default()
+	};
+	if let Some(labels) = &found.label_dir {
+		let load = load_label_files(labels).with_context(|| format!("reading the label files in {}", labels.display()))?;
+		found.lbl = load.lbl_count;
+		found.clb = load.clb_count;
+		found.parsed = load.files.len();
+		found.read_errors = load.read_errors;
+	}
+	walk(dir, &mut found);
+	found.strays.sort();
+	Ok(found)
+}
+
+/// Count the `.rod` files under `dir` and collect the `.lbl`/`.clb` outside the label
+/// directory. Names only: nothing here is opened.
+fn walk(dir: &Path, found: &mut Inventory) {
+	let Ok(entries) = std::fs::read_dir(dir) else {
+		found.read_errors += 1;
+		return;
+	};
+	for path in entries.flatten().map(|e| e.path()) {
+		if path.is_dir() {
+			walk(&path, found);
+			continue;
+		}
+		let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+		match ext.as_deref() {
+			Some("rod") => found.rod += 1,
+			Some("lbl" | "clb") if path.parent() != found.label_dir.as_deref() => found.strays.push(path),
+			_ => {}
+		}
+	}
+}
+
 /// The file counts (`.lbl` / `.clb` / `.rod`) and one summary line.
-fn render_summary(scan: &LabelScan) -> String {
-	let mut table = Table::new(&["kind", "files"]).right(1);
-	for (kind, n) in [(".lbl", scan.lbl_count), (".clb", scan.clb_count), (".rod", scan.rod_count)] {
+fn render_summary(found: &Inventory) -> String {
+	let mut table = Table::new(&["what", "count"]).right(1);
+	for (kind, n) in [(".lbl", found.lbl), (".clb", found.clb), (".rod", found.rod)] {
 		table.row(vec![kind.to_string(), n.to_string()]);
 	}
 	let mut out = table.render(table::terminal_width());
-	let total = scan.lbl_count + scan.clb_count + scan.rod_count;
-	let mut summary = format!("{total} files · {} .lbl/.clb parsed", scan.files.len());
-	if scan.read_errors > 0 {
-		summary.push_str(&format!(" · {} unreadable", scan.read_errors));
+	out.push('\n');
+	let total = found.lbl + found.clb + found.rod;
+	let mut summary = format!(
+		"{total} {} · {} {} parsed",
+		plural(total, "file"),
+		found.parsed,
+		plural(found.parsed, "label file")
+	);
+	if found.read_errors > 0 {
+		summary.push_str(&format!(" · {} unreadable", found.read_errors));
 	}
 	out.push_str(&summary);
 	out.push('\n');
@@ -293,16 +380,17 @@ fn render_part_lookup(db: &LabelDb, part_no: &str) -> String {
 		rows.push(("unit", format!("{:02X}  {}", unit.address, unit.name)));
 	}
 	let mut out = table::pairs(&rows);
+	out.push('\n');
 	let ms = db.measurements(part_no);
 	if !ms.is_empty() {
-		out.push('\n');
 		let mut table = measurement_table(&[]);
 		for m in &ms {
 			table.row(measurement_cells(&[], m));
 		}
 		out.push_str(&table.render(table::terminal_width()));
+		out.push('\n');
 	}
-	out.push_str(&format!("{} measurements\n", ms.len()));
+	out.push_str(&format!("{} {}\n", ms.len(), plural(ms.len(), "measurement")));
 	out
 }
 
@@ -320,14 +408,20 @@ fn render_block_lookup(db: &LabelDb, block: u16, field: Option<u8>) -> String {
 			table.row(measurement_cells(&[source], m));
 		}
 		out.push_str(&table.render(table::terminal_width()));
+		out.push('\n');
 	}
-	out.push_str(&format!("{} definitions · {scope}\n", hits.len()));
+	out.push_str(&format!("{} {} · {scope}\n", hits.len(), plural(hits.len(), "definition")));
 	out
 }
 
-/// The measurement columns, after `leading`: block and field right-aligned, the name last.
+/// The measurement columns, after `leading`: block and field right-aligned, then the name,
+/// then `phys`, the physical unit, last.
+///
+/// `phys`, not `unit`: across the tool `unit` is a control unit. Last, because the last
+/// column is the one cut to the terminal's width, and a label file's unit field can be a
+/// sentence (53 characters in one) — before the name, it cut every name to seven.
 fn measurement_table(leading: &[&str]) -> Table {
-	let headers: Vec<&str> = leading.iter().copied().chain(["block", "field", "unit", "name"]).collect();
+	let headers: Vec<&str> = leading.iter().copied().chain(["block", "field", "name", "phys"]).collect();
 	Table::new(&headers).right(leading.len()).right(leading.len() + 1)
 }
 
@@ -336,10 +430,26 @@ fn measurement_cells(leading: &[&str], m: &Measurement) -> Vec<String> {
 	cells.extend([
 		m.block.to_string(),
 		m.field.to_string(),
-		m.unit.clone().unwrap_or_default(),
 		m.name.clone(),
+		m.unit.clone().unwrap_or_default(),
 	]);
 	cells
+}
+
+/// What `labels --odx` says when no `.rod` answers the name.
+///
+/// The control unit names this file itself, so either the directory is not a VCDS
+/// install or the install lacks the unit's file. Only the first is something to fix
+/// here: a directory that holds `UDS_EV/` (or is it) is the install root already, and
+/// telling somebody who passed it to pass it is a wrong answer.
+fn no_rod(dir: &Path, odx_name: &str) -> Vec<String> {
+	let missing = format!("no {odx_name}.rod under {}", dir.display());
+	let is_uds_ev = |p: &Path| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.eq_ignore_ascii_case("UDS_EV"));
+	let holds_uds_ev = std::fs::read_dir(dir).is_ok_and(|entries| entries.flatten().any(|e| e.path().is_dir() && is_uds_ev(&e.path())));
+	if is_uds_ev(dir) || holds_uds_ev {
+		return vec![missing];
+	}
+	vec![missing, "Fix: pass the VCDS install root, the directory that holds UDS_EV/".to_string()]
 }
 
 /// Resolve the label file a control unit names for itself.
@@ -352,23 +462,26 @@ fn measurement_cells(leading: &[&str], m: &Measurement) -> Vec<String> {
 pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Result<()> {
 	use vag_data_labels::rod::{IvCache, decode_rod_recover};
 
+	use crate::vcds::rod::{NO_CRIB, SECTION_COLUMNS, cipher, state};
+
 	let hits = vag_data_labels::find_rod_by_odx_name(std::path::Path::new(dir), odx_name)?;
-	vag_cli_core::note!("{} file(s) named {odx_name}.rod under {dir}", hits.len());
+	vag_cli_core::note!("{} {} named {odx_name}.rod under {dir}", hits.len(), plural(hits.len(), "file"));
 	if hits.is_empty() {
 		vag_cli_core::out!("{}", table::pairs(&[("odx", odx_name.to_string()), ("file", "none".to_string())]));
-		// The control unit names this file itself, so the label files are either
-		// incomplete or this is the wrong directory.
-		vag_cli_core::say!("pass the VCDS install root, or a directory above its .rod files");
+		for line in no_rod(Path::new(dir), odx_name) {
+			vag_cli_core::say!("{line}");
+		}
 		return Ok(());
 	}
 
 	// Recovered initialisation vectors come from the cache only. The search
-	// that fills it costs minutes of every core and is its own command
+	// that fills it costs about 3 min per file and is its own command
 	// (`vagcan dev vcds rod --cache <this cache> <file.rod>`), so a lookup
 	// never starts one.
 	let mut cache = IvCache::load(cache_path);
-	vag_cli_core::note!("{} keys in {}", cache.len(), cache_path.display());
-	let mut table = Table::new(&["file", "section", "bytes", "state"]).right(2);
+	vag_cli_core::note!("{} {} in {}", cache.len(), plural(cache.len(), "key"), cache_path.display());
+	let headers: Vec<&str> = ["file"].into_iter().chain(SECTION_COLUMNS).collect();
+	let mut table = Table::new(&headers).right(3);
 	let (mut open, mut total) = (0usize, 0usize);
 	let mut sealed_files = Vec::new();
 	for path in &hits {
@@ -377,17 +490,16 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Resu
 		let bytes = match std::fs::read(path) {
 			Ok(b) => b,
 			Err(e) => {
-				table.row(vec![name.to_string(), String::new(), String::new(), format!("unreadable: {e}")]);
+				table.row(vec![name.to_string(), String::new(), format!("unreadable: {e}")]);
 				continue;
 			}
 		};
 		let sections = decode_rod_recover(&bytes, name, &mut cache, false);
 		if sections.is_empty() {
-			table.row(vec![name.to_string(), String::new(), String::new(), "no sections".to_string()]);
+			table.row(vec![name.to_string(), String::new(), "no sections".to_string()]);
 			continue;
 		}
 		for section in &sections {
-			let state = crate::vcds::rod::state(section);
 			vag_cli_core::wire!(
 				"{name} [{}]: {:?}, {}",
 				section.tag,
@@ -397,31 +509,34 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Resu
 					None => "no key in the cache".to_string(),
 				}
 			);
-			match state {
+			match cipher(section) {
 				// No vector in the cache for this section, and a lookup does not search
 				// for one: `rod` does.
-				"sealed" => {
+				"no key" => {
+					vag_cli_core::note!("{name} [{}] no key", section.tag);
 					if !sealed_files.contains(path) {
 						sealed_files.push(path.clone());
 					}
 				}
-				// Pointing at the recovery command here would waste an hour of every
-				// core: the search cannot start on this file at all.
-				"no crib" => vag_cli_core::note!(
-					"{name} [{}] no crib: the key search cannot start on this file; not damaged, not yet openable \
-					 (.archive/research/labels/tttext2.md)",
-					section.tag
-				),
-				_ => {}
+				// Pointing at the recovery command here would waste the search's time:
+				// it cannot start on this file at all.
+				"no crib" => vag_cli_core::note!("{name} [{}] no crib: {NO_CRIB}", section.tag),
+				cipher => vag_cli_core::note!("{name} [{}] {cipher}", section.tag),
 			}
 			let size = section.text.as_ref().map(|t| t.len()).unwrap_or(0);
 			open += usize::from(section.text.is_some());
 			total += 1;
-			table.row(vec![name.to_string(), section.tag.clone(), size.to_string(), state.to_string()]);
+			table.row(vec![name.to_string(), section.tag.clone(), state(section).to_string(), size.to_string()]);
 		}
 	}
 	vag_cli_core::out!("{}", table.render(table::terminal_width()));
-	vag_cli_core::outln!("{open}/{total} sections open · {} files", hits.len());
+	vag_cli_core::outln!();
+	vag_cli_core::outln!(
+		"{open}/{total} {} open · {} {}",
+		plural(total, "section"),
+		hits.len(),
+		plural(hits.len(), "file")
+	);
 	for path in sealed_files {
 		vag_cli_core::say!(
 			"to open its sealed sections: vagcan dev vcds rod --cache {} {}",
@@ -530,33 +645,80 @@ mod tests {
 		assert!(why.contains("vagcan setup"), "{why}");
 	}
 
-	fn scan_with(files: Vec<vag_data_labels::LabelFile>, lbl: usize, clb: usize, rod: usize) -> LabelScan {
-		LabelScan {
-			files,
-			lbl_count: lbl,
-			clb_count: clb,
-			rod_count: rod,
-			other_count: 0,
-			read_errors: 0,
-		}
-	}
-
 	#[test]
 	fn summary_reports_all_three_file_kinds_and_total() {
-		let scan = scan_with(vec![], 1181, 1854, 16578);
+		let found = Inventory {
+			lbl: 1181,
+			clb: 1854,
+			parsed: 3035,
+			rod: 16578,
+			..Inventory::default()
+		};
 		assert_eq!(
-			render_summary(&scan),
-			"kind  files\n\
+			render_summary(&found),
+			"what  count\n\
 			 .lbl   1181\n\
 			 .clb   1854\n\
 			 .rod  16578\n\
-			 19613 files · 0 .lbl/.clb parsed\n"
+			 \n\
+			 19613 files · 3035 label files parsed\n"
 		);
-		let broken = LabelScan {
+		let broken = Inventory {
+			lbl: 1,
 			read_errors: 2,
-			..scan_with(vec![], 1, 0, 0)
+			..Inventory::default()
 		};
-		assert!(render_summary(&broken).ends_with("1 files · 0 .lbl/.clb parsed · 2 unreadable\n"));
+		assert!(render_summary(&broken).ends_with("\n\n1 file · 0 label files parsed · 2 unreadable\n"));
+	}
+
+	/// A VCDS install keeps one `.clb` in `UDS_EV/`, beside the `.rod` files. The cache
+	/// and `dump` read `Labels/` alone, so the inventory counts `Labels/` alone and names
+	/// the stray: before, it printed one `.clb` more than they did.
+	#[test]
+	fn the_inventory_counts_the_label_directory_and_names_what_lies_outside_it() {
+		let here = tempfile::tempdir().unwrap();
+		let labels = here.path().join("Labels");
+		let uds = here.path().join("UDS_EV");
+		std::fs::create_dir_all(&labels).unwrap();
+		std::fs::create_dir_all(uds.join("deeper")).unwrap();
+		std::fs::write(labels.join("A.lbl"), b"001,1,Engine Speed,,").unwrap();
+		std::fs::write(labels.join("readme.txt"), b"not a label file").unwrap();
+		std::fs::write(uds.join("chassis.clb"), b"stray").unwrap();
+		std::fs::write(uds.join("EV_A.rod"), b"").unwrap();
+		std::fs::write(uds.join("deeper").join("EV_B.ROD"), b"").unwrap();
+
+		let found = inventory(here.path()).unwrap();
+		assert_eq!(
+			found,
+			Inventory {
+				label_dir: Some(labels),
+				lbl: 1,
+				clb: 0,
+				parsed: 1,
+				rod: 2,
+				strays: vec![uds.join("chassis.clb")],
+				read_errors: 0,
+			}
+		);
+		assert!(inventory(&here.path().join("nope")).is_err());
+	}
+
+	#[test]
+	fn no_rod_offers_the_install_root_only_to_a_directory_that_is_not_one() {
+		let here = tempfile::tempdir().unwrap();
+		let root = here.path().join("vcds");
+		std::fs::create_dir_all(root.join("UDS_EV")).unwrap();
+		std::fs::create_dir_all(root.join("Labels")).unwrap();
+		let miss = |dir: &Path| format!("no EV_X.rod under {}", dir.display());
+		assert_eq!(no_rod(&root, "EV_X"), vec![miss(&root)], "the install root, passed");
+		assert_eq!(no_rod(&root.join("UDS_EV"), "EV_X"), vec![miss(&root.join("UDS_EV"))]);
+		assert_eq!(
+			no_rod(&root.join("Labels"), "EV_X"),
+			vec![
+				miss(&root.join("Labels")),
+				"Fix: pass the VCDS install root, the directory that holds UDS_EV/".to_string()
+			]
+		);
 	}
 
 	#[test]
@@ -568,9 +730,10 @@ mod tests {
 			"part  022-906-032-C\n\
 			 file  022-906-032-C.LBL\n\
 			 \n\
-			 block  field  unit  name\n\
-			 \x20   1      1  RPM   Engine Speed\n\
-			 1 measurements\n"
+			 block  field  name          phys\n\
+			 \x20   1      1  Engine Speed  RPM\n\
+			 \n\
+			 1 measurement\n"
 		);
 	}
 
@@ -578,6 +741,21 @@ mod tests {
 	fn part_lookup_reports_miss() {
 		let db = LabelDb::new(vec![parse_label("X.LBL", b"001,1,Irrelevant,,")]);
 		assert_eq!(render_part_lookup(&db, "999-999-999-Z"), "part  999-999-999-Z\nfile  none\n");
+	}
+
+	/// The physical unit is last: a long one is what the terminal cuts, not every name.
+	#[test]
+	fn a_long_physical_unit_does_not_squeeze_the_names() {
+		let long = "Range: 0...255 = see the workshop manual for the meaning of each";
+		let db = LabelDb::new(vec![parse_label(
+			"AAA.LBL",
+			format!("002,1,Engine Speed,,Range: 0...6500 RPM\n002,2,Status bits,,{long}").as_bytes(),
+		)]);
+		let text = render_block_lookup(&db, 2, None);
+		let header = text.lines().next().unwrap();
+		assert_eq!(header, "file     block  field  name          phys");
+		assert!(text.contains("AAA.LBL      2      1  Engine Speed  RPM\n"), "{text}");
+		assert!(text.contains("Status bits"), "{text}");
 	}
 
 	#[test]
@@ -589,10 +767,11 @@ mod tests {
 		let all = render_block_lookup(&db, 2, None);
 		assert_eq!(
 			all,
-			"file     block  field  unit  name\n\
-			 AAA.LBL      2      1  RPM   Engine Speed\n\
-			 BBB.LBL      2      1  km/h  Vehicle Speed\n\
-			 BBB.LBL      2      2        Coolant\n\
+			"file     block  field  name           phys\n\
+			 AAA.LBL      2      1  Engine Speed   RPM\n\
+			 BBB.LBL      2      1  Vehicle Speed  km/h\n\
+			 BBB.LBL      2      2  Coolant\n\
+			 \n\
 			 3 definitions · block 2\n"
 		);
 

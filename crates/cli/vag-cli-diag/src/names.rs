@@ -17,6 +17,8 @@
 use anyhow::{Context, Result};
 use vag_cli_core::table::{self, Table};
 
+use crate::render::plural;
+
 /// Every name whose text contains `needle`, case-insensitively, with its text
 /// id.
 pub fn search<'a>(catalog: &'a serde_json::Value, needle: &str) -> Vec<(&'a str, &'a str)> {
@@ -88,7 +90,7 @@ pub fn run(needle: &str, limit: usize, files: &[NamesFile]) -> Result<()> {
 	for (file, catalog) in &catalogs {
 		let found = search(catalog, needle);
 		let size = catalog.as_object().map_or(0, |m| m.len());
-		vag_cli_core::note!("searched {} ({size} names)", file.path.display());
+		vag_cli_core::note!("searched {} ({size} {})", file.path.display(), plural(size, "name"));
 		vag_cli_core::wire!("{}: {} of {size} match {needle:?}", file.path.display(), found.len());
 		hits.extend(found.into_iter().map(|(id, text)| (file.source, id, text)));
 	}
@@ -123,8 +125,9 @@ fn render(hits: &[(&str, &str, &str)], total: usize, limit: usize, tagged: bool)
 			table.row(row);
 		}
 		out.push_str(&table.render(table::terminal_width()));
+		out.push('\n');
 	}
-	out.push_str(&format!("{} of {total} names match", hits.len()));
+	out.push_str(&format!("{} of {total} {} match", hits.len(), plural(total, "name")));
 	if hits.len() > shown {
 		out.push_str(&format!(" · first {shown} shown (--limit)"));
 	}
@@ -211,12 +214,13 @@ mod tests {
 		];
 		assert_eq!(
 			render(&hits[..1], 3, 40, false),
-			"id      name\n000017  Synthetic manifold pressure\n1 of 3 names match\n"
+			"id      name\n000017  Synthetic manifold pressure\n\n1 of 3 names match\n"
 		);
 		assert_eq!(
 			render(&hits, 6, 1, true),
-			"source  id      name\nVCDS    000017  Synthetic manifold pressure\n2 of 6 names match · first 1 shown (--limit)\n"
+			"source  id      name\nVCDS    000017  Synthetic manifold pressure\n\n2 of 6 names match · first 1 shown (--limit)\n"
 		);
-		assert_eq!(render(&[], 3, 40, false), "0 of 3 names match\n");
+		assert_eq!(render(&[], 3, 40, false), "0 of 3 names match\n", "no table, no blank line");
+		assert_eq!(render(&[], 1, 40, false), "0 of 1 name match\n");
 	}
 }

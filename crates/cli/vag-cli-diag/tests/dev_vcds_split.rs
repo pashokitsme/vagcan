@@ -123,9 +123,10 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 	let inventory = levels("labels", || labels(&vcds_dir, None, None, None, &keys));
 	assert_eq!(
 		inventory[0].stdout,
-		"kind  files\n.lbl      2\n.clb      0\n.rod      1\n3 files · 2 .lbl/.clb parsed\n"
+		"what  count\n.lbl      2\n.clb      0\n.rod      1\n\n3 files · 2 label files parsed\n"
 	);
 	assert_eq!(inventory[0].stderr, "");
+	assert!(inventory[1].stderr.contains("counted and parsed in"), "{}", inventory[1].stderr);
 
 	let part = levels("labels --part --block", || labels(&vcds_dir, Some("022-906-032-C"), Some(1), None, &keys));
 	assert_eq!(
@@ -133,13 +134,15 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 		"part  022-906-032-C\n\
 		 file  022-906-032-C.lbl\n\
 		 \n\
-		 block  field  unit  name\n\
-		 \x20   1      1  RPM   Engine Speed\n\
-		 1 measurements\n\
+		 block  field  name          phys\n\
+		 \x20   1      1  Engine Speed  RPM\n\
 		 \n\
-		 file               block  field  unit  name\n\
-		 022-906-032-C.lbl      1      1  RPM   Engine Speed\n\
-		 022-906-032-D.lbl      1      1  km/h  Vehicle Speed\n\
+		 1 measurement\n\
+		 \n\
+		 file               block  field  name           phys\n\
+		 022-906-032-C.lbl      1      1  Engine Speed   RPM\n\
+		 022-906-032-D.lbl      1      1  Vehicle Speed  km/h\n\
+		 \n\
 		 2 definitions · block 1\n"
 	);
 	assert_eq!(part[0].stderr, "", "the cache built on the way is a note");
@@ -153,12 +156,26 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 	let odx = levels("labels --odx", || labels(&vcds_dir, None, None, Some("EV_TEST"), &keys));
 	assert_eq!(
 		odx[0].stdout,
-		"file         section  bytes  state\nEV_TEST.rod                  no sections\n0/0 sections open · 1 files\n"
+		"file         section  state        bytes\nEV_TEST.rod           no sections\n\n0/0 sections open · 1 file\n"
 	);
-	assert!(odx[1].stderr.contains("1 file(s) named EV_TEST.rod"), "{}", odx[1].stderr);
+	assert!(odx[1].stderr.contains("1 file named EV_TEST.rod"), "{}", odx[1].stderr);
+	// Not an install: the fix is to pass one.
 	let miss = levels("labels --odx, no such file", || labels(&vcds_dir, None, None, Some("EV_NOTHING"), &keys));
 	assert_eq!(miss[0].stdout, "odx   EV_NOTHING\nfile  none\n");
-	assert_eq!(miss[0].stderr, "pass the VCDS install root, or a directory above its .rod files\n");
+	assert_eq!(
+		miss[0].stderr,
+		format!(
+			"no EV_NOTHING.rod under {}\nFix: pass the VCDS install root, the directory that holds UDS_EV/\n",
+			vcds_dir.display()
+		)
+	);
+	// The install root, passed: telling its owner to pass it would be wrong.
+	let install = here.path().join("install");
+	std::fs::create_dir_all(install.join("UDS_EV")).unwrap();
+	let miss = levels("labels --odx, an install without the file", || {
+		labels(&install, None, None, Some("EV_NOTHING"), &keys)
+	});
+	assert_eq!(miss[0].stderr, format!("no EV_NOTHING.rod under {}\n", install.display()));
 
 	// names: a hit, the limit, a miss.
 	let names_file = here.path().join("names.json");
@@ -179,7 +196,7 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 	let hits = levels("names", names("invented"));
 	assert_eq!(
 		hits[0].stdout,
-		"id      name\n000017  Invented manifold pressure\n2 of 3 names match · first 1 shown (--limit)\n"
+		"id      name\n000017  Invented manifold pressure\n\n2 of 3 names match · first 1 shown (--limit)\n"
 	);
 	assert_eq!(hits[0].stderr, "");
 	assert!(hits[1].stderr.contains("not by data identifier"), "{}", hits[1].stderr);
@@ -197,16 +214,17 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 		min_points: 20,
 	});
 	let rows: Vec<&str> = analyse[0].stdout.lines().collect();
-	assert_eq!(rows.len(), 4, "{}", analyse[0].stdout);
-	assert!(rows[0].starts_with("ide       unit  range"), "{}", rows[0]);
+	assert_eq!(rows.len(), 5, "{}", analyse[0].stdout);
+	assert!(rows[0].starts_with("ide       phys  range"), "{}", rows[0]);
 	assert!(
 		rows[1].starts_with("IDE00405  /min") && rows[1].contains("7E8/F40C  U16Be  0.250000") && rows[1].ends_with("proven"),
 		"{}",
 		rows[1]
 	);
 	assert!(rows[2].starts_with("IDE00155  deg") && rows[2].ends_with("never moved"), "{}", rows[2]);
-	assert_eq!(rows[3], "1 of 2 measurements proven");
-	assert_eq!(analyse[0].stderr, format!("wrote 1 catalog rows to {}\n", out.display()));
+	assert_eq!(rows[3], "", "one blank line between the table and its summary");
+	assert_eq!(rows[4], "1 of 2 measurements proven");
+	assert_eq!(analyse[0].stderr, format!("wrote 1 catalog row to {}\n", out.display()));
 	assert!(
 		analyse[1].stderr.contains("the log starts +0.5 s into the capture"),
 		"{}",
@@ -224,7 +242,7 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 	assert!(
 		rod[0]
 			.stdout
-			.ends_with("tag  state  bytes  key  preview\n0/0 sections open · 0 keys recovered\n"),
+			.ends_with("section  state  bytes  key  preview\n\n0/0 sections open · 0 keys recovered\n"),
 		"{}",
 		rod[0].stdout
 	);
@@ -242,8 +260,9 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 		dir: label_dir.to_string_lossy().into_owned(),
 		out: Some(json.to_string_lossy().into_owned()),
 	});
-	assert!(dump[0].stdout.starts_with("files  count\n.lbl       2\n"), "{}", dump[0].stdout);
-	assert!(dump[0].stdout.ends_with("2 label files parsed\n"), "{}", dump[0].stdout);
+	assert!(dump[0].stdout.starts_with("what   count\n.lbl       2\n"), "{}", dump[0].stdout);
+	assert!(dump[0].stdout.contains("\nlong_coding      0\n"), "{}", dump[0].stdout);
+	assert!(dump[0].stdout.ends_with("\n\n2 label files parsed\n"), "{}", dump[0].stdout);
 	assert_eq!(dump[0].stderr, format!("wrote 2 label files to {}\n", json.display()));
 
 	// tttext: one record that reads, one that does not.
@@ -259,14 +278,14 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 		catalog: None,
 	});
 	assert_eq!(tttext[0].stdout, "000017\tInvented flap position\t2\t90001\n");
-	assert_eq!(tttext[0].stderr, "1 records · 1 name an IDE or MAS id · 1 malformed, left out\n");
+	assert_eq!(tttext[0].stderr, "1 record · 1 with an IDE or MAS id · 1 malformed, left out\n");
 	assert!(tttext[1].stderr.contains("000005 read as"), "{}", tttext[1].stderr);
 
 	// stats: the cache `labels --part` built in this project.
 	let stats = levels("stats", || Tool::Stats { catalog: None });
 	assert_eq!(
 		stats[0].stdout,
-		"table        rows\nlabel_file      2\nmeasurement     2\nredirect        0\nadaptation      0\nlong_coding     0\n"
+		"what         count\nlabel_file       2\nmeasurement      2\nredirect         0\nadaptation       0\nlong_coding      0\n"
 	);
 	assert_eq!(stats[0].stderr, "");
 	assert!(
