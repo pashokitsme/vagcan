@@ -82,6 +82,8 @@ impl Asker for Console {
 		if !super::can_ask() {
 			bail!(menu_needs_a_terminal(&self.instead));
 		}
+		// No progress line may tick over the menu (`crate::progress::hold`).
+		let _held = crate::progress::hold();
 		let mut at = at.min(items.len() - 1);
 		let mut out = std::io::stdout();
 		// Everything below this line can leave through a `?` or a panic, and both
@@ -137,6 +139,8 @@ impl Asker for Console {
 		if !super::can_ask() {
 			return Ok(default.to_string());
 		}
+		// No progress line may tick over the question (`crate::progress::hold`).
+		let _held = crate::progress::hold();
 		// Asked outside raw mode, so the answer echoes and a backspace works.
 		let mut out = std::io::stdout();
 		write!(out, "{}", prompt(question, default))?;

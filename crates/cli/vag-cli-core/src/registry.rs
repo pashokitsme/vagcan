@@ -61,6 +61,39 @@ pub const ODX_DIR: &str = "UDS_EV";
 /// closed, so a name nobody here has seen is a question to ask, not a verdict.
 pub const TEXT_TABLES: &[&str] = &["TTTEXT.ROD", "TTText-RUS.rod"];
 
+/// The fault text store, one file in the install root beside `Labels/`.
+///
+/// Same story as [`TEXT_TABLES`]: `Codes.dat` in the English build,
+/// `Code-RUS.dat` in the Russian one.
+pub const CODES_FILES: &[&str] = &["Codes.dat", "Code-RUS.dat"];
+
+/// The language a VCDS build is in, as ISO 639-2, from the name of its fault
+/// text file or its text table — the only place the build says. Recorded on the
+/// source the same way an ODIS project's `<LANGUAGE>` is, and read off the pool
+/// by `faults`, so the two can be compared.
+pub fn codes_language(file_name: &str) -> Option<&'static str> {
+	match file_name {
+		"Codes.dat" | "TTTEXT.ROD" => Some("eng"),
+		"Code-RUS.dat" | "TTText-RUS.rod" => Some("rus"),
+		_ => None,
+	}
+}
+
+/// Which language build a directory holds, named by the file that says so.
+///
+/// No marker is written for this: a directory that contains `Code-RUS.dat` and
+/// `TTText-RUS.rod` *is* the Russian build, and a note beside it saying so
+/// would be one more thing to keep in step with what is actually there. Asked
+/// of an installation and of the pool `setup` copies it into, which holds one
+/// build at a time (`setup` clears it when the build changes).
+pub fn build_of(dir: &Path) -> Option<&'static str> {
+	CODES_FILES
+		.iter()
+		.find(|name| dir.join(name).is_file())
+		.or_else(|| TEXT_TABLES.iter().find(|name| dir.join(ODX_DIR).join(name).is_file()))
+		.copied()
+}
+
 /// The code page a text table's high bytes are in, from its name — the only
 /// place the build says, as for the fault text.
 ///
@@ -1022,6 +1055,24 @@ impl Progress for Quietly {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_build_says_its_language_by_the_files_it_ships() {
+		// The pool `faults` reads holds one build; which language it is comes
+		// from the files in it, not from the source rows of every build ever set up.
+		let base = std::env::temp_dir().join(format!("vagcan-build-of-{}-{:?}", std::process::id(), std::thread::current().id()));
+		let _ = std::fs::remove_dir_all(&base);
+		std::fs::create_dir_all(base.join(ODX_DIR)).unwrap();
+		assert_eq!(build_of(&base), None, "an empty directory is no build");
+		std::fs::write(base.join(ODX_DIR).join("TTText-RUS.rod"), b"x").unwrap();
+		assert_eq!(build_of(&base).and_then(codes_language), Some("rus"), "the text table alone says it");
+		std::fs::write(base.join("Codes.dat"), b"x").unwrap();
+		assert_eq!(build_of(&base), Some("Codes.dat"), "the fault text file is asked first");
+		assert_eq!(build_of(&base).and_then(codes_language), Some("eng"));
+		assert_eq!(codes_language("Code-RUS.dat"), Some("rus"));
+		assert_eq!(codes_language("Codes-XYZ.dat"), None);
+		let _ = std::fs::remove_dir_all(&base);
+	}
 
 	fn unit(request: u16, odx: Option<&str>, version: Option<&str>) -> UnitIdentity {
 		UnitIdentity {

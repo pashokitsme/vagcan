@@ -143,8 +143,10 @@ fn ident_text(bytes: &[u8]) -> String {
 /// installation names a code through a registry, a per-unit catalogue and a
 /// text store, each of which can be missing or sealed. The project is asked
 /// first because it answers for the exact variant the unit named; the chain
-/// is asked where the project has no table for the unit, or where
-/// `[faults] language` names a language only the VCDS build declares.
+/// is asked where the project has no table for the unit, or first where the
+/// preferred language — `[faults] language`, else English wherever a source has
+/// it ([`crate::odisfaults::OdisFaults::preferred`]) — is one only the VCDS
+/// build declares.
 ///
 /// Either half may be absent — a project set up from one source has one —
 /// and a command with neither still prints the codes.
@@ -167,9 +169,15 @@ impl Namers {
 	/// not open, or for keys named with `--iv-cache` (`given`) that are not there.
 	pub fn open(keys: &std::path::Path, given: bool) -> Result<Namers> {
 		let vcds_root = crate::project::rod_pool()?;
-		let odis = crate::odisfaults::OdisFaults::open();
+		let mut odis = crate::odisfaults::OdisFaults::open();
 		let odis_alone = odis.as_ref().is_some_and(|o| !o.has_vcds_source());
 		let vcds = open_vcds(&vcds_root, keys, given, odis_alone)?;
+		// The VCDS text's language is the pool's own build, read off its files —
+		// not any source row's: the cache keeps a row per installation ever set
+		// up, the pool holds the last one. None where the chain did not open.
+		if let Some(odis) = &mut odis {
+			odis.set_vcds(vcds.as_ref().map(|_| crate::odisfaults::VcdsBuild::of(&vcds_root)));
+		}
 		Ok(Namers { odis, vcds, vcds_root })
 	}
 
@@ -198,7 +206,11 @@ impl Namers {
 				vcds.registry_rows(),
 				vcds.codes_texts(),
 				self.vcds_root.display(),
-				if self.odis.is_some() { " — the fallback" } else { "" }
+				match &self.odis {
+					Some(odis) if odis.prefers_vcds() => " — asked first",
+					Some(_) => " — the fallback",
+					None => "",
+				}
 			));
 		}
 		out
@@ -227,7 +239,8 @@ impl Namers {
 			});
 		}
 		let vcds_matters = !project_has_it || self.odis.as_ref().is_some_and(|o| o.prefers_vcds());
-		if vcds_matters && let Some(note) = unit.vcds.as_ref().and_then(crate::faultnames::unit_note) {
+		let instead = if project_has_it { "the ODIS project's text" } else { "codes only" };
+		if vcds_matters && let Some(note) = unit.vcds.as_ref().and_then(|lookup| crate::faultnames::unit_note(lookup, instead)) {
 			out.push(note);
 		}
 		out
@@ -316,6 +329,12 @@ fn compose(
 		// A code without words anywhere is not a named code, whatever else the
 		// row carries — the run's tally counts names, not rows.
 		let named = naming.text.is_some();
+		// VCDS was asked first, for its language, and had nothing: these are the
+		// project's words, likely in another language, and the line says so —
+		// as a borrowed VCDS text says whose it is above.
+		if prefer_vcds && named {
+			return Some((format!("{}  (text from the ODIS project)", naming.line()), true));
+		}
 		return Some((naming.line(), named));
 	}
 	if let Some(naming) = vcds {
@@ -563,6 +582,12 @@ pub async fn run<L: UnitLink>(
 		}
 		backend = L::release(uds.into_transport());
 	}
+	// The walk is over, and so is its line: cleared and its ticker stopped
+	// before the summary and the offer below. The last unit has nothing to show
+	// more often than not, so nothing in the loop finished the line, and it
+	// ticked on over the offer's question (2026-10-20). Dropped rather than
+	// finished, so no ticker is left running either.
+	drop(progress);
 
 	if supported {
 		return Ok(());
@@ -664,6 +689,42 @@ mod tests {
 		let (line, named) = compose(Some(textless_odis_row()), Some(vcds), false, true).expect("a code with a display code says something");
 		assert_eq!(line, "B1168F2  Steering angle sensor  (text from the VCDS labels)");
 		assert!(named, "a borrowed name is still a name");
+	}
+
+	#[test]
+	fn with_vcds_asked_first_its_english_wins_and_the_project_answers_the_rest() {
+		// Unset language, a German project and an English VCDS build:
+		// `prefers_vcds` is true, so a code VCDS names reads in its English, and
+		// one it cannot name still gets the project's German rather than nothing.
+		let german = crate::odisfaults::Naming {
+			text: Some("Lenkwinkelsensor".into()),
+			..textless_odis_row()
+		};
+		let english = crate::faultnames::Naming::Named {
+			text: "Steering angle sensor".into(),
+			sae: Some("B1168".into()),
+			failure_type: Some(0xF2),
+		};
+		let (line, named) = compose(Some(german.clone()), Some(english), true, true).unwrap();
+		assert_eq!(line, "B1168 F2  Steering angle sensor");
+		assert!(named);
+		let (line, _) = compose(Some(german), Some(crate::faultnames::Naming::NotListed), true, true).unwrap();
+		assert_eq!(
+			line, "B1168F2  Lenkwinkelsensor  (text from the ODIS project)",
+			"the project's words where VCDS was asked first say whose they are"
+		);
+		// With the project first, as usual, its own words need no marker.
+		let (line, _) = compose(
+			Some(crate::odisfaults::Naming {
+				text: Some("Lenkwinkelsensor".into()),
+				..textless_odis_row()
+			}),
+			None,
+			false,
+			true,
+		)
+		.unwrap();
+		assert_eq!(line, "B1168F2  Lenkwinkelsensor");
 	}
 
 	#[test]

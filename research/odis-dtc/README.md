@@ -266,8 +266,10 @@ project, with its own `index.xml` and its own 291,346 objects.
 filled from the declaration — `deu` here; a VCDS build's `Codes.dat` records `eng`,
 `Code-RUS.dat` `rus`), never per row. `[faults] language = "…"` in `config.toml` picks a
 source when several are set up and the codes they declare differ; with one source the
-setting is never needed; unset with several, the first ODIS source wins and the listing
-says so and names the setting. That is the smallest honest thing: it cannot translate,
+setting is never needed; unset with several, English wins wherever a source has it (an
+ODIS `eng` project, else the VCDS build's English text), else the first ODIS source, and
+the listing says so and names the setting (2026-10-20; it was the first ODIS source
+before). The setting takes `de`/`en`/`ru` as well as the declared `deu`/`eng`/`rus`. That is the smallest honest thing: it cannot translate,
 so it does not pretend to.
 
 ---

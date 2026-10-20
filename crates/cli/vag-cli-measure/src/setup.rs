@@ -190,6 +190,8 @@ pub struct Console;
 
 impl Interview for Console {
 	fn ask(&mut self, prompt: &str, default: Option<&str>) -> Result<String> {
+		// No progress line may tick over the question (`crate::progress::hold`).
+		let _held = crate::progress::hold();
 		let mut out = std::io::stdout();
 		write!(out, "{}", prompt_line(prompt, default))?;
 		out.flush()?;

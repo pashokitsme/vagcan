@@ -18,7 +18,6 @@
 //! through five passes and this module is where that is kept.
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -192,21 +191,24 @@ impl Namer {
 	}
 }
 
-/// Why a unit's faults are being shown as numbers, in one line for the console.
-pub fn unit_note(lookup: &UnitLookup) -> Option<String> {
+/// Why a unit's faults are not in the VCDS text, in one line for the console.
+///
+/// `instead` is what the codes are shown with: `codes only`, or the ODIS
+/// project's text where the project has the unit and VCDS was only asked first.
+pub fn unit_note(lookup: &UnitLookup, instead: &str) -> Option<String> {
 	match lookup {
 		UnitLookup::Found { .. } => None,
-		UnitLookup::NoFile => Some("the label files have no ODX file of the name this unit gives — codes only".to_string()),
+		UnitLookup::NoFile => Some(format!("the label files have no ODX file of the name this unit gives — {instead}")),
 		UnitLookup::NoSection { candidates } => Some(format!(
-			"none of the {candidates} ODX files of this family carries a fault catalogue — codes only"
+			"none of the {candidates} ODX files of this family carries a fault catalogue — {instead}"
 		)),
 		UnitLookup::Locked { file } => Some(format!(
-			"the fault catalogue in {} is still sealed — codes only",
+			"the fault catalogue in {} is still sealed — {instead}",
 			file.file_name().and_then(|n| n.to_str()).unwrap_or_default()
 		)),
 		UnitLookup::Mismatched { file, listed, distinct } => Some(format!(
 			"{} lists {listed} faults that land on only {distinct} registry rows, \
-             so it is not the same vintage as this RD.rod — refused, codes only",
+             so it is not the same vintage as this RD.rod — refused, {instead}",
 			file.file_name().and_then(|n| n.to_str()).unwrap_or_default()
 		)),
 	}
@@ -247,10 +249,8 @@ pub fn offer_to_unseal(files: &[PathBuf], cache: &Path) -> Result<()> {
 		);
 		return Ok(());
 	}
-	print!("\nRecover them now? [y/N] ");
-	let _ = std::io::stdout().flush();
-	let mut answer = String::new();
-	if std::io::stdin().read_line(&mut answer).is_err() || !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+	println!();
+	if !unseal_now(&mut crate::ui::Console::new(String::new())) {
 		println!(
 			"Left sealed. When you want them:\n    vagcan dev vcds rod --cache {} <file>   (once per file above)",
 			cache.display()
@@ -265,9 +265,41 @@ pub fn offer_to_unseal(files: &[PathBuf], cache: &Path) -> Result<()> {
 	Ok(())
 }
 
+/// The question, as the person reads it. `[y/N]` in the text: the answer is a
+/// letter and the default is the empty line.
+const UNSEAL_QUESTION: &str = "Recover them now? [y/N]";
+
+/// Ask whether to start the key search. Anything short of a clear yes is a no —
+/// an empty line, Ctrl-D, a read that failed — because the price is minutes.
+///
+/// Through [`crate::ui::menu::Asker::line`], the one way a question is put to a
+/// person, rather than a `print!` and a `read_line` of its own: that is where the
+/// progress lines are held off the question (`crate::progress::hold`). This one's
+/// own `print!` was overdrawn by the walk's still-ticking line, and `faults`
+/// looked hung on "unit 18 of 18" while it waited for an answer to a question
+/// nobody could see (2026-10-20).
+fn unseal_now(io: &mut impl crate::ui::menu::Asker) -> bool {
+	io.line(UNSEAL_QUESTION, "")
+		.is_ok_and(|typed| matches!(typed.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::ui::menu::{Answer, Scripted};
+
+	#[test]
+	fn the_offer_to_unseal_is_asked_through_the_one_question_helper() {
+		// The helper is what holds the progress lines off the question; a
+		// `print!` of its own is what left this one under a spinner.
+		let mut io = Scripted::new(vec![Answer::Type("y".into())]);
+		assert!(unseal_now(&mut io));
+		assert_eq!(io.typed, vec![(UNSEAL_QUESTION.to_string(), String::new())]);
+		for typed in ["", "n", "later"] {
+			assert!(!unseal_now(&mut Scripted::new(vec![Answer::Type(typed.into())])), "{typed:?}");
+		}
+		assert!(!unseal_now(&mut Scripted::new(vec![Answer::Quit])), "Ctrl-D is a no");
+	}
 
 	#[test]
 	fn a_named_fault_reads_as_vcds_prints_it() {
@@ -314,14 +346,15 @@ mod tests {
 	fn a_units_missing_catalogue_is_explained_rather_than_hidden() {
 		// On the reference car the body control module's F19E is EV_BCMMQB and
 		// no file in the English label files start with that name.
-		assert!(unit_note(&UnitLookup::NoFile).unwrap().contains("no ODX file"));
-		assert!(unit_note(&UnitLookup::NoSection { candidates: 14 }).unwrap().contains("14"));
-		assert!(
-			unit_note(&UnitLookup::Locked {
-				file: PathBuf::from("EV_X.rod")
-			})
-			.unwrap()
-			.contains("EV_X.rod")
-		);
+		assert!(unit_note(&UnitLookup::NoFile, "codes only").unwrap().contains("no ODX file"));
+		assert!(unit_note(&UnitLookup::NoSection { candidates: 14 }, "codes only").unwrap().contains("14"));
+		let sealed = UnitLookup::Locked {
+			file: PathBuf::from("EV_X.rod"),
+		};
+		assert!(unit_note(&sealed, "codes only").unwrap().contains("EV_X.rod"));
+		// Where the ODIS project has the unit, its codes are not numbers alone,
+		// and the note says what they are shown with instead.
+		let note = unit_note(&sealed, "the ODIS project's text").unwrap();
+		assert!(note.ends_with("sealed — the ODIS project's text"), "{note}");
 	}
 }
