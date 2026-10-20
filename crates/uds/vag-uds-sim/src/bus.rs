@@ -29,8 +29,8 @@ pub struct Frame {
 pub enum Event {
 	/// A whole request reached a unit.
 	Request { unit: u16, pdu: Vec<u8> },
-	/// A whole answer left a unit: its first frame went out.
-	Answer { unit: u16, pdu: Vec<u8> },
+	/// A whole answer left a unit, on `id`, its answer id: its first frame went out.
+	Answer { unit: u16, id: u16, pdu: Vec<u8> },
 	/// A unit said nothing to a request, and why.
 	Silent { unit: u16, why: Why },
 	/// A frame that broke the protocol, or a transfer given up.
@@ -265,7 +265,7 @@ impl Bus {
 			}
 			let (_, pdu) = end.outbox.pop_front()?;
 			let unit = end.request;
-			self.events.push(Event::Answer { unit, pdu: pdu.clone() });
+			self.events.push(Event::Answer { unit, id: response, pdu: pdu.clone() });
 			if pdu.len() <= 7 {
 				let mut data = vec![pdu.len() as u8];
 				data.extend_from_slice(&pdu);

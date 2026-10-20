@@ -77,6 +77,23 @@ jobs:
       - name: just test (with the renderer for wasm)
         run: just test
 
+  # The commands as a person runs them, against the virtual car on a pseudo-terminal
+  # (`tests/e2e/`, docs/virtual-car.md): trycmd cases, each against a made-up car and project.
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: system deps for btleplug (BlueZ over D-Bus) and serialport (libudev)
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libudev-dev pkg-config
+      - uses: extractions/setup-just@v2
+      - name: just e2e
+        run: just e2e
+
   no-std:
     name: no-std
     runs-on: ubuntu-latest

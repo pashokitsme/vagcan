@@ -1,0 +1,26 @@
+{
+	"vin": "SIMVIN00000000004",
+	"units": [
+		{
+			"request": "710",
+			"part_number": "SIM907000C",
+			"odx_name": "EV_SimGatew",
+			"odx_version": "001004",
+			"component": "SIM GATEWAY"
+		},
+		{
+			"request": "713",
+			"part_number": "SIM614000D",
+			"odx_name": "EV_SimBrake",
+			"odx_version": "001003",
+			"component": "SIM ESC"
+		},
+		{
+			"request": "7E0",
+			"part_number": "SIM906000A",
+			"odx_name": "EV_SimEngine",
+			"odx_version": "001001",
+			"component": "SIM ENGINE"
+		}
+	]
+}

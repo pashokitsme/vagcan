@@ -1,0 +1,45 @@
+about = """
+A made-up car whose units misbehave the ways real ones do: the engine takes its time over
+one identifier (response pending, twice) and refuses another (conditions not correct); the
+brakes answer one request and then fall silent; the gearbox is not there at all, and the
+gateway lists a unit that never answers. The road speed is 0, so nothing is refused for
+moving.
+"""
+
+[[unit]]
+request = "7E0"
+name = "engine"
+part = "SIM906000A"
+component = "SIM ENGINE"
+odx = "EV_SimEngine"
+odx_version = "001001"
+vin = "SIMVIN00000000003"
+
+[unit.did]
+F40D = "00"
+F189 = { text = "0001", pending = 2, pending_ms = 30 }
+F18C = { nrc = 0x22 }
+F191 = { text = "SIM906000HW", silent_after = 0 }
+
+[[unit]]
+request = "710"
+name = "gateway"
+part = "SIM907000C"
+component = "SIM GATEWAY"
+installed = ["713", "70E"]
+
+[[unit]]
+request = "713"
+name = "brakes"
+part = "SIM614000D"
+component = "SIM ESC"
+quiet_after = 1
+
+[[unit.fault]]
+code = "04 71 20"
+status = 0x08
+
+[[unit]]
+request = "70E"
+name = "body"
+silent = true

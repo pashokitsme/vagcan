@@ -77,7 +77,7 @@ pub struct DeviceArg {
 	/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
 	/// cable), `ble` for an adapter over Bluetooth, or `ble:<name>` for one adapter by
 	/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
-	/// when asked.
+	/// when asked. `VAGCAN_DEVICE` stands for it when it is not given.
 	#[arg(long, value_name = "PATH|ble|ble:NAME")]
 	pub device: Option<String>,
 	/// Same as `--device ble`: the dash board over Bluetooth.
@@ -85,11 +85,33 @@ pub struct DeviceArg {
 	pub ble: bool,
 }
 
+/// The environment variable that stands for `--device` when neither it nor `--ble` is
+/// given: a shell that always reads through one adapter, and `vagcan dev sim`'s port for
+/// the e2e cases (`tests/e2e/`), which run every command against a virtual car.
+pub const DEVICE_ENV: &str = "VAGCAN_DEVICE";
+
 impl DeviceArg {
-	/// What was asked for, as [`resolve`] takes it: `--ble` is `ble`.
+	/// What was asked for, as [`resolve`] takes it: `--ble` is `ble`, then `--device`, then
+	/// [`DEVICE_ENV`].
 	pub fn requested(&self) -> Option<&str> {
-		if self.ble { Some("ble") } else { self.device.as_deref() }
+		self.requested_with(device_from_env())
 	}
+
+	/// [`Self::requested`] with the environment's value handed in.
+	pub fn requested_with<'a>(&'a self, env: Option<&'a str>) -> Option<&'a str> {
+		match self.ble {
+			true => Some("ble"),
+			false => self.device.as_deref().or(env),
+		}
+	}
+}
+
+/// [`DEVICE_ENV`], read once: empty is unset.
+fn device_from_env() -> Option<&'static str> {
+	static ENV: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+	ENV
+		.get_or_init(|| std::env::var(DEVICE_ENV).ok().filter(|v| !v.trim().is_empty()))
+		.as_deref()
 }
 
 /// Why no board was heard, as far as this side can tell.
@@ -673,6 +695,18 @@ mod tests {
 		use clap::Parser as _;
 		let parsed = TakesADevice::try_parse_from(std::iter::once("cmd").chain(args.iter().copied()))?;
 		Ok(parsed.device.requested().map(str::to_owned))
+	}
+
+	#[test]
+	fn the_environment_stands_for_device_only_when_neither_flag_is_given() {
+		let arg = |device: Option<&str>, ble: bool| DeviceArg {
+			device: device.map(str::to_string),
+			ble,
+		};
+		assert_eq!(arg(None, false).requested_with(Some("/dev/ttys9")), Some("/dev/ttys9"));
+		assert_eq!(arg(Some("/dev/x"), false).requested_with(Some("/dev/ttys9")), Some("/dev/x"));
+		assert_eq!(arg(None, true).requested_with(Some("/dev/ttys9")), Some("ble"));
+		assert_eq!(arg(None, false).requested_with(None), None);
 	}
 
 	#[test]

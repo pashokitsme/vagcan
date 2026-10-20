@@ -412,6 +412,7 @@ crates/
     vag-uds-can              slcan USB-CAN backend, listen-only mode, ISO-TP sniffer
     vag-uds-client           UDS client, ISO-TP framing, unit addressing
     vag-uds-capture          capture and replay transport, so tests need no hardware
+    vag-uds-sim              a virtual car on a pseudo-terminal: `dev sim`, `just e2e`
   data/                    somebody else's diagnostic files
     vag-data-labels          parsers and decoders (.lbl/.clb/.rod), ODX/ODIS resolution
     vag-data-db              SQLite cache over the label files
@@ -504,6 +505,17 @@ admits `0x22` (read data), `0x19` (read faults), `0x10` (session control) and `0
 (tester present), and that is the whole of it. That is not the same as harmless:
 "read-only" bounds what you can *change* about a car, not what you can *provoke*, and an
 identifier sweep is a fuzz test of a control unit's diagnostic server.
+
+**The virtual car is the far side of the cable, not a seam in the program.** `vag-uds-sim`
+opens a pseudo-terminal and speaks slcan on it as a USB-CAN adapter does, with the control
+units of a TOML profile behind it; a car command opens it through `--device` (or
+`VAGCAN_DEVICE`) and runs its whole path unchanged — the serial port, slcan, ISO-TP with flow
+control both ways, the UDS client and its allowlist, the bus task. The sim's ISO-TP is its own,
+not the client's run backwards, so a defect shared by both ends cannot pass between them
+unseen; the answer id comes from the client's addressing rule, so it cannot drift from where
+the client listens. It answers whatever is asked, because what may be asked is the client's to
+decide. The e2e cases (`tests/e2e/`, trycmd) run the installed binary against a made-up car per
+directory and a made-up project; `docs/virtual-car.md` has the profile format.
 
 ---
 

@@ -121,6 +121,23 @@ clippy:
 test:
     VAGCAN_DASH_WASM_REQUIRED=1 cargo test --workspace
 
+# CI `e2e`: the commands as a person runs them, against the virtual car (`tests/e2e/`,
+# docs/virtual-car.md). Builds the vagcan `just install` would — a `cargo test` build is a test
+# build and says so on every run — and copies it aside before the test target is built, which
+# puts a test build back in its place. Extra args go to the test: `just e2e trycmd=units`.
+e2e *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target="${CARGO_TARGET_DIR:-$PWD/target}"
+    cargo build -p vag-cli --bin vagcan
+    mkdir -p "$target/e2e"
+    cp "$target/debug/vagcan" "$target/e2e/vagcan"
+    VAGCAN_E2E_BIN="$target/e2e/vagcan" cargo test -p vag-cli --test e2e -- e2e {{args}}
+
+# rewrite what the e2e cases expect with what the commands print now; read the diff after
+e2e-bless *args:
+    TRYCMD=overwrite just e2e {{args}}
+
 # CI `no-std`: the workspace crates the board links, without `std`, for the board's target
 # (`vag-dash-core` brings `vag-dash-render` with it)
 no-std:
@@ -146,8 +163,8 @@ dead-code:
         exit 1
     fi
 
-# everything CI checks, in CI's jobs: workspace, no-std, bench crate, firmware, dead code
-check: fmt-check clippy test no-std host-check fw-check fw-ram dead-code
+# everything CI checks, in CI's jobs: workspace, e2e, no-std, bench crate, firmware, dead code
+check: fmt-check clippy test e2e no-std host-check fw-check fw-ram dead-code
 
 # ---- helpers --------------------------------------------------------------------------------
 

@@ -1,0 +1,4 @@
+# Data on stdout, everything else on stderr (CLAUDE.md, "Command output"): the one case
+# whose streams are checked apart. `streams.stdout` is the listing alone.
+bin.name = "vagcan"
+args = ["-v", "units", "--identify"]

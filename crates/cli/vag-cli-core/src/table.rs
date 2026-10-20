@@ -182,12 +182,27 @@ pub fn plural(n: usize, singular: &str) -> String {
 	if n == 1 { singular.to_string() } else { format!("{singular}s") }
 }
 
-/// The terminal's width in columns, when stdout is one; `None` for a pipe or a file.
+/// The width a layout is made for when it is set: [`COLUMNS_ENV`] columns, whatever stdout
+/// is — a pipe included. For a layout at a width the terminal is not (a log read later in a
+/// narrower window) and for the e2e cases (`tests/e2e/`), which run commands on pipes.
+pub const COLUMNS_ENV: &str = "VAGCAN_COLUMNS";
+
+/// The terminal's width in columns, when stdout is one; `None` for a pipe or a file. A
+/// width [`COLUMNS_ENV`] names comes first. Not `COLUMNS`: shells set that one by
+/// themselves, and a layout must not change because a shell exported it.
 pub fn terminal_width() -> Option<usize> {
+	if let Some(columns) = columns_override(std::env::var(COLUMNS_ENV).ok().as_deref()) {
+		return Some(columns);
+	}
 	if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
 		return None;
 	}
 	crossterm::terminal::size().ok().map(|(columns, _)| usize::from(columns))
+}
+
+/// [`COLUMNS_ENV`]'s value as a width: a positive number, else nothing.
+fn columns_override(value: Option<&str>) -> Option<usize> {
+	value?.trim().parse::<usize>().ok().filter(|n| *n > 0)
 }
 
 /// A `key  value` block: the keys padded to one width, in the order given. A value of
@@ -290,5 +305,14 @@ mod tests {
 			pairs(&[("vin", "XW8".into()), ("engine", "8V0906264H".into()), ("x", String::new())]),
 			"vin     XW8\nengine  8V0906264H\nx\n"
 		);
+	}
+
+	#[test]
+	fn a_width_is_taken_from_the_override_only_when_it_is_a_positive_number() {
+		assert_eq!(columns_override(Some("80")), Some(80));
+		assert_eq!(columns_override(Some(" 100 ")), Some(100));
+		for unset in [None, Some(""), Some("0"), Some("wide"), Some("-5")] {
+			assert_eq!(columns_override(unset), None, "{unset:?}");
+		}
 	}
 }

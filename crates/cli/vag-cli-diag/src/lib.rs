@@ -34,6 +34,7 @@ pub mod rescue;
 pub mod safety;
 pub mod scan;
 pub mod setup;
+pub mod sim;
 pub mod sniff;
 pub mod vcds;
 pub mod watch;

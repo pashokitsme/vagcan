@@ -23,7 +23,7 @@ lists the recipes. Use them rather than retyping the cargo lines, so what an age
 CI runs.
 
 - **Before a push: `just check`** — every CI job, one recipe each (`fmt-check`, `clippy`,
-  `test`, `no-std`, `host-check`, `fw-check`, `fw-ram`, `dead-code`). A change that touches
+  `test`, `e2e`, `no-std`, `host-check`, `fw-check`, `fw-ram`, `dead-code`). A change that touches
   only one area may run that recipe; the push still has to pass all of them.
 - **CI calls the recipes and nothing else** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
   a job installs its toolchain and system packages, then runs `just <recipe>`. A new check is
@@ -198,6 +198,8 @@ crates/            all Rust. Three families and the product.
     vag-uds-can        slcan backend, async ISO-TP over CAN, listen-only sniffer
     vag-uds-client     UDS client + allowlist, DTCs, gateway, addressing
     vag-uds-capture    capture/replay transport, hardware-free tests
+    vag-uds-sim        a virtual car on a pseudo-terminal: `dev sim`, the e2e
+                       cases (`just e2e`, `tests/e2e/`, docs/virtual-car.md)
   data/              somebody else's diagnostic files, parsed and cached.
     vag-data-labels    parsers: .rod/.clb/.lbl, TTTEXT names, Codes.dat,
                        ODX/ODIS, OBD-II PIDs, catalog
