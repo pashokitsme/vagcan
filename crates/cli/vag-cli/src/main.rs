@@ -233,6 +233,9 @@ enum Command {
 	/// `--refresh` redoes them. `--list` shows what the project was read from, and
 	/// `--drop` removes one source with everything it wrote.
 	///
+	/// Prints one row per step and a summary line; `-v` adds what each step wrote,
+	/// why a step is short, and timings.
+	///
 	/// No VCDS installation: https://www.ross-tech.com/vcds/download/
 	Setup {
 		/// What to read: a VCDS installation root (the directory holding

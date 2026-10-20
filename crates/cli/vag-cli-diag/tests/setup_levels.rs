@@ -70,7 +70,7 @@ fn run_at(level: u8, home: &Path, root: &Path, state: Cars) -> Captured {
 	let _ = std::fs::remove_dir_all(home.join(".vagcan"));
 	cars(home, state);
 	let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-	let capture = Capture::start(level);
+	let capture = Capture::start_all(level);
 	let root = root.display().to_string();
 	runtime
 		.block_on(vag_cli_diag::setup::run(vag_cli_diag::setup::Options {
@@ -207,7 +207,7 @@ fn child(scenario: &str) {
 			};
 			let runs = [0, 1, 2].map(|level| {
 				run_at(0, &home, &root, Cars::One);
-				let capture = Capture::start(level);
+				let capture = Capture::start_all(level);
 				vag_cli_core::registry::ensure(std::slice::from_ref(&unit));
 				capture.finish()
 			});
