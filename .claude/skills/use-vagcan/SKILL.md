@@ -101,13 +101,16 @@ vagcan faults --unit 01,02,713    # several
 ODIS itself would print. The output is one table and a summary line on stdout:
 
 ```
-unit  id   name         code    dtc      status     km      count  last seen            text
-16    70C  Lenks.Modul  047120  B145501  confirmed  214592    254  2026-09-28 14:20:59  Unterbrechung des Signalpfades "Init"
+unit  id   name         code    dtc      status     km      count  last seen            src   text
+16    70C  Lenks.Modul  047120  B145501  confirmed  214592    254  2026-09-28 14:20:59  odis  Unterbrechung des Signalpfades "Init"
 
 1 stored · 0 failing now · 18 units read
 ```
 
 `status` is one word (`failing` = failing now); `last seen` is the car's own clock.
+`src` is whose words the text is: `odis`, `vcds`, or `odis?` — an ODIS variant the car's
+identifiers did not settle, a guess; report such a text as one. On a narrow terminal the
+text moves to its own indented line under the row.
 On the reference car 11 of 15 confirmed codes name with VCDS alone, 15 of 15 with ODIS.
 
 A code stays a number when the chain cannot reach it, and `vagcan -v faults` says why,

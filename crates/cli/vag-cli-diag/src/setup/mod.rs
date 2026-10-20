@@ -95,7 +95,7 @@ use crate::registry::{ODX_DIR, TEXT_TABLES, build_of, codes_language, text_page}
 /// label files, so recovering their keys once serves every vehicle.
 ///
 /// Per-unit files are deliberately not swept. There are over sixteen thousand
-/// of them, a blocked section costs about a minute of every core, and which
+/// of them, a section of a file not under its own name costs a search of minutes, and which
 /// handful a given car needs is a question only that car can answer — it names
 /// its own file in identifier `F19E`.
 const SHARED_ROD_FILES: &[&str] = &["RD.rod", "MUX.rod"];
@@ -1548,7 +1548,7 @@ struct Report {
 /// one artefact needs to see which one without re-reading the scroll — the
 /// `state` column, and `gaps` in the summary.
 fn report(steps: &[Step], closing: &Closing<'_>) -> Report {
-	let mut table = vag_cli_core::table::Table::new(&["source", "step", "state", "detail"]);
+	let mut table = vag_cli_core::table::Table::new(&["source", "step", "state", "detail"]).no_cut();
 	let mut notes = Vec::new();
 	for step in steps {
 		table.row(vec![
