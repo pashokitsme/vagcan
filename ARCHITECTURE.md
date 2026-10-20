@@ -98,8 +98,9 @@ inside a project that declares `deu`. So language is a property of the *source*:
 build's `Codes.dat` or `Code-RUS.dat`), a second project in another language is a second
 source, and `[faults] language` in `config.toml` chooses between sources (`en`, `de`, `ru`,
 or the ISO 639-2 code a source declares). Unset, English wins wherever a source has it — an
-ODIS project that declares `eng`, else the VCDS installation's English text, asked before the
-project — and otherwise the project's own; the listing says which in one line.
+ODIS project that declares `eng`, else the VCDS text when the build in `~/.vagcan/rod` is
+English (read off its own files, not the source rows), asked before the project — and
+otherwise the project's own; the listing says which in one line.
 
 ---
 

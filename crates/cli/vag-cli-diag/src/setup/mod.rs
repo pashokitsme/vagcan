@@ -79,25 +79,10 @@ use anyhow::{Context, Result};
 // The installation's layout — where the ODX files are, what the text table is
 // called per language build, which code page it is in — is `core`'s now, because
 // the registry read that needs it runs from `watch` and `measure` as well as
-// from here. Same names, so every use below reads as it did.
-use crate::registry::{ODX_DIR, TEXT_TABLES, text_page};
-
-/// The fault text store, one file in the install root beside `Labels/`.
-///
-/// Same story as [`TEXT_TABLES`]: `Codes.dat` in the English build,
-/// `Code-RUS.dat` in the Russian one.
-pub(crate) const CODES_FILES: &[&str] = &["Codes.dat", "Code-RUS.dat"];
-
-/// The language a VCDS build's fault-text file is in, as ISO 639-2, from its
-/// name — the only place the build says. Recorded on the source the same way
-/// an ODIS project's `<LANGUAGE>` is, so the two can be compared.
-fn codes_language(file_name: &str) -> Option<&'static str> {
-	match file_name {
-		"Codes.dat" => Some("eng"),
-		"Code-RUS.dat" => Some("rus"),
-		_ => None,
-	}
-}
+// from here — and which build a directory holds, and in what language, is asked
+// by `faults` of the pool too. Same names, so every use below reads as it did.
+pub(crate) use crate::registry::CODES_FILES;
+use crate::registry::{ODX_DIR, TEXT_TABLES, build_of, codes_language, text_page};
 
 /// Label files-wide `.rod` files whose keys every car needs.
 ///
@@ -373,19 +358,6 @@ fn keyed_already(source: &Path, project: &crate::project::Project) -> Result<boo
 			.as_object()
 			.is_some_and(|m| m.keys().any(|k| k.starts_with(name.as_ref()) && k.ends_with("TXT"))),
 	)
-}
-
-/// Which language build a directory holds, named by the file that says so.
-///
-/// No marker is written for this: a directory that contains `Code-RUS.dat` and
-/// `TTText-RUS.rod` *is* the Russian build, and a note beside it saying so
-/// would be one more thing to keep in step with what is actually there.
-fn build_of(dir: &Path) -> Option<&'static str> {
-	CODES_FILES
-		.iter()
-		.find(|name| dir.join(name).is_file())
-		.or_else(|| TEXT_TABLES.iter().find(|name| dir.join(ODX_DIR).join(name).is_file()))
-		.copied()
 }
 
 /// Clear `target` when what is about to be written is a different build.

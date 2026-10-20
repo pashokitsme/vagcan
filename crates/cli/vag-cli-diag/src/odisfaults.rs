@@ -44,12 +44,38 @@ pub struct OdisFaults {
 	/// `(kind, dir, language)` of every source in the cache, the language as
 	/// [`crate::config::language_code`] gives it.
 	sources: Vec<(String, String, Option<String>)>,
-	/// Whether the VCDS chain opened. A VCDS source that declares English but
-	/// whose files are not here names nothing, so it does not make English the
-	/// default. Set by [`OdisFaults::set_vcds_open`]; true until then.
-	vcds_open: bool,
+	/// The VCDS build the chain reads, when it opened — set by
+	/// [`OdisFaults::set_vcds`]. **Its language is the pool's, not the source
+	/// rows'**: the cache keeps a row for every VCDS installation ever set up,
+	/// and the pool holds one build (`setup` clears it when the build changes),
+	/// so a row saying `eng` beside a pool holding `Code-RUS.dat` would print
+	/// Russian under a header saying English (found in review, PR #36).
+	vcds: Option<VcdsBuild>,
 	/// Rows per `(F19E, F1A2)`, read once per unit rather than once per code.
 	units: BTreeMap<(String, String), UnitTexts>,
+}
+
+/// The VCDS build behind the chain: what the pool's own files say it is, and
+/// where the pool is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VcdsBuild {
+	/// ISO 639-2, from [`crate::registry::build_of`] and
+	/// [`crate::registry::codes_language`]; `None` for a build neither names.
+	pub language: Option<String>,
+	/// The pool the chain reads, said when no source row names the installation.
+	pub pool: PathBuf,
+}
+
+impl VcdsBuild {
+	/// The build the pool at `pool` holds, as its files say.
+	pub fn of(pool: &std::path::Path) -> VcdsBuild {
+		VcdsBuild {
+			language: crate::registry::build_of(pool)
+				.and_then(crate::registry::codes_language)
+				.map(str::to_string),
+			pool: pool.to_path_buf(),
+		}
+	}
 }
 
 /// What the project knows for one unit: the variants its identity picked,
@@ -196,29 +222,56 @@ impl OdisFaults {
 			variants,
 			setting: setting.map(|l| crate::config::language_code(&l)),
 			sources,
-			vcds_open: true,
+			vcds: None,
 			units: BTreeMap::new(),
 		}
 	}
 
-	/// Say whether the VCDS chain opened beside this (see the field).
-	pub fn set_vcds_open(&mut self, open: bool) {
-		self.vcds_open = open;
+	/// Say which VCDS build the chain beside this reads, or `None` when it did
+	/// not open (see the field).
+	pub fn set_vcds(&mut self, build: Option<VcdsBuild>) {
+		self.vcds = build.map(|build| VcdsBuild {
+			language: build.language.map(|l| crate::config::language_code(&l)),
+			..build
+		});
 	}
 
-	/// Whether a source of this kind declares this language.
-	fn declares(&self, kind: &str, language: &str) -> bool {
-		self.sources.iter().any(|(k, _, l)| k == kind && l.as_deref() == Some(language))
+	/// The language of the VCDS text this run can read, if any.
+	fn vcds_language(&self) -> Option<&str> {
+		self.vcds.as_ref()?.language.as_deref()
+	}
+
+	/// Whether an ODIS source declares this language.
+	fn odis_declares(&self, language: &str) -> bool {
+		self
+			.sources
+			.iter()
+			.any(|(k, _, l)| k == vag_data_db::ODIS && l.as_deref() == Some(language))
+	}
+
+	/// Every language this run can show, sorted: the ODIS sources' declared
+	/// ones and the language of the VCDS build the pool holds, when it opened.
+	fn languages(&self) -> Vec<&str> {
+		let mut languages: Vec<&str> = self
+			.sources
+			.iter()
+			.filter(|(kind, _, _)| kind == vag_data_db::ODIS)
+			.filter_map(|(_, _, l)| l.as_deref())
+			.chain(self.vcds_language())
+			.collect();
+		languages.sort_unstable();
+		languages.dedup();
+		languages
 	}
 
 	/// The language this run prefers: the setting; unset, English where an ODIS
-	/// source declares it or an open VCDS chain does; else none, and the first
-	/// ODIS source's text is shown.
+	/// source declares it or the VCDS build the pool holds is English; else
+	/// none, and the first ODIS source's text is shown.
 	pub fn preferred(&self) -> Option<&str> {
 		if let Some(setting) = &self.setting {
 			return Some(setting);
 		}
-		let english = self.declares(vag_data_db::ODIS, ENGLISH) || (self.vcds_open && self.declares(vag_data_db::VCDS, ENGLISH));
+		let english = self.odis_declares(ENGLISH) || self.vcds_language() == Some(ENGLISH);
 		english.then_some(ENGLISH)
 	}
 
@@ -246,22 +299,23 @@ impl OdisFaults {
 	///
 	/// Once per run, above the codes, so that a text in an unexpected language is
 	/// never a surprise. Languages are said the way a person types them (`de`,
-	/// `en`). Three cases:
+	/// `en`), and only those this run can show count: the ODIS sources' and the
+	/// VCDS pool's, when the chain opened ([`OdisFaults::languages`]). Three cases:
 	///
-	/// - **`[faults] language` names a language no source declares** — always
+	/// - **`[faults] language` names a language nothing here has** — always
 	///   said, however many sources there are: which language was asked for,
-	///   which ones are available here, and whose text is shown instead. A VCDS
-	///   source with no language recorded gets a second line saying so and how
-	///   to record it.
-	/// - **Unset, and the sources declare two or more languages** — one line:
-	///   which language and whose text, what else is available, and the setting
-	///   that changes it.
+	///   which ones are available, and whose text is shown instead.
+	/// - **Unset, and two or more languages are available** — one line: which
+	///   language and whose text, what else is available, and the setting that
+	///   changes it.
 	/// - Otherwise — the setting was honoured, or there is nothing to choose —
 	///   `None`.
+	///
+	/// A VCDS source row that recorded no language used to get a line saying how
+	/// to record it. The VCDS language is the pool's own now, read off its files,
+	/// so such a row changes nothing and the line is gone.
 	pub fn choice_note(&self) -> Option<String> {
-		let mut languages: Vec<&str> = self.sources.iter().filter_map(|(_, _, l)| l.as_deref()).collect();
-		languages.sort_unstable();
-		languages.dedup();
+		let languages = self.languages();
 		// Sorted as they are printed: `es` is `spa` and `sv` is `swe`, so the
 		// three-letter order is not the two-letter one.
 		let mut short: Vec<String> = languages.iter().map(|l| crate::config::short_language(l)).collect();
@@ -281,48 +335,26 @@ impl OdisFaults {
 				let language = language.as_deref().map(crate::config::short_language);
 				format!("{dir} ({})", language.as_deref().unwrap_or("no language declared"))
 			});
-			let mut note = format!(
-				"config.toml sets [faults] language = {:?}, which no source here declares (available: {available}) — showing {}.",
+			return Some(format!(
+				"config.toml sets [faults] language = {:?}, which no source here has (available: {available}) — showing {}.",
 				crate::config::short_language(setting),
 				shown.as_deref().unwrap_or("the first source")
-			);
-			for (_, dir, _) in self
-				.sources
-				.iter()
-				.filter(|(kind, _, language)| kind == vag_data_db::VCDS && language.is_none())
-			{
-				let installation = installation_of(dir);
-				// A relative path is relative to wherever `setup` ran, which
-				// nothing here knows; as a command it would only work from there.
-				if installation.is_relative() {
-					note.push_str(&format!(
-						"\nThe VCDS source {dir} has no language recorded; running `vagcan setup` on {} again records it \
-						 (that path is relative to where setup was run).",
-						installation.display()
-					));
-				} else {
-					note.push_str(&format!(
-						"\nThe VCDS source {dir} has no language recorded; `vagcan setup {}` records it.",
-						installation.display()
-					));
-				}
-			}
-			return Some(note);
+			));
 		}
 		if languages.len() < 2 {
 			return None;
 		}
-		// Whose text this run reads first: the source that declares the
-		// preferred language — VCDS where only it does — or the first ODIS one.
+		// Whose text this run reads first: the VCDS build where only it has the
+		// preferred language, else the ODIS source that declares it, else the
+		// first ODIS one.
 		let (language, from) = match self.preferred() {
+			Some(preferred) if self.prefers_vcds() => (preferred, self.vcds_installation()?),
 			Some(preferred) => {
-				let kind = if self.prefers_vcds() { vag_data_db::VCDS } else { vag_data_db::ODIS };
-				let (_, dir, _) = self.sources.iter().find(|(k, _, l)| k == kind && l.as_deref() == Some(preferred))?;
-				let from = match kind == vag_data_db::VCDS {
-					true => format!("the VCDS installation {}", installation_of(dir).display()),
-					false => format!("the ODIS project {dir}"),
-				};
-				(preferred, from)
+				let (_, dir, _) = self
+					.sources
+					.iter()
+					.find(|(k, _, l)| k == vag_data_db::ODIS && l.as_deref() == Some(preferred))?;
+				(preferred, format!("the ODIS project {dir}"))
 			}
 			None => {
 				let (_, dir, language) = first_odis?;
@@ -335,6 +367,22 @@ impl OdisFaults {
 		))
 	}
 
+	/// Where the VCDS build the pool holds came from, for the header: the latest
+	/// VCDS source row in the pool's language — `setup` writes a row per
+	/// installation and the pool keeps only the last build — else the pool.
+	fn vcds_installation(&self) -> Option<String> {
+		let build = self.vcds.as_ref()?;
+		let row = self
+			.sources
+			.iter()
+			.rev()
+			.find(|(kind, _, l)| kind == vag_data_db::VCDS && l.is_some() && *l == build.language);
+		Some(match row {
+			Some((_, dir, _)) => format!("the VCDS installation {}", installation_of(dir).display()),
+			None => format!("the VCDS files in {}", build.pool.display()),
+		})
+	}
+
 	/// Whether the project was set up from a VCDS installation as well — its
 	/// sources say so, whatever language they recorded.
 	pub fn has_vcds_source(&self) -> bool {
@@ -342,11 +390,11 @@ impl OdisFaults {
 	}
 
 	/// Whether the preferred language ([`OdisFaults::preferred`]) is one only
-	/// the VCDS build declares, so the VCDS chain should be asked first and this
-	/// project second.
+	/// the VCDS build the pool holds has, so the VCDS chain should be asked
+	/// first and this project second.
 	pub fn prefers_vcds(&self) -> bool {
 		let Some(preferred) = self.preferred() else { return false };
-		self.vcds_open && self.declares(vag_data_db::VCDS, preferred) && !self.declares(vag_data_db::ODIS, preferred)
+		self.vcds_language() == Some(preferred) && !self.odis_declares(preferred)
 	}
 
 	/// The rows for a unit that named itself, read once and kept.
@@ -469,8 +517,11 @@ mod tests {
 		}
 	}
 
+	/// A resolver over these source rows. Where there is a VCDS row the chain is
+	/// open and the pool holds the build the last one was set up from — what
+	/// `setup` leaves behind; [`pool`] says otherwise where a test needs to.
 	fn resolver(preferred: Option<&str>, sources: &[(&str, &str, Option<&str>)]) -> OdisFaults {
-		OdisFaults::new(
+		let mut r = OdisFaults::new(
 			PathBuf::new(),
 			Vec::new(),
 			preferred.map(str::to_owned),
@@ -478,7 +529,18 @@ mod tests {
 				.iter()
 				.map(|(k, d, l)| (k.to_string(), d.to_string(), l.map(str::to_owned)))
 				.collect(),
-		)
+		);
+		let last = sources.iter().rev().find(|(kind, _, _)| *kind == vag_data_db::VCDS);
+		r.set_vcds(last.map(|(_, _, language)| pool(*language)));
+		r
+	}
+
+	/// The VCDS pool, holding a build in this language.
+	fn pool(language: Option<&str>) -> VcdsBuild {
+		VcdsBuild {
+			language: language.map(str::to_owned),
+			pool: PathBuf::from("/home/.vagcan/rod"),
+		}
 	}
 
 	#[test]
@@ -638,10 +700,10 @@ mod tests {
 	#[test]
 	fn unset_a_german_project_beside_an_english_vcds_reads_english_from_vcds() {
 		// The owner's cache (2026-10-20): an old VCDS row with no language, the
-		// German ODIS project, and the English VCDS build set up after it. With
-		// nothing set the listing was German; English is there, so it is read
-		// first, from VCDS, and the project stays the fallback where VCDS has
-		// nothing for a code.
+		// German ODIS project, and the English VCDS build set up after it, which
+		// the pool holds. With nothing set the listing was German; English is
+		// there, so it is read first, from VCDS, and the project stays the
+		// fallback where VCDS has nothing for a code.
 		let sources = [
 			("vcds", "vendor/vcds-en/Labels", None),
 			("odis", "/x/SK37X", Some("deu")),
@@ -660,13 +722,65 @@ mod tests {
 		let mut german = resolver(Some("de"), &sources);
 		assert!(!german.prefers_vcds());
 		assert_eq!(german.choice_note(), None);
-		german.set_vcds_open(false);
+		german.set_vcds(None);
 		assert!(!german.prefers_vcds());
-		// A VCDS build whose files are not here names nothing: no English default.
-		r.set_vcds_open(false);
+		// A VCDS chain that did not open names nothing: no English default, and
+		// English is not available — one language left, so nothing to say.
+		r.set_vcds(None);
 		assert_eq!(r.preferred(), None);
 		assert!(!r.prefers_vcds());
-		assert!(r.choice_note().unwrap().starts_with("Fault text in de from the ODIS project /x/SK37X"));
+		assert_eq!(r.choice_note(), None);
+		// Asked for anyway, English is not offered as available.
+		let mut english = resolver(Some("en"), &sources);
+		english.set_vcds(None);
+		assert!(!english.prefers_vcds());
+		let note = english.choice_note().expect("a setting nothing here can show is said");
+		assert!(note.contains("(available: de)"), "{note}");
+	}
+
+	#[test]
+	fn the_vcds_language_is_the_build_the_pool_holds_not_any_source_row() {
+		// Found in review (PR #36): set up vcds-en, then vcds-ru, beside a German
+		// project. The cache keeps both VCDS rows; the pool holds only the
+		// Russian build (`setup` clears it when the build changes). Choosing
+		// English because a row said `eng` printed Russian text under a header
+		// saying "Fault text in en from …/vcds-en".
+		let sources = [
+			("vcds", "/v/vcds-en/Labels", Some("eng")),
+			("odis", "/x/SK37X", Some("deu")),
+			("vcds", "/v/vcds-ru/Labels", Some("rus")),
+		];
+		let mut r = resolver(None, &sources);
+		r.set_vcds(Some(pool(Some("rus"))));
+		assert_eq!(r.preferred(), None, "no English to be had: the project's own");
+		assert!(!r.prefers_vcds());
+		let note = r.choice_note().unwrap();
+		assert!(note.starts_with("Fault text in de from the ODIS project /x/SK37X"), "{note}");
+		assert!(note.contains("(available: de, ru)"), "English is not available: {note}");
+
+		let mut english = resolver(Some("en"), &sources);
+		english.set_vcds(Some(pool(Some("rus"))));
+		assert!(!english.prefers_vcds(), "Russian VCDS text must not be asked first for English");
+		assert!(english.choice_note().unwrap().contains("(available: de, ru)"));
+
+		let mut russian = resolver(Some("ru"), &sources);
+		russian.set_vcds(Some(pool(Some("rus"))));
+		assert!(russian.prefers_vcds());
+		assert_eq!(russian.choice_note(), None);
+
+		// Unset, with the pool back on the English build: English, and the header
+		// names the installation that build came from, not the Russian one.
+		let mut back = resolver(None, &sources);
+		back.set_vcds(Some(pool(Some("eng"))));
+		assert!(back.prefers_vcds());
+		assert!(
+			back
+				.choice_note()
+				.unwrap()
+				.starts_with("Fault text in en from the VCDS installation /v/vcds-en "),
+			"{:?}",
+			back.choice_note()
+		);
 	}
 
 	#[test]
@@ -686,44 +800,25 @@ mod tests {
 	}
 
 	#[test]
-	fn a_vcds_source_that_recorded_no_language_is_named_and_how_to_record_it() {
-		// The owner's own cache, built before `language` existed: the VCDS row
-		// is `NULL`, the ODIS one `deu`. With `language = "eng"` the output
-		// stayed German with no note, because one declared language is fewer
-		// than two. Whether that VCDS build is English cannot be known from
-		// here — only that it never said, and that `setup` run on the
-		// installation again records it (`label_cache` → `record_language`).
+	fn a_vcds_row_that_recorded_no_language_counts_for_nothing_beside_the_pool() {
+		// A cache built before `language` existed has a VCDS row that is `NULL`.
+		// The language is read off the pool's files now, so the row neither
+		// blocks English nor needs a line about recording it.
 		let sources = [("vcds", "/Applications/VCDS/Labels", None), ("odis", "/x/SK37X", Some("deu"))];
-		let r = resolver(Some("eng"), &sources);
-		let note = r.choice_note().expect("the setting matches nothing declared here");
-		let mut lines = note.lines();
-		let first = lines.next().unwrap();
-		assert!(first.contains("\"en\""), "{note}");
-		assert!(first.contains("available: de"), "{note}");
-		assert!(first.contains("showing /x/SK37X (de)"), "{note}");
-		let hint = lines.next().expect("a line about the VCDS source that recorded nothing");
-		assert!(hint.contains("/Applications/VCDS/Labels"), "{note}");
-		assert!(hint.contains("no language recorded"), "{note}");
-		assert!(hint.contains("vagcan setup /Applications/VCDS"), "how to record it: {note}");
-		assert_eq!(lines.next(), None, "{note}");
-		assert!(!r.prefers_vcds(), "an unrecorded language is not a declared one");
-	}
-
-	#[test]
-	fn a_relative_vcds_source_is_not_offered_as_a_command_to_run() {
-		// A cache can hold the path as `setup` was given it. `vagcan setup
-		// vendor/vcds-en` is only right from where that ran, and nothing here
-		// knows where that was — so the hint says the path is relative rather
-		// than print a command that fails anywhere else.
-		let sources = [("vcds", "vendor/vcds-en/Labels", None), ("odis", "/x/SK37X", Some("deu"))];
-		let note = resolver(Some("eng"), &sources).choice_note().unwrap();
-		let hint = note.lines().nth(1).expect("the VCDS line");
-		assert!(hint.contains("vendor/vcds-en/Labels"), "{note}");
-		assert!(
-			!hint.contains("`vagcan setup vendor/vcds-en`"),
-			"a command that only runs in one directory: {note}"
+		let mut r = resolver(None, &sources);
+		r.set_vcds(Some(pool(Some("eng"))));
+		assert!(r.prefers_vcds());
+		assert_eq!(
+			r.choice_note().unwrap(),
+			"Fault text in en from the VCDS files in /home/.vagcan/rod (available: de, en). \
+			 Set [faults] language in config.toml to change it.",
+			"no row names the installation, so the pool is named"
 		);
-		assert!(hint.contains("relative"), "{note}");
+		let mut french = resolver(Some("fr"), &sources);
+		french.set_vcds(Some(pool(Some("eng"))));
+		let note = french.choice_note().unwrap();
+		assert_eq!(note.lines().count(), 1, "no hint about the unrecorded row: {note}");
+		assert!(note.contains("(available: de, en)"), "{note}");
 	}
 
 	#[test]

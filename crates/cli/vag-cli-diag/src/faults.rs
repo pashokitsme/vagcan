@@ -172,9 +172,11 @@ impl Namers {
 		let mut odis = crate::odisfaults::OdisFaults::open();
 		let odis_alone = odis.as_ref().is_some_and(|o| !o.has_vcds_source());
 		let vcds = open_vcds(&vcds_root, keys, given, odis_alone)?;
-		// English from VCDS is the default only where the VCDS chain can answer.
+		// The VCDS text's language is the pool's own build, read off its files —
+		// not any source row's: the cache keeps a row per installation ever set
+		// up, the pool holds the last one. None where the chain did not open.
 		if let Some(odis) = &mut odis {
-			odis.set_vcds_open(vcds.is_some());
+			odis.set_vcds(vcds.as_ref().map(|_| crate::odisfaults::VcdsBuild::of(&vcds_root)));
 		}
 		Ok(Namers { odis, vcds, vcds_root })
 	}
@@ -327,6 +329,12 @@ fn compose(
 		// A code without words anywhere is not a named code, whatever else the
 		// row carries — the run's tally counts names, not rows.
 		let named = naming.text.is_some();
+		// VCDS was asked first, for its language, and had nothing: these are the
+		// project's words, likely in another language, and the line says so —
+		// as a borrowed VCDS text says whose it is above.
+		if prefer_vcds && named {
+			return Some((format!("{}  (text from the ODIS project)", naming.line()), true));
+		}
 		return Some((naming.line(), named));
 	}
 	if let Some(naming) = vcds {
@@ -701,6 +709,21 @@ mod tests {
 		assert_eq!(line, "B1168 F2  Steering angle sensor");
 		assert!(named);
 		let (line, _) = compose(Some(german), Some(crate::faultnames::Naming::NotListed), true, true).unwrap();
+		assert_eq!(
+			line, "B1168F2  Lenkwinkelsensor  (text from the ODIS project)",
+			"the project's words where VCDS was asked first say whose they are"
+		);
+		// With the project first, as usual, its own words need no marker.
+		let (line, _) = compose(
+			Some(crate::odisfaults::Naming {
+				text: Some("Lenkwinkelsensor".into()),
+				..textless_odis_row()
+			}),
+			None,
+			false,
+			true,
+		)
+		.unwrap();
 		assert_eq!(line, "B1168F2  Lenkwinkelsensor");
 	}
 
