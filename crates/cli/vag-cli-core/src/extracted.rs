@@ -173,7 +173,7 @@ fn variants_by_source(cache: &std::path::Path) -> Vec<(&'static str, Vec<String>
 			Ok(variants) => (kind, variants),
 			Err(why) => {
 				if matches!(why, vag_data_db::Error::OlderCache { .. } | vag_data_db::Error::NotACache { .. }) && !std::mem::replace(&mut said, true) {
-					eprintln!("{why}");
+					crate::say!("{why}");
 				}
 				(kind, Vec::new())
 			}
