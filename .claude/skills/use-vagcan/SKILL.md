@@ -25,6 +25,12 @@ There is no installed binary. Everything below is `cargo run -q -p vag-cli -- <a
 from the repository root — the package is `vag-cli`, the binary it builds is `vagcan` —
 and the commands are written bare for readability.
 
+Every command prints its data on stdout — tables, `key  value` blocks, one summary line —
+and everything else on stderr: the `adapter` line, notes, questions, progress. So
+`vagcan faults > faults.txt` holds the data alone. Add `-v` (anywhere on the line) for
+where the data came from and why a row is unnamed or skipped, and `-vv` for every
+request and answer on the bus; stdout does not change with either.
+
 ## Quick reference
 
 | Task | Command |
@@ -90,14 +96,23 @@ vagcan faults --unit 01           # one unit
 vagcan faults --unit 01,02,713    # several
 ```
 
-**Run `vagcan setup` once, and faults come out named.** Without it the output is
-bare numbers; with it each code carries its SAE code and the text VCDS itself would
-print — `000129 → B1168 F2 Steering Angle Sensor: Not Initialized`. On the reference
-car 11 of 15 confirmed codes name.
+**Run `vagcan setup` once, and faults come out named.** Without it the `dtc` and
+`text` columns are empty; with it each code carries its SAE code and the text VCDS or
+ODIS itself would print. The output is one table and a summary line on stdout:
 
-A code stays a number when the chain cannot reach it, and the reason is printed above
-the unit: no ODX file of that name in the label files, or no file of its family carrying a
-fault catalogue. **That is not a failure to work around.** Naming a fault wrongly is
+```
+unit  id   name         code    dtc      status     km      count  last seen            text
+16    70C  Lenks.Modul  047120  B145501  confirmed  214592    254  2026-09-28 14:20:59  Unterbrechung des Signalpfades "Init"
+
+1 stored · 0 failing now · 18 units read
+```
+
+`status` is one word (`failing` = failing now); `last seen` is the car's own clock.
+On the reference car 11 of 15 confirmed codes name with VCDS alone, 15 of 15 with ODIS.
+
+A code stays a number when the chain cannot reach it, and `vagcan -v faults` says why,
+per code, on stderr: no ODX file of that name in the label files, or no file of its family
+carrying a fault catalogue. **That is not a failure to work around.** Naming a fault wrongly is
 the one thing this path refuses to do, and it has held at zero wrong answers across
 every check (`.archive/research/labels/fault-naming-hop.md`).
 
