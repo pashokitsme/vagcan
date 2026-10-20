@@ -68,23 +68,42 @@ fn id_text(raw: u32) -> String {
 	}
 }
 
+/// The heading of the stream [`format_pdu`] and [`format_marker`] write under: seconds since
+/// the start, the id, which way it went, its length in bytes, the CAN frames it took, the bytes.
+pub const HEADER: &str = "     time        id  dir   len   fr  data";
+
+/// How many bytes of a message a line shows before `…`.
+const SHOWN_BYTES: usize = 16;
+
+/// One row of the stream: the columns of [`HEADER`], fixed widths, the bytes last.
+fn row(ts_us: u64, id: &str, dir: &str, len: &str, frames: &str, data: &str) -> String {
+	let line = format!("{:9.3}  {id:>8}  {dir:<3}  {len:>4}  {frames:>3}  {data}", ts_us as f64 / 1e6);
+	line.trim_end().to_string()
+}
+
 /// One display line for a completed PDU.
 ///
 /// Long payloads are cut for the terminal; the capture file always holds every
-/// byte, so nothing is lost by shortening what scrolls past on the car.
+/// byte, so nothing is lost by shortening what scrolls past on the car — and the
+/// length column says how many there were.
 pub fn format_pdu(ts_us: u64, pdu: &SnifferPdu) -> String {
-	let secs = ts_us as f64 / 1e6;
 	let mut body = crate::render::hex_spaced(&pdu.data);
-	let full_len = pdu.data.len();
-	if full_len > 16 {
-		body = format!("{} …", crate::render::hex_spaced(&pdu.data[..16]));
+	if pdu.data.len() > SHOWN_BYTES {
+		body = format!("{} …", crate::render::hex_spaced(&pdu.data[..SHOWN_BYTES]));
 	}
-	let tail = if pdu.frames > 1 {
-		format!("   ({full_len}B, {} frames)", pdu.frames)
-	} else {
-		String::new()
-	};
-	format!("{secs:9.3}  {:>8} {}  {body}{tail}", id_text(pdu.id), arrow(pdu.id))
+	row(
+		ts_us,
+		&id_text(pdu.id),
+		arrow(pdu.id).trim(),
+		&pdu.data.len().to_string(),
+		&pdu.frames.to_string(),
+		&body,
+	)
+}
+
+/// One display line for an operator's note: `mark` in the id column, the note as the data.
+pub fn format_marker(ts_us: u64, note: &str) -> String {
+	row(ts_us, "mark", "", "", "", note)
 }
 
 /// What a finished session saw.
@@ -112,6 +131,8 @@ pub struct SniffSession<W: Write> {
 	capture: Option<W>,
 	diag_only: bool,
 	stats: SniffStats,
+	/// Frames kept, per raw id: the summary's table.
+	per_id: std::collections::BTreeMap<u32, usize>,
 }
 
 impl<W: Write> SniffSession<W> {
@@ -124,6 +145,7 @@ impl<W: Write> SniffSession<W> {
 			capture,
 			diag_only,
 			stats: SniffStats::default(),
+			per_id: std::collections::BTreeMap::new(),
 		};
 		if session.capture.is_some() {
 			session.write_marker(0, &wall_clock_anchor(unix_us))?;
@@ -142,6 +164,7 @@ impl<W: Write> SniffSession<W> {
 			return Ok(None);
 		}
 		self.stats.frames_kept += 1;
+		*self.per_id.entry(raw_id).or_default() += 1;
 
 		if let Some(w) = self.capture.as_mut() {
 			let id = if raw_id & CAN_EFF_FLAG != 0 {
@@ -210,6 +233,11 @@ impl<W: Write> SniffSession<W> {
 		self.stats
 	}
 
+	/// Frames kept, per raw id, in id order.
+	pub fn per_id(&self) -> &std::collections::BTreeMap<u32, usize> {
+		&self.per_id
+	}
+
 	/// Flush the capture sink. Called before reporting, so an interrupted
 	/// session still leaves a complete file on disk.
 	pub fn finish(mut self) -> std::io::Result<()> {
@@ -266,20 +294,10 @@ pub async fn run(
 		.unwrap_or(0);
 	let mut session = SniffSession::new(capture, unix_us, diag_only)?;
 
-	println!(
-		"listening at 500 kbit/s, {}{}{}",
-		if active {
-			"NORMAL mode — the adapter will acknowledge frames"
-		} else {
-			"listen-only"
-		},
-		match out {
-			Some(path) => format!(", writing {path}"),
-			None => String::new(),
-		},
-		if diag_only { ", diagnostic traffic only" } else { "" },
-	);
-	println!("type a note + Enter to mark the capture; Ctrl-C to stop\n");
+	for (level, line) in opening(active, out, diag_only) {
+		vag_cli_core::verbosity::say(level, &line);
+	}
+	vag_cli_core::outln!("{HEADER}");
 
 	// Ctrl-C and stdin are watched by their own tasks, so the receive loop is
 	// never interrupted mid-frame.
@@ -307,7 +325,7 @@ pub async fn run(
 	});
 
 	let deadline = seconds.map(|s| started + Duration::from_secs(s));
-	record(
+	let dropped = record(
 		&mut backend,
 		&mut session,
 		started,
@@ -318,42 +336,113 @@ pub async fn run(
 	.await?;
 
 	let _ = backend.close_channel().await;
+	let elapsed = started.elapsed().as_secs_f64();
 	let stats = session.stats();
+	let per_id = session.per_id().clone();
 	session.finish()?;
-	// "written" is only true when there is a file; without one it reads as a
-	// promise of a capture that does not exist.
-	let written = match out {
-		Some(path) => format!(", {} written to {path}", stats.frames_kept),
-		None => String::new(),
-	};
-	println!(
-		"\nstopped after {:.1}s: {} frames seen{written}, {} messages reassembled, \
-         {} incomplete, {} markers",
-		started.elapsed().as_secs_f64(),
-		stats.frames_seen,
-		stats.pdus,
-		stats.dropped,
-		stats.markers
-	);
-	if stats.frames_seen > 0 && stats.pdus == 0 {
-		// The usual case, and it looks like a failure until someone says it is
-		// not: this port carries diagnostics on demand and nothing else.
-		println!(
-			"\nNo diagnostic conversation to show — the frames seen are the car's own \n\
-             background traffic. This port only carries diagnostics while something is \n\
-             asking: run VCDS, or another vagcan command from a second adapter, while \n\
-             this is sniffing."
-		);
-	}
-	if stats.frames_seen == 0 {
-		println!(
-			"\nNo traffic at all. On this platform the diagnostic line is nearly silent when \
-             nothing is querying it, so that alone is not proof of a fault — but check the \
-             ignition, OBD-II pin 6 → CAN-H / pin 14 → CAN-L, and the termination jumper being \
-             OFF."
-		);
+	let (table, said) = summary(&Summary {
+		stats,
+		per_id: &per_id,
+		seconds: elapsed,
+		out,
+		diag_only,
+		dropped: &dropped,
+	});
+	vag_cli_core::outln!();
+	vag_cli_core::out!("{table}");
+	for (level, line) in said {
+		vag_cli_core::verbosity::say(level, &line);
 	}
 	Ok(())
+}
+
+/// What `dev sniff` says on stderr before the first frame: at `-v` how it listens and what it
+/// keeps; at every level how to mark the capture and stop.
+fn opening(active: bool, out: Option<&str>, diag_only: bool) -> Vec<(u8, String)> {
+	use vag_cli_core::verbosity::NOTES;
+	let mode = match active {
+		true => "normal mode (--active): the adapter acknowledges every frame, so it is on the bus, not only listening",
+		false => "listen-only: the adapter acknowledges nothing and sends nothing",
+	};
+	let mut said = vec![(NOTES, format!("listening  500 kbit/s, {mode}"))];
+	if let Some(path) = out {
+		let which = if diag_only { "diagnostic frame" } else { "frame" };
+		said.push((NOTES, format!("capture    {path}: every {which}, as JSON lines")));
+	}
+	let rest = if diag_only { "dropped" } else { "counted, not shown" };
+	said.push((NOTES, format!("shown      diagnostic messages, reassembled; other ids are {rest}")));
+	said.push((0, "type a note + Enter to mark the capture; Ctrl-C stops".to_string()));
+	said
+}
+
+/// What a finished session saw, for [`summary`].
+struct Summary<'a> {
+	stats: SniffStats,
+	per_id: &'a std::collections::BTreeMap<u32, usize>,
+	seconds: f64,
+	out: Option<&'a str>,
+	diag_only: bool,
+	dropped: &'a Drops,
+}
+
+/// The closing summary as data — a table of the ids kept, how many frames each and how many a
+/// second, then one line — and what is said beside it on stderr: a capture with gaps and a
+/// silent bus at every level, the rest at `-v`.
+fn summary(s: &Summary<'_>) -> (String, Vec<(u8, String)>) {
+	use vag_cli_core::verbosity::NOTES;
+	let stats = s.stats;
+	let mut out = String::new();
+	if !s.per_id.is_empty() {
+		let mut table = vag_cli_core::table::Table::new(&["id", "frames", "per s"]).right(0).right(1).right(2);
+		for (id, count) in s.per_id {
+			let rate = match s.seconds > 0.0 {
+				true => format!("{:.1}", *count as f64 / s.seconds),
+				false => "-".to_string(),
+			};
+			table.row(vec![id_text(*id), count.to_string(), rate]);
+		}
+		out.push_str(&table.render(None));
+	}
+	let mut parts = vec![format!("{:.1} s", s.seconds), format!("{} frames", stats.frames_seen)];
+	if s.diag_only {
+		parts.push(format!("{} diagnostic", stats.frames_kept));
+	}
+	if let Some(path) = s.out {
+		parts.push(format!("{} written to {path}", stats.frames_kept));
+	}
+	parts.push(format!("{} {}", stats.pdus, crate::render::plural(stats.pdus, "message")));
+	parts.push(format!("{} incomplete", stats.dropped));
+	parts.push(format!("{} {}", stats.markers, crate::render::plural(stats.markers, "marker")));
+	parts.push(match s.dropped {
+		Drops::Unknown => "drops unknown".to_string(),
+		Drops::None => "drops none".to_string(),
+		Drops::Dropped(bits) => format!("drops 0x{bits:02X}"),
+	});
+	out.push_str(&parts.join(" · "));
+	out.push('\n');
+
+	let mut said = Vec::new();
+	match s.dropped {
+		Drops::Dropped(_) => said.push((0, s.dropped.describe())),
+		_ => said.push((NOTES, s.dropped.describe())),
+	}
+	if stats.frames_seen == 0 {
+		// On this platform the diagnostic line is nearly silent when nothing queries it, so
+		// silence alone is not proof of a fault — but it is what to check first.
+		said.push((
+			0,
+			"no traffic: check the ignition, OBD-II pin 6 → CAN-H and pin 14 → CAN-L, and the termination jumper OFF".to_string(),
+		));
+	} else if stats.pdus == 0 {
+		// The usual case, and it looks like a failure until someone says it is not: this port
+		// carries diagnostics on demand and nothing else.
+		said.push((
+			NOTES,
+			"no diagnostic message: the frames are the car's own traffic; run VCDS, or a vagcan command from a second adapter, while this sniffs"
+				.to_string(),
+		));
+	}
+	(out, said)
 }
 
 /// The session's traffic, from the first `F` to the last, with the adapter,
@@ -386,7 +475,7 @@ where
 	// here, to start this session from zero, and once at the end. Drops left
 	// over from an earlier session are said, not silently absorbed.
 	if let Drops::Dropped(bits) = drops(backend.status_flags(f_wait).await.context("asking the adapter for its status flags")?) {
-		eprintln!("note: the adapter still held a drop flag from before this session (F{bits:02X}); cleared");
+		vag_cli_core::note!("the adapter still held a drop flag from before this session (F{bits:02X}); cleared");
 	}
 	// The frames kept through that wait go into the capture before anything
 	// else does. A note typed meanwhile is stamped when it is read, later than
@@ -395,10 +484,10 @@ where
 		match backend.recv_frame_arrived(Duration::ZERO).await {
 			Ok((arrived, id, data)) => {
 				if let Some(line) = session.on_frame(id, &data, since(started, arrived))? {
-					println!("{line}");
+					vag_cli_core::outln!("{line}");
 				}
 			}
-			Err(CanError::MalformedFrame(what)) => eprintln!("skipped: {what}"),
+			Err(CanError::MalformedFrame(what)) => vag_cli_core::note!("skipped: {what}"),
 			Err(_) => break,
 		}
 	}
@@ -408,21 +497,21 @@ where
 		while let Some(note) = notes() {
 			let note = if note.trim().is_empty() { "mark".to_string() } else { note };
 			session.on_marker(&note, ts_us)?;
-			println!("{:9.3}  -- {note}", ts_us as f64 / 1e6);
+			vag_cli_core::outln!("{}", format_marker(ts_us, &note));
 		}
 
 		match backend.recv_frame_arrived(Duration::from_millis(200)).await {
 			Ok((arrived, id, data)) => {
 				let ts_us = since(started, arrived);
 				if let Some(line) = session.on_frame(id, &data, ts_us)? {
-					println!("{line}");
+					vag_cli_core::outln!("{line}");
 				}
 			}
 			// A quiet window is normal — the bus may simply be idle.
 			Err(CanError::Timeout) => {}
-			Err(CanError::MalformedFrame(what)) => eprintln!("skipped: {what}"),
+			Err(CanError::MalformedFrame(what)) => vag_cli_core::note!("skipped: {what}"),
 			Err(e) => {
-				eprintln!("receive failed: {e}");
+				vag_cli_core::say!("receive failed: {e}");
 				break;
 			}
 		}
@@ -437,22 +526,21 @@ where
 			Ok((arrived, id, data)) => {
 				let ts_us = since(started, arrived);
 				if let Some(line) = session.on_frame(id, &data, ts_us)? {
-					println!("{line}");
+					vag_cli_core::outln!("{line}");
 				}
 			}
-			Err(CanError::MalformedFrame(what)) => eprintln!("skipped: {what}"),
+			Err(CanError::MalformedFrame(what)) => vag_cli_core::note!("skipped: {what}"),
 			Err(_) => break,
 		}
 	}
 	let dropped = match flags {
 		Ok(flags) => drops(flags),
 		Err(e) => {
-			eprintln!("asking the adapter for its status flags failed: {e}");
+			vag_cli_core::note!("asking the adapter for its status flags failed: {e}");
 			Drops::Unknown
 		}
 	};
 	session.on_status(&dropped.describe(), started.elapsed().as_micros() as u64)?;
-	println!("\n{}", dropped.describe());
 	Ok(dropped)
 }
 
@@ -566,8 +654,10 @@ mod tests {
 			.unwrap()
 			.expect("third frame completes it");
 
-		assert!(line.contains("<-"), "{line}");
-		assert!(line.contains("(17B, 3 frames)"), "{line}");
+		assert_eq!(
+			line,
+			"    0.002       7E8  <-     17    3  62 F1 90 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D …"
+		);
 		assert_eq!(s.stats().pdus, 1);
 		assert_eq!(s.stats().frames_seen, 3);
 	}
@@ -671,6 +761,8 @@ mod tests {
 		use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 		const GAP: Duration = Duration::from_millis(150);
+		// What it prints is another test's business; captured, it lands in no other capture.
+		let _quiet = vag_cli_core::verbosity::Capture::start(0);
 		let (client, mut adapter) = tokio::io::duplex(4096);
 		let mut backend = vag_uds_can::SlcanBackend::new(client);
 		let mut session = SniffSession::new(Some(Vec::new()), 0, false).unwrap();
@@ -796,6 +888,149 @@ mod tests {
 		};
 		let line = format_pdu(0, &pdu);
 		assert!(line.contains('…'), "the display is cut: {line}");
-		assert!(line.contains("(40B, 6 frames)"), "the true length is stated: {line}");
+		assert!(line.contains("  40    6  "), "the true length and the frames are stated: {line}");
+	}
+
+	#[test]
+	fn the_stream_is_columns_under_its_heading() {
+		let request = SnifferPdu {
+			id: 0x7E0,
+			data: vec![0x22, 0xF1, 0x90],
+			frames: 1,
+		};
+		let extended = SnifferPdu {
+			id: 0x18DA_F110 | CAN_EFF_FLAG,
+			data: vec![0x22, 0xF1, 0x90],
+			frames: 1,
+		};
+		let broadcast = SnifferPdu {
+			id: 0x7A0,
+			data: vec![0x01],
+			frames: 1,
+		};
+		let lines = [
+			HEADER.to_string(),
+			format_pdu(1_234_567, &request),
+			format_pdu(12_345_678, &extended),
+			format_pdu(0, &broadcast),
+			format_marker(2_000_000, "engine started"),
+		];
+		assert_eq!(
+			lines.join("\n"),
+			"     time        id  dir   len   fr  data\n\
+			 \x20   1.235       7E0  ->      3    1  22 F1 90\n\
+			 \x20  12.346  18DAF110  ->      3    1  22 F1 90\n\
+			 \x20   0.000       7A0          1    1  01\n\
+			 \x20   2.000      mark                  engine started"
+		);
+		// Every column starts where its heading does.
+		let at = |line: &str, what: &str| line.find(what).unwrap();
+		assert_eq!(at(&lines[1], "7E0") + 3, at(HEADER, "id") + 2);
+		assert_eq!(at(&lines[1], "22 F1"), at(HEADER, "data"));
+		assert_eq!(at(&lines[4], "engine"), at(HEADER, "data"));
+	}
+
+	fn summary_of(seen: usize, pdus: usize, per_id: &[(u32, usize)], dropped: Drops, out: Option<&str>) -> (String, Vec<(u8, String)>) {
+		let per_id: std::collections::BTreeMap<u32, usize> = per_id.iter().copied().collect();
+		summary(&Summary {
+			stats: SniffStats {
+				frames_seen: seen,
+				frames_kept: per_id.values().sum(),
+				pdus,
+				dropped: 0,
+				markers: 1,
+			},
+			per_id: &per_id,
+			seconds: 10.0,
+			out,
+			diag_only: false,
+			dropped: &dropped,
+		})
+	}
+
+	#[test]
+	fn the_summary_is_a_table_of_ids_and_one_line() {
+		let (data, said) = summary_of(1500, 4, &[(0x7E8, 500), (0x0FD, 1000)], Drops::Unknown, Some("drive.log"));
+		assert_eq!(
+			data,
+			" id  frames  per s\n\
+			 0FD    1000  100.0\n\
+			 7E8     500   50.0\n\
+			 10.0 s · 1500 frames · 1500 written to drive.log · 4 messages · 0 incomplete · 1 marker · drops unknown\n"
+		);
+		// That the adapter cannot say whether it dropped any is a caveat: `-v`.
+		assert_eq!(said, [(1, Drops::Unknown.describe())]);
+	}
+
+	#[test]
+	fn gaps_and_a_silent_bus_are_said_by_default_and_background_traffic_at_v() {
+		let (_, said) = summary_of(10, 0, &[(0x0FD, 10)], Drops::Dropped(0x08), None);
+		assert_eq!(said[0], (0, Drops::Dropped(0x08).describe()));
+		assert!(
+			said[1].0 == 1 && said[1].1.starts_with("no diagnostic message: the frames are the car's own traffic"),
+			"{said:?}"
+		);
+		let (data, said) = summary_of(0, 0, &[], Drops::None, None);
+		assert_eq!(data, "10.0 s · 0 frames · 0 messages · 0 incomplete · 1 marker · drops none\n");
+		assert!(
+			said
+				.iter()
+				.any(|(level, line)| *level == 0 && line.starts_with("no traffic: check the ignition")),
+			"{said:?}"
+		);
+	}
+
+	#[test]
+	fn how_it_listens_is_a_note_and_how_to_stop_is_said() {
+		let said = opening(false, Some("drive.log"), true);
+		let at = |level: u8| said.iter().filter(|(l, _)| *l == level).map(|(_, t)| t.as_str()).collect::<Vec<_>>();
+		assert_eq!(at(0), ["type a note + Enter to mark the capture; Ctrl-C stops"]);
+		assert_eq!(
+			at(1),
+			[
+				"listening  500 kbit/s, listen-only: the adapter acknowledges nothing and sends nothing",
+				"capture    drive.log: every diagnostic frame, as JSON lines",
+				"shown      diagnostic messages, reassembled; other ids are dropped",
+			]
+		);
+		assert!(opening(true, None, false)[0].1.contains("normal mode (--active)"));
+	}
+
+	/// The frames a session prints are data and nothing else is, at every level.
+	#[tokio::test]
+	async fn the_frames_are_stdout_and_the_adapter_notes_stderr() {
+		use std::time::{Duration, Instant};
+		use tokio::io::AsyncWriteExt as _;
+		use vag_cli_core::verbosity::{Capture, assert_split};
+
+		let mut runs = Vec::new();
+		for level in 0..=2 {
+			let (client, mut adapter) = tokio::io::duplex(4096);
+			let mut backend = vag_uds_can::SlcanBackend::new(client);
+			let mut session: SniffSession<Vec<u8>> = SniffSession::new(None, 0, false).unwrap();
+			// A request, a broadcast frame, and a line that is no frame.
+			adapter.write_all(b"t7E080322F19000000000\rt0FD1A1\rt0FD1ZZ\r").await.unwrap();
+			let capture = Capture::start(level);
+			let started = Instant::now();
+			// No typed note: it is stamped when it is read, which no two runs share.
+			record(
+				&mut backend,
+				&mut session,
+				started,
+				|| started.elapsed() < Duration::from_millis(100),
+				|| None,
+				Duration::from_millis(20),
+			)
+			.await
+			.unwrap();
+			let run = capture.finish();
+			drop(adapter);
+			runs.push(run);
+		}
+		// Arrived before the session started: stamped 0, so every run prints the same line.
+		assert_eq!(runs[0].stdout, "    0.000       7E0  ->      3    1  22 F1 90\n");
+		assert_eq!(runs[0].stderr, "", "nothing on stderr by default");
+		assert!(runs[1].stderr.contains("skipped: "), "{}", runs[1].stderr);
+		assert_split("dev sniff", &runs);
 	}
 }
