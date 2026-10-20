@@ -9,7 +9,8 @@
 //! answers.
 //!
 //! **Its own test binary, on purpose.** The record goes under `~/.vagcan`, which no test
-//! may write into, so this process points `HOME` at a temporary directory before anything
+//! may write into, so this process points `HOME` and `VAGCAN_HOME` at a temporary directory
+//! before anything
 //! reads it — a process-wide change that is only safe while this is the one thread, which a
 //! binary with one test on a single-threaded runtime guarantees and a shared unit-test binary
 //! could not.
@@ -208,6 +209,8 @@ async fn watch_records_the_units_it_identified_and_every_run_asks_them_all_again
 	// Before any thread but this one exists: see the module docs.
 	unsafe {
 		std::env::set_var("HOME", home.path());
+		// The override a test build's data dir answers to; HOME alone it does not read.
+		std::env::set_var(vag_cli_core::datadir::ROOT_ENV, home.path().join(".vagcan"));
 		std::env::remove_var(vag_cli_core::project::PROJECT_ENV);
 	}
 	let record = home.path().join(".vagcan").join("cars").join(VIN).join(vag_cli_core::datadir::UNITS_FILE);

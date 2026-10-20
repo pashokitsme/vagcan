@@ -234,8 +234,8 @@ fn store(dir: &std::path::Path) -> Store {
 fn summarise(project: &project::Project) -> CarData {
 	CarData {
 		id: project.id.clone(),
-		from_vcds: project::has_source(project, "vcds"),
-		from_odis: project::has_source(project, "odis"),
+		from_vcds: project::has_source(project, "vcds").unwrap_or(false),
+		from_odis: project::has_source(project, "odis").unwrap_or(false),
 		described: described(&project.cache()),
 		proven_catalogs: proven_catalogs(&project.measurements_dir()),
 	}

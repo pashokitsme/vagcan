@@ -34,7 +34,10 @@ pub(crate) use vag_cli_core::registry::label_dir_under;
 fn cache_is_current(cache: &Path, dir: &Path) -> bool {
 	// A cache that does not say what it holds cannot be vouched for — that is
 	// every cache written before this was recorded, and it rebuilds once.
-	if vag_data_db::source_of(cache).as_deref() != Some(dir.to_string_lossy().as_ref()) {
+	// In the spelling the cache keys sources by: a directory typed relative, or with a
+	// trailing slash, is still the one the cache was built from.
+	let wanted = vag_data_db::normalise_dir(&dir.to_string_lossy());
+	if vag_data_db::source_of(cache).as_deref() != Some(wanted.as_str()) {
 		return false;
 	}
 	match (std::fs::metadata(cache), std::fs::metadata(dir)) {
@@ -185,6 +188,30 @@ fn recorded_pairings(cars: &[crate::units::Recorded], by_part: impl Fn(&str) -> 
 		.collect()
 }
 
+/// The label files under `dir`, for a lookup, **without writing the project's cache**.
+///
+/// The project's cache answers when it was built from these very label files and is
+/// current ([`cache_is_current`]); anything else — another folder, `--refresh` — is
+/// parsed in memory and forgotten. It used to be built into the project's cache, and a
+/// build replaces the project's label files with the folder's: one lookup against a
+/// one-file folder cost a project its installation's labels, and its source with its
+/// registry channels (review of #37).
+fn look_into(dir: &Path, project: Option<&crate::project::Project>, refresh: bool) -> anyhow::Result<LabelDb> {
+	let labels = label_dir_under(dir)?;
+	if !refresh
+		&& let Some(project) = project
+		&& cache_is_current(&project.cache(), &labels)
+		&& let Ok(db) = vag_data_db::load_db(&project.cache())
+	{
+		return Ok(db);
+	}
+	let load = {
+		let _spinner = crate::progress::Spinner::new(format!("parsing the label files in {}", labels.display()));
+		vag_data_labels::load_label_files(&labels).with_context(|| format!("reading the label files in {}", labels.display()))?
+	};
+	Ok(LabelDb::new(load.files))
+}
+
 /// Entry point for the `labels` subcommand. Loads the label files once, prints the
 /// summary, then runs whichever lookup(s) were requested.
 pub fn labels_cmd(dir: &str, part: Option<&str>, block: Option<u16>, field: Option<u8>, refresh: bool) -> anyhow::Result<()> {
@@ -196,7 +223,7 @@ pub fn labels_cmd(dir: &str, part: Option<&str>, block: Option<u16>, field: Opti
 	}
 
 	if part.is_some() || block.is_some() {
-		let db = load_cached(Path::new(dir), &crate::project::current()?.cache(), refresh)?;
+		let db = look_into(Path::new(dir), crate::project::current().ok().as_ref(), refresh)?;
 		install_unit_numbers(&db);
 		if let Some(part_no) = part {
 			print!("\n{}", render_part_lookup(&db, part_no));

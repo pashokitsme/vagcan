@@ -229,7 +229,8 @@ enum Command {
 	/// source wrote before and leaves every other source's data where it is,
 	/// and a second VCDS installation replaces the first. A VCDS run skips the
 	/// copy and the label files when they are newer than what they read, and
-	/// `--refresh` redoes them.
+	/// `--refresh` redoes them. `--list` shows what the project was read from, and
+	/// `--drop` removes one source with everything it wrote.
 	///
 	/// No VCDS installation: https://www.ross-tech.com/vcds/download/
 	Setup {
@@ -242,6 +243,16 @@ enum Command {
 		/// Redo every step, whatever is already in the project.
 		#[arg(long)]
 		refresh: bool,
+		/// List the project's sources: id, kind, language, when read, rows per kind, path.
+		#[arg(long, conflicts_with_all = ["dir", "refresh", "drop"])]
+		list: bool,
+		/// Remove one source and every row it wrote: `odis`, `vcds`, or an id from `--list`.
+		/// Asks first.
+		#[arg(long, value_name = "SOURCE", conflicts_with_all = ["dir", "refresh"])]
+		drop: Option<String>,
+		/// With `--drop`: do not ask. Needed without a terminal.
+		#[arg(long, requires = "drop")]
+		yes: bool,
 	},
 
 	/// Lists USB-CAN adapters and dash boards on USB.
@@ -550,6 +561,11 @@ fn report(err: &anyhow::Error) {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+	// A binary `cargo test` built reads a temporary data dir, never ~/.vagcan: said once,
+	// first, so one run by hand cannot quietly report a machine with no data.
+	if let Some(note) = vag_cli_core::datadir::test_build_note() {
+		eprintln!("{note}");
+	}
 	match run().await {
 		Ok(code) => code,
 		Err(err) => {
@@ -666,7 +682,11 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 	match command {
 		// Awaited on this very thread, never spawned: the folder panel it may
 		// open needs the main thread (see `setup::run`).
-		Command::Setup { dir, refresh } => {
+		Command::Setup { list: true, .. } => setup::sources::list(),
+		Command::Setup {
+			drop: Some(selector), yes, ..
+		} => setup::sources::drop_source(&selector, yes),
+		Command::Setup { dir, refresh, .. } => {
 			setup::run(setup::Options {
 				dir: dir.as_deref(),
 				refresh,
@@ -1766,6 +1786,25 @@ mod tests {
 		assert!(!Cli::try_parse_from(["vagcan", "info"]).unwrap().slcan);
 		#[cfg(feature = "measure")]
 		assert!(Cli::try_parse_from(["vagcan", "measure", "--slcan"]).unwrap().slcan);
+	}
+
+	#[test]
+	fn the_tests_here_never_reach_the_data_dir_home_points_at() {
+		// `arguments_are_checked_before_the_device_is_resolved` and
+		// `a_unit_that_does_not_parse_is_named_by_the_flag_typed` resolve a unit from the
+		// project's label cache, and opening it upgraded the reference machine's cache
+		// (2026-10-20). The dev-dependency's `test-root` is what keeps them off it.
+		if std::env::var_os(vag_cli_core::datadir::ROOT_ENV).is_some() {
+			return;
+		}
+		let dir = vag_cli_core::datadir::vagcan_dir().unwrap();
+		assert!(dir.starts_with(std::env::temp_dir()), "{dir:?}");
+		if let Some(home) = std::env::var_os("HOME") {
+			assert!(
+				!dir.starts_with(std::path::Path::new(&home).join(".vagcan")),
+				"{dir:?} is the person's own"
+			);
+		}
 	}
 
 	#[test]

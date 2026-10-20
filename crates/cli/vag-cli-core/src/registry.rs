@@ -21,7 +21,7 @@
 //! installation, and for each unit what came of it — read, no file, shifted, key not found.
 //! A unit the installation has no file for is not searched for again on every run, and
 //! [`ensure`] knows where the installation is without asking — or, for a project set up
-//! before the log existed, from the VCDS entry of its `sources.json` ([`Installation`]).
+//! before the log existed, from its VCDS source in the cache ([`Installation`]).
 //! Every read is over every recorded unit at once, because the rows are replaced per kind
 //! ([`vag_data_db::put_all_vcds_readings`], `Replace::Kind`): with the keys cached the known
 //! units cost seconds, and the last installation read is the one whose rows the project holds.
@@ -165,11 +165,18 @@ pub fn label_dir_under(given: &Path) -> Result<PathBuf> {
 /// Where an install's registry rows are written: under the source its label
 /// files were written under, so an install is one source with one language,
 /// whichever of its files a row came from.
-fn source_of(root: &Path) -> String {
+pub(crate) fn source_of(root: &Path) -> String {
 	label_dir_under(root)
 		.unwrap_or_else(|_| root.to_path_buf())
 		.to_string_lossy()
 		.into_owned()
+}
+
+/// The VCDS installation root a recorded label directory sits in: the directory itself or
+/// one of its two parents, whichever holds [`ODX_DIR`] — the root `setup` takes, two levels
+/// at most, as [`label_dir_under`] looks down. `None` when none is on disk.
+pub fn installation_holding(labels: &Path) -> Option<PathBuf> {
+	labels.ancestors().take(3).find(|dir| dir.join(ODX_DIR).is_dir()).map(Path::to_path_buf)
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +273,7 @@ pub fn note_installation(project: &Project, root: &Path) -> Result<()> {
 
 /// The installation as the log names it: resolved, so a path typed relative to
 /// where `setup` ran still means the same directory from wherever `watch` runs
-/// — as `sources.json` keeps it. One that cannot be resolved is kept as given.
+/// — as the cache keeps a source. One that cannot be resolved is kept as given.
 fn installation_path(root: &Path) -> PathBuf {
 	std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
 }
@@ -400,13 +407,33 @@ pub enum Read {
 ///
 /// Says in words what it removed, for the step's reason: channels an earlier
 /// run read disappearing without a word is how a working dash stops building.
-pub fn clear(root: &Path, project: &Project) -> Result<String> {
+///
+/// `None` when the project holds no VCDS source for this installation — never read by
+/// `setup`, or dropped with `setup --drop` while this ran — and nothing was written.
+pub fn clear(root: &Path, project: &Project) -> Result<Option<String>> {
 	let held = vag_data_db::reading_count_of(&project.cache(), vag_data_db::VCDS).unwrap_or(0);
-	vag_data_db::put_all_vcds_readings(&project.cache(), &source_of(root), std::iter::empty())?;
-	Ok(match held {
+	if vag_data_db::put_all_vcds_readings(&project.cache(), &source_of(root), std::iter::empty())?.is_none() {
+		return Ok(None);
+	}
+	Ok(Some(match held {
 		0 => String::new(),
 		n => format!("\n    This run removed the {n} channels an earlier run read from a VCDS registry."),
-	})
+	}))
+}
+
+/// What a read says when the project's VCDS source is not there to write into.
+const SOURCE_GONE: &str = "the project holds no source for this VCDS installation — dropped while this ran, or \
+                           never read by `vagcan setup` — so nothing was written";
+
+/// Take back the log a read just saved, when its source turned out to be gone: the log
+/// names an installation the project no longer holds, and kept, it would send the next
+/// read back to it. `--drop` removes it for the same reason.
+fn forget_log(project: &Project) {
+	match std::fs::remove_file(project.registry_log()) {
+		Ok(()) => {}
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+		Err(e) => eprintln!("note: {} not removed: {e}", project.registry_log().display()),
+	}
 }
 
 /// Read the registry for `units` — `(F19E, F1A2)` each — out of the
@@ -457,7 +484,13 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 			if let Err(e) = log.save(project) {
 				why.push_str(&format!("; what was tried was not written down ({e:#})"));
 			}
-			let removed = clear(root, project)?;
+			let Some(removed) = clear(root, project)? else {
+				forget_log(project);
+				return Ok(Read::NoRegistry {
+					why: format!("{why}; {SOURCE_GONE}"),
+					removed: String::new(),
+				});
+			};
 			return Ok(Read::NoRegistry { why, removed });
 		}
 	};
@@ -588,13 +621,23 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 	}
 
 	let batch: Vec<(&str, &[vag_data_labels::odis::Reading])> = variants.iter().map(|(v, r)| (v.as_str(), r.as_slice())).collect();
-	let written = vag_data_db::put_all_vcds_readings(&project.cache(), &source_of(root), batch)?;
-	// After the rows and never before: see `Log`.
-	if let Err(e) = log.save(project) {
-		notes.push(format!(
-			"what was tried was not written down ({e:#}): the next run tries every unit again"
-		));
-	}
+	// Into the project's VCDS source, checked inside the write: a source dropped while
+	// this read ran is not made again, and the log is not written for it either.
+	let written = match vag_data_db::put_all_vcds_readings(&project.cache(), &source_of(root), batch)? {
+		Some(written) => {
+			// After the rows and never before: see `Log`.
+			if let Err(e) = log.save(project) {
+				notes.push(format!(
+					"what was tried was not written down ({e:#}): the next run tries every unit again"
+				));
+			}
+			written
+		}
+		None => {
+			notes.push(SOURCE_GONE.to_string());
+			0
+		}
+	};
 	Ok(Read::Done(Summary {
 		asked: units.len(),
 		read,
@@ -760,9 +803,9 @@ const RERUN_SETUP: &str = "re-run `vagcan setup <VCDS installation>`";
 ///
 /// The log names it once a read has been made. A project set up **before the log
 /// existed** has none, and with nothing else to go on `ensure` did nothing and
-/// said nothing (found in review, 2026-09-28) — so `sources.json`, which every
-/// `setup` has written, is the fallback: its VCDS entry is the installation when
-/// its path is absolute and holds `UDS_EV`. Absolute, because a relative path in
+/// said nothing (found in review, 2026-09-28) — so the project's VCDS source in the
+/// cache, which every `setup` has written, is the fallback: it is the installation
+/// when its path is absolute and holds `UDS_EV`. Absolute, because a relative path in
 /// there was true in the directory `setup` ran in and nowhere else, and this tool
 /// resolves nothing against the working directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -777,7 +820,7 @@ pub enum Installation {
 }
 
 /// The rule behind [`Installation`], on the log (if any) and the project's
-/// `sources.json` VCDS entries, **newest first** ([`crate::project::sources_of_kind`]).
+/// VCDS sources in the cache, **newest first** ([`crate::project::sources_of_kind`]).
 /// Only the newest counts: its rows are the ones the project holds, and an older
 /// entry is an installation whose rows they replaced.
 fn installation(log: Option<&Log>, vcds_sources: &[String]) -> Installation {
@@ -1294,7 +1337,7 @@ mod tests {
 	fn the_installation_is_the_logs_or_else_the_absolute_vcds_source_holding_udsev() {
 		// Found in review (2026-09-28): a project set up before `registry.json`
 		// existed has no log, and `ensure` did nothing and said nothing — so
-		// `sources.json`'s VCDS entry stands in when it can be used, and when
+		// the VCDS source in the cache stands in when it can be used, and when
 		// it cannot the line says what to type.
 		let dir = tempfile::tempdir().unwrap();
 		let root = install_at(dir.path());
@@ -1423,6 +1466,8 @@ mod tests {
 			fn waiting(&mut self, _: &str) {}
 			fn done(&mut self, _: &str) {}
 		}
+		// The installation is one of the project's sources, as setup's label step leaves it.
+		vag_data_db::record_language(&project.cache(), vag_data_db::VCDS, &source_of(&root), "eng").unwrap();
 		let outcome = read(&root, &project, &units, &mut Nothing).unwrap();
 		let Read::NoRegistry { why, removed } = outcome else {
 			panic!("{outcome:?}");
@@ -1430,7 +1475,7 @@ mod tests {
 		assert!(why.contains("RM.rod"), "{why}");
 		assert_eq!(removed, "", "nothing had been read before");
 		let log = Log::load(&project).unwrap().expect("the log is written");
-		assert_eq!(log.installation, root.canonicalize().unwrap(), "resolved, as sources.json keeps a path");
+		assert_eq!(log.installation, root.canonicalize().unwrap(), "resolved, as the cache keeps a source");
 		assert_eq!(
 			log.units,
 			vec![tried("EV_A", "001", "registry: no file"), tried("EV_B", "", "registry: no file")]
@@ -1438,6 +1483,35 @@ mod tests {
 		assert!(log.tried("EV_A", "001"), "so it is not tried again until setup reads an installation");
 		// And the cache exists, empty of VCDS rows, as `clear` leaves it.
 		assert_eq!(vag_data_db::reading_count_of(&project.cache(), vag_data_db::VCDS).unwrap(), 0);
+	}
+
+	#[test]
+	fn a_read_whose_source_is_gone_writes_no_rows_no_source_and_no_log() {
+		// Review of #37: a `watch` read in flight when `setup --drop vcds` committed wrote
+		// its rows, made the source again and rewrote `registry.json`. Both paths of a read
+		// — the registry not opening, and the rows written — find the source gone.
+		let dir = tempfile::tempdir().unwrap();
+		let root = dir.path().join("not-an-install");
+		std::fs::create_dir_all(&root).unwrap();
+		let project = project(dir.path());
+		std::fs::create_dir_all(&project.dir).unwrap();
+		// The project holds an ODIS source and no VCDS one: the VCDS one was dropped.
+		vag_data_db::record_language(&project.cache(), vag_data_db::ODIS, "/x/SK37X", "deu").unwrap();
+		let units: BTreeSet<(String, String)> = [("EV_A".to_string(), "001".to_string())].into();
+		struct Nothing;
+		impl Progress for Nothing {
+			fn waiting(&mut self, _: &str) {}
+			fn done(&mut self, _: &str) {}
+		}
+		let outcome = read(&root, &project, &units, &mut Nothing).unwrap();
+		let Read::NoRegistry { why, .. } = outcome else {
+			panic!("{outcome:?}");
+		};
+		assert!(why.contains("nothing was written"), "{why}");
+		assert!(!project.registry_log().exists(), "the log names a source the project does not hold");
+		let kinds: Vec<String> = crate::project::sources(&project).unwrap().into_iter().map(|s| s.kind).collect();
+		assert_eq!(kinds, ["odis"], "the read made a VCDS source");
+		assert_eq!(clear(&root, &project).unwrap(), None);
 	}
 
 	#[test]

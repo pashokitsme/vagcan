@@ -170,11 +170,12 @@ impl Namers {
 	pub fn open(keys: &std::path::Path, given: bool) -> Result<Namers> {
 		let vcds_root = crate::project::rod_pool()?;
 		let mut odis = crate::odisfaults::OdisFaults::open();
-		let odis_alone = odis.as_ref().is_some_and(|o| !o.has_vcds_source());
-		let vcds = open_vcds(&vcds_root, keys, given, odis_alone)?;
+		let without_vcds = crate::project::current().is_ok_and(|p| without_vcds(&p, keys));
+		let vcds = open_vcds(&vcds_root, keys, given, without_vcds)?;
 		// The VCDS text's language is the pool's own build, read off its files —
-		// not any source row's: the cache keeps a row per installation ever set
-		// up, the pool holds the last one. None where the chain did not open.
+		// not any source row's: the pool is shared by every project and holds the
+		// build read last, and a stale row can name another. None where the chain
+		// did not open.
 		if let Some(odis) = &mut odis {
 			odis.set_vcds(vcds.as_ref().map(|_| crate::odisfaults::VcdsBuild::of(&vcds_root)));
 		}
@@ -267,28 +268,48 @@ impl Namers {
 	}
 }
 
+/// Whether the project has no VCDS installation among its sources — asked of its
+/// cache's `source` table, not of the files: a VCDS source dropped with `setup --drop`
+/// leaves the shared pool and this project's keys on disk, and its text must not go
+/// on naming codes.
+///
+/// A cache whose sources do not read — an older vagcan's, or one a running `setup`
+/// holds locked — says nothing either way, and is not taken as "no VCDS": that printed
+/// bare numbers with no word why. The rule from before the sources were asked holds
+/// instead — VCDS text where the project's keys are — and that is said once.
+fn without_vcds(project: &crate::project::Project, keys: &std::path::Path) -> bool {
+	match crate::project::has_source(project, vag_data_db::VCDS) {
+		Ok(held) => !held,
+		Err(e) => {
+			crate::project::say_unreadable(project, &e, "VCDS fault text is used where this project's keys are");
+			!keys.is_file()
+		}
+	}
+}
+
 /// The VCDS half of [`Namers`], or `None` where this project has no VCDS text.
 ///
 /// The pool of raw VCDS files is shared by every project and the keys that open
-/// it are per project ([`crate::project::Project::rod_keys`]), so a project set
-/// up from an ODIS project alone (`odis_alone`: ODIS fault text, and no VCDS
-/// installation among its sources) meets a full pool — another project's — and
-/// no keys. That is "this project has no VCDS text", not a refusal: its faults
-/// are named from ODIS.
+/// it are per project ([`crate::project::Project::rod_keys`]), so a project with
+/// no VCDS installation among its sources (`without_vcds`) meets a full pool —
+/// another project's — and no keys, or the keys of a VCDS source dropped from
+/// it. That is "this project has no VCDS text", not a refusal: its faults are
+/// named from ODIS, or shown as numbers. Only keys named with `--iv-cache`
+/// override it.
 ///
 /// Everywhere else missing keys are still refused. A project whose sources
 /// include VCDS has VCDS text of its own, and `[faults] language` may be what
 /// sends a code to it: naming from ODIS instead would print another language
 /// with nothing said. Keys named with `--iv-cache` (`given`) that are not there
 /// are a typo, said as one before anything else.
-fn open_vcds(root: &std::path::Path, keys: &std::path::Path, given: bool, odis_alone: bool) -> Result<Option<crate::faultnames::Namer>> {
+fn open_vcds(root: &std::path::Path, keys: &std::path::Path, given: bool, without_vcds: bool) -> Result<Option<crate::faultnames::Namer>> {
 	if given && !keys.is_file() {
 		anyhow::bail!(
 			"--iv-cache {}: no such file. Leave the flag out to use this project's rod-keys.json.",
 			keys.display()
 		);
 	}
-	if !crate::faultnames::has_fault_labels(root) || (odis_alone && !keys.is_file()) {
+	if !crate::faultnames::has_fault_labels(root) || (without_vcds && !given) {
 		return Ok(None);
 	}
 	crate::faultnames::Namer::open(root, keys).map(Some)
@@ -385,11 +406,13 @@ pub async fn run<L: UnitLink>(
 	// there is the ordinary "setup has not run yet" case: the codes are still
 	// read and shown as numbers, with a note that names `vagcan setup`.
 	// The keys are per project (`rod-keys.json`) unless `--iv-cache` names a file.
-	let keys = crate::datadir::or_default(iv_cache, || Ok(crate::project::current()?.rod_keys()))?;
-	let mut namers = Namers::open(&keys, iv_cache.is_some())?;
 	// The numbers `vagcan units` lists, for `--unit` and for the headings below.
 	crate::labels::install_recorded_units();
+	// `--unit` before the project is opened: opening it can upgrade its cache, and a
+	// typo is refused touching nothing.
 	let requested = only.map(|spec| unit_list("--unit", spec)).transpose()?;
+	let keys = crate::datadir::or_default(iv_cache, || Ok(crate::project::current()?.rod_keys()))?;
+	let mut namers = Namers::open(&keys, iv_cache.is_some())?;
 
 	let mut backend = open().await?;
 
@@ -656,6 +679,63 @@ mod tests {
 		}
 		// An empty pool, by default, is no VCDS text either way.
 		assert!(open_vcds(&base.join("empty"), &keys, false, false).unwrap().is_none());
+		// A VCDS source dropped from the project leaves its keys behind: still no VCDS
+		// text, because the project has no VCDS source to name codes from.
+		std::fs::create_dir_all(keys.parent().unwrap()).unwrap();
+		std::fs::write(&keys, b"{}").unwrap();
+		assert!(
+			open_vcds(&base, &keys, false, true).unwrap().is_none(),
+			"the dropped source's keys named codes"
+		);
+		let _ = std::fs::remove_dir_all(&base);
+	}
+
+	#[test]
+	fn the_vcds_text_is_asked_of_the_projects_sources_and_not_of_a_sources_json() {
+		// What the owner met (2026-10-20): `sources.json` said one thing and the cache
+		// another. Whether a project has VCDS text is the cache's `source` table now —
+		// a project with a VCDS source and no `sources.json` has it.
+		let base = std::env::temp_dir().join(format!("vagcan-no-sources-json-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&base);
+		let project = crate::project::Project {
+			id: "SK37X".into(),
+			dir: base.join("SK37X"),
+		};
+		std::fs::create_dir_all(&project.dir).unwrap();
+		assert!(!crate::project::has_source(&project, vag_data_db::VCDS).unwrap(), "no cache, no source");
+		vag_data_db::record_language(&project.cache(), vag_data_db::VCDS, &base.join("vcds-en/Labels").to_string_lossy(), "eng").unwrap();
+		assert!(!project.dir.join("sources.json").exists());
+		let keys = project.rod_keys();
+		std::fs::write(&keys, b"{}").unwrap();
+		assert!(
+			!without_vcds(&project, &keys),
+			"a VCDS source in the cache is VCDS text, with no sources.json"
+		);
+		// Dropped, it is gone for `faults` too, whatever is left on disk.
+		let id = crate::project::sources(&project).unwrap()[0].id;
+		vag_data_db::drop_source(&project.cache(), id).unwrap();
+		assert!(without_vcds(&project, &keys));
+		let _ = std::fs::remove_dir_all(&base);
+	}
+
+	#[test]
+	fn a_cache_whose_sources_do_not_read_is_not_taken_for_one_without_vcds() {
+		// Review of #37: a cache an older vagcan wrote (or one a running setup holds)
+		// made `without_vcds` true, and every code printed as a bare number. It says
+		// nothing either way: the keys decide, as before the sources were asked.
+		let base = std::env::temp_dir().join(format!("vagcan-unreadable-sources-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&base);
+		let project = crate::project::Project {
+			id: "SK37X".into(),
+			dir: base.join("SK37X"),
+		};
+		std::fs::create_dir_all(&project.dir).unwrap();
+		std::fs::write(project.cache(), b"this is not an SQLite file, and it is longer than a header").unwrap();
+		assert!(crate::project::has_source(&project, vag_data_db::VCDS).is_err(), "an error, not a no");
+		let keys = project.rod_keys();
+		assert!(without_vcds(&project, &keys), "no keys: no VCDS text");
+		std::fs::write(&keys, b"{}").unwrap();
+		assert!(!without_vcds(&project, &keys), "the keys are there: VCDS text, as before");
 		let _ = std::fs::remove_dir_all(&base);
 	}
 

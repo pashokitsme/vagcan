@@ -143,8 +143,14 @@ pub fn open(project: &crate::project::Project) -> Extracted {
 		// A file cannot say who wrote it, so the project's own source log is
 		// asked instead (`crate::project::has_source`).
 		names: match crate::project::has_source(project, vag_data_db::VCDS) {
-			true => read_names(&project.names()),
-			false => BTreeMap::new(),
+			Ok(true) => read_names(&project.names()),
+			Ok(false) => BTreeMap::new(),
+			// A cache that did not answer says nothing either way: the file is taken
+			// as what it promises, as before the sources were asked, and that is said.
+			Err(e) => {
+				crate::project::say_unreadable(project, &e, "names.json is read as VCDS wording");
+				read_names(&project.names())
+			}
 		},
 		// Read for every project, whatever its sources: this file is the
 		// owner's, not a vendor's, and the id it is keyed by is VW's rather than
@@ -604,6 +610,7 @@ mod tests {
 		vag_data_db::put_readings(&cache, "/nowhere/SK37X", "EV_TCMDQ200021_001", &[reading(0x380A, "odis", 0, 16, false)]).unwrap();
 		let gearbox = [reading(0x380A, "vcds", 0, 16, true), reading(0x380B, "vcds", 0, 16, false)];
 		let brake = [reading(0x1822, "vcds", 0, 16, true)];
+		vag_data_db::record_language(&cache, vag_data_db::VCDS, "/nowhere/vcds-en", "eng").unwrap();
 		vag_data_db::put_all_vcds_readings(
 			&cache,
 			"/nowhere/vcds-en",
@@ -647,6 +654,7 @@ mod tests {
 			with_id(0x2CD1, 48, "IDE90001"),
 			with_id(0x2CD1, 128, "IDE90002"),
 		];
+		vag_data_db::record_language(&cache, vag_data_db::VCDS, "/nowhere/vcds", "eng").unwrap();
 		vag_data_db::put_all_vcds_readings(&cache, "/nowhere/vcds", [("EV_Unit_VW37", &vcds[..])]).unwrap();
 		let both = Extracted::synthetic(cache, BTreeMap::new());
 		let ids: Vec<(u16, u32, Option<String>)> = both
@@ -827,6 +835,24 @@ mod tests {
 			},
 		)
 		.unwrap();
+		assert_eq!(
+			open(&project).names.get("MAS14374").map(String::as_str),
+			Some("Total_CarWakeup_Events_Counter")
+		);
+	}
+
+	#[test]
+	fn a_cache_whose_sources_do_not_read_does_not_cost_the_vcds_wording() {
+		// Review of #37: an unreadable cache was taken for "no VCDS source", and
+		// `names.json` dropped with nothing said. It says nothing either way: the file is
+		// read as what it promises, and a note says so.
+		let here = tempfile::tempdir().unwrap();
+		let project = crate::project::Project {
+			id: "SK37X".into(),
+			dir: here.path().to_path_buf(),
+		};
+		std::fs::write(project.cache(), b"this is not an SQLite file, and it is longer than a header").unwrap();
+		std::fs::write(project.names(), r#"{"MAS14374": "Total_CarWakeup_Events_Counter"}"#).unwrap();
 		assert_eq!(
 			open(&project).names.get("MAS14374").map(String::as_str),
 			Some("Total_CarWakeup_Events_Counter")

@@ -4129,7 +4129,9 @@ mod tests {
 		// value and a note saying what it is for.
 		let mut a = App::new(vec![unselected(proven(0x7E0, 0x202A, "Boost pressure", "bar"))]);
 		a.screen = Screen::Settings;
-		let text = settings_text(&mut a, 100, 12);
+		// Wide enough for the title's path: a test build's `~/.vagcan` is a temporary
+		// directory (`datadir::vagcan_dir`), whose path is longer than `~/.vagcan`.
+		let text = settings_text(&mut a, 160, 12);
 		assert!(text.contains("Poll rate"), "{text}");
 		assert!(text.contains("10.0 Hz"), "{text}");
 		assert!(text.contains("Key at the end of each row"), "{text}");

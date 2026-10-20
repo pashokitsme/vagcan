@@ -29,15 +29,15 @@ pub const CAR_FILE: &str = "car.json";
 ///                                     this build's fault text
 ///   data/
 ///     SK37X/                          one directory per *platform* — `crate::project`
-///       cache.sqlite                    the label and ODIS rows, queryable
-///       names.json                      text id -> name, from a VCDS installation
+///       cache.sqlite                    the label and ODIS rows, queryable, and the
+///                                       sources they came from (`source` table)
+///       names.json                     text id -> name, from a VCDS installation
 ///       names-odis.json                 text id -> name, from an ODIS project
 ///       odx-ids.json                    text id -> the IDE/MAS id that text names
 ///       rod-keys.json                   recovered .rod section keys
 ///       registry.json                   which VCDS installation the channels were read
 ///                                       from, and what came of each unit — `crate::registry`
 ///       measurements/                   proven-on-car rows, one file per part number
-///       sources.json                    where this project's data came from
 ///   config.toml                       settings, and the marks `watch` keeps:
 ///                                     which project a bare command means, which
 ///                                     language names are shown in, favourites by VIN
@@ -79,8 +79,103 @@ pub const CAR_FILE: &str = "car.json";
 /// on a vehicle; the label files provably cannot supply those
 /// (`.archive/research/labels/rod-labels.md` §4.0c) and nothing but a car can recreate
 /// them. That is the one distinction a reader of the tree needs.
+///
+/// ## Overrides: [`ROOT_ENV`], and a test build
+///
+/// `VAGCAN_HOME`, when set, **is** that directory — what `~/.vagcan` holds, under
+/// another name — and HOME is not asked. It must be absolute: a relative one would
+/// follow the shell, as a relative HOME would. For a second set of data on one
+/// machine, and for a process a test starts (`.env(ROOT_ENV, …)`), which must never
+/// read the person's own.
+///
+/// **A test build never looks at HOME.** Built for tests — this crate's own, or another
+/// crate's through the `test-root` feature its dev-dependency turns on — the default is
+/// one temporary directory per process ([`test_root`]). Since `cache.sqlite` is upgraded
+/// in place when it is opened, a test that reached `~/.vagcan` was writing the person's
+/// data: `cargo test --workspace` upgraded the reference machine's cache (2026-10-20).
+/// One switch here covers every test, including the ones nobody thought reached it.
 pub fn vagcan_dir() -> anyhow::Result<PathBuf> {
+	if let Some(root) = std::env::var_os(ROOT_ENV).filter(|root| !root.is_empty()) {
+		let root = PathBuf::from(root);
+		anyhow::ensure!(
+			root.is_absolute(),
+			"{ROOT_ENV}={} is not an absolute path — it would mean another directory from every folder",
+			root.display()
+		);
+		return Ok(root);
+	}
+	default_root()
+}
+
+/// `~/.vagcan`, out of HOME.
+#[cfg(not(any(test, feature = "test-root")))]
+fn default_root() -> anyhow::Result<PathBuf> {
 	vagcan_dir_in(dirs::home_dir())
+}
+
+/// A test build's, which is never HOME's ([`test_root`]).
+#[cfg(any(test, feature = "test-root"))]
+fn default_root() -> anyhow::Result<PathBuf> {
+	Ok(test_root().to_path_buf())
+}
+
+/// The line a binary built for tests says at startup, or `None` for a normal build.
+///
+/// `cargo test` leaves a `target/debug/vagcan` built with `test-root`, and that binary
+/// reads a temporary directory, not `~/.vagcan`. Run by hand, it must say so rather than
+/// report a machine with no data.
+pub fn test_build_note() -> Option<String> {
+	if !cfg!(any(test, feature = "test-root")) {
+		return None;
+	}
+	let dir = vagcan_dir().map(|dir| dir.display().to_string()).unwrap_or_else(|e| format!("({e})"));
+	Some(format!("note  test build: data dir {dir}, not ~/.vagcan"))
+}
+
+/// The environment variable that names the directory `~/.vagcan` stands for.
+pub const ROOT_ENV: &str = "VAGCAN_HOME";
+
+/// A test build's `~/.vagcan`: one empty temporary directory for the life of the process,
+/// created on first use. Every test in one binary shares it, as they shared HOME before;
+/// a test that needs its own data writes it into a directory of its own.
+///
+/// All of them under one parent, `vagcan-test-roots/<pid>/`, which the first test of each
+/// process clears of the roots older than [`TEST_ROOT_AGE`]: a process leaves its root
+/// behind — nothing runs at a test binary's exit — and a process still running has not
+/// been running that long, so another binary's live root is never taken from under it.
+#[cfg(any(test, feature = "test-root"))]
+pub fn test_root() -> &'static Path {
+	static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+	ROOT.get_or_init(|| {
+		let parent = std::env::temp_dir().join("vagcan-test-roots");
+		remove_old_roots(&parent, TEST_ROOT_AGE);
+		let root = parent.join(std::process::id().to_string()).join(".vagcan");
+		let _ = std::fs::remove_dir_all(&root);
+		std::fs::create_dir_all(&root).expect("a temporary directory for a test build's ~/.vagcan");
+		root
+	})
+}
+
+/// How old a test build's root is before the next test process removes it.
+#[cfg(any(test, feature = "test-root"))]
+const TEST_ROOT_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Remove the roots under `parent` older than `age`, best effort: a root another process
+/// is removing, or one that will not go, is left for the next run.
+#[cfg(any(test, feature = "test-root"))]
+fn remove_old_roots(parent: &Path, age: std::time::Duration) {
+	let Ok(entries) = std::fs::read_dir(parent) else { return };
+	for entry in entries.flatten() {
+		let old = entry
+			.metadata()
+			.and_then(|meta| meta.modified())
+			.ok()
+			.and_then(|at| at.elapsed().ok())
+			.is_some_and(|elapsed| elapsed > age);
+		if old {
+			let _ = std::fs::remove_dir_all(entry.path());
+		}
+	}
 }
 
 /// Where the projects live — `~/.vagcan/data/`, one directory per platform.
@@ -304,6 +399,8 @@ fn car_folder(vin: &str) -> anyhow::Result<String> {
 
 /// The rule behind [`vagcan_dir`], with the home directory passed in so it can
 /// be tested without a process-wide `set_var` that the other tests would race.
+/// Unused in another crate's test build, whose default is [`test_root`].
+#[cfg_attr(all(feature = "test-root", not(test)), allow(dead_code))]
 fn vagcan_dir_in(home: Option<PathBuf>) -> anyhow::Result<PathBuf> {
 	let home = home
 		.filter(|p| p.is_absolute())
@@ -474,6 +571,51 @@ mod tests {
 		assert_eq!(reads, 2000);
 		let left = std::fs::read_dir(&dir.0).unwrap().flatten().count();
 		assert_eq!(left, 1, "temporary files were left behind");
+	}
+
+	#[test]
+	fn a_test_process_clears_the_roots_old_processes_left_and_no_live_one() {
+		// Each test process left a `vagcan-test-root-<pid>` behind (review of #37). They
+		// share one parent now, and a root older than any test process lives is removed.
+		let parent = TempDir::new("roots");
+		let (old, live) = (parent.0.join("111"), parent.0.join("222"));
+		for dir in [&old, &live] {
+			std::fs::create_dir_all(dir.join(".vagcan").join("data")).unwrap();
+		}
+		let long_ago = std::time::SystemTime::now() - 2 * TEST_ROOT_AGE;
+		std::fs::File::open(&old).unwrap().set_modified(long_ago).unwrap();
+		remove_old_roots(&parent.0, TEST_ROOT_AGE);
+		assert!(!old.exists(), "a root an ended process left stayed");
+		assert!(live.join(".vagcan").is_dir(), "a live process's root was taken");
+		// And this process's own sits under the one parent.
+		assert!(test_root().starts_with(std::env::temp_dir().join("vagcan-test-roots")));
+	}
+
+	#[test]
+	fn a_test_build_has_a_note_naming_its_data_dir() {
+		let note = test_build_note().expect("this is a test build");
+		assert_eq!(
+			note,
+			format!("note  test build: data dir {}, not ~/.vagcan", vagcan_dir().unwrap().display())
+		);
+	}
+
+	#[test]
+	fn a_test_build_never_resolves_to_the_vagcan_dir_home_points_at() {
+		// Opening a cache can upgrade it: a test that resolved HOME's `~/.vagcan` wrote into
+		// the person's data (2026-10-20). Unless `VAGCAN_HOME` names one, a test build's is
+		// a temporary directory of its own.
+		if std::env::var_os(ROOT_ENV).is_some() {
+			return;
+		}
+		let dir = vagcan_dir().unwrap();
+		assert_eq!(dir, test_root());
+		assert!(dir.is_dir());
+		assert!(dir.starts_with(std::env::temp_dir()), "{dir:?}");
+		if let Some(home) = dirs::home_dir() {
+			assert!(!dir.starts_with(home.join(".vagcan")), "{dir:?} is the person's own");
+		}
+		assert!(projects_dir().unwrap().starts_with(&dir));
 	}
 
 	#[test]
