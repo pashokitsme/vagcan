@@ -402,8 +402,12 @@ fn summary(s: &Summary<'_>) -> (String, Vec<(u8, String)>) {
 			table.row(vec![id_text(*id), count.to_string(), rate]);
 		}
 		out.push_str(&table.render(None));
+		out.push('\n');
 	}
-	let mut parts = vec![format!("{:.1} s", s.seconds), format!("{} frames", stats.frames_seen)];
+	let mut parts = vec![
+		format!("{:.1} s", s.seconds),
+		format!("{} {}", stats.frames_seen, crate::render::plural(stats.frames_seen, "frame")),
+	];
 	if s.diag_only {
 		parts.push(format!("{} diagnostic", stats.frames_kept));
 	}
@@ -956,6 +960,7 @@ mod tests {
 			" id  frames  per s\n\
 			 0FD    1000  100.0\n\
 			 7E8     500   50.0\n\
+			 \n\
 			 10.0 s · 1500 frames · 1500 written to drive.log · 4 messages · 0 incomplete · 1 marker · drops unknown\n"
 		);
 		// That the adapter cannot say whether it dropped any is a caveat: `-v`.

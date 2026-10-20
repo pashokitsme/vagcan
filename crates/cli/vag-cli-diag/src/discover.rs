@@ -270,6 +270,7 @@ pub fn render(columns: &[Column]) -> String {
 			]);
 		}
 		out.push_str(&table.render(terminal_width()));
+		out.push('\n');
 	}
 	let continuous = columns.iter().filter(|c| matches!(c.behaviour, Behaviour::Continuous { .. })).count();
 	let constant = columns.iter().filter(|c| c.behaviour == Behaviour::Constant).count();
@@ -329,6 +330,7 @@ pub fn render_pairs(pairs: &[(String, String, f64)]) -> String {
 			table.row(vec![a.clone(), b.clone(), format!("{:.0}%", overlap * 100.0)]);
 		}
 		out.push_str(&table.render(terminal_width()));
+		out.push('\n');
 	}
 	out.push_str(&format!("{} {} changed together\n", pairs.len(), plural(pairs.len(), "pair")));
 	out
@@ -543,6 +545,7 @@ mod tests {
 			render(&classify(csv).unwrap()),
 			"column  values  changes  reads  seen\n\
 			 A            2        1      3  0 1\n\
+			 \n\
 			 1 column · 1 candidate · 0 continuous · 0 never moved\n"
 		);
 	}
@@ -561,6 +564,7 @@ mod tests {
 			render_pairs(&[("A".into(), "Gear".into(), 1.0)]),
 			"first  second  coincide\n\
 			 A      Gear        100%\n\
+			 \n\
 			 1 pair changed together\n"
 		);
 	}

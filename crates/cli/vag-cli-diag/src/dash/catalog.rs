@@ -127,7 +127,12 @@ impl Sources<'_> {
 					break;
 				}
 				Ok(built) => {
-					let why = format!("{} channels built for {} asked", built.plan.channels.len(), pending.len());
+					let built_n = built.plan.channels.len();
+					let why = format!(
+						"{built_n} {} built for {} asked",
+						crate::render::plural(built_n, "channel"),
+						pending.len()
+					);
 					for &i in &pending {
 						verdict.insert(i, Err(why.clone()));
 					}
