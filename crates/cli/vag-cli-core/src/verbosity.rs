@@ -24,8 +24,8 @@ use std::io::Write as _;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-/// `-v` / `--verbose`, counted: declared once for `vagcan` and `vagcan-measure`, global on
-/// both, so it is taken before or after the subcommand.
+/// `-v` / `--verbose`, counted: declared once, global on `vagcan`, so it is taken before or
+/// after the subcommand.
 #[derive(Clone, Copy, Debug, Default, clap::Args)]
 pub struct VerboseArg {
 	/// More on stderr. -v: where the data came from, why a row is unnamed or skipped,

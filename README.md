@@ -191,7 +191,7 @@ In a clone, [`just`](https://github.com/casey/just) runs the common tasks. `just
 | `just dashsim` | the board's screen in this terminal, over USB |
 | `just check` | everything CI checks |
 
-An older `just install` also put `vagcan-measure` there; `cargo uninstall vag-cli-measure` removes it.
+The stopwatch is `vagcan measure`. A `vagcan-measure` an earlier install left there is removed by `cargo uninstall vag-cli-measure`.
 
 `just fw-flash` finds the board by its USB id. With no board found, or several, set the port:
 

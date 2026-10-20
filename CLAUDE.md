@@ -222,9 +222,10 @@ crates/            all Rust. Three families and the product.
     vag-cli-diag       reading a car and the files that explain it: identify,
                        faults, the one guarded sweep (`units --identify <unit>`),
                        watch, setup, dash build and edit, vcds tooling
-    vag-cli-measure    binary `vagcan-measure` — the acceleration stopwatch.
-                       Depends on `core` **alone**, checked symbol by symbol,
-                       which is what makes it a crate rather than a directory.
+    vag-cli-measure    the acceleration stopwatch, a library: `vagcan measure`
+                       is the one way in. Depends on `core` **alone** (its
+                       manifest names no `vag-cli-diag`, so the compiler holds
+                       it), which is what makes it a crate rather than a directory.
     vag-cli            binary `vagcan` — the command surface and nothing else:
                        clap declarations and a dispatcher. Top level = needs the car:
                        devices / info / units / faults / sensors / watch / measure —

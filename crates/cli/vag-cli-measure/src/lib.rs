@@ -2241,11 +2241,10 @@ fn setup_rows<'a>(before: Option<&'a str>, after: Option<&'a str>) -> anyhow::Re
 
 /// Run whatever the command line asked for.
 ///
-/// The one entry point both binaries use, so `vagcan measure` and
-/// `vagcan-measure` cannot diverge in behaviour any more than they can in
-/// flags. `catalogs` is passed in rather than resolved here: where a project's
-/// measurements live is `core`'s question, and answering it twice is how two
-/// binaries end up reading different directories.
+/// The one entry point, `vagcan measure`'s. `catalogs` is passed in rather than
+/// resolved here: where a project's measurements live is `core`'s question, and
+/// answering it here as well is how two callers end up reading different
+/// directories.
 ///
 /// **Called only by what reads them**, with the `--data` the command line gave: `view`
 /// opens a session file and nothing else, so it runs on a machine with no project, where a
@@ -3568,22 +3567,22 @@ mod tests {
 	#[tokio::test]
 	async fn setup_takes_the_adapter_named_before_it_or_after_it() {
 		use clap::Parser as _;
-		let opened = async |args: &[&str]| adapter_opened(args::Cli::try_parse_from(args).unwrap().args).await;
+		let opened = async |args: &[&str]| adapter_opened(args::Measure::try_parse_from(args).unwrap().args).await;
 		for (args, adapter) in [
-			(&["vagcan-measure", "--ble", "setup"][..], Some("ble")),
-			(&["vagcan-measure", "--device", "ble", "setup"], Some("ble")),
-			(&["vagcan-measure", "--device", "/dev/x", "setup"], Some("/dev/x")),
-			(&["vagcan-measure", "setup", "--ble"], Some("ble")),
-			(&["vagcan-measure", "setup", "--device", "/dev/x"], Some("/dev/x")),
-			(&["vagcan-measure", "--ble", "setup", "--device", "ble"], Some("ble")),
-			(&["vagcan-measure", "setup"], None),
+			(&["measure", "--ble", "setup"][..], Some("ble")),
+			(&["measure", "--device", "ble", "setup"], Some("ble")),
+			(&["measure", "--device", "/dev/x", "setup"], Some("/dev/x")),
+			(&["measure", "setup", "--ble"], Some("ble")),
+			(&["measure", "setup", "--device", "/dev/x"], Some("/dev/x")),
+			(&["measure", "--ble", "setup", "--device", "ble"], Some("ble")),
+			(&["measure", "setup"], None),
 		] {
 			let opened = opened(args).await.unwrap_or_else(|e| panic!("{args:?}: {e}"));
 			assert_eq!(opened.as_deref(), adapter, "{args:?}");
 		}
 		for args in [
-			&["vagcan-measure", "--ble", "setup", "--device", "/dev/x"][..],
-			&["vagcan-measure", "--device", "/dev/x", "setup", "--device", "/dev/y"],
+			&["measure", "--ble", "setup", "--device", "/dev/x"][..],
+			&["measure", "--device", "/dev/x", "setup", "--device", "/dev/y"],
 		] {
 			let refused = opened(args).await.expect_err("two adapters named");
 			assert!(refused.to_string().contains("named twice"), "{args:?}: {refused}");

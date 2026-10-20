@@ -428,7 +428,7 @@ crates/
   cli/                     what a person runs, in four layers
     vag-cli-core             which car, what channels, how to poll, where the files are
     vag-cli-diag             reading a car, and the files that explain what it said
-    vag-cli-measure          binary `vagcan-measure` — the stopwatch, on `core` alone
+    vag-cli-measure          the stopwatch behind `vagcan measure`, on `core` alone
     vag-cli                  binary `vagcan` — the command surface and nothing else
 ```
 
@@ -450,9 +450,10 @@ renderer under whichever crate happens to draw with it today.
 `cli/` is layered where the other families are flat, and the layering is load-bearing.
 `measure` — an acceleration stopwatch, a third of what used to be one crate — needs
 twelve modules from `core` and **nothing** from diagnostics. That was measured before it
-was moved, and it is why `vagcan measure` and the standalone `vagcan-measure` can share
-one set of flags and one `dispatch`, and why a build can leave the stopwatch out
-(`--no-default-features`) without touching a line of diagnostics.
+was moved, and the manifest keeps it so: `vag-cli-measure` names no `vag-cli-diag`, so the
+compiler refuses the first symbol it would borrow. It is a library; `vagcan measure` is the
+one way in, and a build can leave the stopwatch out (`--no-default-features`) without
+touching a line of diagnostics.
 
 **One owner of the link: the bus.** Every command that talks to the car gets a `Bus`
 (`vag-cli-core/src/bus`), not the adapter. One task owns the adapter and runs the
