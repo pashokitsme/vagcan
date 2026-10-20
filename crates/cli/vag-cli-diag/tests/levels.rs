@@ -198,6 +198,8 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	// Before any thread but this one exists: see the module docs.
 	unsafe {
 		std::env::set_var("HOME", home.path());
+		// The override a test build's data dir answers to; HOME alone it does not read.
+		std::env::set_var(vag_cli_core::datadir::ROOT_ENV, home.path().join(".vagcan"));
 		std::env::remove_var(vag_cli_core::project::PROJECT_ENV);
 	}
 	let open = || async { Ok(car()) };

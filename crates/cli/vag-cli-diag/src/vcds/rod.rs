@@ -3,7 +3,7 @@
 //! VW ships ODX label files with every section encrypted, and a section whose
 //! `product` field is nonzero cannot be decrypted from the file alone: five
 //! bytes of its first-block IV are missing and have to be searched for. The
-//! search costs about 3 min per file, which is why nothing
+//! search costs minutes per file (none for a file under its own name), which is why nothing
 //! in the live path runs it — the live path reads the *answer* out of the
 //! project's `rod-keys.json`. This command is where that answer comes from.
 //!
@@ -201,7 +201,7 @@ fn notes(opened: &Opened, run_crack: bool, dump: Option<&str>, keys: &[Key]) -> 
 	if searchable > 0 && !run_crack {
 		notes.push((
 			NOTES,
-			format!("{searchable} sealed: without --no-crack the key is searched for, about 3 min per file"),
+			format!("{searchable} sealed: without --no-crack the key is searched for, a search of minutes per file"),
 		));
 	}
 	if searchable > 0 && run_crack {
@@ -322,7 +322,7 @@ mod tests {
 			at(NOTES),
 			vec![
 				"1 key in /k/rod-keys.json before this run",
-				"1 sealed: without --no-crack the key is searched for, about 3 min per file",
+				"1 sealed: without --no-crack the key is searched for, a search of minutes per file",
 				"[CMP] tea",
 				"[TXT] zlib",
 				"[INC] no key",

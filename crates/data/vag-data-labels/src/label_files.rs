@@ -72,7 +72,7 @@ pub fn load_label_files(dir: &Path) -> io::Result<LabelFileLoad> {
 						})
 					}
 					Err(e) => {
-						eprintln!("warn: cannot read {}: {e}", path.display());
+						let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("warn: cannot read {}: {e}\n", path.display()));
 						None
 					}
 				},
@@ -315,7 +315,7 @@ fn scan_dir(dir: &Path, scan: &mut LabelScan) {
 	let entries = match std::fs::read_dir(dir) {
 		Ok(e) => e,
 		Err(e) => {
-			eprintln!("warn: cannot read dir {}: {e}", dir.display());
+			let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("warn: cannot read dir {}: {e}\n", dir.display()));
 			scan.read_errors += 1;
 			return;
 		}
@@ -337,7 +337,7 @@ fn scan_file(path: &Path, scan: &mut LabelScan) {
 		match std::fs::read(path) {
 			Ok(bytes) => scan.files.push(parse_label(file_name_or(path, "<?>"), &bytes)),
 			Err(e) => {
-				eprintln!("warn: cannot read {}: {e}", path.display());
+				let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("warn: cannot read {}: {e}\n", path.display()));
 				scan.read_errors += 1;
 			}
 		}
@@ -349,7 +349,7 @@ fn scan_file(path: &Path, scan: &mut LabelScan) {
 				scan.files.push(parse_label(file_name_or(path, "<?>"), &decoded));
 			}
 			Err(e) => {
-				eprintln!("warn: cannot read {}: {e}", path.display());
+				let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("warn: cannot read {}: {e}\n", path.display()));
 				scan.read_errors += 1;
 			}
 		}

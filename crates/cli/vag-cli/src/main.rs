@@ -361,9 +361,9 @@ enum Command {
 		/// assisting while it is in one.
 		#[arg(long)]
 		extended: bool,
-		/// Where the recovered `.rod` section keys are cached. A fault
-		/// catalogue is sealed with one, and recovering one takes about 3 min per
-		/// file — so they are kept as data, not searched for per run.
+		/// Where the recovered `.rod` section keys are cached. A file under its own
+		/// name needs none; one under another name costs a search of minutes — so
+		/// those are kept as data, not searched for per run.
 		/// Default: this project's `rod-keys.json`, written by `vagcan setup`.
 		//
 		// Not on `-h`: nobody reading a car needs it, and `--help` still has it.

@@ -109,7 +109,11 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 	std::fs::create_dir_all(&project).unwrap();
 	std::fs::write(home.join(".vagcan/config.toml"), "project = \"TEST\"\n").unwrap();
 	// SAFETY: the one test of this binary, before any thread is started or `HOME` read.
-	unsafe { std::env::set_var("HOME", &home) };
+	unsafe {
+		std::env::set_var("HOME", &home);
+		// The override a test build's data dir answers to; HOME alone it does not read.
+		std::env::set_var(vag_cli_core::datadir::ROOT_ENV, home.join(".vagcan"));
+	}
 
 	let vcds_dir = here.path().join("vcds");
 	let label_dir = vcds_dir.join("Labels");
@@ -283,7 +287,9 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 	assert_eq!(tttext[0].stderr, "1 record · 1 with an IDE or MAS id · 1 malformed, left out\n");
 	assert!(tttext[1].stderr.contains("000005 read as"), "{}", tttext[1].stderr);
 
-	// stats: the cache `labels --part` built in this project.
+	// stats: the project's cache, built as `setup` builds it — `labels` reads a cache and
+	// never writes one (#37).
+	vag_cli_diag::labels::load_cached(&vcds_dir, &home.join(".vagcan/data/TEST/cache.sqlite"), false).unwrap();
 	let stats = levels("stats", || Tool::Stats { catalog: None });
 	assert_eq!(
 		stats[0].stdout,

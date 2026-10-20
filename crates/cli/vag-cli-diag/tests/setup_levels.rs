@@ -124,23 +124,20 @@ fn child(scenario: &str) {
 				 vcds    copy      wrote    3 files, 3 copied (30 B), 0 current\n\
 				 vcds    labels    wrote    1 label file\n\
 				 vcds    names     missing  no text table\n\
-				 vcds    keys      wrote    0 keys\n\
+				 vcds    keys      wrote    every section opened by its file name, nothing to cache\n\
 				 vcds    registry  pending  read the first time a car command meets the car\n\
 				 \n\
 				 default: new project · 5 steps · 1 gap · fault text · no scalings\n",
 				"level 0, stdout"
 			);
 			// With no terminal the name was taken unasked, which is said, with where
-			// it went; a first read is the one wait of minutes. Nothing else is said:
-			// no list of projects for a question that never came.
+			// it went. Nothing else is said: no list of projects for a question that never
+			// came, and no warning of a long first read — the keys come from the file
+			// names, seconds (#40).
 			let project = vag_cli_core::datadir::projects_dir().unwrap().join("default");
 			assert_eq!(
 				quiet.stderr,
-				format!(
-					"project  default (no terminal: default taken)  {}\n\
-					 first read of this installation: tens of minutes, mostly key searches; later runs reuse them\n",
-					project.display()
-				),
+				format!("project  default (no terminal: default taken)  {}\n", project.display()),
 				"level 0, stderr"
 			);
 			for said in [
@@ -255,7 +252,7 @@ fn child(scenario: &str) {
 			assert_eq!(runs[0].stdout, "", "a note of the read is never data");
 			assert_eq!(
 				runs[0].stderr,
-				"reading the VCDS registry: 2 units (1 of this car new); minutes when a key is searched for, the first time only\n\
+				"reading the VCDS registry: 2 units (1 of this car new), the first time only\n\
 				 the VCDS registry did not open: there is no RM.rod in this installation\n"
 			);
 			assert!(
@@ -284,6 +281,7 @@ fn in_child(test: &str, scenario: &str) {
 		.args([test, "--exact", "--nocapture", "--test-threads=1"])
 		.env(CHILD, scenario)
 		.env("HOME", home.path())
+		.env(vag_cli_core::datadir::ROOT_ENV, home.path().join(".vagcan"))
 		.env_remove(vag_cli_core::project::PROJECT_ENV)
 		.stdin(Stdio::null())
 		.output()

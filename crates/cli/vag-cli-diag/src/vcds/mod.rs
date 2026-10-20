@@ -190,7 +190,7 @@ pub enum Tool {
 		#[arg(value_name = "FILE")]
 		file: String,
 		/// Use only keys already in the cache; do not search for missing ones.
-		/// Searching costs about 3 min per file.
+		/// Searching costs minutes per file; a file under its own name needs none.
 		#[arg(long)]
 		no_crack: bool,
 		/// Where recovered keys are read and written. Default: next to the

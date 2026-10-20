@@ -2450,7 +2450,7 @@ mod tests {
 		std::fs::File::options().write(true).open(&older).unwrap().set_modified(past).unwrap();
 		let target = TempDir::new("twice-out");
 		let step = copy_label_files(&install.0, &target.0, false).unwrap().0;
-		assert_eq!(detail(&step), "1 files, 1 copied (5 B), 0 current");
+		assert_eq!(detail(&step), "1 file, 1 copied (5 B), 0 current");
 		let landed: Vec<_> = std::fs::read_dir(&target.0).unwrap().flatten().map(|e| e.path()).collect();
 		assert_eq!(landed.len(), 1, "{landed:?}");
 		assert_eq!(std::fs::read(&landed[0]).unwrap(), b"newer");

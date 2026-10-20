@@ -16,6 +16,7 @@ fn a_run_whose_stderr_takes_nothing_ends_with_its_own_exit_code() {
 		let mut child = Command::new(env!("CARGO_BIN_EXE_vagcan"))
 			.args(args)
 			.env("HOME", home.path())
+			.env("VAGCAN_HOME", home.path().join(".vagcan"))
 			.env_remove("VAGCAN_PROJECT")
 			.stdin(Stdio::null())
 			.stdout(Stdio::null())

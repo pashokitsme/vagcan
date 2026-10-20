@@ -488,7 +488,7 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Resu
 	}
 
 	// Recovered initialisation vectors come from the cache only. The search
-	// that fills it costs about 3 min per file and is its own command
+	// that fills it costs a search of minutes per file and is its own command
 	// (`vagcan dev vcds rod --cache <this cache> <file.rod>`), so a lookup
 	// never starts one.
 	let mut cache = IvCache::load(cache_path);

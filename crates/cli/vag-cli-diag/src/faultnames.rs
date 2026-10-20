@@ -235,7 +235,7 @@ pub fn offer_to_unseal(files: &[PathBuf], cache: &Path) -> Result<()> {
 	let names: Vec<&str> = files.iter().map(|f| f.file_name().and_then(|f| f.to_str()).unwrap_or_default()).collect();
 	// What is sealed and the command that opens it, on stderr: a hint, not data.
 	vag_cli_core::say!(
-		"sealed   {} — `vagcan dev vcds rod --cache {} <file>` (about 3 min per file)",
+		"sealed   {} — `vagcan dev vcds rod --cache {} <file>` (a search of minutes per file)",
 		names.join(", "),
 		cache.display()
 	);
