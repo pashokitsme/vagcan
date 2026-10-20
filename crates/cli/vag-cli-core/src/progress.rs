@@ -424,6 +424,12 @@ impl Spinner {
 	pub fn update(&mut self, message: &str) {
 		self.line.update(message);
 	}
+
+	/// A handle any thread can set the message through, as [`Line::reporter`]:
+	/// for a wait that is many tasks on rayon's pool, counted as each ends.
+	pub fn reporter(&self) -> Reporter {
+		self.line.reporter()
+	}
 }
 
 #[cfg(test)]

@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 
 use crate::dtc::{DtcRegistry, DtcRow, find_named};
 use crate::glyphs::TableAlphabet;
-use crate::rod::{IvCache, KeyCost, RodStatus, decode_rod_recover, key_cost, recover_classic_key};
+use crate::rod::{IvCache, KeyCost, RodStatus, key_cost, open_section};
 
 /// The section a unit's measurement list, and the registry, are read from.
 pub const MWB_SECTION: &str = "MWB";
@@ -281,7 +281,8 @@ pub enum UnitMeasurements {
 	/// The list is in a classic section whose key is not cached: one search,
 	/// minutes. `setup` runs it.
 	Locked { file: PathBuf, section: String },
-	/// The list is in a shifted file. VCDS's runtime key opens it and nothing
+	/// The list is in a shifted file. The mask VCDS gets from its interface opens
+	/// it (`.archive/research/labels/tttext2.md` §3.3b), and nothing
 	/// offline does (`.archive/research/labels/tttext2.md` §3.3a).
 	Shifted { file: PathBuf, section: String },
 	/// `[INC]` names no store this install has, or its first row could not be
@@ -375,6 +376,36 @@ pub fn unit_measurements(
 	})
 }
 
+/// [`unit_measurements`] for many units at once, on rayon's pool, in the order
+/// given.
+///
+/// Every lookup is a walk of the install's directory and a read of one or two
+/// files, independent of every other, so they run side by side. Each searches
+/// with its own copy of `cache`, and hands `finished` the keys it found — only
+/// those, so one copy's stale key cannot undo another's fresh one — as soon as
+/// that unit is done, which is when a caller can save them and count the unit.
+/// Two units that share a store whose key is not cached would both search for
+/// it; a file under its own name needs no search.
+pub fn units_measurements(
+	root: &Path,
+	units: &[(&str, &str)],
+	cache: &IvCache,
+	crack: bool,
+	registry: &MeasurementRegistry,
+	finished: &(dyn Fn(IvCache) + Sync),
+) -> Vec<UnitMeasurements> {
+	use rayon::prelude::*;
+	units
+		.par_iter()
+		.map(|(odx_name, version)| {
+			let mut own = cache.clone();
+			let found = unit_measurements(root, odx_name, version, &mut own, crack, registry);
+			finished(own.since(cache));
+			found
+		})
+		.collect()
+}
+
 /// The outcome of reading one `[MWB]` list.
 enum Listed {
 	Found(UnitMeasurements),
@@ -432,7 +463,7 @@ enum Unread {
 	/// A plain-TEA first row whose key's first three digits did not survive.
 	/// Those bytes come from the tag alone and a nonzero `product` never reaches
 	/// them; only the shifted regime's per-file mask does, so the file is
-	/// shifted, and only VCDS's runtime key reads that row.
+	/// shifted, and only the mask VCDS gets from its interface reads that row.
 	Shifted,
 }
 
@@ -519,24 +550,18 @@ enum SectionRead {
 fn read_section(path: &Path, tag: &str, cache: &mut IvCache, crack: bool) -> SectionRead {
 	let Ok(bytes) = std::fs::read(path) else { return SectionRead::Absent };
 	let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-	if crack {
-		recover_classic_key(&bytes, name, tag, cache);
+	let Some(section) = open_section(&bytes, name, tag, cache, crack) else {
+		return SectionRead::Absent;
+	};
+	match (section.status, section.text) {
+		(RodStatus::Tea, Some(text)) => SectionRead::Text { text, tea: true },
+		(RodStatus::Zlib, Some(text)) => SectionRead::Text { text, tea: false },
+		(RodStatus::SearchDeclined, _) => SectionRead::Shifted,
+		_ => match key_cost(&bytes, tag) {
+			Some(KeyCost::AnchorSweep) => SectionRead::Shifted,
+			_ => SectionRead::Locked,
+		},
 	}
-	for section in decode_rod_recover(&bytes, name, cache, false) {
-		if section.tag != tag {
-			continue;
-		}
-		return match (section.status, section.text) {
-			(RodStatus::Tea, Some(text)) => SectionRead::Text { text, tea: true },
-			(RodStatus::Zlib, Some(text)) => SectionRead::Text { text, tea: false },
-			(RodStatus::SearchDeclined, _) => SectionRead::Shifted,
-			_ => match key_cost(&bytes, tag) {
-				Some(KeyCost::AnchorSweep) => SectionRead::Shifted,
-				_ => SectionRead::Locked,
-			},
-		};
-	}
-	SectionRead::Absent
 }
 
 /// The words registry rows are shown with: `TTTEXT`'s records, by id.
@@ -705,7 +730,8 @@ pub fn load_registry(root: &Path, cache: &mut IvCache, crack: bool) -> RegistryL
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::rod::testkit::section;
+	use crate::rod::testkit::{named, section};
+	use crate::rod::{decode_rod_recover, recover_classic_key};
 
 	/// A registry line: the key in plaintext, the fields in its alphabet.
 	fn line(key: u32, fields: &str) -> String {
@@ -955,7 +981,7 @@ mod tests {
 			std::fs::create_dir_all(root.join("UDS_EV")).unwrap();
 			let registry: Vec<String> = REGISTRY_ROWS.iter().map(|(key, fields)| line(*key, fields)).collect();
 			let install = Self(root);
-			install.file("RM.rod", &[section("MWB", registry.join("\r\n").as_bytes(), true, None)]);
+			install.file("RM.rod", &[section("MWB", registry.join("\r\n").as_bytes(), true, named("RM.rod"))]);
 			install
 		}
 
@@ -997,7 +1023,7 @@ mod tests {
 	#[test]
 	fn a_units_own_list_reads_its_rows_counted_from_one() {
 		let install = Install::new("own");
-		install.file("EV_UnitA_001.rod", &[section("MWB", &list(&[3, 5]), true, None)]);
+		install.file("EV_UnitA_001.rod", &[section("MWB", &list(&[3, 5]), true, named("EV_UnitA_001.rod"))]);
 		let found = install.lookup("EV_UnitA", "001017");
 		assert_eq!(dids(&install, &found), vec![4099, 4101], "rows 3 and 5, not 2 and 4 (4098, 4100)");
 		let UnitMeasurements::Found { store, rows, .. } = found else {
@@ -1010,8 +1036,11 @@ mod tests {
 	#[test]
 	fn a_list_held_in_an_included_store_is_followed_and_a_damaged_first_row_repaired() {
 		let install = Install::new("inc");
-		install.file("IV_EV_UnitB_M1.rod", &[section("MWB", &list(&[1, 6]), true, None)]);
-		install.file("IV_EV_UnitB_D2.rod", &[section("DTC", b"000001,00\r\n", true, None)]);
+		install.file("IV_EV_UnitB_M1.rod", &[section("MWB", &list(&[1, 6]), true, named("IV_EV_UnitB_M1.rod"))]);
+		install.file(
+			"IV_EV_UnitB_D2.rod",
+			&[section("DTC", b"000001,00\r\n", true, named("IV_EV_UnitB_D2.rod"))],
+		);
 		// A plain-TEA `[INC]` under a nonzero product: its first eight bytes
 		// decode wrong, which is the case the repair exists for.
 		let inc = format!("{}\r\n{}\r\n", line(123_456, "IV_EV_UnitB_M1"), line(654_321, "IV_EV_UnitB_D2"));
@@ -1048,15 +1077,15 @@ mod tests {
 		// and telling the person a store is missing would send them looking for a
 		// file that is there.
 		let install = Install::new("inc-shifted");
-		install.file("IV_EV_UnitS_M1.rod", &[section("MWB", &list(&[1]), true, None)]);
+		install.file("IV_EV_UnitS_M1.rod", &[section("MWB", &list(&[1]), true, named("IV_EV_UnitS_M1.rod"))]);
 		let inc = format!("\u{1}\u{7}\u{2}456,Q{}\r\n", &line(123_456, "IV_EV_UnitS_M1")[8..]);
-		install.file("EV_UnitS.rod", &[section("INC", inc.as_bytes(), false, None)]);
+		install.file("EV_UnitS.rod", &[section("INC", inc.as_bytes(), false, named("EV_UnitS.rod"))]);
 		assert!(matches!(install.lookup("EV_UnitS", ""), UnitMeasurements::Shifted { section, .. } if section == "INC"));
 
 		// Whereas a first row that kept its digits and names nothing here is a
 		// store the install lacks.
 		let inc = format!("{}\r\n", line(123_456, "IV_EV_Gone_M1"));
-		install.file("EV_UnitG.rod", &[section("INC", inc.as_bytes(), false, None)]);
+		install.file("EV_UnitG.rod", &[section("INC", inc.as_bytes(), false, named("EV_UnitG.rod"))]);
 		assert!(matches!(install.lookup("EV_UnitG", ""), UnitMeasurements::Unresolved { .. }));
 	}
 
@@ -1080,25 +1109,25 @@ mod tests {
 
 		// A shifted section: the file's mask moves the first block's IV, so its
 		// first two bytes no longer read as the zlib header.
-		let mut shifted = section("MWB", &list(&[1]), true, None);
+		let mut shifted = section("MWB", &list(&[1]), true, named("EV_Shifted.rod"));
 		let body = shifted.iter().position(|&b| b == b'\n').unwrap() + 1 + 6;
 		shifted[body] ^= 0x5a;
 		install.file("EV_Shifted.rod", &[shifted]);
 		assert!(matches!(install.lookup("EV_Shifted", ""), UnitMeasurements::Shifted { section, .. } if section == "MWB"));
 
-		install.file("EV_Elsewhere.rod", &[section("MWB", &list(&[2, 99]), true, None)]);
+		install.file("EV_Elsewhere.rod", &[section("MWB", &list(&[2, 99]), true, named("EV_Elsewhere.rod"))]);
 		assert!(matches!(
 			install.lookup("EV_Elsewhere", ""),
 			UnitMeasurements::Mismatched { listed: 2, outside: 1, .. }
 		));
 
-		install.file("EV_Silent.rod", &[section("DTC", b"000001,00\r\n", true, None)]);
+		install.file("EV_Silent.rod", &[section("DTC", b"000001,00\r\n", true, named("EV_Silent.rod"))]);
 		assert_eq!(install.lookup("EV_Silent", ""), UnitMeasurements::NoList { candidates: 1 });
 	}
 
 	#[test]
 	fn a_classic_key_is_recovered_for_one_section_and_a_shifted_one_is_never_searched() {
-		let open = section("MWB", &list(&[1]), true, None);
+		let open = section("MWB", &list(&[1]), true, named("EV_Open.rod"));
 		assert!(
 			recover_classic_key(&open, "EV_Open.rod", "MWB", &mut IvCache::default()),
 			"not blocked: opens as it is"

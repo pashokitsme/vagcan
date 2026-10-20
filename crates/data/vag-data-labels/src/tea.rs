@@ -66,18 +66,59 @@ pub(crate) fn tea_cbc_encrypt(plain: &[u8], key: &[u32; 4], iv: [u8; 8]) -> Vec<
 /// TEA-CBC decrypt: `cipher` is processed in 8-byte blocks (any trailing
 /// partial block, which should not occur for well-formed records, is
 /// ignored). `P_i = TEA_dec(C_i) XOR C_{i-1}`, with `C_{-1} = iv`.
+///
+/// Each plaintext block needs only its own cipher block and the one before it,
+/// never the plaintext before it, so the blocks decrypt independently: runs of
+/// 64 KiB go to rayon's pool. The global tables are megabytes of
+/// cipher — `TTTEXT`, `RM`, `RD` — and one core spent tens of milliseconds on
+/// each. Anything up to one run — a label file, a fault record — is decrypted
+/// right here, as before: handing it to the pool would cost more than it does.
 pub(crate) fn tea_cbc_decrypt(cipher: &[u8], key: &[u32; 4], iv: [u8; 8]) -> Vec<u8> {
-	let mut out = Vec::with_capacity(cipher.len());
-	let mut prev = iv;
-	for block in cipher.chunks_exact(8) {
-		let block: [u8; 8] = block.try_into().unwrap();
-		let dec = tea_decrypt_block(block, key);
-		let mut plain = [0u8; 8];
-		for i in 0..8 {
-			plain[i] = dec[i] ^ prev[i];
+	use rayon::prelude::*;
+	/// Bytes per task: big enough that a task is far more work than handing it out.
+	const CHUNK: usize = 64 * 1024;
+	let whole = cipher.len() / 8 * 8;
+	let mut out = vec![0u8; whole];
+	let run = |n: usize, plain: &mut [u8]| {
+		let start = n * CHUNK;
+		for (k, plain) in plain.chunks_exact_mut(8).enumerate() {
+			let at = start + 8 * k;
+			let prev: [u8; 8] = match at {
+				0 => iv,
+				_ => cipher[at - 8..at].try_into().unwrap(),
+			};
+			let dec = tea_decrypt_block(cipher[at..at + 8].try_into().unwrap(), key);
+			for i in 0..8 {
+				plain[i] = dec[i] ^ prev[i];
+			}
 		}
-		out.extend_from_slice(&plain);
-		prev = block;
+	};
+	match whole <= CHUNK {
+		true => run(0, &mut out),
+		false => out.par_chunks_mut(CHUNK).enumerate().for_each(|(n, plain)| run(n, plain)),
 	}
 	out
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn a_cipher_of_many_runs_decrypts_as_one_block_after_another_would() {
+		// Several 64 KiB runs and a ragged end, so every run boundary is crossed:
+		// the first block of each run takes the previous run's last cipher block
+		// as its IV, and only the very first takes `iv`.
+		let key = [0x0123_4567, 0x89ab_cdef, 0xfedc_ba98, 0x7654_3210];
+		let iv = [1, 2, 3, 4, 5, 6, 7, 8];
+		let plain: Vec<u8> = (0..(3 * 64 * 1024 + 8 * 13))
+			.map(|i: u32| (i.wrapping_mul(31) ^ (i >> 7)) as u8)
+			.collect();
+		let cipher = tea_cbc_encrypt(&plain, &key, iv);
+		assert_eq!(tea_cbc_decrypt(&cipher, &key, iv), plain);
+		// A trailing partial block is ignored, as before.
+		let mut ragged = cipher.clone();
+		ragged.extend_from_slice(&[9, 9, 9]);
+		assert_eq!(tea_cbc_decrypt(&ragged, &key, iv), plain);
+	}
 }

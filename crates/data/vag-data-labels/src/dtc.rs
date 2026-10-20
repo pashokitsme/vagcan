@@ -308,11 +308,12 @@ enum Section {
 	Absent,
 }
 
-/// Decode one file's `[DTC]` section, using the cache and never the search.
+/// Decode one file's `[DTC]` section, by its file name and the cache, never the
+/// search.
 ///
-/// Every `[DTC]` section in these label files carry a nonzero per-record term, so
-/// none of them opens without a recovered key — which is why the cache is the
-/// mechanism here and not an optimisation.
+/// A `[DTC]` section opens by its file's name (2026-10-20,
+/// [`crate::rod::name_product`]); the cache holds what the name does not give —
+/// a shifted file's key, recovered once.
 fn section_of(path: &Path, cache: &IvCache) -> Section {
 	let Ok(bytes) = std::fs::read(path) else { return Section::Absent };
 	let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
@@ -351,7 +352,7 @@ pub fn find_named(root: &Path, name: &str) -> Option<PathBuf> {
 		let Ok(entries) = std::fs::read_dir(&dir) else { continue };
 		for entry in entries.flatten() {
 			let path = entry.path();
-			if path.is_dir() {
+			if crate::label_files::is_dir(&entry) {
 				dirs.push(path);
 			} else if path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.eq_ignore_ascii_case(name)) {
 				return Some(path);

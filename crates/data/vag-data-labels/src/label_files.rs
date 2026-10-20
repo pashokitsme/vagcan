@@ -38,58 +38,71 @@ fn file_name_or(path: &Path, fallback: &str) -> String {
 /// Walk `dir`, parse every `.lbl`, decrypt+parse every `.clb`, into label files.
 /// Non-file entries and other extensions are counted, not parsed. Read errors
 /// are counted (and the file skipped), never fatal.
+///
+/// The files are read, decrypted and parsed on rayon's pool, three thousand of
+/// them, and come back in the directory's own order — the order a loop gave —
+/// so the cache built from them holds the same rows under the same ids.
 pub fn load_label_files(dir: &Path) -> io::Result<LabelFileLoad> {
-	let entries = std::fs::read_dir(dir)?;
+	use rayon::prelude::*;
 
-	let mut files = Vec::new();
-	let mut lbl_count = 0;
-	let mut clb_count = 0;
-	let mut other_count = 0;
-	let mut read_errors = 0;
+	/// One entry, as far as the listing says.
+	enum Kind {
+		Lbl,
+		Clb,
+		Other,
+		NotAFile,
+	}
+	let paths: Vec<PathBuf> = std::fs::read_dir(dir)?.map(|entry| entry.map(|e| e.path())).collect::<io::Result<_>>()?;
+	let read: Vec<(Kind, Option<LabelFile>)> = paths
+		.par_iter()
+		.map(|path| {
+			let kind = match () {
+				_ if !path.is_file() => Kind::NotAFile,
+				_ if has_ext(path, "lbl") => Kind::Lbl,
+				_ if has_ext(path, "clb") => Kind::Clb,
+				_ => Kind::Other,
+			};
+			let parsed = match kind {
+				Kind::Lbl | Kind::Clb => match std::fs::read(path) {
+					Ok(bytes) => {
+						let name = file_name_or(path, "<?>");
+						Some(match kind {
+							Kind::Clb => parse_label(name, &decrypt_clb(&bytes)),
+							_ => parse_label(name, &bytes),
+						})
+					}
+					Err(e) => {
+						eprintln!("warn: cannot read {}: {e}", path.display());
+						None
+					}
+				},
+				Kind::Other | Kind::NotAFile => None,
+			};
+			(kind, parsed)
+		})
+		.collect();
 
-	for entry in entries {
-		let entry = entry?;
-		let path = entry.path();
-		if !path.is_file() {
-			continue;
+	let mut load = LabelFileLoad {
+		files: Vec::new(),
+		lbl_count: 0,
+		clb_count: 0,
+		other_count: 0,
+		read_errors: 0,
+	};
+	for (kind, parsed) in read {
+		match kind {
+			Kind::Lbl => load.lbl_count += 1,
+			Kind::Clb => load.clb_count += 1,
+			Kind::Other => load.other_count += 1,
+			Kind::NotAFile => continue,
 		}
-		if has_ext(&path, "lbl") {
-			lbl_count += 1;
-			match std::fs::read(&path) {
-				Ok(bytes) => {
-					let name = file_name_or(&path, "<?>");
-					files.push(parse_label(name, &bytes));
-				}
-				Err(e) => {
-					eprintln!("warn: cannot read {}: {e}", path.display());
-					read_errors += 1;
-				}
-			}
-		} else if has_ext(&path, "clb") {
-			clb_count += 1;
-			match std::fs::read(&path) {
-				Ok(bytes) => {
-					let name = file_name_or(&path, "<?>");
-					let decoded = decrypt_clb(&bytes);
-					files.push(parse_label(name, &decoded));
-				}
-				Err(e) => {
-					eprintln!("warn: cannot read {}: {e}", path.display());
-					read_errors += 1;
-				}
-			}
-		} else {
-			other_count += 1;
+		match parsed {
+			Some(file) => load.files.push(file),
+			None if !matches!(kind, Kind::Other) => load.read_errors += 1,
+			None => {}
 		}
 	}
-
-	Ok(LabelFileLoad {
-		files,
-		lbl_count,
-		clb_count,
-		other_count,
-		read_errors,
-	})
+	Ok(load)
 }
 
 /// Outcome of a recursive scan (see [`scan_label_files`]).
@@ -217,13 +230,27 @@ fn rank(candidate: &str, wanted: &str, version: Option<&str>) -> Option<OdxMatch
 	Some(if versioned { OdxMatch::Version } else { OdxMatch::Family })
 }
 
+/// Whether a directory entry is a directory, from what the listing already says.
+///
+/// `Path::is_dir` asks the file system again, once per entry: a unit's lookup
+/// walks `UDS_EV`'s sixteen thousand files, and that second call per file was
+/// most of what each unit cost a registry read once its keys came free. A link
+/// is still followed, as `is_dir` would.
+pub(crate) fn is_dir(entry: &std::fs::DirEntry) -> bool {
+	match entry.file_type() {
+		Ok(kind) if kind.is_symlink() => entry.path().is_dir(),
+		Ok(kind) => kind.is_dir(),
+		Err(_) => entry.path().is_dir(),
+	}
+}
+
 fn collect_rod_family(dir: &Path, wanted: &str, version: Option<&str>, hits: &mut Vec<(OdxMatch, PathBuf)>) {
 	let Ok(entries) = std::fs::read_dir(dir) else {
 		return;
 	};
 	for entry in entries.flatten() {
 		let path = entry.path();
-		if path.is_dir() {
+		if is_dir(&entry) {
 			collect_rod_family(&path, wanted, version, hits);
 			continue;
 		}
@@ -245,7 +272,7 @@ fn collect_rod_matches(dir: &Path, wanted: &str, hits: &mut Vec<PathBuf>) {
 	};
 	for entry in entries.flatten() {
 		let path = entry.path();
-		if path.is_dir() {
+		if is_dir(&entry) {
 			collect_rod_matches(&path, wanted, hits);
 			continue;
 		}

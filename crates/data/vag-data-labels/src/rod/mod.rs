@@ -45,9 +45,9 @@ pub enum RodStatus {
 	/// `TTTEXT2.ROD` sat "uncrackable" through four writeups that named it as
 	/// the next thing to open.
 	SearchDeclined,
-	/// Could not be decoded: bad framing, a first block needing the
-	/// (unavailable) nonzero per-record `product` term, a short/misaligned
-	/// cipher, or an inflate failure.
+	/// Could not be decoded: bad framing, a key the file's name does not give
+	/// and nothing cached (a file under another name, or [`decode_rod`], which
+	/// knows no name), a short/misaligned cipher, or an inflate failure.
 	Undecodable,
 }
 
@@ -59,8 +59,10 @@ pub struct RodSection {
 	pub text: Option<String>,
 }
 
-/// IV for a `.rod` record's first TEA-CBC block, in the `product = 0` case
-/// (correct whenever the per-record string is empty/NUL — the common case).
+/// IV for a `.rod` record's first TEA-CBC block, in the `product = 0` case —
+/// a file with no name, which is what [`decode_rod`] decodes as.
+/// `IV[0..3]` comes from the tag alone and is the same for every `product`,
+/// which is what the search and the shift test lean on.
 /// `tag` must be at least 3 bytes (all real section tags are 2-4 uppercase
 /// ASCII letters, so this always holds for tags accepted by the framing
 /// scanner below).
@@ -78,6 +80,59 @@ pub(crate) fn rod_block0_iv(tag: &[u8]) -> [u8; 8] {
 		iv[i] = s[i].wrapping_mul(MT[OFF_ROD[i]]);
 	}
 	iv
+}
+
+/// The first-block IV for a section under a given 5-byte `product`: the seed is
+/// the tag's first three bytes and then those five, each byte shifted by `KS`
+/// and multiplied by `MT` (`.archive/research/labels/rod-labels.md` §1.1).
+/// With five zero bytes this is [`rod_block0_iv`].
+pub(crate) fn rod_iv(tag: &[u8], product5: [u8; 5]) -> [u8; 8] {
+	let m = tag[1] as usize;
+	let mut seed = [0u8; 8];
+	seed[..3].copy_from_slice(&tag[..3]);
+	seed[3..].copy_from_slice(&product5);
+	std::array::from_fn(|i| seed[i].wrapping_add(KS[(m * (i + 2)) & 0xff]).wrapping_mul(MT[OFF_ROD[i]]))
+}
+
+/// The `product` VCDS seeds every section of a file with, from the file's name.
+///
+/// **It is the file name** (2026-10-20). What `rod-labels.md` §1.1 called a
+/// runtime record string is the name VCDS opened the file under, cut at its
+/// first `.` — so `EV_ECM20TFS.rod` gives `EV_ECM20TFS`, and `TTText-RUS.rod`
+/// gives `TTTEXT-RUS`. The stem is upper-cased, and the product is its first
+/// character times the product of all of them: the accumulator starts at the
+/// first character rather than at one, so that character counts twice. The
+/// characters are signed, as VCDS multiplies them; every name in an
+/// installation is ASCII, where that changes nothing. A name with an empty
+/// stem has product 0.
+///
+/// Checked against the 57 keys brute force had recovered for the reference
+/// install (57 of 57), and on files brute force never opened. A path is
+/// accepted: only its last component counts.
+pub fn name_product(file: &str) -> u64 {
+	let base = file.rsplit(['/', '\\']).next().unwrap_or(file);
+	let stem = base.split('.').next().unwrap_or_default().as_bytes();
+	let signed = |c: u8| c.to_ascii_uppercase() as i8 as i64 as u64;
+	match stem.first() {
+		Some(&first) => stem.iter().fold(signed(first), |product, &c| product.wrapping_mul(signed(c))),
+		None => 0,
+	}
+}
+
+/// The low five bytes of a `product`, as the IV seed takes them.
+fn product5(product: u64) -> [u8; 5] {
+	let bytes = product.to_le_bytes();
+	[bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]]
+}
+
+/// The first-block IV of section `tag` in the file named `file`, before any
+/// per-file mask (`.archive/research/labels/tttext2.md` §3.3a).
+///
+/// VCDS also adds a byte `C` to every seed byte when the file is `TTTEXT` or
+/// `UNIT` (tttext2.md §3.3a). It is zero in every install checked: both files
+/// open with this IV.
+pub(crate) fn rod_named_iv(tag: &[u8], file: &str) -> [u8; 8] {
+	rod_iv(tag, product5(name_product(file)))
 }
 
 /// Build the first-block IV for a section whose per-record `product` term is
@@ -133,19 +188,17 @@ fn inflate_with_iv(sc: &SectionCipher<'_>, iv: [u8; 8]) -> Option<Vec<u8>> {
 /// Huffman header) and it is the reason the key cache needs no new format: a
 /// shifted section is openable from the same five bytes as a classic one.
 ///
-/// Also returns the file's `D[2]` — the third byte of the mask, which the
-/// winning anchor pins. It is worth carrying because the mask is a property of
-/// the **file**: knowing it turns the sixty-anchor sweep into a single known
-/// anchor for every other section of the same file, and on the *search* side
-/// that is a 60× saving on hours, not on milliseconds.
-fn decode_shifted(tag_str: &str, tag: &[u8], sc: &SectionCipher<'_>, iv3to8: [u8; 5]) -> Option<(RodSection, u8)> {
+/// Also returns the section's whole first-block IV. It is worth carrying because
+/// the mask is a property of the **file**: the IV XOR the name's IV is the mask,
+/// all eight bytes of it, and with it every other section of the same file opens
+/// with no search at all.
+fn decode_shifted(tag_str: &str, sc: &SectionCipher<'_>, iv3to8: [u8; 5]) -> Option<(RodSection, [u8; 8])> {
 	let first: [u8; 8] = sc.cipher.get(0..8)?.try_into().ok()?;
 	let t = crate::tea::tea_decrypt_block(first, &KEY_ROD);
 	let mut iv = [0u8; 8];
 	iv[0] = t[0] ^ 0x78;
 	iv[1] = t[1] ^ 0xda;
 	iv[3..8].copy_from_slice(&iv3to8);
-	let model2 = rod_block0_iv(tag)[2];
 	deflate_anchors().find_map(|d0| {
 		iv[2] = t[2] ^ d0;
 		inflate_with_iv(sc, iv).map(|bytes| {
@@ -154,21 +207,9 @@ fn decode_shifted(tag_str: &str, tag: &[u8], sc: &SectionCipher<'_>, iv3to8: [u8
 				status: RodStatus::Zlib,
 				text: Some(decode_latin1(&bytes)),
 			};
-			(section, iv[2] ^ model2)
+			(section, iv)
 		})
 	})
-}
-
-/// The deflate anchor for a shifted section, once the file's `D[2]` is known.
-///
-/// `plaintext[2] = t[2] ^ IV[2]` and `IV[2] = IV_model[2] ^ D[2]`, so the byte
-/// the searcher would otherwise have to guess sixty times is simple arithmetic.
-///
-/// Only the search has a use for it.
-fn anchor_from_shift(tag: &[u8], cipher: &[u8], shift2: u8) -> Option<u8> {
-	let first: [u8; 8] = cipher.get(0..8)?.try_into().ok()?;
-	let t = crate::tea::tea_decrypt_block(first, &KEY_ROD);
-	Some(t[2] ^ rod_block0_iv(tag)[2] ^ shift2)
 }
 
 /// Decode raw Latin-1 bytes into a `String`, one byte per `char`. Matches
@@ -286,9 +327,9 @@ fn decode_with_iv(tag_str: &str, sc: &SectionCipher<'_>, iv: [u8; 8]) -> RodSect
 }
 
 /// Decode one section's raw payload bytes (as captured between the `[TAG]`
-/// and `[/TAG]` markers) into a [`RodSection`], using the `product = 0` IV.
-/// Sections whose per-record `product` term is nonzero come back
-/// `Undecodable`; use `decode_rod_recover` to recover those offline.
+/// and `[/TAG]` markers) into a [`RodSection`], using the `product = 0` IV —
+/// the key of a file with no name. A real file's sections are keyed by its
+/// name; [`open_section`] and [`decode_rod_recover`] take it.
 fn decode_section(tag: &[u8], payload: &[u8]) -> RodSection {
 	let tag_str = decode_latin1(tag);
 	if tag.len() < 3 {
@@ -308,11 +349,12 @@ fn decode_section(tag: &[u8], payload: &[u8]) -> RodSection {
 	}
 }
 
-/// Decode a `.rod` file into its sections. Sections whose first block needs
-/// the (unavailable) nonzero per-record `product` term, or that are
-/// otherwise malformed (bad framing, short/misaligned cipher, inflate
-/// failure), come back `Undecodable` with `text: None`. Never panics on
-/// malformed input.
+/// Decode a `.rod` file into its sections **as a file with no name**
+/// (`product = 0`). Every real file's key is its name ([`name_product`]), so
+/// for a file off disk use [`decode_rod_recover`] or [`open_section`], which
+/// take it; here its compressed sections come back `Undecodable` with
+/// `text: None`, as do malformed ones (bad framing, short/misaligned cipher,
+/// inflate failure). Never panics on malformed input.
 pub fn decode_rod(data: &[u8]) -> Vec<RodSection> {
 	let mut sections = Vec::new();
 	let mut pos = 0usize;
@@ -344,9 +386,12 @@ pub fn decode_rod(data: &[u8]) -> Vec<RodSection> {
 // ---------------------------------------------------------------------------
 
 /// A persistent cache of recovered first-block `iv[3..8]` values, keyed by
-/// `(file, tag)`. Recovering a `product != 0` section is CPU-heavy (~1 min),
-/// so the result is cached to disk to make repeat runs instant. Serialized as
-/// a JSON object of `"<file>\t<tag>" -> [5 bytes]`.
+/// `(file, tag)`. It holds only keys the file name does not give
+/// ([`name_product`]): a shifted file's — one per file is enough, it opens the
+/// rest — and a section under a name that is not its own. Each cost a search of
+/// minutes to hours, so it is cached to disk. Serialized as a JSON object of
+/// `"<file>\t<tag>" -> [5 bytes]`. Caches written before the name was known
+/// also hold classic keys; those are still read, and never needed.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IvCache {
 	#[serde(flatten)]
@@ -404,6 +449,25 @@ impl IvCache {
 	pub fn insert(&mut self, file: &str, tag: &str, iv3to8: [u8; 5]) {
 		self.entries.insert(Self::key(file, tag), iv3to8);
 	}
+
+	/// Take in every key `other` holds, its key winning where both hold one.
+	pub fn absorb(&mut self, other: IvCache) {
+		self.entries.extend(other.entries);
+	}
+
+	/// The keys this cache holds that `base` does not, or holds otherwise: what a
+	/// copy handed to a parallel lookup found. Taking in only these keeps one
+	/// lookup's stale copy of a key from undoing another's fresh one.
+	pub fn since(&self, base: &IvCache) -> IvCache {
+		IvCache {
+			entries: self
+				.entries
+				.iter()
+				.filter(|(k, v)| base.entries.get(*k) != Some(*v))
+				.map(|(k, v)| (k.clone(), *v))
+				.collect(),
+		}
+	}
 }
 
 /// The brute-force IV recovery.
@@ -439,9 +503,9 @@ pub fn recover_zlib_iv3to8(tag: &[u8], payload: &[u8]) -> Option<[u8; 5]> {
 /// and the search declines rather than fails.
 ///
 /// A section that answers `false` here is not corrupt: 40 % of the label files
-/// carries a per-file XOR on this IV, and one of those files was opened by
-/// deriving it (`.archive/research/labels/tttext2.md`). Nothing in this crate recovers that
-/// XOR yet, which is exactly why the two cases are reported apart.
+/// carries a per-file XOR on this IV (`.archive/research/labels/tttext2.md`). One key of such
+/// a file gives the whole XOR and opens the rest of it ([`regime`]), but the key
+/// itself costs the anchor sweep, which is why the two cases are reported apart.
 fn search_has_a_crib(tag: &[u8], cipher: &[u8]) -> bool {
 	if tag.len() < 3 || cipher.len() < 8 {
 		return false;
@@ -452,20 +516,20 @@ fn search_has_a_crib(tag: &[u8], cipher: &[u8]) -> bool {
 	t[0] ^ iv[0] == 0x78 && t[1] ^ iv[1] == 0xda
 }
 
-/// Like [`decode_rod`], but for every section that fails the `product = 0`
-/// decode AND is a zlib section, recover the missing `iv[3..8]` offline
-/// (brute force) and retry. Recovered values are read from / written to
-/// `cache` under the key `(file, tag)`; pass the file's display name as
-/// `file`. Set `run_crack = false` to only use already-cached values.
 /// What it would cost to open a section whose key is not cached yet.
 ///
 /// The difference is not a matter of degree. A **classic** section's IV is
 /// tag-derived and exact, so `plaintext[0..2]` reads `78 da` and deflate byte 0
 /// comes free: one search over the multiplicatively-reduced candidate sets, and
-/// a minute or two. A **shifted** file XORs a runtime mask over the finished IV
+/// a minute or two. A **shifted** file XORs a mask — the VCDS interface's answer
+/// to a challenge (`.archive/research/labels/tttext2.md` §3.3b) — over the finished IV
 /// (`.archive/research/labels/tttext2.md` §3.3), which destroys both the anchor and the
 /// reduction — so the only route is every legal anchor against the full space,
 /// sixty searches wide, and that is hours to days rather than minutes.
+///
+/// Since the key is known to be the file name (2026-10-20, [`name_product`]), a
+/// classic section under its own name needs no search at all; `OneSearch` is
+/// what one renamed, or from another build than its name says, would cost.
 ///
 /// Worth asking *before* starting, because the two look identical while running:
 /// a spinner that will stop in ninety seconds and one that will not stop today
@@ -479,7 +543,7 @@ pub enum KeyCost {
 }
 
 /// What opening `want_tag` in this container would cost, or `None` if the
-/// section is absent, uncompressed, or already readable without a search.
+/// section is absent or uncompressed.
 pub fn key_cost(data: &[u8], want_tag: &str) -> Option<KeyCost> {
 	let mut pos = 0usize;
 	while let Some((tag, payload_start)) = find_next_tag(data, pos) {
@@ -490,13 +554,9 @@ pub fn key_cost(data: &[u8], want_tag: &str) -> Option<KeyCost> {
 			if !sc.compressed || sc.cipher.len() < 8 {
 				return None;
 			}
-			let first: [u8; 8] = sc.cipher[0..8].try_into().ok()?;
-			let t = crate::tea::tea_decrypt_block(first, &KEY_ROD);
-			let iv0 = rod_block0_iv(&tag);
 			// The zlib magic is plaintext, so it survives an exact IV and not a
 			// masked one — which is the whole test.
-			let classic = t[0] ^ iv0[0] == 0x78 && t[1] ^ iv0[1] == 0xda;
-			return Some(match classic {
+			return Some(match search_has_a_crib(&tag, sc.cipher) {
 				true => KeyCost::OneSearch,
 				false => KeyCost::AnchorSweep,
 			});
@@ -517,6 +577,215 @@ fn key_opens(tag: &[u8], sc: &SectionCipher<'_>, iv3to8: [u8; 5]) -> bool {
 	matches!(section.status, RodStatus::Zlib | RodStatus::Tea)
 }
 
+/// One `[TAG]…[/TAG]` span of a container: its tag, and its payload — `None`
+/// when the file ends before the section does.
+struct Framed<'a> {
+	tag: Vec<u8>,
+	payload: Option<&'a [u8]>,
+}
+
+/// Every section of a container, in file order. An unterminated section is the
+/// last one: where it ends cannot be told, so nothing after it is guessed at.
+fn frame(data: &[u8]) -> Vec<Framed<'_>> {
+	let mut out = Vec::new();
+	let mut pos = 0usize;
+	while let Some((tag, payload_start)) = find_next_tag(data, pos) {
+		match find_close(data, payload_start, &tag) {
+			Some((payload_end, next_pos)) => {
+				out.push(Framed {
+					tag,
+					payload: Some(&data[payload_start..payload_end]),
+				});
+				pos = next_pos;
+			}
+			None => {
+				out.push(Framed { tag, payload: None });
+				break;
+			}
+		}
+	}
+	out
+}
+
+/// Which brute force a call may start ([`decode_rod_with`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Search {
+	/// None: the name's key and the cache only.
+	Off,
+	/// A classic section whose name does not give its key: one search, minutes.
+	/// What `setup` allows: it never starts the sweep below.
+	Classic,
+	/// That, and the anchor sweep a shifted file's first section needs: hours.
+	/// Only `vagcan dev vcds rod`, and an unseal the person asked for.
+	All,
+}
+
+/// Which IV regime a file is in (`.archive/research/labels/tttext2.md` §3).
+enum Regime {
+	/// Every section's IV is the name's ([`rod_named_iv`]).
+	Classic,
+	/// Every section but `[CMP]` has the name's IV XOR this mask.
+	Shifted([u8; 8]),
+	/// Shifted, and no section's key is known, so neither is the mask.
+	ShiftedUnknown,
+}
+
+/// The section's cipher, when its framing reads and its tag is long enough to
+/// derive an IV from.
+fn cipher_of<'a>(framed: &Framed<'a>) -> Option<SectionCipher<'a>> {
+	match framed.tag.len() >= 3 {
+		true => parse_section_cipher(framed.payload?),
+		false => None,
+	}
+}
+
+/// The regime of a file, and its mask when that can be had.
+///
+/// The test is the zlib magic of any compressed section after `[CMP]` under the
+/// name's IV: a classic file shows `78 da`, a shifted one does not. A shifted
+/// file's mask is the whole IV of one opened section XOR the name's IV — from a
+/// key cached for any of its sections, or, under [`Search::All`], from a search
+/// for the smallest one. One key opens the whole file.
+fn regime(sections: &[Framed<'_>], file: &str, cache: &mut IvCache, search: Search) -> Regime {
+	let compressed: Vec<(&[u8], SectionCipher<'_>)> = sections
+		.iter()
+		.filter(|f| f.tag != b"CMP")
+		.filter_map(|f| cipher_of(f).map(|sc| (f.tag.as_slice(), sc)))
+		.filter(|(_, sc)| sc.compressed && sc.cipher.len() >= 8)
+		.collect();
+	if compressed.is_empty() || compressed.iter().any(|(tag, sc)| search_has_a_crib(tag, sc.cipher)) {
+		return Regime::Classic;
+	}
+	let mask = |tag: &[u8], iv: [u8; 8]| -> [u8; 8] {
+		let named = rod_named_iv(tag, file);
+		std::array::from_fn(|i| iv[i] ^ named[i])
+	};
+	for (tag, sc) in &compressed {
+		let tag_str = decode_latin1(tag);
+		if let Some(iv3to8) = cache.get(file, &tag_str)
+			&& let Some((_, iv)) = decode_shifted(&tag_str, sc, iv3to8)
+		{
+			return Regime::Shifted(mask(tag, iv));
+		}
+	}
+	// Reached with a key cached for this file only when it opens nothing: another
+	// build's under the same name. Under `All` it is searched past, and the key
+	// found replaces it; `setup` searches with `Classic`, which never sweeps.
+	if search == Search::All {
+		let mut by_size: Vec<&(&[u8], SectionCipher<'_>)> = compressed.iter().collect();
+		by_size.sort_by_key(|(_, sc)| sc.cipher.len());
+		for (tag, sc) in by_size {
+			let tag_str = decode_latin1(tag);
+			if let Some(iv3to8) = crack::recover_iv3to8(tag, sc.cipher, sc.plainlen, None)
+				&& let Some((_, iv)) = decode_shifted(&tag_str, sc, iv3to8)
+			{
+				cache.insert(file, &tag_str, iv3to8);
+				return Regime::Shifted(mask(tag, iv));
+			}
+		}
+	}
+	Regime::ShiftedUnknown
+}
+
+/// Open one framed section of `file`, in the file's regime.
+///
+/// The name's IV first — with the file's mask over it when the file is shifted
+/// and the mask is known — which opens every section of a classic file and
+/// every section of a shifted one once a single key of it is known. Then, for a
+/// compressed section that still did not open:
+///
+/// * a crib present (classic regime, but not this name's key: a file renamed, or
+///   another build's under the same name) — the cached key, if it opens this
+///   file, else one search under [`Search::Classic`] and up;
+/// * no crib (shifted, mask unknown) — a key cached for this very section, else
+///   [`RodStatus::SearchDeclined`].
+fn open_framed(framed: &Framed<'_>, file: &str, regime: &Regime, cache: &mut IvCache, search: Search) -> RodSection {
+	let tag = framed.tag.as_slice();
+	let tag_str = decode_latin1(tag);
+	let undecodable = |tag_str: String| RodSection {
+		tag: tag_str,
+		status: RodStatus::Undecodable,
+		text: None,
+	};
+	let Some(sc) = cipher_of(framed) else {
+		return undecodable(tag_str);
+	};
+	let named = rod_named_iv(tag, file);
+	let iv = match regime {
+		// `[CMP]` is exempt from the mask (tttext2.md §3.3a).
+		Regime::Shifted(mask) if tag != b"CMP" => std::array::from_fn(|i| named[i] ^ mask[i]),
+		_ => named,
+	};
+	let section = decode_with_iv(&tag_str, &sc, iv);
+	if section.status != RodStatus::Undecodable || !sc.compressed {
+		return section;
+	}
+	if search_has_a_crib(tag, sc.cipher) {
+		// A cached key is used only if it opens this file — see [`key_opens`].
+		if let Some(iv3to8) = cache.get(file, &tag_str).filter(|&k| key_opens(tag, &sc, k)) {
+			return decode_with_iv(&tag_str, &sc, rod_block0_iv_recovered(tag, iv3to8));
+		}
+		if search != Search::Off
+			&& let Some(iv3to8) = crack::recover_iv3to8(tag, sc.cipher, sc.plainlen, None)
+		{
+			cache.insert(file, &tag_str, iv3to8);
+			return decode_with_iv(&tag_str, &sc, rod_block0_iv_recovered(tag, iv3to8));
+		}
+		return section;
+	}
+	// A classic IV[0..3] is tag-derived; a shifted one's is not, and has to be
+	// read back off the known plaintext instead.
+	let cached = cache.get(file, &tag_str);
+	if let Some(iv3to8) = cached
+		&& let Some((opened, _)) = decode_shifted(&tag_str, &sc, iv3to8)
+	{
+		return opened;
+	}
+	// The mask is known and still did not open this section: the file is under
+	// a name not its own, whose IV differs from the true one per tag past byte 2.
+	// Bytes 0..3 of an IV come from the tag alone, so the mask's are right and
+	// the anchor follows from them — one search with the anchor known, not sixty.
+	if let Regime::Shifted(mask) = regime
+		&& search == Search::All
+		&& let Some(first) = sc.cipher.get(0..8).and_then(|b| <[u8; 8]>::try_from(b).ok())
+	{
+		let anchor = crate::tea::tea_decrypt_block(first, &KEY_ROD)[2] ^ named[2] ^ mask[2];
+		if let Some(iv3to8) = crack::recover_iv3to8(tag, sc.cipher, sc.plainlen, Some(anchor))
+			&& let Some((opened, _)) = decode_shifted(&tag_str, &sc, iv3to8)
+		{
+			cache.insert(file, &tag_str, iv3to8);
+			return opened;
+		}
+	}
+	// Say which of the two happened. A search that ran and lost and a search
+	// that never started are not the same news, and only one of them means the
+	// section is beyond this tooling.
+	RodSection {
+		status: RodStatus::SearchDeclined,
+		..section
+	}
+}
+
+/// Open the one section `want_tag` of a container, or `None` when it has none.
+///
+/// `file` is the file's name: the key of every section comes from it
+/// ([`name_product`]). With `crack`, a classic section the name does not open is
+/// searched for (minutes, recorded in `cache`); a shifted file is never searched
+/// here, and opens only when a key of one of its sections is cached.
+///
+/// Decodes the one section and no other, which is what a caller after one table
+/// of a multi-megabyte file wants.
+pub fn open_section(data: &[u8], file: &str, want_tag: &str, cache: &mut IvCache, crack: bool) -> Option<RodSection> {
+	let sections = frame(data);
+	let wanted = sections.iter().find(|f| f.tag == want_tag.as_bytes())?;
+	let search = match crack {
+		true => Search::Classic,
+		false => Search::Off,
+	};
+	let regime = regime(&sections, file, cache, Search::Off);
+	Some(open_framed(wanted, file, &regime, cache, search))
+}
+
 /// Recover the key of **one** classic section into `cache`, and nothing else.
 ///
 /// [`decode_rod_recover`] with `run_crack` searches every blocked section of a
@@ -526,161 +795,72 @@ fn key_opens(tag: &[u8], sc: &SectionCipher<'_>, iv3to8: [u8; 5]) -> bool {
 /// asks for that one: a classic section gets its one search, minutes; a shifted
 /// one is never searched here.
 ///
-/// `true` when the section opens afterwards with no search: it was not blocked,
-/// its key was already cached, or it has just been recovered. `false` when the
-/// section is absent, shifted, or its search found nothing.
+/// `true` when the section opens afterwards with no search: it opens under its
+/// file's name, its key was already cached, or it has just been recovered.
+/// `false` when the section is absent, shifted with no key known, or its search
+/// found nothing.
 pub fn recover_classic_key(data: &[u8], file: &str, want_tag: &str, cache: &mut IvCache) -> bool {
-	let mut pos = 0usize;
-	while let Some((tag, payload_start)) = find_next_tag(data, pos) {
-		let Some((payload_end, next_pos)) = find_close(data, payload_start, &tag) else {
-			return false;
-		};
-		pos = next_pos;
-		let tag_str = decode_latin1(&tag);
-		if tag_str != want_tag {
-			continue;
-		}
-		let payload = &data[payload_start..payload_end];
-		if decode_section(&tag, payload).status != RodStatus::Undecodable {
-			return true;
-		}
-		let Some(sc) = parse_section_cipher(payload) else { return false };
-		if !sc.compressed || !search_has_a_crib(&tag, sc.cipher) {
-			// Shifted: never searched here. A key for it can only have come from
-			// elsewhere, and is taken as it is.
-			return cache.get(file, &tag_str).is_some();
-		}
-		// A cached key is used only if it opens this file — see [`key_opens`].
-		if cache.get(file, &tag_str).is_some_and(|iv3to8| key_opens(&tag, &sc, iv3to8)) {
-			return true;
-		}
-		return match crack::recover_iv3to8(&tag, sc.cipher, sc.plainlen, None) {
-			Some(iv3to8) => {
-				cache.insert(file, &tag_str, iv3to8);
-				true
-			}
-			None => false,
-		};
-	}
-	false
+	open_section(data, file, want_tag, cache, true).is_some_and(|s| matches!(s.status, RodStatus::Tea | RodStatus::Zlib))
 }
 
+/// Decode every section of a `.rod` file named `file`.
+///
+/// Every key comes from the name ([`name_product`]); a shifted file's mask from
+/// one key of it in `cache`. With `run_crack`, what the name does not open is
+/// searched for: a classic section's key (minutes), and a shifted file's first
+/// section (hours), whose key then opens the rest of the file. Recovered keys
+/// are written to `cache` under `(file, tag)`. Never panics on malformed input.
 pub fn decode_rod_recover(data: &[u8], file: &str, cache: &mut IvCache, run_crack: bool) -> Vec<RodSection> {
-	let mut sections = Vec::new();
-	let mut pos = 0usize;
-	// The IV shift is a property of the file, so the first shifted section to
-	// open hands its third mask byte to every section after it — which is what
-	// spares the rest of the file its own sweep. Only the search consumes it.
-	let mut shift2: Option<u8> = None;
-	while let Some((tag, payload_start)) = find_next_tag(data, pos) {
-		match find_close(data, payload_start, &tag) {
-			Some((payload_end, next_pos)) => {
-				let payload = &data[payload_start..payload_end];
-				let tag_str = decode_latin1(&tag);
-				let mut section = decode_section(&tag, payload);
-				// Only compressed sections can be blocked by a nonzero product.
-				if section.status == RodStatus::Undecodable && tag.len() >= 3 {
-					if let Some(sc) = parse_section_cipher(payload) {
-						if sc.compressed {
-							let cached = cache.get(file, &tag_str);
-							let recovered = cached.or_else(|| {
-								if run_crack {
-									let anchor = shift2.and_then(|d2| anchor_from_shift(&tag, sc.cipher, d2));
-									let iv = crack::recover_iv3to8(&tag, sc.cipher, sc.plainlen, anchor);
-									if let Some(v) = iv {
-										cache.insert(file, &tag_str, v);
-									}
-									return iv;
-								}
-								None
-							});
-							match recovered {
-								// A classic section's IV[0..3] is tag-derived;
-								// a shifted one's is not, and has to be read
-								// back off the known plaintext instead.
-								Some(iv3to8) if search_has_a_crib(&tag, sc.cipher) => {
-									let iv = rod_block0_iv_recovered(&tag, iv3to8);
-									section = decode_with_iv(&tag_str, &sc, iv);
-								}
-								Some(iv3to8) => {
-									if let Some((s, d2)) = decode_shifted(&tag_str, &tag, &sc, iv3to8) {
-										section = s;
-										shift2 = Some(d2);
-									}
-								}
-								// Say which of the two happened. A search that
-								// ran and lost and a search that never started
-								// are not the same news, and only one of them
-								// means the section is beyond this tooling.
-								None if !search_has_a_crib(&tag, sc.cipher) => {
-									section.status = RodStatus::SearchDeclined;
-								}
-								None => {}
-							}
-							// A cached key that did not open a classic section is
-							// another build's, under the same file name: search
-							// for this one's and keep it in its place.
-							if section.status == RodStatus::Undecodable && cached.is_some() && run_crack && search_has_a_crib(&tag, sc.cipher) {
-								if let Some(iv3to8) = crack::recover_iv3to8(&tag, sc.cipher, sc.plainlen, None) {
-									cache.insert(file, &tag_str, iv3to8);
-									section = decode_with_iv(&tag_str, &sc, rod_block0_iv_recovered(&tag, iv3to8));
-								}
-							}
-						}
-					}
-				}
-				sections.push(section);
-				pos = next_pos;
-			}
-			None => {
-				sections.push(RodSection {
-					tag: decode_latin1(&tag),
-					status: RodStatus::Undecodable,
-					text: None,
-				});
-				break;
-			}
-		}
-	}
-	sections
+	let search = match run_crack {
+		true => Search::All,
+		false => Search::Off,
+	};
+	decode_rod_with(data, file, cache, search)
+}
+
+/// [`decode_rod_recover`], with the brute force it may start named: `setup`
+/// opens its shared tables with [`Search::Classic`], so a file that turned out
+/// shifted is reported, never swept for hours.
+pub fn decode_rod_with(data: &[u8], file: &str, cache: &mut IvCache, search: Search) -> Vec<RodSection> {
+	let sections = frame(data);
+	let regime = regime(&sections, file, cache, search);
+	sections.iter().map(|framed| open_framed(framed, file, &regime, cache, search)).collect()
 }
 
 /// Building `.rod` files for tests, with no Ross-Tech data in them.
 ///
 /// The tool only ever reads these files; a test that needs one writes it. Each
-/// section is framed as the real ones are, its first block under the tag-derived
-/// IV (`product = 0`, so it opens with no key) or under a chosen nonzero product
-/// (so it opens only with that product's key — a blocked zlib section, or a TEA
-/// section whose first eight bytes read wrong).
+/// section is framed as the real ones are, its first block under a chosen
+/// product: the one its file's name gives ([`named`] — it opens with no key, as
+/// a real file does), zero (`None` — a file with no name), or any other (it
+/// opens only with that product's key: a file under a name not its own).
 #[cfg(test)]
 pub(crate) mod testkit {
-	use super::{KEY_ROD, KS, MT, OFF_ROD, rod_block0_iv};
+	use super::{KEY_ROD, name_product, product5, rod_iv};
 	use crate::tea::tea_cbc_encrypt;
 
-	/// The full first-block IV for a chosen (nonzero) 5-byte product,
-	/// mirroring `rod_block0_iv` but with a nonzero seed tail — so the produced
-	/// `iv[3..8]` is guaranteed to lie in the reachable candidate space.
+	/// The full first-block IV for a chosen 5-byte product.
 	pub(crate) fn iv_for_product(tag: &[u8], product5: [u8; 5]) -> [u8; 8] {
-		let m = tag[1] as usize;
-		let mut seed = [0u8; 8];
-		seed[..3].copy_from_slice(&tag[..3]);
-		seed[3..8].copy_from_slice(&product5);
-		let mut iv = [0u8; 8];
-		for i in 0..8 {
-			let s = seed[i].wrapping_add(KS[(m * (i + 2)) & 0xff]);
-			iv[i] = s.wrapping_mul(MT[OFF_ROD[i]]);
-		}
-		iv
+		rod_iv(tag, product5)
+	}
+
+	/// The product the file `file` keys its sections with, for [`section`].
+	pub(crate) fn named(file: &str) -> Option<[u8; 5]> {
+		Some(product5(name_product(file)))
 	}
 
 	/// One section, framed: `[TAG]\r\n`, the two BE24 lengths, the cipher,
 	/// `\r\n[/TAG]\r\n`. `compressed` makes it a zlib section (header forced to
 	/// `78 da`, the `.rod` convention); otherwise it is plain TEA.
 	pub(crate) fn section(tag: &str, plain: &[u8], compressed: bool, product: Option<[u8; 5]>) -> Vec<u8> {
-		let iv = match product {
-			None => rod_block0_iv(tag.as_bytes()),
-			Some(product) => iv_for_product(tag.as_bytes(), product),
-		};
+		masked_section(tag, plain, compressed, product, [0; 8])
+	}
+
+	/// [`section`] with `mask` XORed over the first-block IV, the way a shifted
+	/// file's sections after `[CMP]` are (`.archive/research/labels/tttext2.md` §3.3a).
+	pub(crate) fn masked_section(tag: &str, plain: &[u8], compressed: bool, product: Option<[u8; 5]>, mask: [u8; 8]) -> Vec<u8> {
+		let unmasked = rod_iv(tag.as_bytes(), product.unwrap_or_default());
+		let iv: [u8; 8] = std::array::from_fn(|i| unmasked[i] ^ mask[i]);
 		let mut body = match compressed {
 			true => {
 				let mut z = miniz_oxide::deflate::compress_to_vec_zlib(plain, 9);
@@ -753,14 +933,16 @@ mod tests {
 		let at = data.windows(5).position(|w| w == b"[MWB]").unwrap() + 7 + 6;
 		data[at] ^= 0xff;
 
+		// The fixture is sealed under product 0, which is the key of a file with no
+		// name.
 		let mut cache = IvCache::default();
-		let sections = decode_rod_recover(&data, "fixture", &mut cache, false);
+		let sections = decode_rod_recover(&data, "", &mut cache, false);
 		let mwb = sections.iter().find(|s| s.tag == "MWB").unwrap();
 		assert_eq!(mwb.status, RodStatus::SearchDeclined, "{sections:?}");
 
 		// And the untouched file still reports the case where a search would
 		// run: the two must not collapse back into one word.
-		let clean = decode_rod_recover(&hex_decode(FIXTURE_HEX), "fixture", &mut cache, false);
+		let clean = decode_rod_recover(&hex_decode(FIXTURE_HEX), "", &mut cache, false);
 		assert_eq!(clean.iter().find(|s| s.tag == "MWB").unwrap().status, RodStatus::Zlib);
 	}
 
@@ -867,12 +1049,13 @@ mod tests {
 		let (payload, plain, iv3to8, _) = shifted_section(tag, mask);
 		let sc = parse_section_cipher(&payload).unwrap();
 
-		let (opened, d2) = decode_shifted("MWB", tag, &sc, iv3to8).expect("the anchor sweep must find it");
+		let (opened, iv) = decode_shifted("MWB", &sc, iv3to8).expect("the anchor sweep must find it");
 		assert_eq!(opened.status, RodStatus::Zlib);
 		assert_eq!(opened.text.unwrap().len(), plain.len());
-		// The sweep also hands back the file's third mask byte, which is what
-		// spares every later section of the same file its own sixty searches.
-		assert_eq!(d2, mask[2]);
+		// The sweep also hands back the whole IV, and with it the file's whole
+		// mask, which is what spares every later section of the same file a search.
+		let model = rod_block0_iv(tag);
+		assert_eq!(iv, std::array::from_fn(|i| model[i] ^ mask[i]));
 	}
 
 	#[test]
@@ -887,27 +1070,148 @@ mod tests {
 
 		let mut wrong = iv3to8;
 		wrong[0] ^= 0xff;
-		assert!(decode_shifted("MWB", tag, &sc, wrong).is_none());
+		assert!(decode_shifted("MWB", &sc, wrong).is_none());
 	}
 
 	// What it spares is a search.
 	#[test]
-	fn one_opened_section_spares_the_rest_of_the_file_their_own_sweep() {
-		// The mask belongs to the file, not the section. Two sections under
-		// one mask: the third mask byte learned from the first must give the
-		// second its deflate anchor outright, which is what turns 60 full-space
-		// searches into 1 for every section after the first.
+	fn one_key_of_a_shifted_file_opens_every_other_section_of_it() {
+		// The mask belongs to the file, not the section, and it is all eight bytes
+		// of the IV: one key of the file gives the whole of it, and every other
+		// section opens with no search — the plain-TEA ones whole, first eight
+		// bytes and all. `[CMP]` is exempt from the mask.
+		let file = "EV_MadeUpShifted_042.rod";
 		let mask = [0x5e, 0xe6, 0x10, 0x51, 0x77, 0x19, 0x40, 0x8c];
-		let (pa, _, iv_a, _) = shifted_section(b"MWB", mask);
-		let (pb, _, _, anchor_b) = shifted_section(b"DTC", mask);
+		let plain: Vec<u8> = (0..4096u32)
+			.map(|i| 0x20 + ((i.wrapping_mul(7).wrapping_add(i / 13)) % 60) as u8)
+			.collect();
+		let data = [
+			testkit::section("CMP", b"012345,AB\r\n", false, testkit::named(file)),
+			testkit::masked_section("MWB", &plain, true, testkit::named(file), mask),
+			testkit::masked_section("DTC", &plain[..2048], true, testkit::named(file), mask),
+			testkit::masked_section("INC", b"000017,QRSTUV\r\n", false, testkit::named(file), mask),
+		]
+		.concat();
 
-		let sc_a = parse_section_cipher(&pa).unwrap();
-		let (_, d2) = decode_shifted("MWB", b"MWB", &sc_a, iv_a).expect("first section opens");
+		// No key known: shifted, and said so rather than called undecodable.
+		let mut cache = IvCache::default();
+		let shut = decode_rod_recover(&data, file, &mut cache, false);
+		assert_eq!(shut[0].text.as_deref(), Some("012345,AB\r\n"), "[CMP] is not masked");
+		assert_eq!(shut[1].status, RodStatus::SearchDeclined);
+		assert_eq!(shut[2].status, RodStatus::SearchDeclined);
 
-		let sc_b = parse_section_cipher(&pb).unwrap();
-		assert_eq!(anchor_from_shift(b"DTC", sc_b.cipher, d2), Some(anchor_b));
+		// One section's key, as the search would have found it, and the rest opens.
+		let named = rod_named_iv(b"MWB", file);
+		cache.insert(file, "MWB", std::array::from_fn(|k| named[k + 3] ^ mask[k + 3]));
+		let opened = decode_rod_recover(&data, file, &mut cache, false);
+		assert_eq!(opened[1].text.as_ref().map(String::len), Some(plain.len()));
+		assert_eq!(opened[2].status, RodStatus::Zlib);
+		assert_eq!(opened[2].text.as_ref().map(String::len), Some(2048));
+		assert_eq!(opened[3].text.as_deref(), Some("000017,QRSTUV\r\n"), "plain TEA, whole");
+		assert_eq!(cache.len(), 1, "nothing the name gives is cached");
+		// And one section asked for alone opens the same way.
+		let dtc = open_section(&data, file, "DTC", &mut cache, false).unwrap();
+		assert_eq!(dtc.status, RodStatus::Zlib);
 	}
 
+	#[test]
+	fn setup_never_starts_the_sweep_of_a_shifted_file() {
+		// Another build's key under the same name: it does not open, and the sweep
+		// it would take is hours. `setup` searches with `Classic`, which never
+		// sweeps — the section says it is shifted, and the stale key is left for
+		// `dev vcds rod` to search past.
+		let file = "EV_MadeUpShifted_043.rod";
+		let mask = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+		let data = testkit::masked_section("MWB", &[b'7'; 3000], true, testkit::named(file), mask);
+		let mut cache = IvCache::default();
+		cache.insert(file, "MWB", [1, 2, 3, 4, 5]);
+		let started = std::time::Instant::now();
+		let opened = decode_rod_with(&data, file, &mut cache, Search::Classic);
+		assert!(started.elapsed() < std::time::Duration::from_secs(2), "searched");
+		assert_eq!(opened[0].status, RodStatus::SearchDeclined);
+		assert_eq!(cache.get(file, "MWB"), Some([1, 2, 3, 4, 5]), "left as it was");
+	}
+
+	#[test]
+	fn a_copy_gives_back_only_the_keys_it_changed() {
+		// So one parallel lookup's untouched copy of a stale key cannot undo the
+		// fresh one another lookup found.
+		let mut base = IvCache::default();
+		base.insert("A.rod", "MWB", [1; 5]);
+		base.insert("B.rod", "MWB", [2; 5]);
+		let mut fresh = base.clone();
+		fresh.insert("A.rod", "MWB", [9; 5]);
+		fresh.insert("C.rod", "DTC", [3; 5]);
+		let untouched = base.clone();
+		let (fresh, untouched) = (fresh.since(&base), untouched.since(&base));
+		assert_eq!((fresh.len(), untouched.len()), (2, 0));
+		base.absorb(fresh);
+		base.absorb(untouched);
+		assert_eq!(base.get("A.rod", "MWB"), Some([9; 5]));
+		assert_eq!(base.get("B.rod", "MWB"), Some([2; 5]));
+		assert_eq!(base.get("C.rod", "DTC"), Some([3; 5]));
+	}
+
+	// --- the key is the file name (2026-10-20) --------------------------------
+
+	#[test]
+	fn a_product_of_zero_is_the_tag_derived_iv() {
+		// What every earlier decode used, and what a file with no name gets.
+		for tag in [&b"CMP"[..], b"MWB", b"TXT", b"DTC", b"STRUC", b"FFMUX"] {
+			assert_eq!(rod_iv(tag, [0; 5]), rod_block0_iv(tag), "{tag:?}");
+			assert_eq!(rod_named_iv(tag, ""), rod_block0_iv(tag), "{tag:?}");
+			assert_eq!(rod_named_iv(tag, ".rod"), rod_block0_iv(tag), "an empty stem");
+		}
+		assert_eq!(name_product(""), 0);
+	}
+
+	#[test]
+	fn the_product_is_the_upper_cased_stem_with_its_first_character_twice() {
+		let ab = 65u64 * 65 * 66;
+		assert_eq!(name_product("AB"), ab);
+		assert_eq!(name_product("ab.rod"), ab, "upper-cased, cut at the first dot");
+		assert_eq!(name_product("Ab.x.rod"), ab);
+		assert_eq!(name_product("/some/dir/aB.ROD"), ab, "the last path component");
+		assert_eq!(name_product(r"C:\VCDS\UDS_EV\AB.rod"), ab);
+		// Long names wrap, as a 64-bit multiply does.
+		let stem = "EV_MADEUPNAME_0123456789";
+		let first = stem.as_bytes()[0] as u64;
+		let expected = stem.bytes().fold(first, |p, c| p.wrapping_mul(c as u64));
+		assert_eq!(name_product("EV_MadeUpName_0123456789.rod"), expected);
+		// Only the low five bytes reach the IV.
+		let iv = rod_named_iv(b"MWB", "ab.rod");
+		assert_eq!(iv, rod_iv(b"MWB", [ab as u8, (ab >> 8) as u8, (ab >> 16) as u8, 0, 0]));
+	}
+
+	#[test]
+	fn a_classic_file_opens_by_its_name_alone_and_by_no_other() {
+		let file = "EV_MadeUpUnit_017.rod";
+		let plain: Vec<u8> = (0..2000u32).map(|i| b'0' + (i % 10) as u8).collect();
+		let data = [
+			testkit::section("CMP", b"017001,XY\r\n", false, testkit::named(file)),
+			testkit::section("MWB", &plain, true, testkit::named(file)),
+			testkit::section("INC", b"000017,QRSTUV\r\n", false, testkit::named(file)),
+		]
+		.concat();
+		let mut cache = IvCache::default();
+		let opened = decode_rod_recover(&data, file, &mut cache, false);
+		assert_eq!(opened[0].text.as_deref(), Some("017001,XY\r\n"));
+		assert_eq!(opened[1].status, RodStatus::Zlib);
+		assert_eq!(opened[1].text.as_deref().map(str::as_bytes), Some(&plain[..]));
+		assert_eq!(
+			opened[2].text.as_deref(),
+			Some("000017,QRSTUV\r\n"),
+			"a plain-TEA section's first eight bytes are right too"
+		);
+		assert!(cache.is_empty(), "nothing to search for, nothing to cache");
+		assert!(recover_classic_key(&data, file, "MWB", &mut cache));
+
+		// Under another name the key is another, and the section stays shut —
+		// a classic one, whose search would run.
+		let renamed = decode_rod_recover(&data, "EV_Renamed.rod", &mut cache, false);
+		assert_eq!(renamed[1].status, RodStatus::Undecodable);
+		assert_ne!(renamed[2].text.as_deref(), Some("000017,QRSTUV\r\n"));
+	}
 	#[test]
 	fn the_anchors_are_exactly_the_dynamic_huffman_headers() {
 		let anchors: Vec<u8> = deflate_anchors().collect();

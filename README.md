@@ -15,7 +15,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 | Command | What it does |
 |---|---|
 | `vagcan` | Shows where you stand: adapter, car data, what to type next |
-| `vagcan setup` | Reads an ODIS project or a VCDS installation, offline. Takes seconds for ODIS; the first VCDS read can take tens of minutes |
+| `vagcan setup` | Reads an ODIS project or a VCDS installation, offline, in seconds |
 | `vagcan setup --list` | The project's sources: id, kind, language, when read, rows per kind, path |
 | `vagcan setup --drop <SOURCE>` | Removes one source and everything it wrote. `SOURCE` is `odis`, `vcds` or an id from `--list` |
 | `vagcan devices` | Lists USB-CAN adapters and dash boards on USB |
@@ -88,6 +88,7 @@ Updated 2026-10-20.
 - [x] Read the car: identity, units, faults, OBD-II sensors, live values, acceleration timing with html-report
 - [x] ODIS project as the main data source, with fault text from ODIS
 - [x] `setup` in about 4 s on an ODIS project
+- [x] `setup` in about 3 s cold on a VCDS installation, was about 5 min (845 s measured on a loaded machine) (2026-10-20): the `.rod` keys come from the file names, and the steps run on every core
 - [x] Dash reads the car: 13 channels from 2 units, values and chart pages; an alarm takes the screen and blinks the cell
 - [x] ESP32 board as a CAN adapter (`slcan`), tested on the bench
 - [x] UDS over BLE: read the car from a laptop without a cable (info, faults, watch and units on the car; measure started, a full run waits for the road)
@@ -244,7 +245,7 @@ For cars no ODIS project covers.
 
 - It has names and fault text, and the channels of the units of the cars `watch`, `measure` or `units --identify` records.
 - About 40 % of its unit files are locked to VCDS itself; ODIS covers those.
-- **The first read can take tens of minutes.** It searches for the keys of VCDS's encrypted files, unit by unit. The keys are kept, so each one is searched for once.
+- It reads in about 3 s cold. The keys of VCDS's encrypted files come from their file names.
 - **A Russian-only VCDS gives fault text, but no measurement names.** `watch` then shows its channels by reading id. Read an English VCDS instead: `vagcan setup` with no path, then pick "Download VCDS". A second VCDS installation replaces the first.
 
 With VCDS alone, the channels come the first time `vagcan watch`, `vagcan measure` or

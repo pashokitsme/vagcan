@@ -136,9 +136,8 @@ impl std::fmt::Display for NoLabelData {
              units of every car `vagcan watch`, `measure` or `units --identify` records:\n    \
              vagcan setup <path to the VCDS installation>\n\
              Neither to hand? Leave the path off: it asks which, and can fetch VCDS.\n\n\
-             It is offline — no adapter, no car. An ODIS project reads in seconds; a VCDS\n\
-             installation can take tens of minutes the first time, most of it searching for\n\
-             keys. What it reads lands in a project under ~/.vagcan/data/. An ODIS project\n\
+             It is offline — no adapter, no car, and it takes seconds. What it reads lands\n\
+             in a project under ~/.vagcan/data/. An ODIS project\n\
              can be deleted afterwards; keep a VCDS installation: a unit the tool meets\n\
              later — swapped, updated, or asleep the first time — is read from it.\n\n\
              VCDS is Ross-Tech's, and free from them directly:\n    \

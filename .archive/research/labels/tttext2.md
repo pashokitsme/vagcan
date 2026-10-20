@@ -5,6 +5,12 @@
 > is moot. The shifted-IV analysis here still governs the ~41% of files that are shifted (their
 > `RM`/`IV` sections are blocked the same way). See
 > [`research/vcds-registry/README.md`](../../../research/vcds-registry/README.md).
+>
+> **UPDATE 2026-10-20 — the product is the file name; `D` is the interface's answer** (§3.3b).
+> Classic files open with no key at all. A file is shifted exactly when its `[CMP]` number has
+> eight digits, and its mask is the reply of the cable to a challenge built from that number and
+> the name — still not derivable offline, so a shifted file still costs one search, which now
+> opens all of it.
 
 `label-linkage.md` §5.5 named `TTTEXT2.ROD` and `MUX.rod` as the only two uncracked files
 that could still hold a global measurement registry — the `identifier → measurement` link
@@ -33,7 +39,7 @@ Companion to `.archive/research/labels/rod-labels.md` (§1 for the crypto) and `
 | Is that specific to this file? | **No — 7,830 of 20,091 files** and **14,997 of 37,104** compressed sections are in the same regime | high (whole-corpus census, §3.1) |
 | Is it the compression that differs, or the IV? | **the IV** — uncompressed `TEA` sections in the same files are hit identically | **very high** (237/237 vs 144/146, §3.2) |
 | What is the deviation? | a **per-file XOR constant on the first-block IV**, applying to every section *after* `[CMP]` | **certain** — measured at 149/149 against a 13.8 % null (§3.3), then read off the binary (§3.3a) |
-| Can `D` be derived from the file? | **No, and provably not.** VCDS XORs the finished IV with an 8-byte **runtime global**, skipped when the tag is literally `"CMP"` | **certain** (disassembly, §3.3a) |
+| Can `D` be derived from the file? | **No, and provably not.** VCDS XORs the finished IV with an 8-byte **runtime global**, skipped when the tag is literally `"CMP"` | **certain** (disassembly, §3.3a) — *2026-10-20: the conclusion stands, the reason is corrected: `D` is the interface's answer to a challenge built from the file, see §3.3b* |
 | How wide is it? | **all eight IV bytes.** Bytes 0–2 by measurement (§3.3, §3.4), `IV[3:8]` first statistically (§3.5) then directly from a cracked key (§4.1) — so the searcher's 2³⁶ reduction is invalid on these files and the space is 2⁴⁰ | **very high** |
 | Can a shifted section be opened at all? | **Yes — one was.** `EV_HCP4Contr2OBDAU41X_BY64.rod [FFMUX]` inflates to exactly its declared 55,121 bytes of `<text-id>,<code>` rows | certain (§4.1) |
 | What is inside `TTTEXT2.ROD`? | **unknown — the file is not open**, and the sweep that would open it is 5–11 h of CPU that §8 argues should be spent differently first | — |
@@ -232,6 +238,9 @@ disassembly was read:
 * the mask is a **runtime global**. It is not a field of the file, not a function of the file
   name, not a checksum. It is filled elsewhere in the process, exactly like the `product` term
   `rod-labels.md` §1.1 found to be "a runtime buffer — not any field of the file".
+  *(Overturned in part 2026-10-20, §3.3b: that `product` is the file name, so the analogy
+  proved nothing; `D` is filled from the interface's answer to a challenge made of `[CMP]`'s
+  number and the name — a function of the file, through a key only the hardware holds.)*
 
 **So `D` cannot be derived offline, and that is a property of the design rather than a gap in
 this analysis.** The corpus is not self-describing here; VCDS knows something the files do not
@@ -249,6 +258,48 @@ not.
 matches nothing structural (`MT`/`KS` adjacency, ratio, sum and XOR of its two bytes were all
 tested against 242 files and all came back flat), which is what a runtime global should look
 like from the outside.
+
+### 3.3b 2026-10-20: the product is the file name; `D` is the interface's answer
+
+Two corrections to §3.3a, from the same binary.
+
+**The `product` is the file name** (`rod-labels.md` §1.1, overturned there): the name VCDS
+opened the file under, cut at the first `.`, upper-cased, `product = stem[0] · ∏ stem[i]`. With
+it every section of a classic file opens with no key — 10,372 of 16,576 files in the 26.3
+`UDS_EV`, every one of their 20,435 compressed sections. The "same runtime global" reasoning of
+§3.3a is therefore not evidence about `D` either way, and was re-examined rather than inherited.
+
+**What `D` is.** Read off `VCDS-arm64-unpacked.exe` (global object at `0x1405e8720`; the gate
+`obj+0x10ea6fc0`, the mask `obj+0x10ea7004`):
+
+* On opening a file (`0x1400278c0`) VCDS zeroes the gate and `D`, decrypts `[CMP]`, and counts the
+  leading digits of its first line. Six digits are read `%06d`, eight `%08d`, and the number is the
+  gate `G` (`0x140027d34`). The IV routine also leaves a one-byte name hash `h` at `obj+0x88`
+  (`h = stem[0]`, then `h = (T[0] + (c ^ h)) & 0xff` per upper-cased character).
+* If `G > 999999` — **eight digits in `[CMP]`** — it calls the interface (vtable slot `+0x58`,
+  `0x140073df8`): 32 challenge bytes `c[i] = (G >> (T[1+i] >> 3)) & 0xff`, a zero byte replaced
+  from `T` by `h`, where `T` is `rod_ks.bin`; sent as cable command `0x45`; `D` is the last eight
+  reply bytes, reversed (`0x140073f10`). One interface type (`0x1236`) has `D[3]` bit 7 flipped
+  on two calls of three from the fifth on, which reads as a deliberate poisoning of a known clone.
+* With no interface the call is skipped and `D` stays zero.
+
+Census, all 16,572 files with a `[CMP]`: an 8-digit first field is a shifted file in **6,204 of
+6,204**, a 6-digit one classic in **10,321 of 10,321**; no file breaks the rule (largest 6-digit
+`G` 999,883, smallest 8-digit 1,019,594). Every shifted file has its own `G`, and `D[0:2]` is
+neither predicted by any challenge byte nor GF(2)-affine in the challenge and `G` bits (about
+half of 6,204 inconsistent on each of the 16 bits) — a keyed function of the challenge, as a
+cable's answer should be. VCDS holds no copy of it: the only other `0x45` sender sends random
+bytes and never checks the reply.
+
+So the verdict of §0 stands, with its reason replaced: `D` is not derivable offline because it
+is the **interface hardware's secret function** of a challenge the file fully determines, not
+because it is process state. Ways left: a genuine interface answering the 6,204 precomputed
+challenges; a dump of `obj+0x10ea7004` after each open; the firmware of a clone that answers
+`0x45`; or the per-file search — one search per shifted file, since the whole `D` is the cracked
+IV XOR the name's IV and opens the rest of the file. That search ships in `vagcan dev vcds rod`
+with the search on, and nowhere else: `setup` never runs it (it searches with `Classic`), so a
+shifted file stays shut there until a key for it is cached. Scripts:
+`research/`-external scratch (`rodlib.py`, `census.py`, `challenges.py`), not committed.
 
 ### 3.4 The shift reaches at least byte 2, which is exactly the byte that costs
 
