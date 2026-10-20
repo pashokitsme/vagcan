@@ -1643,7 +1643,18 @@ impl Plan {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Built {
 	pub plan: Plan,
+	/// Every line of the log, in the order the build decided it: what a firmware build prints
+	/// as its warnings, and `dev dash build` at `-v`.
 	pub notes: Vec<String>,
+	/// The lines of `notes` that say what the input lacks and what to write — a page nothing
+	/// opens, a strip on no page: what `dev dash build` says by default.
+	pub advice: Vec<String>,
+}
+
+/// One line of the log that is also advice: what the input lacks and what to write.
+fn advise(notes: &mut Vec<String>, advice: &mut Vec<String>, text: String) {
+	advice.push(text.clone());
+	notes.push(text);
 }
 
 /// What a channel reads on the bus: unit, identifier, and the bits taken from the answer —
@@ -1721,6 +1732,10 @@ fn resolve_channel(wanted: &ChannelInput, offered: &[poll::Channel], units: &[Un
 			Reference::Field { did, bit_offset, .. } => c.did == *did && c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset()) == *bit_offset,
 		})
 		.collect();
+	if crate::verbosity::at(crate::verbosity::WIRE) {
+		let on_unit = offered.iter().filter(|c| c.request == request && c.def.is_some()).count();
+		crate::verbosity::say(crate::verbosity::WIRE, &candidate_lookup(&wanted.reference, &matches, on_unit));
+	}
 	// A text id can name a field the device cannot show beside one it can:
 	// on the reference car every OBD-II parameter's id also sits on its
 	// "supported" bit in the `F400`/`F420`/… masks, an enum with no unit. A
@@ -1868,6 +1883,56 @@ fn no_such_channel(reference: &Reference, offered: &[poll::Channel]) -> Error {
 	}
 }
 
+/// `-vv`: what the catalogs offered each recorded unit, looked up by what the unit said
+/// about itself — one line a unit.
+fn catalog_lookups(offered: &[poll::Channel], units: &[UnitIdentity]) -> Vec<String> {
+	let or_none = |text: &Option<String>| text.as_deref().filter(|t| !t.is_empty()).unwrap_or("-").to_string();
+	units
+		.iter()
+		.map(|unit| {
+			let rows: Vec<&poll::Channel> = offered.iter().filter(|c| c.request == unit.request && c.def.is_some()).collect();
+			let measured = rows.iter().filter(|c| c.proven).count();
+			format!(
+				"catalog {}: part {}, odx {} {} → {} rows, {measured} measured on a car",
+				unit_label(unit.request),
+				or_none(&unit.part_number),
+				or_none(&unit.odx_name),
+				or_none(&unit.odx_version),
+				rows.len(),
+			)
+		})
+		.collect()
+}
+
+/// `-vv`: the rows a reference was looked up among on its unit, and how each scales — what
+/// [`resolve_channel`] chose from.
+fn candidate_lookup(reference: &Reference, candidates: &[&poll::Channel], on_unit: usize) -> String {
+	let rows: Vec<String> = candidates
+		.iter()
+		.map(|c| {
+			let kind = match c.def.as_ref().map(|d| &d.scaling) {
+				Some(Scaling::Linear(_)) => "linear",
+				Some(Scaling::Enum { .. }) => "enum",
+				Some(Scaling::Anchor { .. }) => "anchor",
+				None => "raw",
+			};
+			let source = if c.proven { "measured" } else { "declared" };
+			format!("{} {kind} {source}", row_name(c))
+		})
+		.collect();
+	match rows.as_slice() {
+		[] => format!("lookup {reference}: none of the {on_unit} rows on its unit"),
+		_ => format!("lookup {reference}: {} of {on_unit} rows — {}", rows.len(), rows.join("; ")),
+	}
+}
+
+/// A unit as the plan's notes write it: its short number, else its request id.
+fn unit_label(request: u16) -> String {
+	UnitAddress::from_request(request)
+		.map(|a| a.label())
+		.unwrap_or_else(|| format!("{request:03X}"))
+}
+
 /// One row as an [`Error::Ambiguous`] lists it: what to write instead — its identifier and bit
 /// offset — and its name.
 fn row_name(c: &poll::Channel) -> String {
@@ -1878,7 +1943,9 @@ fn row_name(c: &poll::Channel) -> String {
 ///
 /// `units` are the car's own words about itself (from its record); `store` and
 /// `extracted` are the project — the same two `watch` opens. Pure: reads
-/// nothing but its arguments, writes nothing.
+/// nothing but its arguments, writes nothing — at `-vv` it says on stderr what each unit's
+/// catalog held and which rows each name was chosen from, the lookups a failed build needs
+/// and the log it returns would lose with it.
 ///
 /// **One language for the plan** (owner, 2026-09-27): the input's `language`, or
 /// `default_language` — `config.toml`'s — without one. It is the board's own words and the
@@ -1896,7 +1963,13 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 		&respoken
 	};
 	let offered = poll::available(store, extracted, units);
+	if crate::verbosity::at(crate::verbosity::WIRE) {
+		for line in catalog_lookups(&offered, units) {
+			crate::verbosity::say(crate::verbosity::WIRE, &line);
+		}
+	}
 	let mut notes = Vec::new();
+	let mut advice = Vec::new();
 	let mut channels: Vec<Channel> = Vec::new();
 	let mut index_of: BTreeMap<Reference, u16> = BTreeMap::new();
 
@@ -2013,7 +2086,7 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 		None => None,
 		Some(wanted) => {
 			let speed = index_by_row(&wanted.speed, &channels, declared, &index_of, &offered, units);
-			Some(resolve_stopwatch(wanted, speed, &channels, &mut notes)?)
+			Some(resolve_stopwatch(wanted, speed, &channels, &mut notes, &mut advice)?)
 		}
 	};
 	// Whether the car stands is one fact of the plan (`todo/dash/26`, archived), and its one
@@ -2070,18 +2143,30 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 	for b in &input.buttons {
 		notes.push(format!("button: pin {} → {}", b.pin, b.action.name()));
 		if b.action == Command::Stopwatch && stopwatch.is_none() {
-			notes.push(format!(
-				"button: pin {} is a stopwatch button, and there is no [stopwatch] — a press of it only silences an alarm",
-				b.pin
-			));
+			advise(
+				&mut notes,
+				&mut advice,
+				format!(
+					"button: pin {} is a stopwatch button, and there is no [stopwatch] — a press of it only silences an alarm",
+					b.pin
+				),
+			);
 		}
 	}
 	let opens = stalk.is_some() || input.buttons.iter().any(|b| b.action == Command::Stopwatch);
 	if stopwatch.is_some() && !opens {
-		notes.push("stopwatch: nothing opens the page — give [stalk] a measure, or a [[button]] action = \"stopwatch\"".to_string());
+		advise(
+			&mut notes,
+			&mut advice,
+			"stopwatch: nothing opens the page — give [stalk] a measure, or a [[button]] action = \"stopwatch\"".to_string(),
+		);
 	}
 	if stalk.is_some() && stopwatch.is_none() {
-		notes.push("stalk: there is no [stopwatch] — a press of measure only silences an alarm".to_string());
+		advise(
+			&mut notes,
+			&mut advice,
+			"stalk: there is no [stopwatch] — a press of measure only silences an alarm".to_string(),
+		);
 	}
 	// BOOT and RESET are no input (owner, 2026-09-27), so a board with none of its own turns its
 	// page from a bench tool alone, and an alarm stays until its channel ends it — a channel gone
@@ -2090,7 +2175,11 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 	let paged = stalk.is_some() || input.buttons.iter().any(|b| b.action != Command::Stopwatch);
 	if input.pages.len() > 1 && !paged {
 		let why = "only dashsim or dashcfg's set page turns the page";
-		notes.push(format!("input: no [stalk] and no [[button]] with next or previous — {why}"));
+		advise(
+			&mut notes,
+			&mut advice,
+			format!("input: no [stalk] and no [[button]] with next or previous — {why}"),
+		);
 	}
 	let alarmed = input
 		.channels
@@ -2098,7 +2187,7 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 		.any(|c| c.alarm_max.is_some() || c.alarm_min.is_some() || c.drift.is_some());
 	if alarmed && stalk.is_none() && input.buttons.is_empty() {
 		let why = "an alarm stays up until its channel answers in range again; only dashsim silences it";
-		notes.push(format!("input: no [stalk] and no [[button]] — {why}"));
+		advise(&mut notes, &mut advice, format!("input: no [stalk] and no [[button]] — {why}"));
 	}
 
 	let mut plan_units: Vec<Unit> = Vec::new();
@@ -2189,7 +2278,7 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 		}
 	}
 	if let (Some(strip), Some(wanted)) = (strip, &input.strip) {
-		strip_notes(strip, &wanted.volts, &channels, &pages, &mut notes);
+		strip_notes(strip, &wanted.volts, &channels, &pages, &mut notes, &mut advice);
 	}
 
 	// Alarms last: a channel's alarm raises the first values page that shows it, else its chart,
@@ -2214,7 +2303,7 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 	// Bus time, the board's planner run over the plan at one constant cost an exchange: an
 	// estimate, said and never refused (2026-10-20: the plan it refused runs on the car).
 	notes.extend(bus_notes(&plan, &input.channels));
-	Ok(Built { plan, notes })
+	Ok(Built { plan, notes, advice })
 }
 
 /// Every `[[channel]]`'s alarms, in priority order — `alarm_priority` ascending, then the file's
@@ -2430,21 +2519,29 @@ fn bus_notes(plan: &Plan, inputs: &[ChannelInput]) -> Vec<String> {
 }
 /// What the build says of the strip: which pages show the voltage, and a channel that does not
 /// read in volts, which the strip writes it as.
-fn strip_notes(strip: Strip, reference: &Reference, channels: &[Channel], pages: &[Page], notes: &mut Vec<String>) {
+fn strip_notes(strip: Strip, reference: &Reference, channels: &[Channel], pages: &[Page], notes: &mut Vec<String>, advice: &mut Vec<String>) {
 	let shown: Vec<String> = pages
 		.iter()
 		.enumerate()
 		.filter(|(_, page)| page.volts() && !page.shows(strip.volts))
 		.map(|(at, _)| (at + 1).to_string())
 		.collect();
-	notes.push(match shown.as_slice() {
-		[] => format!("strip: volts {reference} is on no page — each has volts = false or shows it itself"),
-		[one] => format!("strip: volts {reference} on page {one}"),
-		many => format!("strip: volts {reference} on pages {}", many.join(", ")),
-	});
+	match shown.as_slice() {
+		[] => advise(
+			notes,
+			advice,
+			format!("strip: volts {reference} is on no page — each has volts = false or shows it itself"),
+		),
+		[one] => notes.push(format!("strip: volts {reference} on page {one}")),
+		many => notes.push(format!("strip: volts {reference} on pages {}", many.join(", "))),
+	}
 	let unit = &channels[usize::from(strip.volts)].unit_text;
 	if unit != "V" {
-		notes.push(format!("strip: volts {reference} reads in {unit:?}, and the strip writes it as V"));
+		advise(
+			notes,
+			advice,
+			format!("strip: volts {reference} reads in {unit:?}, and the strip writes it as V"),
+		);
 	}
 }
 
@@ -2468,7 +2565,13 @@ impl Page {
 /// has no offset — the stopwatch takes the channel's zero for a standstill, and with an
 /// offset the zero is somewhere else — and whose factor is above zero, or moving forward
 /// would read as going nowhere. `speed` is what [`index_by_row`] made of `wanted.speed`.
-fn resolve_stopwatch(wanted: &StopwatchInput, speed: Named, channels: &[Channel], notes: &mut Vec<String>) -> Result<Stopwatch, Error> {
+fn resolve_stopwatch(
+	wanted: &StopwatchInput,
+	speed: Named,
+	channels: &[Channel],
+	notes: &mut Vec<String>,
+	advice: &mut Vec<String>,
+) -> Result<Stopwatch, Error> {
 	let speed = match speed {
 		Named::Channel(index) => index,
 		Named::Setpoint => return Err(Error::Stopwatch(format!("speed {}", Named::setpoint_refusal(&wanted.speed)))),
@@ -2508,14 +2611,18 @@ fn resolve_stopwatch(wanted: &StopwatchInput, speed: Named, channels: &[Channel]
 		)));
 	}
 	let marks: Vec<String> = wanted.marks.iter().map(|m| format!("0-{m}")).collect();
-	notes.push(match wanted.km_h_per_unit {
-		0.0 => format!(
-			"stopwatch: {} {}, km_h_per_unit not measured — the page says so and times nothing",
-			wanted.speed,
-			marks.join(", ")
+	match wanted.km_h_per_unit {
+		0.0 => advise(
+			notes,
+			advice,
+			format!(
+				"stopwatch: {} {}, km_h_per_unit not measured — the page says so and times nothing",
+				wanted.speed,
+				marks.join(", ")
+			),
 		),
-		factor => format!("stopwatch: {} × {factor} km/h, {}", wanted.speed, marks.join(", ")),
-	});
+		factor => notes.push(format!("stopwatch: {} × {factor} km/h, {}", wanted.speed, marks.join(", "))),
+	}
 	Ok(Stopwatch {
 		speed,
 		km_h_per_unit: wanted.km_h_per_unit,
@@ -4135,6 +4242,53 @@ mod tests {
 		assert_eq!(c.factor, 0.002);
 		assert_eq!(c.label, "Boost (driven)");
 		assert!(built.notes[0].contains("at 2 Hz, measured on a car (IDE00191)"), "{}", built.notes[0]);
+		assert!(built.advice.is_empty(), "how a channel resolved is no advice: {:?}", built.advice);
+	}
+
+	/// What each unit's catalog held and which rows a `ref` was chosen from: on stderr at `-vv`,
+	/// and not even formatted below it.
+	#[test]
+	fn the_lookups_are_wire_lines_and_nothing_else_is_said() {
+		use crate::verbosity::Capture;
+		let here = tempfile::tempdir().unwrap();
+		let extracted = extracted_with(
+			here.path(),
+			&[("EV_Test_001", vec![reading(0x202A, "Boost", "IDE00191", 0, 16, false, true, 0.001, 0.0)])],
+			&[],
+		);
+		let store = CatalogStore::open(here.path().join("none"));
+		let run = |level| {
+			let capture = Capture::start(level);
+			build(
+				&input(&["01:IDE00191"], &values_page(&["01:IDE00191"])),
+				&store,
+				&extracted,
+				&[identity(ENGINE, "PART1", "EV_Test")],
+				Language::En,
+			)
+			.unwrap();
+			capture.finish()
+		};
+		for level in [0, 1] {
+			assert_eq!(run(level), crate::verbosity::Captured::default(), "level {level}");
+		}
+		let wire = run(2);
+		assert_eq!(wire.stdout, "");
+		let lines: Vec<&str> = wire.stderr.lines().collect();
+		assert_eq!(lines.len(), 2, "{lines:?}");
+		assert!(lines[0].starts_with("catalog 01: part PART1, odx EV_Test 001004 → "), "{lines:?}");
+		assert!(lines[0].ends_with(" rows, 0 measured on a car"), "{lines:?}");
+		assert!(lines[1].starts_with("lookup 01:IDE00191: 1 of "), "{lines:?}");
+		assert!(lines[1].ends_with(" rows — 202A@0 Boost linear declared"), "{lines:?}");
+	}
+
+	#[test]
+	fn a_lookup_that_finds_nothing_says_how_many_rows_it_looked_among() {
+		let reference = Reference::parse("01:IDE99999").unwrap();
+		assert_eq!(
+			candidate_lookup(&reference, &[], 12),
+			"lookup 01:IDE99999: none of the 12 rows on its unit"
+		);
 	}
 
 	/// The reference car puts every OBD-II parameter's text id on two fields:
@@ -5472,10 +5626,11 @@ mod tests {
 
 		assert!(built.notes.iter().any(|n| n == "strip: volts 01:IDE00011 on page 1"), "{:?}", built.notes);
 		assert!(
-			built
-				.notes
-				.iter()
-				.any(|n| n == "strip: volts 01:IDE00011 reads in \"°C\", and the strip writes it as V"),
+			!built.advice.iter().any(|n| n.ends_with("on page 1")),
+			"where the strip is shown is no advice"
+		);
+		assert!(
+			advised(&built, "strip: volts 01:IDE00011 reads in \"°C\", and the strip writes it as V"),
 			"the fixture's rows are all °C: {:?}",
 			built.notes
 		);
@@ -5616,6 +5771,7 @@ mod tests {
 			(1, 0.0, &[60, 100][..])
 		);
 		assert!(built.notes.iter().any(|n| n.contains("not measured")), "{:?}", built.notes);
+		assert!(built.advice.iter().any(|n| n.contains("not measured")), "{:?}", built.advice);
 	}
 
 	#[test]
@@ -6283,10 +6439,23 @@ mod tests {
 		);
 	}
 
+	/// Whether `line` is in the build log, and then as advice — what `dev dash build` says by
+	/// default — too: a line of advice is always in the log, and never only there.
+	fn advised(built: &Built, line: &str) -> bool {
+		let logged = built.notes.iter().any(|n| n == line);
+		assert_eq!(built.advice.iter().any(|n| n == line), logged, "{line}: {:?}", built.advice);
+		assert!(
+			built.advice.iter().all(|a| built.notes.contains(a)),
+			"advice outside the log: {:?}",
+			built.advice
+		);
+		logged
+	}
+
 	#[test]
 	fn a_stopwatch_nothing_opens_is_said() {
 		let nothing = "stopwatch: nothing opens the page — give [stalk] a measure, or a [[button]] action = \"stopwatch\"";
-		let says = |input: &str| build_with_lever(input).unwrap().notes.iter().any(|n| n == nothing);
+		let says = |input: &str| advised(&build_with_lever(input).unwrap(), nothing);
 		assert!(says(WATCH), "no lever, no button");
 		assert!(says(&format!("{WATCH}{}", button("3", "\"next\""))), "a button that only pages");
 		assert!(!says(&format!("{LEVER}{WATCH}")), "the lever's measure opens it");
@@ -6305,8 +6474,8 @@ mod tests {
 				keys: [if alarm { "alarm_max = 10\nalarm_max_off = 5" } else { "" }, "", ""],
 				..Extra::default()
 			};
-			let notes = build_with_lever_and(input, extra).unwrap().notes;
-			(notes.iter().any(|n| n == turns), notes.iter().any(|n| n == silences))
+			let built = build_with_lever_and(input, extra).unwrap();
+			(advised(&built, turns), advised(&built, silences))
 		};
 		let second = values_page_titled("U", &["01:IDE00001"]);
 		assert_eq!(said("", false), (false, false), "one page and no alarm: nothing to turn or silence");
@@ -6327,7 +6496,7 @@ mod tests {
 	#[test]
 	fn a_lever_with_no_stopwatch_to_open_is_said() {
 		let note = "stalk: there is no [stopwatch] — a press of measure only silences an alarm";
-		let says = |input: &str| build_with_lever(input).unwrap().notes.iter().any(|n| n == note);
+		let says = |input: &str| advised(&build_with_lever(input).unwrap(), note);
 		assert!(says(LEVER));
 		assert!(!says(&format!("{LEVER}{WATCH}")), "measure opens the stopwatch");
 		assert!(!says(""), "no lever");

@@ -21,6 +21,7 @@ use anyhow::Result;
 use clap::Subcommand;
 
 use vag_cli_core::dash;
+use vag_cli_core::{note, outln, say};
 
 pub mod catalog;
 pub mod edit;
@@ -51,7 +52,9 @@ pub enum Tool {
 	/// OUT: `plan.json` for a person to read, `plan.rs` for the
 	/// firmware, both under the car in `~/.vagcan/dash/<VIN>/` — wherever the
 	/// input was read from — and the plan's id, which a board flashed with it
-	/// names in `vagcan devices` and `dashcfg`.
+	/// names in `vagcan devices` and `dashcfg`. `-v` adds how each channel resolved (row,
+	/// bits, scaling, measured or declared), the alarms and the bus estimate per page; `-vv`
+	/// what each unit's catalog held and which rows each `ref` was chosen from.
 	///
 	/// If there is no input yet, the smallest one that builds is at the end of
 	/// this help. A channel is `<unit>:<text id>` or
@@ -97,7 +100,8 @@ pub enum Tool {
 	/// as `dev dash build` reads them, and `~/.vagcan/dash/<VIN>/dash.toml` when
 	/// there is one: the page opens on its pages. No adapter, no car.
 	///
-	/// OUT: a page on `http://127.0.0.1:<port>/`, opened in the browser. Its
+	/// OUT: a page on `http://127.0.0.1:<port>/`, opened in the browser; the
+	/// address is the one line on stdout. Its
 	/// files are under `~/.vagcan/dash/<VIN>/editor/`; the channel list is kept
 	/// there and made again when the project, the record, names.csv or the language
 	/// change. It changes no file of yours: it shows the `[[page]]` and
@@ -123,6 +127,13 @@ pub async fn run(tool: Tool) -> Result<()> {
 			// come before the read below, which can take minutes, not after it
 			// (found in review, 2026-09-28).
 			let mut inputs = dash::read_inputs(&vin, input.as_deref())?;
+			note!("input   {}", inputs.input_path.display());
+			note!(
+				"record  {}, {} {}",
+				inputs.record.display(),
+				inputs.units.len(),
+				crate::render::plural(inputs.units.len(), "unit")
+			);
 			// The channels of units nothing has read yet, out of the VCDS
 			// installation the project was set up from. Offline: the read needs
 			// the units' identities — the car's record — and the installation,
@@ -132,25 +143,110 @@ pub async fn run(tool: Tool) -> Result<()> {
 			vag_cli_core::registry::ensure_async(inputs.units.clone()).await;
 			inputs.read_attempted = true;
 			let written = dash::build_inputs(inputs)?;
-			// The notes first, because they are the answer: one line per
-			// channel saying which row was chosen, how it is decoded, and
-			// whether the car proved it or a label file merely declared it.
-			for note in &written.built.notes {
-				println!("{note}");
-			}
-			println!("\nwrote {}", written.json.display());
-			println!("wrote {}", written.rust.display());
-			let plan = &written.built.plan;
-			let count = |n: usize, what: &str| format!("{n} {}", crate::render::plural(n, what));
-			println!(
-				"{} on {}, {}",
-				count(plan.channels.len(), "channel"),
-				count(plan.units.len(), "unit"),
-				count(plan.pages.len(), "page")
-			);
-			// What a board flashed with it names in `vagcan devices` and `dashcfg`.
-			println!("plan {:016x}", dash::plan_id(plan));
+			report(&written);
 			Ok(())
 		}
+	}
+}
+
+/// What a build says: the plan as a `key  value` block on stdout; on stderr each line of
+/// advice — what the input lacks and what to write — and at `-v` the rest of the build log,
+/// one line per channel, alarm, page's bus share and input.
+pub fn report(written: &dash::Written) {
+	let plan = &written.built.plan;
+	let advice = &written.built.advice;
+	for line in written.built.notes.iter().filter(|n| !advice.contains(n)) {
+		note!("{line}");
+	}
+	let count = |n: usize, what: &str| format!("{n} {}", crate::render::plural(n, what));
+	outln!(
+		"{}",
+		vag_cli_core::table::pairs(&[
+			("vin", plan.vin.clone()),
+			// What a board flashed with it names in `vagcan devices` and `dashcfg`.
+			("plan", format!("{:016x}", dash::plan_id(plan))),
+			("pages", plan.pages.len().to_string()),
+			("channels", format!("{} on {}", plan.channels.len(), count(plan.units.len(), "unit"))),
+			("alarms", plan.alarms.len().to_string()),
+			("plan.json", written.json.display().to_string()),
+			("plan.rs", written.rust.display().to_string()),
+		])
+		.trim_end()
+	);
+	for line in advice {
+		say!("{line}");
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use vag_cli_core::verbosity::{Capture, assert_split};
+
+	fn written() -> dash::Written {
+		let plan = dash::Plan {
+			vin: "TESTVIN0000000001".into(),
+			language: "en".into(),
+			units: vec![],
+			channels: vec![],
+			pages: vec![],
+			alarms: vec![],
+			stalk: None,
+			stopwatch: None,
+			buttons: vec![],
+			strip: None,
+			standstill: None,
+		};
+		let advice = "stalk: there is no [stopwatch] — a press of measure only silences an alarm".to_string();
+		dash::Written {
+			built: dash::Built {
+				plan,
+				notes: vec![
+					"BOOST ← 01:IDE00191 202A@0/16 u BE ×0.001 +0 at 2 Hz, measured on a car (IDE00191)".into(),
+					advice.clone(),
+				],
+				advice: vec![advice],
+			},
+			dir: "/cars/X".into(),
+			json: "/cars/X/plan.json".into(),
+			rust: "/cars/X/plan.rs".into(),
+			inputs: vec![],
+		}
+	}
+
+	/// The plan as a block on stdout, the advice by default and the log at `-v`, on stderr.
+	#[test]
+	fn a_build_is_a_block_of_data_with_its_advice_and_its_log_at_v() {
+		let written = written();
+		let run = |level| {
+			let capture = Capture::start(level);
+			report(&written);
+			capture.finish()
+		};
+		let runs = [run(0), run(1), run(2)];
+		assert_eq!(
+			runs[0].stdout,
+			format!(
+				"vin        TESTVIN0000000001\n\
+				 plan       {:016x}\n\
+				 pages      0\n\
+				 channels   0 on 0 units\n\
+				 alarms     0\n\
+				 plan.json  /cars/X/plan.json\n\
+				 plan.rs    /cars/X/plan.rs\n",
+				dash::plan_id(&written.built.plan)
+			)
+		);
+		assert_eq!(
+			runs[0].stderr,
+			"stalk: there is no [stopwatch] — a press of measure only silences an alarm\n"
+		);
+		assert_eq!(
+			runs[1].stderr,
+			"BOOST ← 01:IDE00191 202A@0/16 u BE ×0.001 +0 at 2 Hz, measured on a car (IDE00191)\n\
+			 stalk: there is no [stopwatch] — a press of measure only silences an alarm\n",
+			"the advice once, not again in the log"
+		);
+		assert_split("dev dash build", &runs);
 	}
 }
