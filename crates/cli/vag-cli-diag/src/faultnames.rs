@@ -24,6 +24,8 @@ use anyhow::{Context, Result};
 use vag_data_labels::CodesDb;
 use vag_data_labels::codes::sae_code;
 use vag_data_labels::dtc::{self, DtcRegistry, UnitCatalogue, UnitLookup};
+use vag_data_labels::label_files::{Lookup, redirect_line};
+use vag_data_labels::redirect::{self, RedirectLoad, Redirects};
 use vag_data_labels::rod::IvCache;
 
 /// The fault text store's own file name inside a VCDS installation.
@@ -92,6 +94,15 @@ impl Naming {
 pub struct Namer {
 	root: PathBuf,
 	cache: IvCache,
+	/// The installation's `ReDir.rod`, opened once: empty when it has none or it did not open,
+	/// and every unit is then looked up by its own name alone.
+	redirects: Redirects,
+	/// Why `ReDir.rod` did not open, for the lines above a listing; `None` when it opened
+	/// or there is none.
+	redirect_note: Option<String>,
+	/// The project codes of the cars recorded on this machine, per unit
+	/// ([`crate::registry::recorded_projects`]): `faults` reads no VIN of its own.
+	projects: BTreeMap<(String, String), Vec<String>>,
 	registry: DtcRegistry,
 	codes: CodesDb,
 	/// Per-unit catalogues, memoised — a fault read re-reads the same unit's file
@@ -135,9 +146,29 @@ impl Namer {
 			)
 		})?;
 		let codes = CodesDb::parse(&std::fs::read(&codes_path).with_context(|| format!("reading {}", codes_path.display()))?);
+		// With the cached keys only, as every file here: the search is `setup`'s.
+		let what = "units VCDS reads through another unit's file show codes only";
+		let (redirects, redirect_note) = match redirect::load_redirects(root, &mut cache.clone(), false) {
+			RedirectLoad::Found { redirects, .. } => (redirects, None),
+			RedirectLoad::NoFile => (Redirects::default(), None),
+			RedirectLoad::Locked { file } => (
+				Redirects::default(),
+				Some(format!("{} is still sealed: {what} — `vagcan setup` opens it", file.display())),
+			),
+			RedirectLoad::Shifted { file } => (
+				Redirects::default(),
+				Some(format!("{} opens only inside VCDS itself: {what}", file.display())),
+			),
+		};
+		let projects = crate::project::current()
+			.map(|project| crate::registry::recorded_projects(&project))
+			.unwrap_or_default();
 		Ok(Self {
 			root: root.to_path_buf(),
 			cache,
+			redirects,
+			redirect_note,
+			projects,
 			registry,
 			codes,
 			units: BTreeMap::new(),
@@ -154,6 +185,11 @@ impl Namer {
 		self.codes.len()
 	}
 
+	/// Why `ReDir.rod` did not open, when it did not.
+	pub fn redirect_note(&self) -> Option<&str> {
+		self.redirect_note.as_deref()
+	}
+
 	/// The catalogue for a unit that named its own ODX file.
 	///
 	/// Cloned rather than borrowed: opening the catalogue needs `&mut self`
@@ -163,10 +199,17 @@ impl Namer {
 	pub fn unit(&mut self, odx_name: &str, version: &str) -> UnitLookup {
 		let key = (odx_name.to_string(), version.to_string());
 		let (root, cache, registry) = (&self.root, &self.cache, &self.registry);
+		// The project of the recorded cars that carry this unit: `faults` reads no VIN. Two
+		// cars of two projects with one unit offer both projects' names first, in turn.
+		let projects = self.projects.get(&(odx_name.to_string(), version.to_string()));
+		let lookup = Lookup {
+			redirects: &self.redirects,
+			projects: projects.map_or(&[][..], Vec::as_slice),
+		};
 		self
 			.units
 			.entry(key)
-			.or_insert_with(|| dtc::unit_catalogue(root, odx_name, version, cache, registry))
+			.or_insert_with(|| dtc::unit_catalogue(root, odx_name, version, lookup, cache, registry))
 			.clone()
 	}
 
@@ -191,13 +234,30 @@ impl Namer {
 	}
 }
 
-/// Why a unit's faults are not in the VCDS text, in one line for the console.
+/// Why a unit's faults are not in the VCDS text, in one line for the console — or, for a
+/// catalogue `ReDir.rod` chose, which file it came from.
 ///
 /// `instead` is what the codes are shown with: `codes only`, or the ODIS
 /// project's text where the project has the unit and VCDS was only asked first.
 pub fn unit_note(lookup: &UnitLookup, instead: &str) -> Option<String> {
 	match lookup {
-		UnitLookup::Found { .. } => None,
+		UnitLookup::Found {
+			file, via, sealed_before, ..
+		} => {
+			let from = match via {
+				Some(source) => redirect_line(source, file),
+				None => file_name(file).to_string(),
+			};
+			match sealed_before {
+				// Never another variant's text as this unit's without saying so.
+				Some(sealed) => Some(format!(
+					"the fault catalogue in {} is still sealed — VCDS text from {from}, another variant, in its place",
+					file_name(sealed)
+				)),
+				None => via.as_ref().map(|_| format!("VCDS text from {from}")),
+			}
+		}
+		UnitLookup::NoData { source } => Some(format!("VCDS has no data for this unit: ReDir.rod sends {source} to EMPTY — {instead}")),
 		UnitLookup::NoFile => Some(format!("the label files have no ODX file of the name this unit gives — {instead}")),
 		UnitLookup::NoSection { candidates } => Some(format!(
 			"none of the {candidates} ODX files of this family carries a fault catalogue — {instead}"
@@ -212,6 +272,11 @@ pub fn unit_note(lookup: &UnitLookup, instead: &str) -> Option<String> {
 			file.file_name().and_then(|n| n.to_str()).unwrap_or_default()
 		)),
 	}
+}
+
+/// A path's file name, for a line that names a file.
+fn file_name(path: &Path) -> &str {
+	path.file_name().and_then(|n| n.to_str()).unwrap_or_default()
 }
 
 /// Offer to open the fault catalogues this car needs and nobody has opened yet.
@@ -359,9 +424,42 @@ mod tests {
 
 	#[test]
 	fn a_units_missing_catalogue_is_explained_rather_than_hidden() {
-		// On the reference car the body control module's F19E is EV_BCMMQB and
-		// no file in the English label files start with that name.
 		assert!(unit_note(&UnitLookup::NoFile, "codes only").unwrap().contains("no ODX file"));
+		let none = unit_note(
+			&UnitLookup::NoData {
+				source: "EV_InvMQB_018".into(),
+			},
+			"codes only",
+		)
+		.unwrap();
+		assert!(none.contains("no data") && none.contains("EV_InvMQB_018"), "{none}");
+		// A redirected catalogue names itself, in the one line every output uses;
+		// one of the unit's own name says nothing.
+		let found = |via: Option<&str>| UnitLookup::Found {
+			file: PathBuf::from("/vcds/UDS_EV/EV_InvBOSCH_017.rod"),
+			via: via.map(str::to_string),
+			sealed_before: None,
+			catalogue: UnitCatalogue::default(),
+		};
+		// A better variant still sealed: the text standing in is said to be another's.
+		let standing_in = UnitLookup::Found {
+			file: PathBuf::from("/vcds/UDS_EV/EV_InvBOSCH_017.rod"),
+			via: Some("EV_InvMQB_017".into()),
+			sealed_before: Some(PathBuf::from("/vcds/UDS_EV/EV_InvBOSCH_016_VW37.rod")),
+			catalogue: UnitCatalogue::default(),
+		};
+		assert_eq!(
+			unit_note(&standing_in, "codes only").as_deref(),
+			Some(
+				"the fault catalogue in EV_InvBOSCH_016_VW37.rod is still sealed — VCDS text from \
+				 EV_InvMQB_017 → EV_InvBOSCH_017.rod (VCDS ReDir), another variant, in its place"
+			)
+		);
+		assert_eq!(
+			unit_note(&found(Some("EV_InvMQB_017")), "codes only").as_deref(),
+			Some("VCDS text from EV_InvMQB_017 → EV_InvBOSCH_017.rod (VCDS ReDir)")
+		);
+		assert_eq!(unit_note(&found(None), "codes only"), None);
 		assert!(unit_note(&UnitLookup::NoSection { candidates: 14 }, "codes only").unwrap().contains("14"));
 		let sealed = UnitLookup::Locked {
 			file: PathBuf::from("EV_X.rod"),

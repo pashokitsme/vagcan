@@ -41,6 +41,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use vag_data_labels::codes::CodePage;
+use vag_data_labels::redirect::{self, RedirectLoad, Redirects};
 use vag_data_labels::registry::{self, RegistryLoad, RowError, UnitMeasurements, Words};
 use vag_data_labels::rod::{IvCache, KeyCost, RodStatus, key_cost, open_section};
 use vag_data_labels::ttdop::{self, TablesLoad};
@@ -192,9 +193,15 @@ pub struct Tried {
 	pub odx_name: String,
 	#[serde(default)]
 	pub odx_version: String,
-	/// `read`, `no file`, `no list`, `key not found`, `shifted`, `unresolved`,
-	/// `mismatched`, or `registry: …` when the registry itself did not open.
+	/// `read`, `no file or redirect`, `no data`, `no list`, `key not found`, `shifted`,
+	/// `unresolved`, `mismatched`, or `registry: …` when the registry itself did not open.
+	/// `no file` and `no file; ReDir unread` are words of a lookup that did not ask
+	/// `ReDir.rod` ([`settled`]).
 	pub outcome: String,
+	/// The car's project the unit was looked up with (`SK37`), when one was known: a unit
+	/// two cars of two projects carry is read once per project.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub project: Option<String>,
 }
 
 /// A project's `registry.json`: the installation its VCDS channels were read
@@ -209,9 +216,22 @@ pub struct Tried {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Log {
 	pub installation: PathBuf,
+	/// The [`READ_VERSION`] of the read that wrote it; `0` for a log from before the field.
+	#[serde(default)]
+	pub read_version: u32,
 	#[serde(default)]
 	pub units: Vec<Tried>,
 }
+
+/// What a read finds and how, as far as the log is concerned. **Bump it to make every
+/// recorded unit be read once more:** a log written by an older read counts as having tried
+/// nothing ([`Log::is_current`]), so the next car command or `setup` reads every unit again,
+/// with no step for anybody to run.
+///
+/// 1 (2026-10-20): units looked up in VCDS's own order — version and project before the
+/// bare name — and through `ReDir.rod`. A machine read before then holds the files the old
+/// order picked (`EV_GatewNF_SK26` where VCDS reads `EV_GatewNF_SK37 → EV_GatewNF_VW37`).
+pub const READ_VERSION: u32 = 1;
 
 impl Log {
 	/// The project's log, or `None` when no read has been made into it — an
@@ -237,11 +257,62 @@ impl Log {
 		crate::datadir::replace_file(&project.registry_log(), text.as_bytes())
 	}
 
-	/// Whether this unit has been tried with the recorded installation, whatever came of it.
+	/// A log with nothing tried, written by this version of the read.
+	pub fn new(installation: PathBuf) -> Log {
+		Log {
+			installation,
+			read_version: READ_VERSION,
+			units: Vec::new(),
+		}
+	}
+
+	/// Whether the read that wrote this log is this one ([`READ_VERSION`]). An older one
+	/// counts as having tried nothing.
+	pub fn is_current(&self) -> bool {
+		self.read_version >= READ_VERSION
+	}
+
+	/// Whether this unit has been tried with the recorded installation, for any project,
+	/// whatever came of it — see [`Self::tried_with`] for the outcomes that do not count.
 	pub fn tried(&self, odx_name: &str, odx_version: &str) -> bool {
-		self.units.iter().any(|t| t.odx_name == odx_name && t.odx_version == odx_version)
+		self
+			.units
+			.iter()
+			.any(|t| t.odx_name == odx_name && t.odx_version == odx_version && settled(t, false))
+	}
+
+	/// Whether this unit has been tried for this car project (`None`: a car whose project is
+	/// not known), whatever came of it — except a "no file" that did not ask `ReDir.rod`:
+	/// [`BEFORE_REDIRECTS`] always, and [`REDIRECTS_UNREAD`] when `redirects_open`, the table
+	/// opening now ([`redirects_open`]). One still shut is tried: a read would search for the
+	/// same key again, minutes, on every car command.
+	pub fn tried_with(&self, odx_name: &str, odx_version: &str, project: Option<&str>, redirects_open: bool) -> bool {
+		self
+			.units
+			.iter()
+			.any(|t| t.odx_name == odx_name && t.odx_version == odx_version && t.project.as_deref() == project && settled(t, redirects_open))
 	}
 }
+
+/// Whether what a unit's line in the log says stands, or the unit is worth another read.
+fn settled(tried: &Tried, redirects_open: bool) -> bool {
+	match tried.outcome.as_str() {
+		BEFORE_REDIRECTS => false,
+		REDIRECTS_UNREAD => !redirects_open,
+		_ => true,
+	}
+}
+
+/// The word a log written before `ReDir.rod` was followed kept for a unit with no file of
+/// its own name. Such a unit may be redirected, so it is read again ([`settled`]).
+const BEFORE_REDIRECTS: &str = "no file";
+
+/// The word for a unit with no file of its name when `ReDir.rod` did not open: read again
+/// once the table opens, and not before ([`settled`]).
+const REDIRECTS_UNREAD: &str = "no file; ReDir unread";
+
+/// The word for a unit with no file of its name and no redirect to one.
+const NO_FILE: &str = "no file or redirect";
 
 /// Record the installation without reading anything: for a `setup` run on a
 /// machine no car has been recorded on yet, so that the first `watch` knows
@@ -249,6 +320,7 @@ impl Log {
 pub fn record_installation(project: &Project, root: &Path) -> Result<()> {
 	Log {
 		installation: installation_path(root),
+		read_version: READ_VERSION,
 		units: Vec::new(),
 	}
 	.save(project)
@@ -285,7 +357,8 @@ fn installation_path(root: &Path) -> PathBuf {
 fn outcome(found: &UnitMeasurements) -> &'static str {
 	match found {
 		UnitMeasurements::Found { .. } => "read",
-		UnitMeasurements::NoFile => "no file",
+		UnitMeasurements::NoFile => NO_FILE,
+		UnitMeasurements::NoData { .. } => "no data",
 		UnitMeasurements::NoList { .. } => "no list",
 		UnitMeasurements::Locked { .. } => "key not found",
 		UnitMeasurements::Shifted { .. } => "shifted",
@@ -474,6 +547,7 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 	let mut notes = Vec::new();
 	let mut log = Log {
 		installation: installation_path(root),
+		read_version: READ_VERSION,
 		units: Vec::new(),
 	};
 
@@ -492,6 +566,7 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 					odx_name: odx.clone(),
 					odx_version: version.clone(),
 					outcome: word.clone(),
+					project: None,
 				})
 				.collect();
 			// The log before the rows go, on this path: a kill between the two
@@ -558,6 +633,17 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 		}
 	};
 	keys.save();
+	progress.waiting("opening ReDir.rod");
+	let (redirects, redirects_read) = redirects(root, &mut keys.cache, &mut notes);
+	keys.save();
+	let projects = projects(root);
+	// A unit two recorded cars of two projects carry is two lookups, since VCDS picks its
+	// file by the project, and so is one a car of no known project carries beside them;
+	// each lookup's rows go by the name it chose.
+	let lookups: Vec<(&String, &String, Option<String>)> = units
+		.iter()
+		.flat_map(|(odx, version)| projects_of(&projects, odx, version).into_iter().map(move |car| (odx, version, car)))
+		.collect();
 
 	// A unit the project's ODIS rows describe is not a gap when this
 	// installation has nothing for it: its channels are there already.
@@ -570,9 +656,20 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 	// each is then said in order, as before.
 	// Each unit's keys are saved as that unit finishes, so a Ctrl-C keeps the
 	// keys of every unit done so far, and the line counts the units done.
-	progress.waiting(&format!("finding the measurement lists — 0 of {} units", units.len()));
+	progress.waiting(&format!("finding the measurement lists — 0 of {} units", lookups.len()));
 	let line = progress.reporter();
-	let wanted: Vec<(&str, &str)> = units.iter().map(|(odx, version)| (odx.as_str(), version.as_str())).collect();
+	let car_projects: Vec<Vec<String>> = lookups.iter().map(|(_, _, car)| car.iter().cloned().collect()).collect();
+	let wanted: Vec<(&str, &str, vag_data_labels::label_files::Lookup<'_>)> = lookups
+		.iter()
+		.zip(&car_projects)
+		.map(|((odx, version, _), projects)| {
+			let lookup = vag_data_labels::label_files::Lookup {
+				redirects: &redirects,
+				projects,
+			};
+			(odx.as_str(), version.as_str(), lookup)
+		})
+		.collect();
 	let base = keys.cache.clone();
 	let done = std::sync::atomic::AtomicUsize::new(0);
 	let shared = std::sync::Mutex::new(&mut keys);
@@ -585,20 +682,30 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 			keys.save();
 		}
 		if let Some(line) = &line {
-			line.set(&format!("finding the measurement lists — {finished} of {} units", units.len()));
+			line.set(&format!("finding the measurement lists — {finished} of {} units", lookups.len()));
 		}
 	});
 	keys.save();
-	for (at, ((odx, version), found)) in units.iter().zip(lists).enumerate() {
+	for (at, ((odx, version, car), found)) in lookups.iter().zip(lists).enumerate() {
+		let (odx, version) = (*odx, *version);
 		// The list is found already; this numbers the unit's line.
-		progress.unit(at, units.len(), odx);
-		crate::wire!("vcds registry: {odx} {version}: {}", outcome(&found));
+		progress.unit(at, lookups.len(), odx);
+		crate::wire!(
+			"vcds registry: {odx} {version}{}: {}",
+			car.as_deref().map(|p| format!(" ({p})")).unwrap_or_default(),
+			outcome(&found)
+		);
 		log.units.push(Tried {
 			odx_name: odx.clone(),
 			odx_version: version.clone(),
-			outcome: outcome(&found).to_string(),
+			outcome: match (&found, redirects_read) {
+				(UnitMeasurements::NoFile, false) => REDIRECTS_UNREAD,
+				_ => outcome(&found),
+			}
+			.to_string(),
+			project: car.clone(),
 		});
-		let UnitMeasurements::Found { file, rows, .. } = found else {
+		let UnitMeasurements::Found { file, rows, via, .. } = found else {
 			if !extracted.for_unit_from(vag_data_db::ODIS, Some(odx), Some(version)).is_empty() {
 				progress.done(&format!("{odx}: {}; the ODIS project describes it", unit_gap(&found)));
 				continue;
@@ -609,7 +716,11 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 			continue;
 		};
 		read += 1;
-		let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or(odx).to_string();
+		// A redirected unit's rows go by the redirect's source, the name a unit is joined to
+		// them by (`extracted::best_variants`); its target is another unit's name.
+		let stem = via
+			.clone()
+			.unwrap_or_else(|| file.file_stem().and_then(|s| s.to_str()).unwrap_or(odx).to_string());
 		// Two cars can carry one unit at two versions that come to the same
 		// file. Its rows are written once.
 		if variants.contains_key(&stem) {
@@ -641,7 +752,11 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 		}
 		dropped += usize::from(rows.first_row_dropped);
 		// A line per unit, in order, whatever order their lists were found in.
-		progress.done(&format!("{odx}: {} channel{}", channels.len(), plural(channels.len())));
+		let through = via
+			.as_deref()
+			.map(|source| format!(", {}", vag_data_labels::label_files::redirect_line(source, &file)))
+			.unwrap_or_default();
+		progress.done(&format!("{odx}: {} channel{}{through}", channels.len(), plural(channels.len())));
 		variants.insert(stem, channels);
 	}
 	if lossy > 0 {
@@ -682,7 +797,7 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 		}
 	};
 	Ok(Read::Done(Summary {
-		asked: units.len(),
+		asked: lookups.len(),
 		read,
 		written,
 		not_channels,
@@ -726,6 +841,101 @@ fn words(root: &Path, cache: &mut IvCache, notes: &mut Vec<String>) -> (Words, C
 	}
 	notes.push(format!("none of {TEXT_TABLES:?} is in {}: {unnamed}", root.join(ODX_DIR).display()));
 	(Words::default(), CodePage::Windows1252)
+}
+
+/// The installation's redirect table, opened once for every unit of the read, and whether
+/// it was read: `false` when it did not open, which is said in `notes` — every unit is then
+/// looked up by its own name alone, and one with no file is logged [`REDIRECTS_UNREAD`]. An
+/// installation with no table at all has nothing to read, and counts as read. Lines of it
+/// that did not read are said too.
+fn redirects(root: &Path, cache: &mut IvCache, notes: &mut Vec<String>) -> (Redirects, bool) {
+	let what = "units VCDS reads through another unit's file are looked up by their own name alone";
+	match redirect::load_redirects(root, cache, true) {
+		RedirectLoad::Found { redirects, .. } => {
+			if redirects.unread() > 0 {
+				notes.push(format!(
+					"{} lines of ReDir.rod did not read: those redirects are not followed",
+					redirects.unread()
+				));
+			}
+			(redirects, true)
+		}
+		RedirectLoad::NoFile => (Redirects::default(), true),
+		RedirectLoad::Locked { .. } => {
+			notes.push(format!("ReDir.rod did not open (the search for its key found nothing): {what}"));
+			(Redirects::default(), false)
+		}
+		RedirectLoad::Shifted { .. } => {
+			notes.push(format!("ReDir.rod did not open ({OPENS_ONLY_IN_VCDS}): {what}"));
+			(Redirects::default(), false)
+		}
+	}
+}
+
+/// Whether the installation's `ReDir.rod` opens now with the keys `setup` keeps, searching
+/// for nothing: what decides whether a unit logged [`REDIRECTS_UNREAD`] is worth another
+/// read ([`Log::tried_with`]). One that still does not open is not — a read would search
+/// for the same key, minutes, on every car command. No table at all opens nothing.
+fn redirects_open(root: &Path, project: &Project) -> bool {
+	let mut cache = IvCache::load(&project.rod_keys());
+	matches!(redirect::load_redirects(root, &mut cache, false), RedirectLoad::Found { .. })
+}
+
+/// Per unit `(F19E, F1A2)`, the projects it is looked up with ([`projects`]).
+type Projects = BTreeMap<(String, String), Vec<Option<String>>>;
+
+/// The projects a unit is looked up with: those of the cars recorded on this machine that
+/// carry it (`SK37`, a car's VIN through the installation's `chassis.clb`,
+/// [`vag_data_labels::chassis`]), and `None` for a carrying car whose project is not known —
+/// its model code is not in the table, or the installation has no table. A unit no
+/// recorded car carries is absent, and looked up with no project ([`projects_of`]).
+fn projects(root: &Path) -> Projects {
+	let mut out: Projects = BTreeMap::new();
+	let table = vag_data_labels::chassis::load_projects(root);
+	for car in crate::units::recorded_cars().unwrap_or_default() {
+		let project = table.as_ref().and_then(|t| t.of_vin(&car.vin)).map(str::to_string);
+		for unit in car.units.iter().filter_map(key) {
+			let held = out.entry(unit).or_default();
+			if !held.contains(&project) {
+				held.push(project.clone());
+			}
+		}
+	}
+	out
+}
+
+/// One unit's projects out of [`projects`]: one lookup each, and a single one with no
+/// project for a unit no recorded car carries.
+fn projects_of(projects: &Projects, odx: &str, version: &str) -> Vec<Option<String>> {
+	projects
+		.get(&(odx.to_string(), version.to_string()))
+		.filter(|of| !of.is_empty())
+		.cloned()
+		.unwrap_or_else(|| vec![None])
+}
+
+/// The project codes of the recorded cars, per unit they carry, for a project's logged
+/// installation: what `faults` looks a unit's file up with when it has no VIN of its own.
+/// Empty with no log, or the installation gone.
+pub fn recorded_projects(project: &Project) -> BTreeMap<(String, String), Vec<String>> {
+	match Log::load(project) {
+		Ok(Some(log)) => projects(&log.installation)
+			.into_iter()
+			.map(|(unit, of)| (unit, of.into_iter().flatten().collect()))
+			.collect(),
+		_ => BTreeMap::new(),
+	}
+}
+
+/// The project code of the car with this VIN (`SK37`), out of the `chassis.clb` of the
+/// installation the project's VCDS rows were read from — the project those rows were read
+/// for ([`crate::extracted::Extracted::for_car`]). `None` with no log, the installation
+/// gone, or a model its table does not list.
+pub fn car_project(project: &Project, vin: &str) -> Option<String> {
+	let log = Log::load(project).ok()??;
+	vag_data_labels::chassis::load_projects(&log.installation)?
+		.of_vin(vin)
+		.map(str::to_string)
 }
 
 /// Why a shifted file did not open, in words a reader needs: its mask is the
@@ -777,6 +987,7 @@ fn unit_gap(outcome: &UnitMeasurements) -> &'static str {
 	match outcome {
 		UnitMeasurements::Found { .. } => "",
 		UnitMeasurements::NoFile => "no file of that name in this installation",
+		UnitMeasurements::NoData { .. } => "VCDS has no data for it (ReDir.rod sends it to EMPTY)",
 		UnitMeasurements::NoList { .. } => "none of its files lists measurements",
 		UnitMeasurements::Locked { .. } => "the search for its list's key found nothing",
 		UnitMeasurements::Shifted { .. } => "its list opens only inside VCDS itself",
@@ -790,6 +1001,9 @@ fn unit_why(outcome: &UnitMeasurements) -> String {
 	match outcome {
 		UnitMeasurements::Found { .. } => String::new(),
 		UnitMeasurements::NoFile => "no file of that name in this installation; an ODIS project that describes the unit brings its channels".to_string(),
+		UnitMeasurements::NoData { source } => {
+			format!("VCDS has no data for it: ReDir.rod sends {source} to EMPTY; an ODIS project that describes the unit brings its channels")
+		}
 		UnitMeasurements::NoList { candidates: 1 } => "its one file lists no measurements".to_string(),
 		UnitMeasurements::NoList { candidates } => format!("none of its {candidates} files lists measurements"),
 		UnitMeasurements::Locked { file, section } => {
@@ -825,11 +1039,42 @@ fn key(unit: &UnitIdentity) -> Option<(String, String)> {
 ///
 /// `described` is whether an ODIS variant in the project describes the unit,
 /// passed in so the rule can be tested without a cache.
-fn pending(log: &Log, identities: &[UnitIdentity], described: impl Fn(&str, &str) -> bool) -> BTreeSet<(String, String)> {
+///
+/// `projects` are the projects a read looks each unit up with ([`projects`]), when the
+/// installation is at hand: a unit is pending until it is tried for **each** of them, so a
+/// second car of another project with the same unit gets its own read. It is the very map
+/// the read expands its lookups from, so what one read logs is what the next asks for.
+/// With no installation at hand, any project's line counts. `redirects_open` is whether
+/// `ReDir.rod` opens now ([`Log::tried_with`]).
+///
+/// A log an older read wrote ([`READ_VERSION`]) has tried nothing: with the installation at
+/// hand every unit is pending, described or not, so the next read covers them all once.
+/// Without it nothing can be read again, and the log stands as it is.
+fn pending(
+	log: &Log,
+	identities: &[UnitIdentity],
+	described: impl Fn(&str, &str) -> bool,
+	projects: Option<&Projects>,
+	redirects_open: bool,
+) -> BTreeSet<(String, String)> {
+	let stale = !log.is_current() && projects.is_some();
 	identities
 		.iter()
 		.filter_map(key)
-		.filter(|(odx, version)| !log.tried(odx, version) && !described(odx, version))
+		.filter(|(odx, version)| {
+			if stale {
+				return true;
+			}
+			if described(odx, version) {
+				return false;
+			}
+			match projects {
+				Some(projects) => projects_of(projects, odx, version)
+					.iter()
+					.any(|project| !log.tried_with(odx, version, project.as_deref(), redirects_open)),
+				None => !log.tried(odx, version),
+			}
+		})
 		.collect()
 }
 
@@ -946,9 +1191,19 @@ pub fn unread(project: &Project, identities: &[UnitIdentity], described: impl Fn
 	}
 	let untried = log.unwrap_or_else(|| Log {
 		installation: PathBuf::new(),
+		read_version: READ_VERSION,
 		units: Vec::new(),
 	});
-	let units = pending(&untried, identities, described);
+	// The projects the read would look each unit up with, and whether a "no file" logged
+	// while ReDir.rod was shut is worth a read now — asked only when there is such a line.
+	let (projects, open) = match &where_from {
+		Installation::At(root) => {
+			let open = untried.units.iter().any(|t| t.outcome == REDIRECTS_UNREAD) && redirects_open(root, project);
+			(Some(projects(root)), open)
+		}
+		_ => (None, false),
+	};
+	let units = pending(&untried, identities, described, projects.as_ref(), open);
 	if units.is_empty() {
 		return Ok(Unread::Nothing);
 	}
@@ -992,7 +1247,8 @@ pub fn causes(identities: &[UnitIdentity]) -> BTreeMap<u16, String> {
 fn gap_of(outcome: &str) -> Option<String> {
 	Some(match outcome {
 		"read" => return None,
-		"no file" => unit_gap(&UnitMeasurements::NoFile).to_string(),
+		BEFORE_REDIRECTS | REDIRECTS_UNREAD | NO_FILE => unit_gap(&UnitMeasurements::NoFile).to_string(),
+		"no data" => unit_gap(&UnitMeasurements::NoData { source: String::new() }).to_string(),
 		"no list" => "none of its files lists measurements".to_string(),
 		"key not found" => "the search for its list's key found nothing".to_string(),
 		"shifted" => unit_gap(&UnitMeasurements::Shifted {
@@ -1194,6 +1450,7 @@ mod tests {
 			odx_name: odx.into(),
 			odx_version: version.into(),
 			outcome: outcome.into(),
+			project: None,
 		}
 	}
 
@@ -1210,6 +1467,7 @@ mod tests {
 		let file = PathBuf::from("EV_X.rod");
 		let outcomes = [
 			UnitMeasurements::NoFile,
+			UnitMeasurements::NoData { source: "EV_X_017".into() },
 			UnitMeasurements::NoList { candidates: 2 },
 			UnitMeasurements::Locked {
 				file: file.clone(),
@@ -1279,7 +1537,8 @@ mod tests {
 		assert_eq!(Log::load(&project).unwrap(), None, "no log is a project that never read an installation");
 		let log = Log {
 			installation: PathBuf::from("/somewhere/vcds"),
-			units: vec![tried("EV_A", "001007", "read"), tried("EV_B", "017001", "no file")],
+			read_version: READ_VERSION,
+			units: vec![tried("EV_A", "001007", "read"), tried("EV_B", "017001", NO_FILE)],
 		};
 		log.save(&project).unwrap();
 		assert_eq!(Log::load(&project).unwrap(), Some(log.clone()));
@@ -1305,6 +1564,7 @@ mod tests {
 		let same = install_at(dir.path());
 		Log {
 			installation: same.canonicalize().unwrap(),
+			read_version: READ_VERSION,
 			units: vec![tried("EV_A", "001007", "read"), tried("EV_B", "017001", "no file")],
 		}
 		.save(&project)
@@ -1348,7 +1608,7 @@ mod tests {
 		// Up to the unit loop, and no further: past it the text runs on into
 		// this test, whose own list names every load again, and the last
 		// table's search would then reach the per-unit saves and pass on them.
-		let read = &read[..read.find("for (at, ((odx, version), found))").expect("the unit loop")];
+		let read = &read[..read.find("for (at, ((odx, version, car), found))").expect("the unit loop")];
 		let loads = ["load_registry(", "load_text_tables(", "= words(", "load_unit_strings("];
 		let mut from = 0;
 		for load in loads {
@@ -1370,7 +1630,8 @@ mod tests {
 	fn a_read_is_worth_making_only_for_units_untried_with_this_installation_and_described_by_nothing() {
 		let log = Log {
 			installation: PathBuf::from("/vcds"),
-			units: vec![tried("EV_Tried", "001", "no file")],
+			read_version: READ_VERSION,
+			units: vec![tried("EV_Tried", "001", NO_FILE)],
 		};
 		let identities = [
 			unit(0x7E0, Some("EV_Tried"), Some("001")),
@@ -1380,12 +1641,116 @@ mod tests {
 			unit(0x715, Some("EV_NoVersion"), None),
 			unit(0x746, None, None),
 		];
-		let wanted = pending(&log, &identities, |odx, _| odx == "EV_Odis");
+		let wanted = pending(&log, &identities, |odx, _| odx == "EV_Odis", None, false);
 		let expected: BTreeSet<(String, String)> = [("EV_New".to_string(), "003".to_string()), ("EV_NoVersion".to_string(), String::new())].into();
 		assert_eq!(wanted, expected, "tried, described and nameless units are left out; a unit twice is one");
 		// The same unit at another version is another list to find.
-		let wanted = pending(&log, &[unit(0x7E0, Some("EV_Tried"), Some("002"))], |_, _| false);
+		let wanted = pending(&log, &[unit(0x7E0, Some("EV_Tried"), Some("002"))], |_, _| false, None, false);
 		assert_eq!(wanted.len(), 1);
+		// "No file" from before redirects were followed is tried again: the unit may be one
+		// `ReDir.rod` sends to another unit's file. Today's words are not.
+		let before = Log {
+			installation: PathBuf::from("/vcds"),
+			read_version: READ_VERSION,
+			units: vec![
+				tried("EV_Tried", "001", BEFORE_REDIRECTS),
+				tried("EV_Empty", "001", "no data"),
+				tried("EV_Unread", "001", REDIRECTS_UNREAD),
+				tried("EV_Asked", "001", NO_FILE),
+			],
+		};
+		let identities = [
+			unit(0x7E0, Some("EV_Tried"), Some("001")),
+			unit(0x7E1, Some("EV_Empty"), Some("001")),
+			unit(0x7E2, Some("EV_Unread"), Some("001")),
+			unit(0x7E3, Some("EV_Asked"), Some("001")),
+		];
+		let no_cars = BTreeMap::new();
+		let names = |set: BTreeSet<(String, String)>| set.into_iter().map(|(odx, _)| odx).collect::<Vec<_>>();
+		assert_eq!(
+			names(pending(&before, &identities, |_, _| false, Some(&no_cars), true)),
+			["EV_Tried", "EV_Unread"],
+			"a lookup that did not ask ReDir.rod is retried once the table opens; one that asked is not"
+		);
+		// The table still shut: the unit is not read again. A read would search for the same
+		// key, minutes, on every car command (found in review, 2026-10-20).
+		assert_eq!(names(pending(&before, &identities, |_, _| false, Some(&no_cars), false)), ["EV_Tried"]);
+		assert_eq!(names(pending(&before, &identities, |_, _| false, None, true)), ["EV_Tried"]);
+		assert_eq!(gap_of(REDIRECTS_UNREAD).as_deref(), Some(unit_gap(&UnitMeasurements::NoFile)));
+	}
+
+	/// Two recorded cars of two projects carry one unit: each project is a lookup of its own,
+	/// and a line for one does not stand for the other. A car of no known project beside
+	/// them is a lookup with no project (found in review, 2026-10-20).
+	#[test]
+	fn a_unit_is_pending_until_it_is_tried_for_every_project_that_carries_it() {
+		let ac = ("EV_InvAC".to_string(), "006145".to_string());
+		let tried_for = |project: Option<&str>| Tried {
+			project: project.map(str::to_string),
+			..tried("EV_InvAC", "006145", "read")
+		};
+		let log = |units: Vec<Tried>| Log {
+			units,
+			..Log::new(PathBuf::from("/vcds"))
+		};
+		let identities = [unit(0x708, Some("EV_InvAC"), Some("006145"))];
+		let two: BTreeMap<_, _> = [(ac.clone(), vec![Some("SK37".to_string()), Some("VW48".to_string())])].into();
+		let sk37_only = log(vec![tried_for(Some("SK37"))]);
+		assert_eq!(
+			pending(&sk37_only, &identities, |_, _| false, Some(&two), false).len(),
+			1,
+			"VW48 not read"
+		);
+		let both = log(vec![tried_for(Some("SK37")), tried_for(Some("VW48"))]);
+		assert!(pending(&both, &identities, |_, _| false, Some(&two), false).is_empty());
+		// A car whose model code the table does not list, beside the SK37 car.
+		let with_unknown: BTreeMap<_, _> = [(ac.clone(), vec![Some("SK37".to_string()), None])].into();
+		assert_eq!(pending(&sk37_only, &identities, |_, _| false, Some(&with_unknown), false).len(), 1);
+		assert_eq!(projects_of(&with_unknown, &ac.0, &ac.1), [Some("SK37".to_string()), None]);
+		// A unit no recorded car carries is one lookup, with no project.
+		assert_eq!(projects_of(&with_unknown, "EV_Other", "001"), [None]);
+		let unknown = log(vec![tried_for(None)]);
+		assert!(pending(&unknown, &identities, |_, _| false, Some(&BTreeMap::new()), false).is_empty());
+	}
+
+	/// The read and the pending check take the cars' projects from the recorded cars, and in a
+	/// test build those are the test root's, never the ones under HOME: `recorded_cars` goes
+	/// through `datadir`, whose test default is [`crate::datadir::test_root`].
+	#[test]
+	fn the_recorded_cars_a_test_reads_are_the_test_roots() {
+		let cars = crate::datadir::cars_dir().unwrap();
+		assert!(cars.starts_with(crate::datadir::test_root()), "{}", cars.display());
+		if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+			assert!(!cars.starts_with(PathBuf::from(home).join(".vagcan")), "{}", cars.display());
+		}
+	}
+
+	/// A log an older read wrote has tried nothing: every unit is read once more with the
+	/// installation at hand, described by ODIS or not — and with the installation gone the
+	/// log stands, since nothing could be read again.
+	#[test]
+	fn a_log_an_older_read_wrote_makes_every_unit_pending_once() {
+		let mut log = Log {
+			units: vec![tried("EV_InvGatew", "013020", "read")],
+			..Log::new(PathBuf::from("/vcds"))
+		};
+		let identities = [unit(0x710, Some("EV_InvGatew"), Some("013020"))];
+		let described = |_: &str, _: &str| true;
+		let no_cars = BTreeMap::new();
+		assert!(
+			pending(&log, &identities, described, Some(&no_cars), false).is_empty(),
+			"current: nothing to read"
+		);
+		log.read_version = READ_VERSION - 1;
+		assert_eq!(pending(&log, &identities, described, Some(&no_cars), false).len(), 1);
+		assert!(
+			pending(&log, &identities, described, None, false).is_empty(),
+			"no installation: the log stands"
+		);
+		// A log from before the field reads as version 0.
+		let old: Log = serde_json::from_str(r#"{"installation": "/vcds", "units": []}"#).unwrap();
+		assert!(!old.is_current());
+		assert!(Log::new(PathBuf::new()).is_current());
 	}
 
 	/// A directory that passes for an installation: `UDS_EV` in place, nothing in it.
@@ -1405,11 +1770,13 @@ mod tests {
 		let root = install_at(dir.path());
 		let logged = Log {
 			installation: root.clone(),
+			read_version: READ_VERSION,
 			units: Vec::new(),
 		};
 		assert_eq!(installation(Some(&logged), &[]), Installation::At(root.clone()), "the log's, first");
 		let gone = Log {
 			installation: dir.path().join("moved-away"),
+			read_version: READ_VERSION,
 			units: Vec::new(),
 		};
 		let Installation::Unusable { why } = installation(Some(&gone), &[root.display().to_string()]) else {
@@ -1500,7 +1867,8 @@ mod tests {
 		// Once the log says what was tried, the sources are not consulted.
 		Log {
 			installation: root.clone(),
-			units: vec![tried("EV_Engine", "001", "read"), tried("EV_Brake", "002", "no file")],
+			read_version: READ_VERSION,
+			units: vec![tried("EV_Engine", "001", "read"), tried("EV_Brake", "002", NO_FILE)],
 		}
 		.save(&project)
 		.unwrap();

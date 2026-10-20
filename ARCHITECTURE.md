@@ -250,7 +250,11 @@ is reading the mask out of a running VCDS, not out of the files.
 
 **A control unit tells you which `.rod` is its own.** Identifier `F19E` returns an ODX
 file name — `EV_ECM18TFS0208V0906264H`, say. That is how `vagcan dev vcds labels
---from-car` finds the right file with no lookup table in the middle.
+--from-car` finds the right file with no lookup table in the middle. The rest of the name
+follows VCDS's order: `<name>_<vvv>_<project>`, `<name>_<vvv>`, `<name>_<project>`, `<name>`,
+with `vvv` from `F1A2` and the project from the VIN through `chassis.clb`; a name the
+installation has no file of can be a `UDS_EV/ReDir.rod` source, which names the file VCDS
+reads instead (or `EMPTY`: no data) (`vag_data_labels::label_files`, `redirect`, `chassis`).
 
 **The ODIS fault chain**, which is asked first, is the measurement chain's shape with
 two hops fewer:

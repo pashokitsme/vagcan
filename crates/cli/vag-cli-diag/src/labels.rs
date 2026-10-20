@@ -472,20 +472,15 @@ fn no_rod(dir: &Path, odx_name: &str) -> Vec<String> {
 /// being a part-number guess: the car answers the question. Reports what the
 /// file contains, marking sections whose payload did not decode rather than
 /// implying the whole file was read.
+///
+/// An exact-name lookup, not [`vag_data_labels::find_rod_by_odx_variant`]'s ranked one: the
+/// name given is a file name (`EV_BCMMQB_017`), not a unit's `F19E`/`F1A2` and project. With
+/// no file of that name, the redirect of that very name ([`vag_data_labels::redirect::Redirects::target`])
+/// is followed, and a bare name the table only has variants of lists them.
 pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Result<()> {
 	use vag_data_labels::rod::{IvCache, decode_rod_recover};
 
 	use crate::vcds::rod::{NO_CRIB, SECTION_COLUMNS, cipher, state};
-
-	let hits = vag_data_labels::find_rod_by_odx_name(std::path::Path::new(dir), odx_name)?;
-	vag_cli_core::note!("{} {} named {odx_name}.rod under {dir}", hits.len(), plural(hits.len(), "file"));
-	if hits.is_empty() {
-		vag_cli_core::out!("{}", table::pairs(&[("odx", odx_name.to_string()), ("file", "none".to_string())]));
-		for line in no_rod(Path::new(dir), odx_name) {
-			vag_cli_core::say!("{line}");
-		}
-		return Ok(());
-	}
 
 	// Recovered initialisation vectors come from the cache only. The search
 	// that fills it costs a search of minutes per file and is its own command
@@ -493,6 +488,42 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Resu
 	// never starts one.
 	let mut cache = IvCache::load(cache_path);
 	vag_cli_core::note!("{} {} in {}", cache.len(), plural(cache.len(), "key"), cache_path.display());
+	let root = Path::new(dir);
+	let mut hits = vag_data_labels::find_rod_by_odx_name(root, odx_name)?;
+	vag_cli_core::note!("{} {} named {odx_name}.rod under {dir}", hits.len(), plural(hits.len(), "file"));
+	if hits.is_empty() {
+		match redirected(root, odx_name, &mut cache)? {
+			// The table below names another file than the one asked for: said, so it is
+			// not read as this name's own.
+			Redirected::To { line, files } => {
+				vag_cli_core::say!("{line}");
+				hits = files;
+			}
+			Redirected::Nothing { source } => {
+				vag_cli_core::out!(
+					"{}",
+					table::pairs(&[("odx", odx_name.to_string()), ("file", "EMPTY (VCDS ReDir)".to_string())])
+				);
+				vag_cli_core::say!("{source} → EMPTY (VCDS ReDir): VCDS has no data for this unit");
+				return Ok(());
+			}
+			Redirected::No { variants } => {
+				vag_cli_core::out!("{}", table::pairs(&[("odx", odx_name.to_string()), ("file", "none".to_string())]));
+				for line in no_rod(root, odx_name) {
+					vag_cli_core::say!("{line}");
+				}
+				if !variants.is_empty() {
+					vag_cli_core::say!(
+						"ReDir.rod redirects {} {} of it; pass one with its version: {}",
+						variants.len(),
+						plural(variants.len(), "variant"),
+						variants.join(", ")
+					);
+				}
+				return Ok(());
+			}
+		}
+	}
 	let headers: Vec<&str> = ["file"].into_iter().chain(SECTION_COLUMNS).collect();
 	let mut table = Table::new(&headers).right(3);
 	let (mut open, mut total) = (0usize, 0usize);
@@ -559,6 +590,52 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Resu
 	}
 	Ok(())
 }
+
+/// What VCDS's `ReDir.rod` says about a name the installation has no file of.
+enum Redirected {
+	/// It stands for these files: `line` says so, `source → file (VCDS ReDir)`.
+	To { line: String, files: Vec<std::path::PathBuf> },
+	/// It is redirected to `EMPTY`: VCDS has no data for the unit.
+	Nothing { source: String },
+	/// Not redirected; `variants` are the redirected names of its family
+	/// (`<name>_<version>…`), for a name given without its version.
+	No { variants: Vec<String> },
+}
+
+/// Look `odx_name` up in the installation's redirect table. Opened with the
+/// cached keys only, as the files are; a table that does not open redirects
+/// nothing.
+fn redirected(root: &Path, odx_name: &str, cache: &mut vag_data_labels::rod::IvCache) -> anyhow::Result<Redirected> {
+	use vag_data_labels::redirect::{Resolved, load_redirects};
+	let load = load_redirects(root, cache, false);
+	let Some(redirects) = load.redirects() else {
+		return Ok(Redirected::No { variants: Vec::new() });
+	};
+	let name = odx_name.trim_end_matches(['\0', ' ']);
+	let has_file = |stem: &str| vag_data_labels::find_rod_by_odx_name(root, stem).is_ok_and(|hits| !hits.is_empty());
+	Ok(match redirects.target(name).map(|_| redirects.resolve(name, has_file)) {
+		Some(Resolved::File(target)) => {
+			let files = vag_data_labels::find_rod_by_odx_name(root, &target)?;
+			let line = files
+				.first()
+				.map(|file| vag_data_labels::label_files::redirect_line(name, file))
+				.unwrap_or_default();
+			Redirected::To { line, files }
+		}
+		Some(Resolved::Nothing) => Redirected::Nothing { source: name.to_string() },
+		_ => {
+			let family = format!("{}_", name.to_ascii_uppercase());
+			Redirected::No {
+				variants: redirects
+					.sources()
+					.filter(|(_, upper)| upper.starts_with(&family))
+					.map(|(written, _)| written.to_string())
+					.collect(),
+			}
+		}
+	})
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

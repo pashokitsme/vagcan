@@ -1886,7 +1886,7 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, vin: Option<&st
 
 	// Bound rather than built twice: the coverage line names the project these
 	// very rows came out of, and a second `current()` could answer differently.
-	let extracted = crate::extracted::current();
+	let extracted = crate::extracted::current().for_car(vin);
 	let mut channels = crate::plan::available(&store, &extracted, &identities);
 	// A recording does not say which unit each column came from. Columns that
 	// match a known measurement keep its unit; the rest are attributed to the
@@ -2463,7 +2463,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 	crate::registry::ensure_async(identities.clone()).await;
 	// Bound rather than built twice: the coverage line names the project these
 	// very rows came out of, and a second `current()` could answer differently.
-	let extracted = crate::extracted::current();
+	let extracted = crate::extracted::current().for_car(vin.as_deref());
 	let mut channels = crate::plan::available(&store, &extracted, &identities);
 	// Say what the car has and what of it can be shown, before the screen takes
 	// over. A unit that identified itself but has no catalog contributes no

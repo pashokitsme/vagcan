@@ -271,10 +271,21 @@ impl UnitRows {
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnitMeasurements {
 	/// The list: from the unit's own file, or from the store its `[INC]` names.
-	Found { file: PathBuf, store: Option<PathBuf>, rows: UnitRows },
-	/// No file of that ODX name in the install. On the reference car this is
-	/// the body control module, `EV_BCMMQB`, in every install checked.
+	/// `via` is the redirect source when `ReDir.rod` named the file
+	/// ([`crate::label_files::UnitRod::via`]) — the name the unit's rows go by.
+	Found {
+		file: PathBuf,
+		store: Option<PathBuf>,
+		rows: UnitRows,
+		via: Option<String>,
+	},
+	/// No file of that ODX name in the install, and no redirect to one. On the
+	/// reference car the body control module (`EV_BCMMQB`) was this until
+	/// `ReDir.rod` was read; it redirects the unit to `EV_BCMBOSCH_017`.
 	NoFile,
+	/// `ReDir.rod` redirects the unit to `EMPTY`: VCDS has no data for it — a
+	/// definite answer, not a file missing.
+	NoData { source: String },
 	/// The family is there and no member lists measurements, directly or
 	/// through `[INC]`.
 	NoList { candidates: usize },
@@ -300,19 +311,35 @@ pub enum UnitMeasurements {
 /// ([`crate::label_files::find_rod_by_odx_variant`]). Candidates are tried best
 /// match first and the first whose list opens wins. With `crack`, a classic
 /// section whose key is not cached is searched for (minutes, recorded in
-/// `cache`); a shifted one never is.
+/// `cache`); a shifted one never is. `lookup` carries the installation's
+/// redirect table and the car's project.
 pub fn unit_measurements(
 	root: &Path,
 	odx_name: &str,
 	version: &str,
+	lookup: crate::label_files::Lookup<'_>,
 	cache: &mut IvCache,
 	crack: bool,
 	registry: &MeasurementRegistry,
 ) -> UnitMeasurements {
-	let candidates = crate::label_files::find_rod_by_odx_variant(root, odx_name, version).unwrap_or_default();
+	let found = crate::label_files::find_rod_by_odx_variant(root, odx_name, version, lookup).unwrap_or_default();
+	if let Some(source) = found.nothing {
+		return UnitMeasurements::NoData { source };
+	}
+	let candidates = found.files;
 	if candidates.is_empty() {
 		return UnitMeasurements::NoFile;
 	}
+	// The redirect a candidate came through rides on what its list opened to.
+	let through = |found: UnitMeasurements, via: &Option<String>| match found {
+		UnitMeasurements::Found { file, store, rows, .. } => UnitMeasurements::Found {
+			file,
+			store,
+			rows,
+			via: via.clone(),
+		},
+		other => other,
+	};
 	// Why no candidate answered, best reason first: a list from another install
 	// is a warning, a lock is minutes away, a shift is not.
 	let mut why: Option<UnitMeasurements> = None;
@@ -328,9 +355,10 @@ pub fn unit_measurements(
 			why = Some(answer);
 		}
 	};
-	for (_, file) in &candidates {
+	for candidate in &candidates {
+		let file = &candidate.path;
 		match list_of(file, file, None, cache, crack, registry) {
-			Listed::Found(found) => return found,
+			Listed::Found(found) => return through(found, &candidate.via),
 			Listed::Failed(answer) => keep(answer),
 			Listed::Absent => {}
 		}
@@ -354,7 +382,7 @@ pub fn unit_measurements(
 				}
 				for store in lists {
 					match list_of(&store, file, Some(&store), cache, crack, registry) {
-						Listed::Found(found) => return found,
+						Listed::Found(found) => return through(found, &candidate.via),
 						Listed::Failed(answer) => keep(answer),
 						Listed::Absent => keep(UnitMeasurements::Unresolved { file: file.clone() }),
 					}
@@ -388,7 +416,7 @@ pub fn unit_measurements(
 /// it; a file under its own name needs no search.
 pub fn units_measurements(
 	root: &Path,
-	units: &[(&str, &str)],
+	units: &[(&str, &str, crate::label_files::Lookup<'_>)],
 	cache: &IvCache,
 	crack: bool,
 	registry: &MeasurementRegistry,
@@ -397,9 +425,9 @@ pub fn units_measurements(
 	use rayon::prelude::*;
 	units
 		.par_iter()
-		.map(|(odx_name, version)| {
+		.map(|(odx_name, version, lookup)| {
 			let mut own = cache.clone();
-			let found = unit_measurements(root, odx_name, version, &mut own, crack, registry);
+			let found = unit_measurements(root, odx_name, version, *lookup, &mut own, crack, registry);
 			finished(own.since(cache));
 			found
 		})
@@ -423,6 +451,7 @@ fn list_of(path: &Path, unit: &Path, store: Option<&Path>, cache: &mut IvCache, 
 					file: unit.to_path_buf(),
 					store: store.map(Path::to_path_buf),
 					rows,
+					via: None,
 				}),
 				outside => Listed::Failed(UnitMeasurements::Mismatched {
 					file: path.to_path_buf(),
@@ -534,7 +563,7 @@ fn stems_beside(path: &Path) -> BTreeSet<String> {
 }
 
 /// One section of one file, as far as it opened.
-enum SectionRead {
+pub(crate) enum SectionRead {
 	/// The text, and whether it was plain TEA (whose first eight bytes may be wrong).
 	Text { text: String, tea: bool },
 	/// A classic section whose key is not cached.
@@ -547,7 +576,7 @@ enum SectionRead {
 
 /// Open `tag` in `path` with the keys in `cache`, first searching for its key
 /// when `crack` is set and the section is classic.
-fn read_section(path: &Path, tag: &str, cache: &mut IvCache, crack: bool) -> SectionRead {
+pub(crate) fn read_section(path: &Path, tag: &str, cache: &mut IvCache, crack: bool) -> SectionRead {
 	let Ok(bytes) = std::fs::read(path) else { return SectionRead::Absent };
 	let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
 	let Some(section) = open_section(&bytes, name, tag, cache, crack) else {
@@ -997,7 +1026,15 @@ mod tests {
 		}
 
 		fn lookup(&self, odx: &str, version: &str) -> UnitMeasurements {
-			unit_measurements(&self.0, odx, version, &mut IvCache::default(), false, &self.registry())
+			unit_measurements(
+				&self.0,
+				odx,
+				version,
+				crate::label_files::Lookup::direct(),
+				&mut IvCache::default(),
+				false,
+				&self.registry(),
+			)
 		}
 	}
 
@@ -1031,6 +1068,59 @@ mod tests {
 		};
 		assert_eq!(store, None);
 		assert!(!rows.first_row_dropped);
+	}
+
+	#[test]
+	fn a_redirected_unit_reads_the_list_of_the_file_its_redirect_names_and_says_through_what() {
+		let install = Install::new("redir");
+		install.file(
+			"EV_UnitBOSCH_017.rod",
+			&[section("MWB", &list(&[2]), true, named("EV_UnitBOSCH_017.rod"))],
+		);
+		let dir = crate::redirect::testkit::table(&[(4711, "EV_UnitMQB_017", "EV_UnitBOSCH_017"), (4712, "EV_UnitMQB_018", "EMPTY")]);
+		install.file(
+			crate::redirect::REDIRECT_FILE,
+			&[section(
+				crate::redirect::DIR_SECTION,
+				dir.as_bytes(),
+				true,
+				named(crate::redirect::REDIRECT_FILE),
+			)],
+		);
+		let mut cache = IvCache::default();
+		let crate::redirect::RedirectLoad::Found { redirects, .. } = crate::redirect::load_redirects(&install.0, &mut cache, false) else {
+			panic!("the table opens")
+		};
+		let lookup = |version: &str| {
+			let lookup = crate::label_files::Lookup {
+				redirects: &redirects,
+				projects: &[],
+			};
+			unit_measurements(
+				&install.0,
+				"EV_UnitMQB",
+				version,
+				lookup,
+				&mut IvCache::default(),
+				false,
+				&install.registry(),
+			)
+		};
+		let found = lookup("017001");
+		assert_eq!(dids(&install, &found), vec![4098]);
+		let UnitMeasurements::Found { file, via, .. } = found else {
+			unreachable!()
+		};
+		assert!(file.ends_with("EV_UnitBOSCH_017.rod"));
+		assert_eq!(via.as_deref(), Some("EV_UnitMQB_017"));
+		assert_eq!(
+			lookup("018001"),
+			UnitMeasurements::NoData {
+				source: "EV_UnitMQB_018".into()
+			}
+		);
+		// Without the table it is the file that is not there, as before.
+		assert_eq!(install.lookup("EV_UnitMQB", "017001"), UnitMeasurements::NoFile);
 	}
 
 	#[test]
@@ -1210,7 +1300,7 @@ mod tests {
 		proven: &Path,
 		shift: usize,
 	) -> Result<(BTreeSet<u16>, BTreeSet<u16>), String> {
-		let listed = match unit_measurements(root, odx, version, cache, false, registry) {
+		let listed = match unit_measurements(root, odx, version, crate::label_files::Lookup::direct(), cache, false, registry) {
 			UnitMeasurements::Found { rows, .. } => rows.rows,
 			other => return Err(format!("{odx}'s list did not open: {other:?}")),
 		};
@@ -1281,7 +1371,15 @@ mod tests {
 				return;
 			}
 		};
-		let gearbox = match unit_measurements(&root, "EV_TCMDQ200021", "", &mut cache, false, &registry) {
+		let gearbox = match unit_measurements(
+			&root,
+			"EV_TCMDQ200021",
+			"",
+			crate::label_files::Lookup::direct(),
+			&mut cache,
+			false,
+			&registry,
+		) {
 			UnitMeasurements::Found { rows, .. } => rows.rows,
 			other => panic!("the gearbox's list: {other:?}"),
 		};

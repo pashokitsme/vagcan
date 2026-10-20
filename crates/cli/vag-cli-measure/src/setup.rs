@@ -873,7 +873,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 	//    whatever the mode: the barometer and the ambient sensor are what a `CdA`
 	//    means anything against, and this is the measurement that makes runs
 	//    possible rather than a run.
-	let set = match channels::resolve(&store, &crate::extracted::current(), &identities, true) {
+	let set = match channels::resolve(&store, &crate::extracted::current().for_car(Some(vin.as_str())), &identities, true) {
 		Ok(set) => set,
 		Err(missing) => {
 			let rows: Vec<ChannelFound> = crate::found_report(&identities, &missing);

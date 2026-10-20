@@ -3539,7 +3539,7 @@ pub fn resolve(inputs: Inputs) -> anyhow::Result<Resolved> {
 	} = inputs;
 	let project = crate::project::current()?;
 	let store = CatalogStore::open(project.measurements_dir());
-	let extracted = crate::extracted::open(&project);
+	let extracted = crate::extracted::open(&project).for_car(Some(vin.as_str()));
 	let referenced = referenced_units(&parsed);
 	let (used, unused): (Vec<UnitIdentity>, Vec<UnitIdentity>) = units.iter().cloned().partition(|u| referenced.contains(&u.request));
 	let unused_note = {

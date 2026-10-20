@@ -1077,7 +1077,13 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 	// the project was set up from — before the project's rows are loaded below.
 	crate::registry::ensure_async(identities.clone()).await;
 
-	let prepared = prepare(&store, &crate::extracted::current(), &identities, vin.clone(), &opts)?;
+	let prepared = prepare(
+		&store,
+		&crate::extracted::current().for_car(vin.as_deref()),
+		&identities,
+		vin.clone(),
+		&opts,
+	)?;
 	for (level, line) in &prepared.said {
 		vag_cli_core::verbosity::say(*level, line);
 	}
