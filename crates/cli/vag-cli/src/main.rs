@@ -381,6 +381,9 @@ enum Command {
 	/// addresses (0x7E0..0x7E7), and only where the answer is the width SAE
 	/// J1979 defines. Other units answer `F4xx` identifiers too and mean
 	/// something else by them, so those are shown as `raw` bytes, the reason in the name column.
+	///
+	/// On a unit outside 0x7E0..0x7E7 the read is a sweep: it is refused while the car
+	/// moves, and needs a cable adapter (`--slcan` makes the dash board one).
 	Sensors {
 		#[command(flatten)]
 		device: DeviceArg,
@@ -768,7 +771,18 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 			let open = async || device::connect(device.requested(), slcan).await;
 			car::units(open, identify.is_some()).await
 		}
-		Command::Sensors { device, unit } => car::sensors(async || device::connect(device.requested(), slcan).await, &unit).await,
+		// The unit decides the link, so the device is resolved inside `open`, once the unit
+		// is parsed: off the emissions block the read is a sweep and takes a cable only.
+		Command::Sensors { device, unit } => {
+			let open = async |reach| match reach {
+				car::Reach::AnyLink => device::connect(device.requested(), slcan).await,
+				car::Reach::CableOnly => {
+					let path = device::resolve_cable_for(device.requested(), slcan, &SENSORS)?;
+					device::open_bus(&Target::Serial(path)).await
+				}
+			};
+			car::sensors(open, &unit).await
+		}
 		Command::Watch {
 			replay: Some(path),
 			data,
@@ -928,6 +942,19 @@ const IDENTIFY: NotThroughTheBoard<'static> = NotThroughTheBoard {
 const IDENTIFY_OVER_BLE: &str = "`units --identify <unit>` walks F100–F1FF, a sweep, and a sweep is refused over BLE — use a cable";
 const IDENTIFY_OVER_USB: &str = "`units --identify <unit>` walks F100–F1FF, a sweep, and a sweep does not run through the dash board — use a cable \
                                  adapter, or `vagcan --slcan units --identify <unit>`";
+
+/// Why `sensors --unit <unit>` off the emissions block does not run through the dash board:
+/// it asks a unit J1979 does not bind the standard identifiers, a sweep (`car::sensors`). The
+/// rule is `units --identify <unit>`'s: a sweep runs on a cable, never through the board over
+/// BLE or over its cable. Both are said before a session starts.
+const SENSORS: NotThroughTheBoard<'static> = NotThroughTheBoard {
+	over_ble: SENSORS_OVER_BLE,
+	over_usb: SENSORS_OVER_USB,
+};
+const SENSORS_OVER_BLE: &str = "`sensors --unit <unit>` outside 7E0–7E7 asks the unit identifiers it is not bound to answer, a sweep, and a \
+                                sweep is refused over BLE — use a cable";
+const SENSORS_OVER_USB: &str = "`sensors --unit <unit>` outside 7E0–7E7 asks the unit identifiers it is not bound to answer, a sweep, and a \
+                                sweep does not run through the dash board — use a cable adapter, or `vagcan --slcan sensors --unit <unit>`";
 
 /// Why `dev sniff` needs an adapter: it reads CAN frames, and the link to the dash board
 /// carries whole answers only.
@@ -1301,12 +1328,19 @@ mod tests {
 		// then it was `properties`, which read 256 identifiers off a unit with
 		// no road-speed check at all. `scan` is gone, `properties` is now
 		// `units --identify <unit>`, and the whole-car sweep `dev survey` went
-		// with its command (owner, 2026-09-28) — so this is the one left.
+		// with its command (owner, 2026-09-28). `sensors --unit <unit>` off the
+		// emissions block was the next (review, 2026-09-28): it is refused on a
+		// moving car with no flag to lift it (`vag-cli-diag/tests/sensors_guard.rs`).
 		let cli = Cli::command();
 		let sub = cli.find_subcommand("units").expect("units exists");
 		assert!(
 			sub.get_arguments().any(|a| a.get_id() == "while_driving"),
 			"units --identify <unit> is a sweep with no --while-driving gate"
+		);
+		let sensors = cli.find_subcommand("sensors").expect("sensors exists");
+		assert!(
+			!sensors.get_arguments().any(|a| a.get_id() == "while_driving"),
+			"an override on sensors lifts its moving-car refusal: that is a decision, not a flag to add in passing"
 		);
 	}
 
@@ -1319,6 +1353,10 @@ mod tests {
 			let cases = [
 				(vec!["vagcan", "units", "--identify", "01", "--device", device], IDENTIFY_OVER_BLE),
 				(vec!["vagcan", "dev", "sniff", "--device", device], SNIFF_OVER_BLE),
+				// Off the emissions block `sensors` is a sweep; on the engine it reads through
+				// the board, and so is refused only for `--slcan`.
+				(vec!["vagcan", "sensors", "--unit", "713", "--device", device], SENSORS_OVER_BLE),
+				(vec!["vagcan", "sensors", "--device", device], ""),
 				// A command that reads through the board is refused only for `--slcan`.
 				(vec!["vagcan", "info", "--device", device], ""),
 			];
@@ -1344,6 +1382,8 @@ mod tests {
 		let cases = [
 			(vec!["vagcan", "units", "--identify", "01", "--ble"], IDENTIFY_OVER_BLE),
 			(vec!["vagcan", "units", "--identify", "01", "--ble", "--slcan"], device::SLCAN_OVER_BLE),
+			(vec!["vagcan", "sensors", "--unit", "713", "--ble"], SENSORS_OVER_BLE),
+			(vec!["vagcan", "sensors", "--unit", "713", "--ble", "--slcan"], device::SLCAN_OVER_BLE),
 			(vec!["vagcan", "info", "--ble", "--slcan"], device::SLCAN_OVER_BLE),
 		];
 		for (args, why) in cases {
@@ -1360,6 +1400,36 @@ mod tests {
 			"{IDENTIFY_OVER_USB}"
 		);
 		assert!(!IDENTIFY_OVER_USB.contains("on the bench"), "{IDENTIFY_OVER_USB}");
+		assert!(SENSORS_OVER_USB.contains("`vagcan --slcan sensors --unit <unit>`"), "{SENSORS_OVER_USB}");
+	}
+
+	/// `sensors --unit <unit>` off the emissions block, through the dash board on its cable:
+	/// refused on the `dash` image, picked or named, and read through it once `--slcan` makes
+	/// it a plain adapter. Hardware-free: the listing and the board's answer are handed in.
+	#[test]
+	fn a_sensors_sweep_is_refused_through_the_board_unless_slcan_makes_it_an_adapter() {
+		const BOARD: &str = "/dev/cu.usbmodem1101";
+		let listing = || {
+			Ok(vec![vag_uds_can::classify_usb(
+				BOARD.into(),
+				0x303a,
+				0x1001,
+				Some("USB JTAG/serial debug unit".into()),
+			)])
+		};
+		let dash = |path: &str| {
+			assert_eq!(path, BOARD, "only the board is probed");
+			vag_uds_can::BoardAnswer::Dash {
+				version: "0.1.0".into(),
+				plan: None,
+			}
+		};
+		for requested in [None, Some(BOARD)] {
+			let refused = device::resolve_cable_for_with(requested, false, &SENSORS, listing(), dash).expect_err("through the board");
+			assert_eq!(refused.to_string(), SENSORS_OVER_USB, "{requested:?}");
+			let path = device::resolve_cable_for_with(requested, true, &SENSORS, listing(), dash).expect("--slcan");
+			assert_eq!(path, BOARD, "{requested:?}");
+		}
 	}
 
 	/// What a command can check without the car goes before the device is resolved: a

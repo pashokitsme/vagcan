@@ -22,7 +22,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 | `vagcan info` | VIN, and the engine's and gearbox's part numbers and software versions |
 | `vagcan units` | The car's control units, named from your label files and earlier `--identify` runs. `--identify` makes each one name itself |
 | `vagcan faults` | Stored fault codes with VW's own text, in English where a source has it. `[faults] language = "de"` (or `en`, `ru`, …) in the config picks another |
-| `vagcan sensors` | Standard OBD-II readings |
+| `vagcan sensors` | Standard OBD-II readings. `--unit <unit>` outside 7E0–7E7: parked car and a cable adapter only |
 | `vagcan watch` | Live values from several units at once, with a chart of up to 6 channels. States show by name. `--out` records to CSV |
 | `vagcan measure` | Acceleration run timing from the car's own speed signal. `measure view` opens a saved run as a chart |
 | `-v`, `-vv` | On any command. `-v`: where the data came from, why a row is unnamed or skipped, caveats, timings. `-vv`: also every request and answer on the bus. Data is on stdout, the rest on stderr |

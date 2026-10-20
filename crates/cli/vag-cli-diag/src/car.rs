@@ -61,6 +61,17 @@ pub async fn info<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>) -> Result<
 	Ok(())
 }
 
+/// Which link a command may be opened on. The command decides, once its arguments are
+/// read; whoever opens the device carries it out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+	/// Whatever `--device` names: a cable adapter, or the dash board on its cable or over BLE.
+	AnyLink,
+	/// A cable adapter only. Never through the dash board, unless `--slcan` makes the board
+	/// a plain adapter — the rule for a sweep (`CLAUDE.md`, Safety).
+	CableOnly,
+}
+
 /// Read the standard OBD-II sensors (see the `Sensors` subcommand docs).
 ///
 /// The table in `vag_data_labels::obd` is SAE J1979's, and J1979 is only binding on
@@ -68,25 +79,76 @@ pub async fn info<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>) -> Result<
 /// answers is still shown; whether its bytes become a number is decided by
 /// `obd::conversion_for`, per parameter, from the unit's block and the width of
 /// what it actually answered.
-pub async fn sensors<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, unit_text: &str) -> Result<()> {
+///
+/// **Where it is a sweep, and where it is not.** Inside the emissions block (`7E0`–`7E7`)
+/// these are the identifiers J1979 legislates on that unit: every generic scan tool reads
+/// them off a running car, at the roadside and on the move, and the moving-car check
+/// itself is one of them (`F40D` off `7E0`, [`safety::require_stationary`]). Plain
+/// `sensors` is the engine (`--unit 01`), so it is not a sweep: it runs on any link and at
+/// any speed, and over BLE the board's own guards apply. Outside the block nothing binds a
+/// unit to these identifiers — the climate unit answers `F405` and means something else
+/// ([`UnitAddress::is_emissions_related`]) — so there the reads are guesses at one
+/// diagnostic server, which is a sweep, and it is guarded as `units --identify <unit>` is:
+/// one named unit; the fixed list in `obd::PIDS`, never a range; refused on a moving car,
+/// with "no answer" counted as moving; through a cable adapter only ([`Reach::CableOnly`]).
+/// On every unit the read stops the moment the unit falls silent under it
+/// ([`anomaly::Monitor`]).
+pub async fn sensors<L: UnitLink>(open: impl AsyncFnOnce(Reach) -> Result<L>, unit_text: &str) -> Result<()> {
 	use render::SensorLine;
 	use vag_data_labels::obd::{self, PIDS};
 
 	labels::install_recorded_units();
 	let unit = parse_unit("--unit", unit_text)?;
 	let established = unit.is_emissions_related();
-	let mut uds = address_unit(open().await?, unit);
+	let mut backend = open(if established { Reach::AnyLink } else { Reach::CableOnly }).await?;
+	if !established {
+		backend = match safety::require_stationary(backend).await {
+			Ok(backend) => backend,
+			Err((_, why)) => anyhow::bail!(
+				"{why}\n\
+                 Read it parked: {} standard identifiers asked of a unit outside the emissions block \
+                 (7E0–7E7) are a sweep, and a sweep can stop a unit doing its job while the car moves.",
+				PIDS.len()
+			),
+		};
+	}
+	let mut uds = address_unit(backend, unit);
 
 	// Ask for every standard parameter; the unit refuses the ones it does not
-	// implement, and those are skipped rather than failing the run.
+	// implement, and those are skipped rather than failing the run. Each identifier is a
+	// span of one: the list is fixed, and nothing between two of them is asked. No
+	// witness and no keepalive: each identifier is asked once, and what the monitor can
+	// see here is a unit that had been answering going quiet.
+	let ranges: Vec<_> = PIDS
+		.iter()
+		.map(|p| {
+			let did = obd::did_for_pid(p.pid);
+			did..=did
+		})
+		.collect();
+	let mut monitor = anomaly::Monitor::new(unit.request);
+	let mut guard = scan::Guard {
+		witness: None,
+		monitor: &mut monitor,
+	};
+	let mut answered = Vec::new();
+	let stats = scan::scan_dids(&mut uds, &ranges, std::time::Duration::ZERO, 0, &mut guard, |hit| {
+		answered.push(hit.clone());
+		Ok(())
+	})
+	.await?;
+	if let Some(halt) = monitor.halted() {
+		let mut progress = progress::Line::new();
+		progress.notice(&halt.report());
+		anyhow::bail!("the read was stopped: control unit {} changed while it was being read", halt.unit());
+	}
+
 	let mut lines = Vec::new();
-	let mut refused = 0usize;
-	for p in PIDS {
-		let did = obd::did_for_pid(p.pid);
-		let Ok(bytes) = uds.read_data_by_identifier(did).await else {
-			refused += 1;
-			continue;
-		};
+	for scan::DidHit { did, data: bytes } in answered {
+		let p = PIDS
+			.iter()
+			.find(|p| obd::did_for_pid(p.pid) == did)
+			.expect("only the listed identifiers are asked");
 		lines.push(match obd::conversion_for(p, established, &bytes) {
 			Ok(def) => SensorLine::Converted {
 				did,
@@ -107,7 +169,11 @@ pub async fn sensors<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, unit_te
 	}
 	let (data, notes) = render::render_sensors(&unit.label(), &lines);
 	out!("{data}");
-	note!("{} standard parameters asked, {refused} not answered or refused", PIDS.len());
+	note!(
+		"{} standard parameters asked, {} not answered or refused",
+		PIDS.len(),
+		stats.refused + stats.failed
+	);
 	for line in notes {
 		note!("{line}");
 	}
