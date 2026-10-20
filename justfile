@@ -69,15 +69,14 @@ bench secs="15" bin="cantx": _espflash
 
 # ---- the laptop side ------------------------------------------------------------------------
 
-# build vagcan and vagcan-measure (target/release/)
+# build vagcan (target/release/)
 build:
-    cargo build --release -p vag-cli -p vag-cli-measure
+    cargo build --release -p vag-cli
 
 # install vagcan into ~/.cargo/bin, over whatever installed it before (an old checkout's
 # `crates/vagcan` package included); extra flags go to cargo: `just install --locked`.
-# Not `vagcan-measure`: it is `vagcan measure` again, the same flags and the same code, there
-# because the stopwatch is a crate of its own on `core` alone. Nobody reading a car needs the
-# second copy (`cargo uninstall vag-cli-measure` removes one an earlier `just install` put there).
+# The stopwatch is `vagcan measure`; a `vagcan-measure` an earlier install left there is
+# removed by `cargo uninstall vag-cli-measure`.
 install *args:
     cargo install --force --path crates/cli/vag-cli {{args}}
 

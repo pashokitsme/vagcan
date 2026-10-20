@@ -33,7 +33,7 @@ embedded-graphics = "0.8"
 dirs = "6"
 # The system folder chooser behind `setup`'s "Choose the folder in a dialog"
 # row. It lives here rather than in `vag-cli-core` because the question it
-# answers is `setup`'s and nothing else asks it — `core` is what `vagcan-measure`
+# answers is `setup`'s and nothing else asks it — `core` is what `vag-cli-measure`
 # also stands on, and a stopwatch has no use for a file panel.
 #
 # `default-features = false` + `xdg-portal` is about what gets *built on Linux*.

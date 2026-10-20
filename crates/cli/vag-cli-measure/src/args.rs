@@ -1,13 +1,12 @@
 //! The stopwatch's own command line.
 //!
-//! Declared here rather than in `vag-cli` so that `vagcan measure` and the
-//! standalone `vagcan-measure` cannot drift apart: one is `#[command(flatten)]`
-//! over this struct and the other is `Parser` over it, and neither has a copy
+//! Declared here rather than in `vag-cli`, beside the code that reads them:
+//! `vagcan measure` is `#[command(flatten)]` over this struct, and holds no copy
 //! of the flags to keep in step.
 
-use clap::{Args as ClapArgs, Parser};
+use clap::Args as ClapArgs;
 
-/// Everything `measure` takes, whichever binary is asking.
+/// Everything `measure` takes.
 // Clone for the reason the command enums are: `vagcan`'s dispatcher keeps a
 // copy of the command so it can be run again after the label data has been made.
 #[derive(Clone, ClapArgs)]
@@ -85,29 +84,12 @@ pub struct Args {
 	pub speed_scale: f64,
 }
 
-/// `vagcan-measure` as its own program.
-#[derive(Parser)]
-#[command(name = "vagcan-measure", version, about = "Time a car's acceleration, from its own speed signal.")]
-pub struct Cli {
-	/// Which project to read — a directory name under `~/.vagcan/data/`.
-	///
-	/// The diagnostics binary carries this as a global flag, so the two
-	/// spellings would otherwise read different directories from the same
-	/// command line and say nothing about it.
-	//
-	// Listed after the command's own flags, as on `vagcan`: left at 0 it sorts in between
-	// `--device` and `--ble`.
-	#[arg(long, value_name = "ID", global = true, display_order = 900)]
-	pub project: Option<String>,
-
-	/// Use the dash board's USB cable as a plain slcan adapter rather than reading through
-	/// its `dash` image. `vagcan` carries the same global flag.
-	#[arg(long, global = true, display_order = 901)]
-	pub slcan: bool,
-
-	#[command(flatten)]
-	pub verbose: vag_cli_core::verbosity::VerboseArg,
-
+/// `measure`'s flags as a command line of their own, for the tests that parse one:
+/// `vagcan measure` flattens [`Args`] the same way.
+#[cfg(test)]
+#[derive(clap::Parser)]
+#[command(name = "measure")]
+pub(crate) struct Measure {
 	#[command(flatten)]
 	pub args: Args,
 }
@@ -116,41 +98,24 @@ pub struct Cli {
 mod tests {
 	use clap::Parser as _;
 
-	use super::Cli;
+	use super::Measure;
 
+	/// `--ble` is `--device ble`, on the run and on `setup`.
 	#[test]
-	fn slcan_is_global_as_it_is_on_vagcan() {
-		assert!(Cli::try_parse_from(["vagcan-measure", "--slcan"]).unwrap().slcan);
-		assert!(Cli::try_parse_from(["vagcan-measure", "setup", "--slcan"]).unwrap().slcan);
-		assert!(!Cli::try_parse_from(["vagcan-measure"]).unwrap().slcan);
-	}
-
-	#[test]
-	fn verbose_is_counted_before_and_after_the_subcommand() {
-		let level = |args: &[&str]| Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}")).verbose.verbose;
-		assert_eq!(level(&["vagcan-measure"]), 0);
-		assert_eq!(level(&["vagcan-measure", "-v"]), 1);
-		assert_eq!(level(&["vagcan-measure", "-vv"]), 2);
-		assert_eq!(level(&["vagcan-measure", "--verbose", "setup"]), 1);
-		assert_eq!(level(&["vagcan-measure", "setup", "-vv"]), 2);
-	}
-
-	/// `vagcan-measure --ble` is `--device ble`, on the run and on `setup`, as on `vagcan`.
-	#[test]
-	fn ble_is_device_ble_on_the_standalone_binary_too() {
+	fn ble_is_device_ble_on_the_run_and_on_setup() {
 		let requested = |args: &[&str]| {
-			let cli = Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
-			let device = match cli.args.tool {
+			let parsed = Measure::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+			let device = match parsed.args.tool {
 				Some(crate::Tool::Setup { device, .. }) => device,
-				_ => cli.args.device,
+				_ => parsed.args.device,
 			};
 			device.requested().map(str::to_owned)
 		};
-		for prefix in [&["vagcan-measure"][..], &["vagcan-measure", "setup"]] {
+		for prefix in [&["measure"][..], &["measure", "setup"]] {
 			let with = |extra: &[&'static str]| prefix.iter().chain(extra).copied().collect::<Vec<_>>();
 			assert_eq!(requested(&with(&["--ble"])).as_deref(), Some("ble"), "{prefix:?}");
 			assert_eq!(requested(&with(&["--device", "ble"])).as_deref(), Some("ble"), "{prefix:?}");
-			let refused = Cli::try_parse_from(with(&["--ble", "--device", "/dev/x"]))
+			let refused = Measure::try_parse_from(with(&["--ble", "--device", "/dev/x"]))
 				.err()
 				.expect("two adapters named");
 			assert_eq!(refused.kind(), clap::error::ErrorKind::ArgumentConflict, "{prefix:?}");

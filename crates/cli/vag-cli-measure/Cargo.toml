@@ -5,12 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 
 # The acceleration stopwatch, and the only crate here that is not diagnostics.
-# It stands on `core` alone — checked symbol by symbol — which is why it can be
-# a crate at all, and why it can be left out of a build.
-
-[[bin]]
-name = "vagcan-measure"
-path = "src/bin/vagcan-measure.rs"
+# A library: `vagcan measure` is the one way in. It stands on `core` alone —
+# no `vag-cli-diag` below, so the compiler holds that — which is why it can be a
+# crate at all, and why `vag-cli` can leave it out of a build.
 
 [dependencies]
 vag-cli-core = { path = "../vag-cli-core" }
