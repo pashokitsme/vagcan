@@ -273,7 +273,7 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	assert_eq!(
 		sensors[0].stdout,
 		"did          value  name\n\
-		 F405      40.00 °C  Coolant temperature\n\
+		 F405    40.00 °C    Coolant temperature\n\
 		 F40C  1000.00 /min  Engine speed\n\
 		 F40D     0.00 km/h  Vehicle speed\n\
 		 \n\

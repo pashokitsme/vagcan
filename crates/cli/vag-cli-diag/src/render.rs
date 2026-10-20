@@ -126,13 +126,26 @@ pub enum SensorLine {
 /// words, is a note.
 pub fn render_sensors(unit_label: &str, lines: &[SensorLine]) -> (String, Vec<String>) {
 	let mut table = Table::new(&["did", "value", "name"]).right(1);
+	// Every unit padded to the widest, `raw` included, so the numbers right-align on their
+	// last digit whatever unit follows them: `40.00 °C  ` over `1000.00 /min`.
+	let unit_width = lines
+		.iter()
+		.map(|l| match l {
+			SensorLine::Converted { reading, .. } => sensor_cells(reading).1.chars().count(),
+			SensorLine::Unconverted { .. } => "raw".len(),
+		})
+		.max()
+		.unwrap_or(0);
+	let with_unit = |value: String, unit: &str| match unit_width {
+		0 => value,
+		w => format!("{value} {unit:<w$}"),
+	};
 	let mut converted = 0usize;
 	for line in lines {
 		if let SensorLine::Converted { did, reading } = line {
 			converted += 1;
 			let (value, unit) = sensor_cells(reading);
-			let value = if unit.is_empty() { value } else { format!("{value} {unit}") };
-			table.row(vec![format!("{did:04X}"), value, reading.name.clone()]);
+			table.row(vec![format!("{did:04X}"), with_unit(value, &unit), reading.name.clone()]);
 		}
 	}
 	let mut notes = Vec::new();
@@ -146,7 +159,7 @@ pub fn render_sensors(unit_label: &str, lines: &[SensorLine]) -> (String, Vec<St
 			}
 			Unconverted::WrongWidth { expected, got } => format!("not J1979: {got} {}, standard {expected}", plural(*got, "byte")),
 		};
-		table.row(vec![format!("{did:04X}"), format!("{} raw", hex_spaced(bytes)), reason]);
+		table.row(vec![format!("{did:04X}"), with_unit(hex_spaced(bytes), "raw"), reason]);
 	}
 	if off_block {
 		notes.push(format!(
@@ -312,7 +325,7 @@ mod tests {
 		assert_eq!(
 			text,
 			"did       value  name\n\
-			 F405   89.00 °C  Coolant temperature\n\
+			 F405  89.00 °C   Coolant temperature\n\
 			 F40D  9C 02 raw  not J1979: 2 bytes, standard 1\n\
 			 \n\
 			 1 of 2 converted · unit 02\n"
