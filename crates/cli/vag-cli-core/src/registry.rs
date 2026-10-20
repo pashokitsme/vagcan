@@ -384,10 +384,14 @@ impl Summary {
 			plural(self.asked)
 		);
 		if self.not_channels > 0 {
-			detail.push_str(&format!("; {} listed rows are not channels", self.not_channels));
+			let (row, channel) = match self.not_channels {
+				1 => ("row is", "a channel"),
+				_ => ("rows are", "channels"),
+			};
+			detail.push_str(&format!("; {} listed {row} not {channel}", self.not_channels));
 		}
 		if self.unread > 0 {
-			detail.push_str(&format!("; {} listed rows did not read", self.unread));
+			detail.push_str(&format!("; {} listed row{} did not read", self.unread, plural(self.unread)));
 		}
 		if self.keys_found > 0 {
 			let kept = match self.keys_unsaved {
@@ -428,7 +432,10 @@ pub fn clear(root: &Path, project: &Project) -> Result<Option<String>> {
 	}
 	Ok(Some(match held {
 		0 => String::new(),
-		n => format!("\n    This run removed the {n} channels an earlier run read from a VCDS registry."),
+		n => format!(
+			"\n    This run removed the {n} channel{} an earlier run read from a VCDS registry.",
+			if n == 1 { "" } else { "s" }
+		),
 	}))
 }
 
@@ -443,7 +450,7 @@ fn forget_log(project: &Project) {
 	match std::fs::remove_file(project.registry_log()) {
 		Ok(()) => {}
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-		Err(e) => eprintln!("note: {} not removed: {e}", project.registry_log().display()),
+		Err(e) => crate::say!("{} not removed: {e}", project.registry_log().display()),
 	}
 }
 
@@ -518,9 +525,11 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 			// A row charged to no table could be any listed row's; one charged to
 			// a table is said below only where a listed row names that table.
 			if tables.unattributed() > 0 {
+				let n = tables.unattributed();
+				let (rows, they) = if n == 1 { ("row", "it holds") } else { ("rows", "they hold") };
 				notes.push(format!(
-					"{} rows of TTDOP.rod name no table: the states they hold are left out",
-					tables.unattributed()
+					"{n} {rows} of TTDOP.rod name{} no table: the states {they} are left out",
+					if n == 1 { "s" } else { "" }
 				));
 			}
 			tables
@@ -781,6 +790,7 @@ fn unit_why(outcome: &UnitMeasurements) -> String {
 	match outcome {
 		UnitMeasurements::Found { .. } => String::new(),
 		UnitMeasurements::NoFile => "no file of that name in this installation; an ODIS project that describes the unit brings its channels".to_string(),
+		UnitMeasurements::NoList { candidates: 1 } => "its one file lists no measurements".to_string(),
 		UnitMeasurements::NoList { candidates } => format!("none of its {candidates} files lists measurements"),
 		UnitMeasurements::Locked { file, section } => {
 			format!("the search for the key of [{section}] in {} found nothing", file.display())
@@ -792,8 +802,9 @@ fn unit_why(outcome: &UnitMeasurements) -> String {
 		UnitMeasurements::Unresolved { file } => format!("{} includes a store this installation does not have", file.display()),
 		UnitMeasurements::Mismatched { file, listed, outside } => {
 			format!(
-				"{} lists {outside} of {listed} rows the registry does not have — another install's file",
-				file.display()
+				"{} lists {outside} of {listed} row{} the registry does not have — another install's file",
+				file.display(),
+				plural(*listed)
 			)
 		}
 	}

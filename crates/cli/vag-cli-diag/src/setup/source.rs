@@ -850,10 +850,12 @@ fn unescape(text: &str) -> String {
 /// would invite a second name for one project. Asks otherwise, because D3 leaves a
 /// VCDS-only project with nothing to derive a name from.
 ///
-/// Either way it says what it settled on. A run with no terminal answers this
-/// question by taking the default without printing anything ([`Asker::line`]),
-/// and a project name that appears nowhere is a directory somebody finds later
-/// with no idea how it got there.
+/// `asks` is whether there is a terminal to ask at. Without one nothing is said
+/// and the default is taken: the lines that introduce the question belong with
+/// it, and a name list printed above a question that never comes is a stray line.
+/// [`Named::unasked`] says the default was taken that way, so the caller's one
+/// `project` line can say so at level 0 — a project name that appears nowhere is
+/// a directory somebody finds later with no idea how it got there.
 ///
 /// **The folder name is the fallback, not the authority.** A project names
 /// itself inside, in `index.xml`'s `<CATALOG><SHORT-NAME>`, and that survives
@@ -865,10 +867,9 @@ fn unescape(text: &str) -> String {
 /// a store at `SK37X-1` holding data that calls itself `SK37X` is one platform in
 /// two places. Nothing here reads `index.xml` itself: one rule with two
 /// implementations that can disagree is worse than one that is asked twice.
-/// `rereads` are the projects in `existing` whose cache already holds this source
-/// ([`crate::project::records_source`]): landing on one of those reads the source
-/// again rather than adding it, and says so.
-pub fn project_id(io: &mut impl Asker, source: &Source, existing: &[String], rereads: &[String]) -> Result<String> {
+/// What landing on the name means — new, added, read again — is the closing
+/// summary's to say ([`landing`]).
+pub fn project_id(io: &mut impl Asker, asks: bool, source: &Source, existing: &[String]) -> Result<Named> {
 	let folder = match source {
 		Source::Odis { dir } => dir.file_name().map(|name| name.to_string_lossy().into_owned()),
 		_ => None,
@@ -879,8 +880,10 @@ pub fn project_id(io: &mut impl Asker, source: &Source, existing: &[String], rer
 	if let Some(name) = &folder
 		&& why_not(name).is_none()
 	{
-		vag_cli_core::note!("{}", settled(name, landing(name, existing, rereads), true, false));
-		return Ok(name.clone());
+		return Ok(Named {
+			id: name.clone(),
+			unasked: false,
+		});
 	}
 	let default = match (folder.as_deref().map(clean), existing) {
 		// The ODIS folder name, cleaned into something a directory can be
@@ -894,8 +897,11 @@ pub fn project_id(io: &mut impl Asker, source: &Source, existing: &[String], rer
 		(_, [only]) => only.clone(),
 		_ => DEFAULT_ID.to_string(),
 	};
-	// What a project is, at `-v`: the question itself needs only the names.
-	vag_cli_core::note!("{WHAT_A_PROJECT_IS}");
+	// No terminal: the default, and nothing said here — every line below belongs
+	// with the question.
+	if !asks {
+		return Ok(Named { id: default, unasked: true });
+	}
 	// A default that appears out of nowhere is worse than no default: somebody
 	// shown `[SK-37X-copy]` with no explanation cannot tell whether the tool
 	// read it somewhere or invented it.
@@ -911,13 +917,7 @@ pub fn project_id(io: &mut impl Asker, source: &Source, existing: &[String], rer
 		let typed = io.line("What should this project be called?", &default)?;
 		let id = typed.trim().to_string();
 		match why_not(&id) {
-			None => {
-				vag_cli_core::note!(
-					"{}",
-					settled(&id, landing(&id, existing, rereads), false, matches!(source, Source::Vcds { .. }))
-				);
-				return Ok(id);
-			}
+			None => return Ok(Named { id, unasked: false }),
 			// Asked again rather than refused: a name is one keystroke, and
 			// losing the whole run over a slash would be a poor trade.
 			// The resolved path goes last because it is the one part whose
@@ -931,10 +931,13 @@ pub fn project_id(io: &mut impl Asker, source: &Source, existing: &[String], rer
 	}
 }
 
-/// What a project is, said at `-v` before its name is asked for.
-const WHAT_A_PROJECT_IS: &str = "project: a kind of car rather than one car (VW's naming puts several models under one); \
-                                 what is true of one car lives under cars/<VIN>/; a second source is added to a project \
-                                 rather than replacing what is there";
+/// The name [`project_id`] settled on, and whether it was taken unasked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Named {
+	pub id: String,
+	/// The default, taken because there was no terminal to ask at.
+	pub unasked: bool,
+}
 
 /// Where projects live, in words, for a sentence a person reads.
 ///
@@ -972,32 +975,6 @@ pub fn landing(id: &str, existing: &[String], rereads: &[String]) -> Landing {
 		(false, true) => Landing::Adds,
 		(false, false) => Landing::New,
 	}
-}
-
-/// What the run says about the project it landed on.
-///
-/// The merge case is the one that has to be said out loud: spec §5 adds a
-/// source to an existing project rather than replacing it, and somebody who
-/// believes they are starting fresh would otherwise find out from the data.
-/// A reread is not a merge — the source's entry and rows are replaced — and says
-/// that instead.
-///
-/// `vcds` because "what other sources put there stays" is only true of an ODIS
-/// source: a VCDS installation's label files replace every label file already in
-/// the project (`insert_files` clears them whichever installation wrote them),
-/// and its names replace `names.json` wholesale. ODIS rows stay either way.
-fn settled(id: &str, landing: Landing, from_odis: bool, vcds: bool) -> String {
-	let how = match from_odis {
-		true => " — the name ODIS gives this folder",
-		false => "",
-	};
-	let what = match landing {
-		Landing::Rereads => "it has read this source before; reading it again replaces what it wrote",
-		Landing::Adds if vcds => "this installation is added to it: ODIS rows stay, and any VCDS read before is replaced",
-		Landing::Adds => "this source is added to it; what other sources put there stays",
-		Landing::New => "new — nothing has been read into it yet",
-	};
-	format!("project  `{id}`{how}: {what}")
 }
 
 /// Why this cannot be a directory under `~/.vagcan/data/`, if it cannot.
@@ -1643,55 +1620,45 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
 		let mut io = Scripted::new(vec![]);
-		let id = project_id(&mut io, &Source::Odis { dir: project }, &[], &[]).unwrap();
-		assert_eq!(id, "SK37X");
+		let named = project_id(&mut io, true, &Source::Odis { dir: project }, &[]).unwrap();
+		assert_eq!(
+			named,
+			Named {
+				id: "SK37X".into(),
+				unasked: false
+			}
+		);
 		assert!(io.typed.is_empty(), "nothing was asked");
-		// What it landed on is said at `-v`; the closing line names the project too.
-		assert!(settled(&id, landing(&id, &[], &[]), true, false).contains("`SK37X` — the name ODIS gives this folder"));
+		assert!(io.said.is_empty(), "nothing was said: {:?}", io.said);
 	}
 
 	#[test]
-	fn an_odis_project_landing_on_a_name_already_here_says_it_is_adding_to_it() {
-		// Spec §5: a second source is added, not swapped in. Somebody who thinks
-		// they are starting fresh has to be told they are not.
+	fn an_odis_project_landing_on_a_name_already_here_is_adding_to_it() {
+		// Spec §5: a second source is added, not swapped in. The closing summary
+		// says it (`source added`); this is the landing it is told.
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
 		let mut io = Scripted::new(vec![]);
 		let existing = ["SK37X".to_string()];
-		let id = project_id(&mut io, &Source::Odis { dir: project }, &existing, &[]).unwrap();
+		let id = project_id(&mut io, true, &Source::Odis { dir: project }, &existing).unwrap().id;
 		assert_eq!(id, "SK37X");
 		assert_eq!(landing(&id, &existing, &[]), Landing::Adds);
-		let said = settled(&id, Landing::Adds, true, false);
-		assert!(said.contains("added"), "{said}");
-		assert!(said.contains("what other sources put there stays"), "{said}");
 	}
 
 	#[test]
-	fn a_source_read_into_this_project_before_is_said_to_be_read_again() {
-		// e2e79a7 made a reread replace the source's entry (its cache row now), and the
-		// rows it wrote go with it. "Added; what other sources put there stays"
-		// describes a second source, not the same one a second time.
+	fn a_source_read_into_this_project_before_is_read_again() {
+		// e2e79a7 made a reread replace the source's `sources.json` entry, and the
+		// rows it wrote go with it: a reread, not a second source.
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
 		let mut io = Scripted::new(vec![]);
 		let existing = ["SK37X".to_string()];
-		assert_eq!(
-			project_id(&mut io, &Source::Odis { dir: project }, &existing, &existing).unwrap(),
-			"SK37X"
-		);
+		assert_eq!(project_id(&mut io, true, &Source::Odis { dir: project }, &existing).unwrap().id, "SK37X");
 		assert_eq!(landing("SK37X", &existing, &existing), Landing::Rereads);
-		let said = settled("SK37X", Landing::Rereads, true, false);
-		assert!(said.contains("again"), "{said}");
-		assert!(said.contains("replaces"), "{said}");
-		assert!(!said.contains("is added to it"), "{said}");
 
 		let install = vcds(here.path());
 		let mut io = Scripted::new(vec![Answer::Type(String::new())]);
-		assert_eq!(
-			project_id(&mut io, &Source::Vcds { dir: install }, &existing, &existing).unwrap(),
-			"SK37X"
-		);
-		assert!(settled("SK37X", Landing::Rereads, false, true).contains("again"));
+		assert_eq!(project_id(&mut io, true, &Source::Vcds { dir: install }, &existing).unwrap().id, "SK37X");
 	}
 
 	#[test]
@@ -1700,7 +1667,7 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK 37X (copy)");
 		let mut io = Scripted::new(vec![Answer::Type(String::new())]);
-		let id = project_id(&mut io, &Source::Odis { dir: project }, &[], &[]).unwrap();
+		let id = project_id(&mut io, true, &Source::Odis { dir: project }, &[]).unwrap().id;
 		assert_eq!(io.defaults(), ["SK-37X-copy"], "the offered default is the folder name, cleaned");
 		assert_eq!(id, "SK-37X-copy");
 		// A default out of nowhere is worse than no default: it has to say
@@ -1716,9 +1683,36 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let install = vcds(here.path());
 		let mut io = Scripted::new(vec![Answer::Type(String::new())]);
-		let id = project_id(&mut io, &Source::Vcds { dir: install }, &[], &[]).unwrap();
-		assert_eq!(id, "default");
+		let named = project_id(&mut io, true, &Source::Vcds { dir: install }, &[]).unwrap();
+		assert_eq!(named.id, "default");
+		assert!(!named.unasked, "pressing Enter on the question is an answer");
 		assert_eq!(io.defaults(), ["default"]);
+	}
+
+	#[test]
+	fn with_no_terminal_the_default_is_taken_and_nothing_introduces_a_question() {
+		// The stray line: `Projects already here: SK37X` printed above a question
+		// that never came. Without a terminal nothing is said and nothing asked; the
+		// caller's `project` line says the default was taken.
+		let here = tempfile::tempdir().unwrap();
+		let install = vcds(here.path());
+		let mut io = Scripted::new(vec![]);
+		let named = project_id(&mut io, false, &Source::Vcds { dir: install }, &["SK37X".to_string()]).unwrap();
+		assert_eq!(
+			named,
+			Named {
+				id: "SK37X".into(),
+				unasked: true
+			}
+		);
+		assert!(io.said.is_empty(), "{:?}", io.said);
+		assert!(io.typed.is_empty(), "nothing was asked");
+		// The same for a folder that needs cleaning: its line belongs with the question.
+		let project = odis(here.path(), "SK 37X (copy)");
+		let mut io = Scripted::new(vec![]);
+		let named = project_id(&mut io, false, &Source::Odis { dir: project }, &[]).unwrap();
+		assert_eq!((named.id.as_str(), named.unasked), ("SK-37X-copy", true));
+		assert!(io.said.is_empty(), "{:?}", io.said);
 	}
 
 	#[test]
@@ -1729,13 +1723,10 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let install = vcds(here.path());
 		let mut io = Scripted::new(vec![Answer::Type(String::new())]);
-		let id = project_id(&mut io, &Source::Vcds { dir: install }, &["SK37X".to_string()], &[]).unwrap();
+		let id = project_id(&mut io, true, &Source::Vcds { dir: install }, &["SK37X".to_string()])
+			.unwrap()
+			.id;
 		assert_eq!(id, "SK37X");
-		// A second VCDS installation replaces the first one's label files, so
-		// "what other sources put there stays" would be false here.
-		let said = settled(&id, Landing::Adds, false, true);
-		assert!(!said.contains("what other sources put there stays"), "{said}");
-		assert!(said.contains("any VCDS read before is replaced"), "{said}");
 	}
 
 	#[test]
@@ -1744,7 +1735,7 @@ mod tests {
 		let install = vcds(here.path());
 		let mut io = Scripted::new(vec![Answer::Type("SK37X".to_string())]);
 		let existing = ["SK37X".to_string(), "default".to_string()];
-		assert_eq!(project_id(&mut io, &Source::Vcds { dir: install }, &existing, &[]).unwrap(), "SK37X");
+		assert_eq!(project_id(&mut io, true, &Source::Vcds { dir: install }, &existing).unwrap().id, "SK37X");
 		let said = io.all_said();
 		assert!(said.contains("SK37X") && said.contains("default"), "both are on screen: {said}");
 		assert_eq!(io.defaults(), ["default"], "with more than one there is nothing to guess");
@@ -1759,7 +1750,7 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let install = vcds(here.path());
 		let mut io = Scripted::new(vec![Answer::Type("no/pe".to_string()), Answer::Type("ok".to_string())]);
-		project_id(&mut io, &Source::Vcds { dir: install }, &[], &[]).unwrap();
+		project_id(&mut io, true, &Source::Vcds { dir: install }, &[]).unwrap();
 		let said = io.all_said();
 		assert!(!said.contains(".vagcan/projects"), "the directory that no longer exists: {said}");
 		let real = crate::datadir::projects_dir().unwrap();
@@ -1770,29 +1761,11 @@ mod tests {
 	}
 
 	#[test]
-	fn the_offer_does_not_call_a_project_one_car() {
-		// A project is a platform — one *kind* of car. VW's own mapping puts
-		// several models under one name, so "one car's data" would promise a
-		// separation that is not there, and somebody would go looking for a
-		// second project for their second Octavia.
-		let here = tempfile::tempdir().unwrap();
-		let install = vcds(here.path());
-		let mut io = Scripted::new(vec![Answer::Type(String::new())]);
-		project_id(&mut io, &Source::Vcds { dir: install }, &[], &[]).unwrap();
-		// Said at `-v`, before the name is asked for.
-		let said = WHAT_A_PROJECT_IS;
-		assert!(!said.contains("one car's data"), "{said}");
-		assert!(said.contains("kind of car"), "it says what a project actually covers: {said}");
-		// The one-car store is still a real thing, and it is somewhere else.
-		assert!(said.contains("cars/"), "and where what is true of one car lives: {said}");
-	}
-
-	#[test]
 	fn a_name_that_could_not_be_a_folder_is_refused_and_asked_again() {
 		let here = tempfile::tempdir().unwrap();
 		let install = vcds(here.path());
 		let mut io = Scripted::new(vec![Answer::Type("my car/2".to_string()), Answer::Type("my-car-2".to_string())]);
-		let id = project_id(&mut io, &Source::Vcds { dir: install }, &[], &[]).unwrap();
+		let id = project_id(&mut io, true, &Source::Vcds { dir: install }, &[]).unwrap().id;
 		assert_eq!(id, "my-car-2");
 		let said = io.all_said();
 		assert!(said.contains("my car/2"), "{said}");
@@ -1805,7 +1778,7 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let install = vcds(here.path());
 		let mut io = Scripted::new(vec![Answer::Type("..".to_string()), Answer::Type("ok".to_string())]);
-		assert_eq!(project_id(&mut io, &Source::Vcds { dir: install }, &[], &[]).unwrap(), "ok");
+		assert_eq!(project_id(&mut io, true, &Source::Vcds { dir: install }, &[]).unwrap().id, "ok");
 		assert!(io.all_said().contains(".."), "{:?}", io.said);
 	}
 

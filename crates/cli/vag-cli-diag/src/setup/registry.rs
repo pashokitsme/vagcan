@@ -22,9 +22,10 @@ use crate::registry::{Progress, Read};
 
 pub(super) const NAME: &str = "registry";
 
-/// Why the step is pending with no car recorded, at `-v`: what reads the channels.
+/// Why the step is pending with no car recorded, at `-v`: what reads the channels
+/// — said as what happens, not as a command for the reader to run.
 pub(super) const PENDING_WHY: &str =
-	"no car recorded on this machine; `vagcan watch`, `measure` or `units --identify` with the car reads the channels of its units";
+	"no car recorded on this machine; `watch`, `measure` and `units --identify` read its units' channels when they meet the car";
 
 /// The `(F19E, F1A2)` of every unit of every car recorded on this machine,
 /// each once, in order. A unit that did not say what it is has no file to find.
@@ -95,9 +96,9 @@ pub(super) async fn registry_channels(root: &Path, project: &crate::project::Pro
 		return Ok(Step::new(vag_data_db::VCDS, NAME, State::Pending, super::NEXT_WITH_THE_CAR).because(format!("{PENDING_WHY}{removed}")));
 	}
 	vag_cli_core::note!(
-		"vcds registry: {} unit{} of the cars recorded here",
+		"vcds registry: {} {} of the cars recorded here",
 		units.len(),
-		plural(units.len())
+		crate::render::plural(units.len(), "unit")
 	);
 	let (root, project, units) = (root.to_path_buf(), project.clone(), units.clone());
 	let outcome = tokio::task::spawn_blocking(move || {
@@ -123,9 +124,11 @@ pub(super) async fn registry_channels(root: &Path, project: &crate::project::Pro
 }
 
 /// The step when the cars' records could not be read: nothing was read. The row
-/// names the file — the one thing to act on — and what to do about it closes the
-/// run ([`super::AFTER_A_FAILED_STEP`]); the cause is at `-v`.
-pub(super) fn failed(e: &anyhow::Error) -> Step {
+/// says what did not read — the file, or the error that names it — and its
+/// `Fix:` line, at level 0, what to do and the command that reads the
+/// installation at `root` again; a record's parse error is at `-v`.
+pub(super) fn failed(e: &anyhow::Error, root: &Path) -> Step {
+	let again = crate::missing::shell_word(&root.display().to_string());
 	match e.downcast_ref::<crate::units::NotARecord>() {
 		Some(bad) => Step::new(
 			vag_data_db::VCDS,
@@ -133,18 +136,14 @@ pub(super) fn failed(e: &anyhow::Error) -> Step {
 			State::Failed,
 			format!("not a record this tool wrote: {}", bad.path.display()),
 		)
-		.because(format!(
-			"a car's record on this machine is not one this tool wrote: {} ({})",
-			bad.path.display(),
-			bad.cause
-		)),
-		None => Step::new(vag_data_db::VCDS, NAME, State::Failed, "the cars' records could not be read")
-			.because(format!("the records of the cars on this machine could not be read: {e:#}")),
+		.because(bad.cause.clone())
+		.fix(format!("Fix: move {} aside, then `vagcan setup {again}`", bad.path.display())),
+		None => {
+			let cars = crate::datadir::cars_dir().map_or_else(|_| "~/.vagcan/cars".to_string(), |dir| dir.display().to_string());
+			Step::new(vag_data_db::VCDS, NAME, State::Failed, format!("the cars' records did not read: {e:#}"))
+				.fix(format!("Fix: make {cars} and the records in it readable, then `vagcan setup {again}`"))
+		}
 	}
-}
-
-fn plural(n: usize) -> &'static str {
-	if n == 1 { "" } else { "s" }
 }
 
 #[cfg(test)]
@@ -154,10 +153,10 @@ mod tests {
 	#[tokio::test]
 	async fn with_no_car_recorded_the_step_is_pending_names_the_live_commands_and_records_the_installation() {
 		// Spec 4: the units come from the record `watch`, `measure` and
-		// `units --identify` write, so what a reader is told to do is connect the
-		// car with one of them — not run anything else. And the installation is
-		// written down even now, so that first `watch` knows where to read the
-		// channels from.
+		// `units --identify` write, so the reader is told when the channels come —
+		// the first time one of them meets the car — and is asked to run nothing.
+		// And the installation is written down even now, so that first car command
+		// knows where to read the channels from.
 		let dir = tempfile::tempdir().unwrap();
 		let root = dir.path().join("vcds");
 		std::fs::create_dir_all(root.join("UDS_EV")).unwrap();
@@ -169,14 +168,20 @@ mod tests {
 		let step = registry_channels(&root, &project, &BTreeSet::new()).await.unwrap();
 		assert_eq!(step.state, State::Pending, "{step:?}");
 		assert_eq!((step.source, step.name), ("vcds", "registry"));
-		// The row says what to type; `-v` says which commands read the channels.
-		assert_eq!(step.detail, "no car recorded: run `vagcan watch` with the car");
+		// The row says when the channels come; `-v` says which commands read them.
+		// Neither tells the reader to run anything: the tool learns the car as a
+		// side effect of the car commands.
+		assert_eq!(step.detail, "read the first time a car command meets the car");
 		let why = step.why.as_deref().expect("a reason at -v");
 		assert!(why.starts_with("no car recorded on this machine"), "{why}");
 		assert!(
-			why.contains("`vagcan watch`, `measure` or `units --identify` with the car reads the channels of its units"),
+			why.contains("`watch`, `measure` and `units --identify` read its units' channels when they meet the car"),
 			"{why}"
 		);
+		for said in [step.detail.as_str(), why] {
+			assert!(!said.contains("run "), "an instruction to run a command: {said}");
+		}
+		assert!(step.fix.is_none(), "nothing to type: {step:?}");
 		assert!(!why.contains("survey"), "no other instruction: {why}");
 		assert!(
 			!why.contains("connected"),
