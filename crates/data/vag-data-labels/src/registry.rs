@@ -281,7 +281,8 @@ pub enum UnitMeasurements {
 	/// The list is in a classic section whose key is not cached: one search,
 	/// minutes. `setup` runs it.
 	Locked { file: PathBuf, section: String },
-	/// The list is in a shifted file. VCDS's runtime key opens it and nothing
+	/// The list is in a shifted file. The mask VCDS gets from its interface opens
+	/// it (`.archive/research/labels/tttext2.md` §3.3b), and nothing
 	/// offline does (`.archive/research/labels/tttext2.md` §3.3a).
 	Shifted { file: PathBuf, section: String },
 	/// `[INC]` names no store this install has, or its first row could not be
@@ -380,33 +381,29 @@ pub fn unit_measurements(
 ///
 /// Every lookup is a walk of the install's directory and a read of one or two
 /// files, independent of every other, so they run side by side. Each searches
-/// with its own copy of `cache`, and the keys any of them found — only those, so
-/// one copy's stale key cannot undo another's fresh one — are taken back into
-/// `cache` once all are done. Two units that share a store whose key is not
-/// cached would both search for it; a file under its own name needs no search.
+/// with its own copy of `cache`, and hands `finished` the keys it found — only
+/// those, so one copy's stale key cannot undo another's fresh one — as soon as
+/// that unit is done, which is when a caller can save them and count the unit.
+/// Two units that share a store whose key is not cached would both search for
+/// it; a file under its own name needs no search.
 pub fn units_measurements(
 	root: &Path,
 	units: &[(&str, &str)],
-	cache: &mut IvCache,
+	cache: &IvCache,
 	crack: bool,
 	registry: &MeasurementRegistry,
+	finished: &(dyn Fn(IvCache) + Sync),
 ) -> Vec<UnitMeasurements> {
 	use rayon::prelude::*;
-	let held: &IvCache = cache;
-	let looked: Vec<(UnitMeasurements, IvCache)> = units
+	units
 		.par_iter()
 		.map(|(odx_name, version)| {
-			let mut own = held.clone();
+			let mut own = cache.clone();
 			let found = unit_measurements(root, odx_name, version, &mut own, crack, registry);
-			(found, own.since(held))
+			finished(own.since(cache));
+			found
 		})
-		.collect();
-	let mut out = Vec::with_capacity(looked.len());
-	for (found, own) in looked {
-		cache.absorb(own);
-		out.push(found);
-	}
-	out
+		.collect()
 }
 
 /// The outcome of reading one `[MWB]` list.
@@ -466,7 +463,7 @@ enum Unread {
 	/// A plain-TEA first row whose key's first three digits did not survive.
 	/// Those bytes come from the tag alone and a nonzero `product` never reaches
 	/// them; only the shifted regime's per-file mask does, so the file is
-	/// shifted, and only VCDS's runtime key reads that row.
+	/// shifted, and only the mask VCDS gets from its interface reads that row.
 	Shifted,
 }
 

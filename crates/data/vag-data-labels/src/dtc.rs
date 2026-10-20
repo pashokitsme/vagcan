@@ -308,11 +308,12 @@ enum Section {
 	Absent,
 }
 
-/// Decode one file's `[DTC]` section, using the cache and never the search.
+/// Decode one file's `[DTC]` section, by its file name and the cache, never the
+/// search.
 ///
-/// Every `[DTC]` section in these label files carry a nonzero per-record term, so
-/// none of them opens without a recovered key — which is why the cache is the
-/// mechanism here and not an optimisation.
+/// A `[DTC]` section opens by its file's name (2026-10-20,
+/// [`crate::rod::name_product`]); the cache holds what the name does not give —
+/// a shifted file's key, recovered once.
 fn section_of(path: &Path, cache: &IvCache) -> Section {
 	let Ok(bytes) = std::fs::read(path) else { return Section::Absent };
 	let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();

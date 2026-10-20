@@ -1008,9 +1008,10 @@ fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<(Step, 
 	// Two files of one name in two directories land on one name in the flat
 	// pool, and two threads writing one name would share its staging file — so
 	// one is kept per name, compared as the file system compares names (APFS
-	// ignores case). The newer source, the first listed on a tie: what the loop
-	// this replaced ended up with, since it skipped a source older than the copy
-	// already made.
+	// ignores case). The newer source wins, the first listed on a tie. That is
+	// what the loop this replaced left without `--refresh`, since it skipped a
+	// source older than the copy already made; with `--refresh` it copied every
+	// one and the last listed won. Now the newer one wins either way.
 	let mut landing: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 	let mut keep = vec![true; plan.len()];
 	let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
@@ -1177,9 +1178,10 @@ fn names(pool: &Path, project: &crate::project::Project) -> Result<Step> {
 	println!("[3/5] Measurement names — opening {name}, then reading every record under its own key.");
 	let scratch = out.with_file_name("tttext-scratch");
 	let _ = std::fs::remove_dir_all(&scratch);
+	// `Classic`: a shifted table is reported, never swept for hours.
 	let sections = crate::vcds::rod::open(
 		&source.to_string_lossy(),
-		true,
+		vag_data_labels::rod::Search::Classic,
 		Some(&project.rod_keys().to_string_lossy()),
 		Some(&scratch.to_string_lossy()),
 	)?;
@@ -1294,7 +1296,12 @@ fn rod_keys(pool: &Path, project: &crate::project::Project) -> Result<Step> {
 	println!("[4/5] .rod section keys — opening the shared tables.");
 	let mut shut = Vec::new();
 	for file in &present {
-		for section in crate::vcds::rod::open(&file.to_string_lossy(), true, Some(&cache.to_string_lossy()), None)? {
+		for section in crate::vcds::rod::open(
+			&file.to_string_lossy(),
+			vag_data_labels::rod::Search::Classic,
+			Some(&cache.to_string_lossy()),
+			None,
+		)? {
 			if let Some(why) = crate::vcds::rod::why_shut(&section) {
 				shut.push(format!("[{}] in {} did not open: {why}", section.tag, file.display()));
 			}

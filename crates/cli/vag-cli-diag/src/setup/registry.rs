@@ -42,18 +42,15 @@ pub(super) fn recorded_units() -> Result<BTreeSet<(String, String)>> {
 	Ok(out)
 }
 
-/// The step's progress: a spinner while a table opens or a list is found —
-/// minutes, when a key is searched for — and a line per unit under the header
-/// as each is done, numbered, with a rough estimate of what is left, so a run
-/// that takes that long does not read as hung and says how long it has to go.
+/// The step's progress: a spinner while a table opens and while the units'
+/// lists are found — all at once, counted on the spinner as each unit is done,
+/// with the elapsed time once it runs long — and then a line per unit under the
+/// header, numbered, in order.
 struct Said {
 	spinner: Option<Spinner>,
-	/// Which unit is being read, and of how many.
+	/// Which unit's line is next, and of how many.
 	at: usize,
 	of: usize,
-	/// When the first unit started: the tables opened before it are not part of
-	/// what each unit costs.
-	started: Option<std::time::Instant>,
 }
 
 impl Progress for Said {
@@ -63,40 +60,18 @@ impl Progress for Said {
 		self.spinner = Some(Spinner::new(what));
 	}
 
-	fn unit(&mut self, at: usize, of: usize, name: &str) {
-		self.started.get_or_insert_with(std::time::Instant::now);
+	fn unit(&mut self, at: usize, of: usize, _name: &str) {
 		(self.at, self.of) = (at, of);
-		self.waiting(&format!("[{}/{of}] {name}: finding its measurement list", at + 1));
+	}
+
+	fn reporter(&self) -> Option<crate::progress::Reporter> {
+		self.spinner.as_ref().map(Spinner::reporter)
 	}
 
 	fn done(&mut self, line: &str) {
 		self.spinner = None;
-		let done = self.at + 1;
-		let left = self.started.and_then(|t| time_left(t.elapsed(), done, self.of));
-		match left {
-			Some(left) => println!("      [{done}/{}] {line} — {left}", self.of),
-			None => println!("      [{done}/{}] {line}", self.of),
-		}
+		println!("      [{}/{}] {line}", self.at + 1, self.of);
 	}
-}
-
-/// A rough "how long is left", from the average so far: `done` of `of` units
-/// took `elapsed`. `None` when nothing is left or it is under a minute — a run
-/// whose keys are all cached says nothing about time.
-fn time_left(elapsed: std::time::Duration, done: usize, of: usize) -> Option<String> {
-	if done == 0 || done >= of {
-		return None;
-	}
-	let seconds = elapsed.as_secs_f64() / done as f64 * (of - done) as f64;
-	if seconds < 60.0 {
-		return None;
-	}
-	let minutes = (seconds / 60.0).round() as u64;
-	Some(match (minutes / 60, minutes % 60) {
-		_ if minutes < 90 => format!("about {minutes} min left"),
-		(hours, 0) => format!("about {hours} h left"),
-		(hours, rest) => format!("about {hours} h {rest} min left"),
-	})
 }
 
 /// Read the registry for `units` out of the install at `root` and write their
@@ -134,12 +109,7 @@ pub(super) async fn registry_channels(root: &Path, project: &crate::project::Pro
 	);
 	let (root, project, units) = (root.to_path_buf(), project.clone(), units.clone());
 	let outcome = tokio::task::spawn_blocking(move || {
-		let mut said = Said {
-			spinner: None,
-			at: 0,
-			of: 0,
-			started: None,
-		};
+		let mut said = Said { spinner: None, at: 0, of: 0 };
 		crate::registry::read(&root, &project, &units, &mut said)
 	})
 	.await
@@ -191,18 +161,6 @@ fn plural(n: usize) -> &'static str {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use std::time::Duration;
-
-	#[test]
-	fn the_time_left_is_the_average_so_far_and_quiet_when_short() {
-		// Two of fifteen units took ten minutes: thirteen more at five each.
-		assert_eq!(time_left(Duration::from_secs(600), 2, 15).as_deref(), Some("about 65 min left"));
-		assert_eq!(time_left(Duration::from_secs(3600), 1, 3).as_deref(), Some("about 2 h left"));
-		assert_eq!(time_left(Duration::from_secs(1900), 1, 4).as_deref(), Some("about 1 h 35 min left"));
-		assert_eq!(time_left(Duration::from_secs(3), 1, 15), None, "cached keys: nothing to wait for");
-		assert_eq!(time_left(Duration::from_secs(600), 15, 15), None, "the last unit");
-		assert_eq!(time_left(Duration::from_secs(600), 0, 15), None, "nothing to average yet");
-	}
 
 	#[tokio::test]
 	async fn with_no_car_recorded_the_step_is_pending_names_the_live_commands_and_records_the_installation() {

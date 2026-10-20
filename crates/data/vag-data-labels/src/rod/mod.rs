@@ -521,7 +521,8 @@ fn search_has_a_crib(tag: &[u8], cipher: &[u8]) -> bool {
 /// The difference is not a matter of degree. A **classic** section's IV is
 /// tag-derived and exact, so `plaintext[0..2]` reads `78 da` and deflate byte 0
 /// comes free: one search over the multiplicatively-reduced candidate sets, and
-/// a minute or two. A **shifted** file XORs a runtime mask over the finished IV
+/// a minute or two. A **shifted** file XORs a mask — the VCDS interface's answer
+/// to a challenge (`.archive/research/labels/tttext2.md` §3.3b) — over the finished IV
 /// (`.archive/research/labels/tttext2.md` §3.3), which destroys both the anchor and the
 /// reduction — so the only route is every legal anchor against the full space,
 /// sixty searches wide, and that is hours to days rather than minutes.
@@ -606,14 +607,16 @@ fn frame(data: &[u8]) -> Vec<Framed<'_>> {
 	out
 }
 
-/// Which brute force a call may start.
+/// Which brute force a call may start ([`decode_rod_with`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Search {
+pub enum Search {
 	/// None: the name's key and the cache only.
 	Off,
 	/// A classic section whose name does not give its key: one search, minutes.
+	/// What `setup` allows: it never starts the sweep below.
 	Classic,
 	/// That, and the anchor sweep a shifted file's first section needs: hours.
+	/// Only `vagcan dev vcds rod`, and an unseal the person asked for.
 	All,
 }
 
@@ -665,11 +668,10 @@ fn regime(sections: &[Framed<'_>], file: &str, cache: &mut IvCache, search: Sear
 			return Regime::Shifted(mask(tag, iv));
 		}
 	}
-	// A key cached for this file that no longer opens it is another build's, and
-	// it is not searched past: the sweep is hours, and a cached key never started
-	// one before the name was known either.
-	let keyed = compressed.iter().any(|(tag, _)| cache.get(file, &decode_latin1(tag)).is_some());
-	if search == Search::All && !keyed {
+	// Reached with a key cached for this file only when it opens nothing: another
+	// build's under the same name. Under `All` it is searched past, and the key
+	// found replaces it; `setup` searches with `Classic`, which never sweeps.
+	if search == Search::All {
 		let mut by_size: Vec<&(&[u8], SectionCipher<'_>)> = compressed.iter().collect();
 		by_size.sort_by_key(|(_, sc)| sc.cipher.len());
 		for (tag, sc) in by_size {
@@ -745,7 +747,6 @@ fn open_framed(framed: &Framed<'_>, file: &str, regime: &Regime, cache: &mut IvC
 	// the anchor follows from them — one search with the anchor known, not sixty.
 	if let Regime::Shifted(mask) = regime
 		&& search == Search::All
-		&& cached.is_none()
 		&& let Some(first) = sc.cipher.get(0..8).and_then(|b| <[u8; 8]>::try_from(b).ok())
 	{
 		let anchor = crate::tea::tea_decrypt_block(first, &KEY_ROD)[2] ^ named[2] ^ mask[2];
@@ -810,11 +811,18 @@ pub fn recover_classic_key(data: &[u8], file: &str, want_tag: &str, cache: &mut 
 /// section (hours), whose key then opens the rest of the file. Recovered keys
 /// are written to `cache` under `(file, tag)`. Never panics on malformed input.
 pub fn decode_rod_recover(data: &[u8], file: &str, cache: &mut IvCache, run_crack: bool) -> Vec<RodSection> {
-	let sections = frame(data);
 	let search = match run_crack {
 		true => Search::All,
 		false => Search::Off,
 	};
+	decode_rod_with(data, file, cache, search)
+}
+
+/// [`decode_rod_recover`], with the brute force it may start named: `setup`
+/// opens its shared tables with [`Search::Classic`], so a file that turned out
+/// shifted is reported, never swept for hours.
+pub fn decode_rod_with(data: &[u8], file: &str, cache: &mut IvCache, search: Search) -> Vec<RodSection> {
+	let sections = frame(data);
 	let regime = regime(&sections, file, cache, search);
 	sections.iter().map(|framed| open_framed(framed, file, &regime, cache, search)).collect()
 }
@@ -1107,17 +1115,18 @@ mod tests {
 	}
 
 	#[test]
-	fn a_stale_key_of_a_shifted_file_does_not_start_the_sweep() {
+	fn setup_never_starts_the_sweep_of_a_shifted_file() {
 		// Another build's key under the same name: it does not open, and the sweep
-		// it would take is hours. A cached key never started one before the name
-		// was known, and does not now — the section says it is shifted.
+		// it would take is hours. `setup` searches with `Classic`, which never
+		// sweeps — the section says it is shifted, and the stale key is left for
+		// `dev vcds rod` to search past.
 		let file = "EV_MadeUpShifted_043.rod";
 		let mask = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
 		let data = testkit::masked_section("MWB", &[b'7'; 3000], true, testkit::named(file), mask);
 		let mut cache = IvCache::default();
 		cache.insert(file, "MWB", [1, 2, 3, 4, 5]);
 		let started = std::time::Instant::now();
-		let opened = decode_rod_recover(&data, file, &mut cache, true);
+		let opened = decode_rod_with(&data, file, &mut cache, Search::Classic);
 		assert!(started.elapsed() < std::time::Duration::from_secs(2), "searched");
 		assert_eq!(opened[0].status, RodStatus::SearchDeclined);
 		assert_eq!(cache.get(file, "MWB"), Some([1, 2, 3, 4, 5]), "left as it was");

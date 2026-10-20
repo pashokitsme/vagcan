@@ -295,8 +295,10 @@ So the verdict of §0 stands, with its reason replaced: `D` is not derivable off
 is the **interface hardware's secret function** of a challenge the file fully determines, not
 because it is process state. Ways left: a genuine interface answering the 6,204 precomputed
 challenges; a dump of `obj+0x10ea7004` after each open; the firmware of a clone that answers
-`0x45`; or the per-file search, which is what ships — one search per shifted file, since the
-whole `D` is the cracked IV XOR the name's IV and opens the rest of the file. Scripts:
+`0x45`; or the per-file search — one search per shifted file, since the whole `D` is the cracked
+IV XOR the name's IV and opens the rest of the file. That search ships in `vagcan dev vcds rod`
+with the search on, and nowhere else: `setup` never runs it (it searches with `Classic`), so a
+shifted file stays shut there until a key for it is cached. Scripts:
 `research/`-external scratch (`rodlib.py`, `census.py`, `challenges.py`), not committed.
 
 ### 3.4 The shift reaches at least byte 2, which is exactly the byte that costs

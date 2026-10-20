@@ -307,15 +307,21 @@ pub trait Progress {
 	fn waiting(&mut self, what: &str);
 	/// One unit is done: what it came to, in a line.
 	fn done(&mut self, line: &str);
-	/// Unit `at` (from 0) of `of` is starting: `name` is its ODX name. A
-	/// [`Progress::done`] follows for every one.
+	/// Unit `at` (from 0) of `of` is the next whose line is said: `name` is its
+	/// ODX name. Its list is found already; a [`Progress::done`] follows for
+	/// every one.
 	fn unit(&mut self, at: usize, of: usize, name: &str) {
-		self.waiting(&format!("{name}: finding its measurement list — unit {} of {of}", at + 1));
+		let _ = (at, of, name);
+	}
+	/// A handle the units' lookups, running side by side, can count through on
+	/// the line the last [`Progress::waiting`] drew. `None` draws no count.
+	fn reporter(&self) -> Option<crate::progress::Reporter> {
+		None
 	}
 }
 
-/// The key cache, saved after every table and after the units' lists, so an
-/// interrupted run keeps what it found, and a save that failed said once rather
+/// The key cache, saved after every table and as each unit's list is found, so
+/// an interrupted run keeps what it found, and a save that failed said once rather
 /// than dropped. A file under its own name needs no key, so on a genuine
 /// installation there is nothing to save.
 struct Keys<'a> {
@@ -445,9 +451,9 @@ fn forget_log(project: &Project) {
 /// installation at `root`, write their channels into the project's cache, and
 /// log what came of every unit.
 ///
-/// Every key found is saved after the table it opened, and the units' keys once
-/// their lists are found, so a run that is interrupted leaves the next one less
-/// to search for.
+/// Every key found is saved after the table it opened, and a unit's as that
+/// unit is done, so a run that is interrupted leaves the next one less to search
+/// for.
 pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, progress: &mut impl Progress) -> Result<Read> {
 	let _reading = Reading::start();
 	let path = project.rod_keys();
@@ -553,9 +559,27 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 	// installation and a file or two, and one after another they were most of
 	// what this read cost once the keys came from the file names. What came of
 	// each is then said in order, as before.
-	progress.waiting(&format!("finding the measurement lists of {} units", units.len()));
+	// Each unit's keys are saved as that unit finishes, so a Ctrl-C keeps the
+	// keys of every unit done so far, and the line counts the units done.
+	progress.waiting(&format!("finding the measurement lists — 0 of {} units", units.len()));
+	let line = progress.reporter();
 	let wanted: Vec<(&str, &str)> = units.iter().map(|(odx, version)| (odx.as_str(), version.as_str())).collect();
-	let lists = registry::units_measurements(root, &wanted, &mut keys.cache, true, &registry);
+	let base = keys.cache.clone();
+	let done = std::sync::atomic::AtomicUsize::new(0);
+	let shared = std::sync::Mutex::new(&mut keys);
+	let lists = registry::units_measurements(root, &wanted, &base, true, &registry, &|found| {
+		let finished = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+		if !found.is_empty()
+			&& let Ok(mut keys) = shared.lock()
+		{
+			keys.cache.absorb(found);
+			keys.save();
+		}
+		if let Some(line) = &line {
+			line.set(&format!("finding the measurement lists — {finished} of {} units", units.len()));
+		}
+	});
+	drop(shared);
 	keys.save();
 	for (at, ((odx, version), found)) in units.iter().zip(lists).enumerate() {
 		// The list is found already; this numbers the unit's line.
@@ -695,9 +719,10 @@ fn words(root: &Path, cache: &mut IvCache, notes: &mut Vec<String>) -> (Words, C
 	(Words::default(), CodePage::Windows1252)
 }
 
-/// Why a shifted file did not open, in words a reader needs: its key is made
-/// by VCDS while it runs, and no search here finds it
-/// (`.archive/research/labels/tttext2.md` §3.3).
+/// Why a shifted file did not open, in words a reader needs: its mask is the
+/// answer the VCDS interface gives to a challenge (cable command `0x45`), which
+/// nothing offline computes, and `setup` never runs the hours-long search for it
+/// (`.archive/research/labels/tttext2.md` §3.3b).
 const OPENS_ONLY_IN_VCDS: &str = "it opens only inside VCDS itself";
 
 fn registry_why(load: &RegistryLoad) -> String {
