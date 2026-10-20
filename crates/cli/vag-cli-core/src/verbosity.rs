@@ -129,6 +129,15 @@ fn to_stdout(out: &mut impl std::io::Write, text: &str) -> std::io::Result<()> {
 	result
 }
 
+/// Whether `err` is, anywhere in its chain, stdout's reader having gone (`BrokenPipe`): the
+/// normal end of `vagcan watch … | head`, said as nothing and ended with success.
+pub fn is_broken_pipe(err: &anyhow::Error) -> bool {
+	err.chain().any(|e| {
+		e.downcast_ref::<std::io::Error>()
+			.is_some_and(|e| e.kind() == std::io::ErrorKind::BrokenPipe)
+	})
+}
+
 /// Whether a write to stdout has failed — the reader of a pipe went away. A command that
 /// streams data for as long as it runs stops on it rather than polling a car for nobody.
 pub fn stdout_gone() -> bool {
@@ -425,6 +434,15 @@ mod tests {
 		assert_eq!(said.map_err(|e| e.kind()), Err(std::io::ErrorKind::BrokenPipe));
 		assert!(stdout_gone(), "remembered for a loop that writes through outln!");
 		STDOUT_GONE.store(was, Ordering::Relaxed);
+	}
+
+	#[test]
+	fn a_broken_pipe_is_known_through_the_error_chain() {
+		let pipe = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::BrokenPipe)).context("writing a row");
+		assert!(is_broken_pipe(&pipe));
+		assert!(!is_broken_pipe(&anyhow::anyhow!("the link to the car closed")));
+		let other = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+		assert!(!is_broken_pipe(&other));
 	}
 
 	#[test]

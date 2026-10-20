@@ -19,8 +19,13 @@ async fn main() -> anyhow::Result<()> {
 		Ok(dir.to_string_lossy().into_owned())
 	};
 	let slcan = cli.slcan;
-	vag_cli_measure::dispatch(cli.args, data_dir, async |device: Option<String>| {
+	let ran = vag_cli_measure::dispatch(cli.args, data_dir, async |device: Option<String>| {
 		vag_cli_core::device::connect(device.as_deref(), slcan).await
 	})
-	.await
+	.await;
+	// `vagcan-measure | head`: the reader had what it wanted; the run ends quietly.
+	match ran {
+		Err(err) if vag_cli_core::verbosity::is_broken_pipe(&err) => Ok(()),
+		ran => ran,
+	}
 }

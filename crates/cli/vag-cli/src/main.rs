@@ -576,8 +576,13 @@ enum Dev {
 /// to fix it, and an error already printed there must not be printed again on
 /// the way out. Owning the printing is what keeps a `no` at that question
 /// costing the reader nothing they would not have seen anyway.
+///
+/// Written, not `eprintln!`ed: `eprintln!` panics when stderr will not take the bytes — a
+/// full disk under `2>log`, `2>/dev/full` — and the panic's own message then has nowhere to
+/// go either, which ended a run with exit 101 and nothing said.
 fn report(err: &anyhow::Error) {
-	eprintln!("Error: {err:?}");
+	use std::io::Write as _;
+	let _ = writeln!(std::io::stderr(), "Error: {err:?}");
 }
 
 #[tokio::main]
@@ -589,6 +594,8 @@ async fn main() -> ExitCode {
 	}
 	match run().await {
 		Ok(code) => code,
+		// `vagcan watch … | head`: the reader had what it wanted; the run ends quietly.
+		Err(err) if vag_cli_core::verbosity::is_broken_pipe(&err) => ExitCode::SUCCESS,
 		Err(err) => {
 			report(&err);
 			ExitCode::FAILURE
@@ -636,15 +643,13 @@ async fn run() -> Result<ExitCode> {
 			// is found, so the next run does not search for it again.
 			vag_cli_core::progress::silence();
 			if std::io::stderr().is_terminal() {
-				eprintln!();
+				vag_cli_core::say!();
 			}
 			if vag_cli_core::registry::reading() {
 				// Saved after the tables and after each unit — not after each key,
 				// so a unit that needs two searches and was cut short between them
 				// is searched for again.
-				eprintln!(
-					"interrupted: the VCDS registry keys found so far are cached; the next run goes on from them"
-				);
+				vag_cli_core::say!("interrupted: the VCDS registry keys found so far are cached; the next run goes on from them");
 			}
 			// The command is dropped here, and every bus handle with it: each bus task ends
 			// and drops its link, and a serial link closes its channel on the way
