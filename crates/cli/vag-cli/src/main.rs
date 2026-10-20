@@ -629,7 +629,7 @@ async fn run() -> Result<ExitCode> {
 				// so a unit that needs two searches and was cut short between them
 				// is searched for again.
 				eprintln!(
-					"interrupted while reading the VCDS registry: the keys found for the tables and for every unit finished so far are cached, and the next run continues from them"
+					"interrupted: the VCDS registry keys found so far are cached; the next run goes on from them"
 				);
 			}
 			// The command is dropped here, and every bus handle with it: each bus task ends
