@@ -38,8 +38,16 @@ pub enum Answer {
 	/// A negative response. The unit is there and does not implement it —
 	/// the ordinary answer across most of the space, and not a change.
 	Refused,
-	/// Nothing at all: a timeout or a malformed frame.
+	/// Nothing at all: a timeout, a link gone, or an answer that is not one.
 	Silent,
+	/// The link said no, and the unit said nothing either way: the dash board would
+	/// not carry the request (its guard over BLE — say past `MAX_DISTINCT_IDENTIFIERS`
+	/// of one unit), or the frames that came back broke ISO-TP. Both arrive as
+	/// `TransportError::Protocol`. Not the unit going quiet — a board that refuses
+	/// every identifier past its cap must not read as a unit that fell over — and
+	/// not the unit talking either, so it neither adds to a run of silences nor
+	/// clears one.
+	Withheld,
 }
 
 impl Answer {
@@ -49,6 +57,7 @@ impl Answer {
 		match result {
 			Ok(_) => Answer::Answered,
 			Err(UdsError::NegativeResponse { .. }) => Answer::Refused,
+			Err(UdsError::Transport(vag_uds_transport::TransportError::Protocol(_))) => Answer::Withheld,
 			Err(_) => Answer::Silent,
 		}
 	}
@@ -221,6 +230,8 @@ impl Monitor {
 					});
 				}
 			}
+			// The link's no, not the unit's: nothing learned about the unit.
+			Answer::Withheld => {}
 			Answer::Silent => {
 				self.silences += 1;
 				if !self.spoke() {
@@ -398,5 +409,27 @@ mod tests {
 		assert_eq!(Answer::of(&Ok(vec![0x01])), Answer::Answered);
 		assert_eq!(Answer::of(&Err(UdsError::NegativeResponse { sid: 0x22, nrc: 0x31 })), Answer::Refused);
 		assert_eq!(Answer::of(&Err(UdsError::Malformed("short".into()))), Answer::Silent);
+		use vag_uds_transport::TransportError;
+		assert_eq!(Answer::of(&Err(UdsError::Transport(TransportError::Timeout))), Answer::Silent);
+		assert_eq!(Answer::of(&Err(UdsError::Transport(TransportError::Disconnected))), Answer::Silent);
+		// The dash board's refusal reaches the client as this (`bus::channel`).
+		let refused = TransportError::Protocol("the dash board refused: too many distinct identifiers".into());
+		assert_eq!(Answer::of(&Err(UdsError::Transport(refused))), Answer::Withheld);
+	}
+
+	#[test]
+	fn the_link_refusing_is_not_the_unit_going_quiet() {
+		// The board refusing every identifier past its cap: no run of silences, however
+		// long — and no clearing of one either, so silences on both sides still add up.
+		let mut m = Monitor::new(0x7E0);
+		m.saw(0xF404, Answer::Answered);
+		for did in 0xF405..0xF405 + 10 {
+			assert!(m.saw(did, Answer::Withheld).is_none(), "{did:04X} ended the run");
+		}
+		m.saw(0xF410, Answer::Silent);
+		m.saw(0xF411, Answer::Withheld);
+		m.saw(0xF412, Answer::Silent);
+		m.saw(0xF413, Answer::Withheld);
+		assert!(m.saw(0xF414, Answer::Silent).is_some(), "three silences, a withheld between each");
 	}
 }

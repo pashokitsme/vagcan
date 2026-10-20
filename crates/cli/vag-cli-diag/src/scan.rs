@@ -1,8 +1,10 @@
 //! Asking ONE control unit what it will actually give us.
 //!
 //! The machinery a sweep is made of, and nothing that drives one: `vagcan units
-//! --identify <unit>` is the one command built on this, and it walks a unit's
-//! identification block, `F100`–`F1FF`. The whole-car sweep that was built on it
+//! --identify <unit>` is built on this, and it walks a unit's identification block,
+//! `F100`–`F1FF`; so is `vagcan sensors`, which asks one unit the fixed list of
+//! standard OBD-II identifiers, each a span of one (`crate::car::sensors` says where
+//! that is a sweep). The whole-car sweep that was built on it
 //! too, `dev survey`, is gone (owner, 2026-09-28): the car's units are recorded
 //! by the live commands, and their channels come from a source `setup` reads.
 //! There used to be a second spelling — `vagcan scan`, one unit at a time — and
@@ -17,9 +19,10 @@
 //! And the sweep carries [`Guard`]: the moment a unit that had been answering
 //! stops, or goes back on an identifier it already answered, the run ends. See
 //! [`crate::anomaly`]. The guard's witness — a known-good identifier re-read
-//! every so many requests — is a path with no caller today: the one sweep left
-//! runs with `witness: None`, since nothing is established as known-good before
-//! an identification block is read.
+//! every so many requests — is a path with no caller today: both run with
+//! `witness: None`, since nothing is established as known-good before an
+//! identification block is read, and the standard list is shorter than the
+//! witness's cadence.
 //!
 //! Read-only by construction: the only service issued is `0x22`, which the UDS
 //! client's allowlist already restricts us to.

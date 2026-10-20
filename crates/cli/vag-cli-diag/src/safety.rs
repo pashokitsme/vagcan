@@ -7,7 +7,10 @@
 //! stops assisting mid-drive is a hazard, not a diagnostic result.
 //!
 //! So the session change is not part of an ordinary read any more. It is
-//! opt-in, and even then it is refused while the car is moving.
+//! opt-in, and even then it is refused while the car is moving. So is a sweep
+//! (`units --identify <unit>`, `sensors --unit <unit>` off 7E0–7E7): reading is not
+//! harmless to a diagnostic server asked what it may never have handled. The check
+//! here says only whether the car stands; each caller says what it refuses.
 
 use anyhow::Result;
 use vag_uds_can::UnitLink;
@@ -30,30 +33,39 @@ pub async fn road_speed_kmh<T: AsyncIsoTpTransport>(uds: &mut AsyncUdsClient<T>)
 	uds.read_data_by_identifier(SPEED_DID).await.ok()?.first().copied()
 }
 
-/// Refuse an extended diagnostic session unless the car is standing still.
+/// Why the car does not count as standing still: the fact, and nothing about what was
+/// refused because of it — each caller says that in its own words (an extended session,
+/// a sweep).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotStationary {
+	/// The engine reported this road speed, above zero.
+	Moving(u8),
+	/// The engine did not report road speed.
+	Unknown,
+}
+
+impl std::fmt::Display for NotStationary {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			NotStationary::Moving(kmh) => write!(f, "the car is moving at {kmh} km/h"),
+			NotStationary::Unknown => f.write_str("cannot tell whether the car is moving — the engine did not report road speed"),
+		}
+	}
+}
+
+/// Refuse what follows unless the car is standing still.
 ///
 /// Takes the link, asks the engine for road speed, and hands it back. A car
 /// that will not say how fast it is going is treated as moving: the failure
 /// this guards against is one the driver feels through the controls.
-pub async fn require_stationary<B: UnitLink>(backend: B) -> Result<B, (B, String)> {
+pub async fn require_stationary<B: UnitLink>(backend: B) -> Result<B, (B, NotStationary)> {
 	let mut uds = AsyncUdsClient::new(backend.to_unit(CanId::Standard(ENGINE_REQUEST), CanId::Standard(ENGINE_RESPONSE)));
 	let speed = road_speed_kmh(&mut uds).await;
 	let backend = B::release(uds.into_transport());
 	match speed {
 		Some(0) => Ok(backend),
-		Some(kmh) => Err((
-			backend,
-			format!(
-				"the car is moving at {kmh} km/h. An extended diagnostic session can make a \
-                 control unit stop assisting the driver. Stop the car first."
-			),
-		)),
-		None => Err((
-			backend,
-			"cannot tell whether the car is moving — the engine did not report road speed. \
-             Refusing to change the diagnostic session on that basis."
-				.to_string(),
-		)),
+		Some(kmh) => Err((backend, NotStationary::Moving(kmh))),
+		None => Err((backend, NotStationary::Unknown)),
 	}
 }
 
@@ -110,11 +122,25 @@ mod tests {
 
 		let moving = Scripted(MockAsyncTransport::new(vec![(req(SPEED_DID), resp(SPEED_DID, &[30]))]));
 		let (link, why) = require_stationary(moving).await.err().expect("30 km/h is moving");
-		assert!(why.contains("30 km/h"), "{why}");
+		assert_eq!(why, NotStationary::Moving(30));
 		assert!(link.0.is_exhausted(), "the link comes back on refusal too");
 
 		let silent = Scripted(MockAsyncTransport::new(vec![(req(SPEED_DID), vec![0x7F, 0x22, 0x31])]));
 		let (_, why) = require_stationary(silent).await.err().expect("no speed is moving");
-		assert!(why.contains("cannot tell"), "{why}");
+		assert_eq!(why, NotStationary::Unknown);
+	}
+
+	/// The fact only: what was refused because of it is the caller's to say, so nothing
+	/// here speaks of a diagnostic session to a command that never changes one.
+	#[test]
+	fn the_refusal_says_the_fact_and_not_its_consequence() {
+		assert_eq!(NotStationary::Moving(30).to_string(), "the car is moving at 30 km/h");
+		assert_eq!(
+			NotStationary::Unknown.to_string(),
+			"cannot tell whether the car is moving — the engine did not report road speed"
+		);
+		for why in [NotStationary::Moving(30), NotStationary::Unknown] {
+			assert!(!why.to_string().contains("session"), "{why}");
+		}
 	}
 }

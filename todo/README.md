@@ -50,6 +50,13 @@ dropped), #33 (`1069daf`, the bus-time estimate), #34 (`0ad5502`, `vag-dash-core
   the car — the constant is radio and host time, not CAN time. The board now counts its own
   exchanges (`exch=…/s exch_ms=…` in `state`, a `bus:` console line every 10 s); a drive with it
   gives the car's number, and a strict check can follow that measurement.
+- **`sensors --unit <unit>` guarded** (2026-10-21, Next item 6 dropped): off the emissions
+  block (`7E0`–`7E7`) its read is a sweep and is guarded as `units --identify <unit>` is — one
+  named unit, the fixed `obd::PIDS` list, refused on a moving car with "no answer" counted as
+  moving, stopped by `anomaly::Monitor`, never through the dash board but as `--slcan`. Plain
+  `sensors` (the engine) and the rest of the block are not a sweep: J1979 legislates those
+  identifiers there, and the moving-car check is one of them; the monitor stops them too
+  (`car::sensors`). No `--while-driving`. Not on the car yet.
 - **The board in the car** runs a `dash` built before PR #23 (the commit was not recorded);
   neither #23 nor #24 is on it. Its glass is wired SDIN `GPIO8`, CS `GPIO20`, RES `GPIO21`
   (`365c21e`), the standard since 2026-10-03.
@@ -128,9 +135,6 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 5. **The VCDS follow-ups** — [`label-lookup/04`](label-lookup/04-vcds-follow-ups.md): three for
    the owner to decide (the gateway's reads, a plain list's first row, a witness), then the
    platform file's choice and the Russian fallback.
-6. **Guard `sensors --unit <unit>`** — it reads 32 standard OBD-II identifiers from any unit with
-   no moving-car check (found in review, 2026-09-28; it predates that change). A command that
-   resembles a sweep and is unguarded gets the guard (`CLAUDE.md`, Safety).
 7. **Which way up the glass hangs** — [`dash/22`](dash/22-oled.md): `turned`, with the housing.
 7a. **The review's architecture** (2026-10-19):
    [`dash/24`](../.archive/tasks/done/dash/24-bus-time-check.md), the bus-time estimate, merged

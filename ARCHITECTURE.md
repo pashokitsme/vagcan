@@ -488,9 +488,11 @@ identifiers its data declared, with a blind sweep on request — was removed on 
 (owner). What it supplied is supplied otherwise: which units a car has, `watch`, `measure` and
 `units --identify` record (`~/.vagcan/cars/<VIN>/units.json`), asking every unit again on every
 run and merging what it answered into its entry field by field; which identifiers they answer, a
-source `setup` reads declares. The one sweep left is `units --identify <unit>`, a unit's identification block
-(`F100`–`F1FF`), refused on a moving car and never through the dash board;
-`anomaly::Monitor` watches the unit and ends the run the moment it changes under the reads.
+source `setup` reads declares. Two sweeps are left, each of one unit: `units --identify <unit>`, a
+unit's identification block (`F100`–`F1FF`), and `sensors --unit <unit>` outside 7E0–7E7, the
+standard OBD-II identifiers asked of a unit no regulation binds to them. Both are refused on a
+moving car and never run through the dash board; `anomaly::Monitor` watches the unit and ends the
+run the moment it changes under the reads.
 
 **The CLI is split by what a command needs.** The top level is for commands that need
 a car in front of you, plus `setup`, which a new owner runs first. The workshop is under

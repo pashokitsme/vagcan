@@ -271,7 +271,9 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	assert!(block[0].stdout.starts_with("unit  01\n\ndid   name"), "{}", block[0].stdout);
 	assert!(block[0].stdout.contains("F187  VW spare part number"), "{}", block[0].stdout);
 
-	let sensors = levels!("sensors", car::sensors(open, "01").await);
+	// `sensors` names the link it needs; the scripted car is every link.
+	let open_on = |_: car::Reach| async { Ok(car()) };
+	let sensors = levels!("sensors", car::sensors(open_on, "01").await);
 	assert_eq!(
 		sensors[0].stdout,
 		"did          value  name\n\
@@ -281,7 +283,7 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 		 \n\
 		 3 of 3 converted · unit 01\n"
 	);
-	let gearbox = levels!("sensors --unit 02", car::sensors(open, "02").await);
+	let gearbox = levels!("sensors --unit 02", car::sensors(open_on, "02").await);
 	assert!(
 		gearbox[0].stdout.contains("F40D  9C 02 raw  not J1979: 2 bytes, standard 1"),
 		"{}",
