@@ -129,7 +129,7 @@ pub(super) async fn registry_channels(root: &Path, project: &crate::project::Pro
 /// installation at `root` again; a record's parse error is at `-v`.
 pub(super) fn failed(e: &anyhow::Error, root: &Path) -> Step {
 	let again = crate::missing::shell_word(&root.display().to_string());
-	match e.downcast_ref::<crate::units::NotARecord>() {
+	match vag_cli_core::report::find::<crate::units::NotARecord>(e) {
 		Some(bad) => Step::new(
 			vag_data_db::VCDS,
 			NAME,

@@ -11,6 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 vag-dash-ble = { path = "../vag-dash-ble" }
+# `report`: errors in the one shape `vagcan` prints them in, by the one renderer.
+vag-cli-core = { path = "../../cli/vag-cli-core" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 btleplug = "0.11"

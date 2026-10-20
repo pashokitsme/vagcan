@@ -593,22 +593,16 @@ enum Dev {
 	},
 }
 
-/// How a command's error is reported.
+/// How a command's error is reported: cargo's `error:`/`help:` shape, by
+/// [`vag_cli_core::report`], the renderer `dashcfg` uses too.
 ///
-/// `Termination for Result<T, E: Debug>` prints exactly `Error: {err:?}` before
-/// exiting with a failure code; this is that half of it, by hand. **`main`
-/// returns an `ExitCode` rather than a `Result` for one reason**: the label-data
-/// offer has to put the shortage in front of the reader *before* it asks whether
-/// to fix it, and an error already printed there must not be printed again on
-/// the way out. Owning the printing is what keeps a `no` at that question
-/// costing the reader nothing they would not have seen anyway.
-///
-/// Written, not `eprintln!`ed: `eprintln!` panics when stderr will not take the bytes — a
-/// full disk under `2>log`, `2>/dev/full` — and the panic's own message then has nowhere to
-/// go either, which ended a run with exit 101 and nothing said.
+/// **`main` returns an `ExitCode` rather than a `Result` for one reason**: the label-data
+/// offer has to put the shortage in front of the reader *before* it asks whether to fix it,
+/// and an error already printed there must not be printed again on the way out. Owning the
+/// printing is what keeps a `no` at that question costing the reader nothing they would not
+/// have seen anyway.
 fn report(err: &anyhow::Error) {
-	use std::io::Write as _;
-	let _ = writeln!(std::io::stderr(), "Error: {err:?}");
+	vag_cli_core::report::report(err);
 }
 
 #[tokio::main]

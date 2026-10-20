@@ -209,8 +209,20 @@ impl DashState {
 	}
 }
 
+/// An error is reported in cargo's shape by [`vag_cli_core::report`], as `vagcan` reports one,
+/// and the run fails with exit code 1.
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> std::process::ExitCode {
+	match run().await {
+		Ok(()) => std::process::ExitCode::SUCCESS,
+		Err(err) => {
+			vag_cli_core::report::report(&err);
+			std::process::ExitCode::FAILURE
+		}
+	}
+}
+
+async fn run() -> Result<()> {
 	let Cli { name } = Cli::parse();
 	let mut lines = stdin_lines();
 	let adapter = vag_dash_ble::adapter().await?;

@@ -74,7 +74,7 @@ pub fn worth_offering(err: &anyhow::Error) -> bool {
 
 /// The rule behind [`worth_offering`], with the terminal passed in.
 fn offerable(err: &anyhow::Error, may_ask: bool) -> bool {
-	may_ask && err.downcast_ref::<NoLabelData>().is_some()
+	may_ask && vag_cli_core::report::find::<NoLabelData>(err).is_some()
 }
 
 /// Ask, and if the answer is yes, fetch an installation and read it.
