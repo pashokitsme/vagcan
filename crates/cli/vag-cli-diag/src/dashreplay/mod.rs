@@ -53,18 +53,34 @@ fn replay(
 	panel: Option<f64>,
 ) -> Result<()> {
 	let matched = columns::match_columns(&recording.columns, offered, plan);
-	let mut notes = unreplayed(plan);
-	notes.extend(matched.notes);
+	let mut gaps = matched.gaps;
 	// The board's plan is `'static`; this one lives until the process ends anyway.
 	let device: &'static vag_dash_render::plan::Plan = Box::leak(Box::new(plan.to_device()));
-	let series = columns::series(recording, &matched.sources, plan, device, &mut notes);
+	let series = columns::series(recording, &matched.sources, plan, device, &mut gaps);
+	// What the replay leaves out, and what each kind of gap rests on — at `-v`; the gaps
+	// themselves as rows, after them.
+	let mut notes = unreplayed(plan);
+	notes.extend(matched.notes);
+	notes.extend(columns::caveats(&gaps));
+	let rows = columns::gap_rows(&gaps);
 	if series.iter().all(Option::is_none) {
-		bail!(
-			"none of the plan's {} channels is in {log}, so there is nothing to replay\n{}",
-			plan.channels.len(),
-			notes.join("\n")
+		// Nothing to replay is a refusal: what failed, a row a channel, what to type.
+		for line in &notes {
+			verbosity::say(verbosity::NOTES, line);
+		}
+		let channels = plan.channels.len();
+		let mut message = format!(
+			"none of the plan's {channels} {} is in {log} — nothing to replay\n",
+			crate::render::plural(channels, "channel")
 		);
+		for row in &rows {
+			message.push_str(row);
+			message.push('\n');
+		}
+		message.push_str(&columns::fix(&gaps, plan));
+		bail!(message);
 	}
+	notes.extend(rows);
 
 	let read = series.iter().filter(|s| s.is_some()).count();
 
@@ -93,12 +109,14 @@ fn replay(
 	let mut said: Vec<(u8, String)> = vec![(
 		verbosity::NOTES,
 		format!(
-			"recording  {log}: {} rows, {:.2}–{:.2} s; plan {:016x}, {read} of its {} channels in it",
+			"recording  {log}: {} {}, {:.2}–{:.2} s; plan {:016x}, {read} of its {} {} in it",
 			recording.samples.len(),
+			crate::render::plural(recording.samples.len(), "row"),
 			seconds(start),
 			seconds(end),
 			vag_cli_core::dash::plan_id(plan),
-			plan.channels.len()
+			plan.channels.len(),
+			crate::render::plural(plan.channels.len(), "channel")
 		),
 	)];
 	said.extend(notes.iter().map(|n| (verbosity::NOTES, n.clone())));
@@ -341,13 +359,32 @@ mod tests {
 		);
 		assert!(
 			runs[1].stderr.starts_with(&format!(
-				"recording  drive.csv: 4 rows, 0.00–3.00 s; plan {:016x}, 1 of its 1 channels in it\n",
+				"recording  drive.csv: 4 rows, 0.00–3.00 s; plan {:016x}, 1 of its 1 channel in it\n",
 				vag_cli_core::dash::plan_id(&plan)
 			)),
 			"{}",
 			runs[1].stderr
 		);
 		assert_split("dev recording dash", &runs);
+
+		// None of the plan's channels in the recording: what failed, a row a channel and what to
+		// type; what a missing channel means at `-v` only.
+		let other = Recording::parse("t_s,Other\n0.0,1\n1.0,2\n").unwrap();
+		let refuse = |level| {
+			let capture = Capture::start(level);
+			let error = replay("drive.csv", &other, &plan, &offered, &[], None).unwrap_err();
+			(error.to_string(), capture.finish())
+		};
+		let (error, quiet) = refuse(0);
+		assert_eq!(
+			error,
+			"none of the plan's 1 channel is in drive.csv — nothing to replay\n\
+			 missing  A (01:1001)\n\
+			 Fix: `vagcan watch --did \"01:1001\" --out FILE`"
+		);
+		assert_eq!((quiet.stdout.as_str(), quiet.stderr.as_str()), ("", ""));
+		let (_, verbose) = refuse(1);
+		assert_eq!(verbose.stderr, "missing: not in the recording, so no value and never an alarm\n");
 	}
 
 	#[test]

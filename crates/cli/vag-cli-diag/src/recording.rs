@@ -57,7 +57,9 @@ pub enum Tool {
 	///
 	/// OUT: in a terminal, the panel drawn at the recording's pace with the alarm log
 	/// under it (`q` leaves); piped, only the alarm log, at once. The log ends on
-	/// stdout either way. `-v` says what the replay leaves out. Nothing is written.
+	/// stdout either way. With none of the plan's channels in the recording: one row a
+	/// channel — `missing`, `ambiguous` or `off-scale` — and what to type. `-v` says what
+	/// the replay leaves out, and those rows on a run that replays. Nothing is written.
 	Dash {
 		/// The car whose plan to use, as `vagcan info` reports it.
 		#[arg(value_name = "VIN")]
@@ -166,7 +168,15 @@ fn discover(log: &str, text: &str, pairs: bool) -> Result<()> {
 	use vag_cli_core::verbosity::NOTES;
 	let columns = discover::classify(text).map_err(|e| anyhow::anyhow!("{log}: {e}"))?;
 	let rows = text.lines().skip(1).filter(|l| !l.trim().is_empty()).count();
-	let mut said = vec![(NOTES, format!("recording  {log}: {rows} rows, {} columns", columns.len()))];
+	let mut said = vec![(
+		NOTES,
+		format!(
+			"recording  {log}: {rows} {}, {} {}",
+			crate::render::plural(rows, "row"),
+			columns.len(),
+			crate::render::plural(columns.len(), "column")
+		),
+	)];
 	said.extend(discover::notes(&columns, discover::untimed(text)));
 	vag_cli_core::out!("{}", discover::render(&columns));
 	if pairs {
@@ -223,10 +233,12 @@ mod tests {
 			"column  values  changes  reads  seen\n\
 			 A            2        2      3  0 1\n\
 			 B            2        2      3  0 1\n\
+			 \n\
 			 3 columns · 2 candidates · 0 continuous · 1 never moved\n\
 			 \n\
 			 first  second  coincide\n\
 			 A      B           100%\n\
+			 \n\
 			 1 pair changed together\n"
 		);
 		assert_eq!(runs[0].stderr, "", "nothing but data by default");
