@@ -231,15 +231,73 @@ impl Capture {
 	}
 
 	pub fn finish(self) -> Captured {
-		let captured = SINK.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take().unwrap_or_default();
+		SINK.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take().unwrap_or_default()
+	}
+}
+
+/// Ends the capture however the test ends, a panic included: writes go to the real
+/// stdout and stderr again, at the level before.
+#[cfg(any(test, feature = "test-util"))]
+impl Drop for Capture {
+	fn drop(&mut self) {
+		SINK.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
 		set(self.before);
-		captured
+	}
+}
+
+/// The split every command keeps, checked over one command run at each level: `runs[n]`
+/// is what it wrote at level `n`, from 0 up.
+///
+/// - **The level never changes stdout**: every run's stdout is the first one's.
+/// - **A level only adds**: every line on stderr at one level is on it at the next.
+/// - **Data is never on stderr and a note never on stdout**: no non-blank line of stdout
+///   is a line of any run's stderr.
+///
+/// Panics with `what` and the line at fault.
+#[cfg(any(test, feature = "test-util"))]
+pub fn assert_split(what: &str, runs: &[Captured]) {
+	let Some(first) = runs.first() else { return };
+	let lines = |text: &str| -> Vec<String> {
+		text
+			.lines()
+			.map(str::trim_end)
+			.filter(|l| !l.trim().is_empty())
+			.map(str::to_owned)
+			.collect()
+	};
+	for (level, run) in runs.iter().enumerate() {
+		assert_eq!(run.stdout, first.stdout, "{what}: stdout at level {level} differs from level 0");
+	}
+	for pair in runs.windows(2) {
+		let more = lines(&pair[1].stderr);
+		for line in lines(&pair[0].stderr) {
+			assert!(more.contains(&line), "{what}: {line:?} on stderr at one level and not at the next");
+		}
+	}
+	let data = lines(&first.stdout);
+	for (level, run) in runs.iter().enumerate() {
+		for line in lines(&run.stderr) {
+			assert!(!data.contains(&line), "{what}: {line:?} is on stdout and on stderr at level {level}");
+		}
 	}
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn the_split_is_checked_line_by_line() {
+		let run = |out: &str, err: &str| Captured {
+			stdout: out.into(),
+			stderr: err.into(),
+		};
+		assert_split("good", &[run("a\nb\n", "adapter\n"), run("a\nb\n", "adapter\nnote\n")]);
+		let refused = |runs: Vec<Captured>| std::panic::catch_unwind(|| assert_split("bad", &runs)).is_err();
+		assert!(refused(vec![run("a\n", ""), run("a\nnote\n", "")]), "a note on stdout");
+		assert!(refused(vec![run("a\n", "a\n")]), "a data line on stderr");
+		assert!(refused(vec![run("a\n", "x\n"), run("a\n", "y\n")]), "a level that took a line away");
+	}
 
 	#[test]
 	fn data_goes_to_stdout_and_every_level_of_note_to_stderr() {
