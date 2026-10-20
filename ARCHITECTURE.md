@@ -60,8 +60,11 @@ into the table by a schema migration (2026-10-20): read once into the rows it ma
 removed. `vagcan setup --list` prints the table; `--drop` deletes a source and every row
 that names it in one transaction, and the rules that rank one source over another then rank
 what is left. One folder is one row: paths are canonicalised before they become a key, the
-migration folds rows that name one directory, and a relative path an older vagcan stored is
-never resolved against the working directory — `--list` shows it as `stale`.
+migration folds rows that name one directory and removes rows that own nothing, and a
+relative path an older vagcan stored is never resolved against the working directory —
+`--list` shows it as `stale`, and it counts as no source of its kind. Only `setup`'s label
+step replaces one VCDS installation with another; `dev vcds labels` never writes the
+project's cache, and a registry read writes only into a VCDS source that is still there.
 `setup` fills the project, and with a VCDS installation alone the car's channels arrive with the
 first `watch`, `measure` or `units --identify` after it (or `dev dash build`, offline); the
 messages a short tool prints say whether it lacks label data or scalings.

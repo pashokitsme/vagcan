@@ -115,7 +115,10 @@ pub(super) async fn registry_channels(root: &Path, project: &crate::project::Pro
 			"[5/5] Channels — no car recorded on this machine yet, so there is no list\n      \
              of its units."
 		);
-		let removed = crate::registry::clear(root, project)?;
+		// The label step has just made this installation's source, so it is there; a
+		// `None` would be a source dropped from another terminal meanwhile, and then
+		// there is nothing to say about rows.
+		let removed = crate::registry::clear(root, project)?.unwrap_or_default();
 		// Where the installation is, written down now: the first command with a
 		// car reads the channels of the car's units from it.
 		crate::registry::record_installation(project, root)?;

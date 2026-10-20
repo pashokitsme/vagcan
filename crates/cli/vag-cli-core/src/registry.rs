@@ -407,13 +407,33 @@ pub enum Read {
 ///
 /// Says in words what it removed, for the step's reason: channels an earlier
 /// run read disappearing without a word is how a working dash stops building.
-pub fn clear(root: &Path, project: &Project) -> Result<String> {
+///
+/// `None` when the project holds no VCDS source for this installation — never read by
+/// `setup`, or dropped with `setup --drop` while this ran — and nothing was written.
+pub fn clear(root: &Path, project: &Project) -> Result<Option<String>> {
 	let held = vag_data_db::reading_count_of(&project.cache(), vag_data_db::VCDS).unwrap_or(0);
-	vag_data_db::put_all_vcds_readings(&project.cache(), &source_of(root), std::iter::empty())?;
-	Ok(match held {
+	if vag_data_db::put_all_vcds_readings(&project.cache(), &source_of(root), std::iter::empty())?.is_none() {
+		return Ok(None);
+	}
+	Ok(Some(match held {
 		0 => String::new(),
 		n => format!("\n    This run removed the {n} channels an earlier run read from a VCDS registry."),
-	})
+	}))
+}
+
+/// What a read says when the project's VCDS source is not there to write into.
+const SOURCE_GONE: &str = "the project holds no source for this VCDS installation — dropped while this ran, or \
+                           never read by `vagcan setup` — so nothing was written";
+
+/// Take back the log a read just saved, when its source turned out to be gone: the log
+/// names an installation the project no longer holds, and kept, it would send the next
+/// read back to it. `--drop` removes it for the same reason.
+fn forget_log(project: &Project) {
+	match std::fs::remove_file(project.registry_log()) {
+		Ok(()) => {}
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+		Err(e) => eprintln!("note: {} not removed: {e}", project.registry_log().display()),
+	}
 }
 
 /// Read the registry for `units` — `(F19E, F1A2)` each — out of the
@@ -464,7 +484,13 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 			if let Err(e) = log.save(project) {
 				why.push_str(&format!("; what was tried was not written down ({e:#})"));
 			}
-			let removed = clear(root, project)?;
+			let Some(removed) = clear(root, project)? else {
+				forget_log(project);
+				return Ok(Read::NoRegistry {
+					why: format!("{why}; {SOURCE_GONE}"),
+					removed: String::new(),
+				});
+			};
 			return Ok(Read::NoRegistry { why, removed });
 		}
 	};
@@ -595,13 +621,23 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 	}
 
 	let batch: Vec<(&str, &[vag_data_labels::odis::Reading])> = variants.iter().map(|(v, r)| (v.as_str(), r.as_slice())).collect();
-	let written = vag_data_db::put_all_vcds_readings(&project.cache(), &source_of(root), batch)?;
-	// After the rows and never before: see `Log`.
-	if let Err(e) = log.save(project) {
-		notes.push(format!(
-			"what was tried was not written down ({e:#}): the next run tries every unit again"
-		));
-	}
+	// Into the project's VCDS source, checked inside the write: a source dropped while
+	// this read ran is not made again, and the log is not written for it either.
+	let written = match vag_data_db::put_all_vcds_readings(&project.cache(), &source_of(root), batch)? {
+		Some(written) => {
+			// After the rows and never before: see `Log`.
+			if let Err(e) = log.save(project) {
+				notes.push(format!(
+					"what was tried was not written down ({e:#}): the next run tries every unit again"
+				));
+			}
+			written
+		}
+		None => {
+			notes.push(SOURCE_GONE.to_string());
+			0
+		}
+	};
 	Ok(Read::Done(Summary {
 		asked: units.len(),
 		read,
@@ -1430,6 +1466,8 @@ mod tests {
 			fn waiting(&mut self, _: &str) {}
 			fn done(&mut self, _: &str) {}
 		}
+		// The installation is one of the project's sources, as setup's label step leaves it.
+		vag_data_db::record_language(&project.cache(), vag_data_db::VCDS, &source_of(&root), "eng").unwrap();
 		let outcome = read(&root, &project, &units, &mut Nothing).unwrap();
 		let Read::NoRegistry { why, removed } = outcome else {
 			panic!("{outcome:?}");
@@ -1445,6 +1483,35 @@ mod tests {
 		assert!(log.tried("EV_A", "001"), "so it is not tried again until setup reads an installation");
 		// And the cache exists, empty of VCDS rows, as `clear` leaves it.
 		assert_eq!(vag_data_db::reading_count_of(&project.cache(), vag_data_db::VCDS).unwrap(), 0);
+	}
+
+	#[test]
+	fn a_read_whose_source_is_gone_writes_no_rows_no_source_and_no_log() {
+		// Review of #37: a `watch` read in flight when `setup --drop vcds` committed wrote
+		// its rows, made the source again and rewrote `registry.json`. Both paths of a read
+		// — the registry not opening, and the rows written — find the source gone.
+		let dir = tempfile::tempdir().unwrap();
+		let root = dir.path().join("not-an-install");
+		std::fs::create_dir_all(&root).unwrap();
+		let project = project(dir.path());
+		std::fs::create_dir_all(&project.dir).unwrap();
+		// The project holds an ODIS source and no VCDS one: the VCDS one was dropped.
+		vag_data_db::record_language(&project.cache(), vag_data_db::ODIS, "/x/SK37X", "deu").unwrap();
+		let units: BTreeSet<(String, String)> = [("EV_A".to_string(), "001".to_string())].into();
+		struct Nothing;
+		impl Progress for Nothing {
+			fn waiting(&mut self, _: &str) {}
+			fn done(&mut self, _: &str) {}
+		}
+		let outcome = read(&root, &project, &units, &mut Nothing).unwrap();
+		let Read::NoRegistry { why, .. } = outcome else {
+			panic!("{outcome:?}");
+		};
+		assert!(why.contains("nothing was written"), "{why}");
+		assert!(!project.registry_log().exists(), "the log names a source the project does not hold");
+		let kinds: Vec<String> = crate::project::sources(&project).unwrap().into_iter().map(|s| s.kind).collect();
+		assert_eq!(kinds, ["odis"], "the read made a VCDS source");
+		assert_eq!(clear(&root, &project).unwrap(), None);
 	}
 
 	#[test]

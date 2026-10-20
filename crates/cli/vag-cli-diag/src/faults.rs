@@ -170,7 +170,7 @@ impl Namers {
 	pub fn open(keys: &std::path::Path, given: bool) -> Result<Namers> {
 		let vcds_root = crate::project::rod_pool()?;
 		let mut odis = crate::odisfaults::OdisFaults::open();
-		let without_vcds = crate::project::current().is_ok_and(|p| without_vcds(&p));
+		let without_vcds = crate::project::current().is_ok_and(|p| without_vcds(&p, keys));
 		let vcds = open_vcds(&vcds_root, keys, given, without_vcds)?;
 		// The VCDS text's language is the pool's own build, read off its files —
 		// not any source row's: the pool is shared by every project and holds the
@@ -272,8 +272,19 @@ impl Namers {
 /// cache's `source` table, not of the files: a VCDS source dropped with `setup --drop`
 /// leaves the shared pool and this project's keys on disk, and its text must not go
 /// on naming codes.
-fn without_vcds(project: &crate::project::Project) -> bool {
-	!crate::project::has_source(project, vag_data_db::VCDS)
+///
+/// A cache whose sources do not read — an older vagcan's, or one a running `setup`
+/// holds locked — says nothing either way, and is not taken as "no VCDS": that printed
+/// bare numbers with no word why. The rule from before the sources were asked holds
+/// instead — VCDS text where the project's keys are — and that is said once.
+fn without_vcds(project: &crate::project::Project, keys: &std::path::Path) -> bool {
+	match crate::project::has_source(project, vag_data_db::VCDS) {
+		Ok(held) => !held,
+		Err(e) => {
+			crate::project::say_unreadable(project, &e, "VCDS fault text is used where this project's keys are");
+			!keys.is_file()
+		}
+	}
 }
 
 /// The VCDS half of [`Namers`], or `None` where this project has no VCDS text.
@@ -395,11 +406,13 @@ pub async fn run<L: UnitLink>(
 	// there is the ordinary "setup has not run yet" case: the codes are still
 	// read and shown as numbers, with a note that names `vagcan setup`.
 	// The keys are per project (`rod-keys.json`) unless `--iv-cache` names a file.
-	let keys = crate::datadir::or_default(iv_cache, || Ok(crate::project::current()?.rod_keys()))?;
-	let mut namers = Namers::open(&keys, iv_cache.is_some())?;
 	// The numbers `vagcan units` lists, for `--unit` and for the headings below.
 	crate::labels::install_recorded_units();
+	// `--unit` before the project is opened: opening it can upgrade its cache, and a
+	// typo is refused touching nothing.
 	let requested = only.map(|spec| unit_list("--unit", spec)).transpose()?;
+	let keys = crate::datadir::or_default(iv_cache, || Ok(crate::project::current()?.rod_keys()))?;
+	let mut namers = Namers::open(&keys, iv_cache.is_some())?;
 
 	let mut backend = open().await?;
 
@@ -689,14 +702,40 @@ mod tests {
 			dir: base.join("SK37X"),
 		};
 		std::fs::create_dir_all(&project.dir).unwrap();
-		assert!(!crate::project::has_source(&project, vag_data_db::VCDS), "no cache, no source");
+		assert!(!crate::project::has_source(&project, vag_data_db::VCDS).unwrap(), "no cache, no source");
 		vag_data_db::record_language(&project.cache(), vag_data_db::VCDS, &base.join("vcds-en/Labels").to_string_lossy(), "eng").unwrap();
 		assert!(!project.dir.join("sources.json").exists());
-		assert!(!without_vcds(&project), "a VCDS source in the cache is VCDS text, with no sources.json");
+		let keys = project.rod_keys();
+		std::fs::write(&keys, b"{}").unwrap();
+		assert!(
+			!without_vcds(&project, &keys),
+			"a VCDS source in the cache is VCDS text, with no sources.json"
+		);
 		// Dropped, it is gone for `faults` too, whatever is left on disk.
 		let id = crate::project::sources(&project).unwrap()[0].id;
 		vag_data_db::drop_source(&project.cache(), id).unwrap();
-		assert!(without_vcds(&project));
+		assert!(without_vcds(&project, &keys));
+		let _ = std::fs::remove_dir_all(&base);
+	}
+
+	#[test]
+	fn a_cache_whose_sources_do_not_read_is_not_taken_for_one_without_vcds() {
+		// Review of #37: a cache an older vagcan wrote (or one a running setup holds)
+		// made `without_vcds` true, and every code printed as a bare number. It says
+		// nothing either way: the keys decide, as before the sources were asked.
+		let base = std::env::temp_dir().join(format!("vagcan-unreadable-sources-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&base);
+		let project = crate::project::Project {
+			id: "SK37X".into(),
+			dir: base.join("SK37X"),
+		};
+		std::fs::create_dir_all(&project.dir).unwrap();
+		std::fs::write(project.cache(), b"this is not an SQLite file, and it is longer than a header").unwrap();
+		assert!(crate::project::has_source(&project, vag_data_db::VCDS).is_err(), "an error, not a no");
+		let keys = project.rod_keys();
+		assert!(without_vcds(&project, &keys), "no keys: no VCDS text");
+		std::fs::write(&keys, b"{}").unwrap();
+		assert!(!without_vcds(&project, &keys), "the keys are there: VCDS text, as before");
 		let _ = std::fs::remove_dir_all(&base);
 	}
 

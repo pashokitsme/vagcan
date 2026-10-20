@@ -290,7 +290,9 @@ fn create_schema(conn: &Connection, db_path: &Path) -> Result<(), Error> {
 ///
 /// 1 (2026-10-20): the source metadata `sources.json` kept moved into `source`, label
 /// files name their source, and a source is one row per directory.
-const SCHEMA_VERSION: i64 = 1;
+/// 2 (2026-10-20): a source row that owns no row at all goes. A cache upgraded to 1 is
+/// brought to 2 by the same [`migrate`]: every step of it is a no-op where done.
+const SCHEMA_VERSION: i64 = 2;
 
 /// The columns [`migrate`] adds to a cache of the shape before [`SCHEMA_VERSION`] 1. A
 /// cache lacking only these is upgraded rather than refused.
@@ -362,7 +364,13 @@ fn missing_everything(conn: &Connection) -> rusqlite::Result<bool> {
 /// What `sources.json` held is not this crate's to read: the project layer adopts it
 /// ([`adopt_meta`]).
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-	let tx = conn.unchecked_transaction()?;
+	// Immediate: the write lock first, so two processes opening one cache at once queue on
+	// it rather than both reading under a shared lock and failing to upgrade it. The one
+	// that waited then finds the work done, and does nothing.
+	let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+	if user_version(&tx)? >= SCHEMA_VERSION && missing(&tx)?.is_empty() {
+		return tx.commit();
+	}
 	for (table, column) in MIGRATED {
 		let held = columns(&tx, table)?;
 		if !held.is_empty() && !held.iter().any(|c| c == column) {
@@ -390,6 +398,36 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 	};
 	if let Some(owner) = owner {
 		tx.execute("UPDATE label_file SET source_id = ?1 WHERE source_id IS NULL", params![owner])?;
+	}
+	// A source row that owns no row at all is a note of a folder and nothing more — the
+	// reference cache had one, a relative path an earlier run in a checkout left. It
+	// holds nothing to lose, and kept, it counts as a source of its kind: `faults` and
+	// `watch` go on asking for VCDS, and `--drop vcds` is two sources. No path is guessed
+	// to delete it. Label files no source owns keep every VCDS row: one could be theirs.
+	let unowned_labels: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM label_file WHERE source_id IS NULL)", [], |row| row.get(0))?;
+	let ids: Vec<(i64, String)> = {
+		let mut stmt = tx.prepare("SELECT id, kind FROM source")?;
+		stmt
+			.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+			.collect::<rusqlite::Result<_>>()?
+	};
+	for (id, kind) in ids {
+		if kind == VCDS && unowned_labels {
+			continue;
+		}
+		let mut holds = false;
+		for table in owning_tables() {
+			// The table names are the schema's own.
+			let any: bool = tx.query_row(
+				&format!("SELECT EXISTS (SELECT 1 FROM {table} WHERE source_id = ?1)"),
+				params![id],
+				|row| row.get(0),
+			)?;
+			holds |= any;
+		}
+		if !holds {
+			tx.execute("DELETE FROM source WHERE id = ?1", params![id])?;
+		}
 	}
 	tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
 	tx.commit()
@@ -430,8 +468,8 @@ fn collapse_duplicates(conn: &Connection) -> rusqlite::Result<()> {
 /// table ends with two copies under one source, and none loses the only copy it had.
 /// `keep` takes whatever metadata it lacks from `other`, and `other`'s row goes.
 fn merge_into(conn: &Connection, keep: i64, other: i64) -> rusqlite::Result<()> {
-	for table in ["reading", "fault", "measurement", "label_file"] {
-		// The table names are the constant above, never anything a caller supplied.
+	for table in owning_tables() {
+		// The table names are the schema's own, never anything a caller supplied.
 		let held: bool = conn.query_row(
 			&format!("SELECT EXISTS (SELECT 1 FROM {table} WHERE source_id = ?1)"),
 			params![keep],
@@ -461,29 +499,54 @@ fn merge_into(conn: &Connection, keep: i64, other: i64) -> rusqlite::Result<()> 
 }
 
 /// Delete the rows of `table` that `owned` (an SQL condition over `?1`) picks, with
-/// every row that hangs off them: a reading's levels, a label file's records. Returns how
-/// many rows of `table` itself went.
+/// every row that hangs off them, however deep: a reading's levels, a label file's
+/// records. Returns how many rows of `table` itself went.
+///
+/// The rows that hang off a table are found from the schema's own foreign keys
+/// ([`schema_links`]), not from a list written here: a table added with a key into
+/// one of these is deleted with it, and one that names a source is dropped with it.
 fn delete_rows(conn: &Connection, table: &str, owned: &str, id: i64) -> rusqlite::Result<usize> {
-	// `table` and `owned` come from this file, never from a caller outside it.
-	match table {
-		"reading" => {
-			conn.execute(
-				&format!("DELETE FROM reading_level WHERE reading_id IN (SELECT id FROM reading WHERE {owned})"),
-				params![id],
-			)?;
-		}
-		"label_file" => {
-			for child in ["redirect", "adaptation", "long_coding", "measurement"] {
-				conn.execute(
-					&format!("DELETE FROM {child} WHERE file_id IN (SELECT id FROM label_file WHERE {owned})"),
-					params![id],
-				)?;
-			}
-		}
-		_ => {}
+	// `table` and the columns are the schema's own, and `owned` is this file's: nothing
+	// a caller supplied is formatted into the SQL.
+	for (child, column, _) in schema_links().iter().filter(|(child, _, parent)| parent == table && child != table) {
+		delete_rows(conn, child, &format!("{column} IN (SELECT id FROM {table} WHERE {owned})"), id)?;
 	}
 	conn.execute(&format!("DELETE FROM {table} WHERE {owned}"), params![id])
 }
+
+/// Every foreign key in [`SCHEMA`], as `(table, column, parent table)` — asked of SQLite
+/// once, from the schema itself, like [`schema_shape`].
+fn schema_links() -> &'static [(String, String, String)] {
+	static LINKS: std::sync::OnceLock<Vec<(String, String, String)>> = std::sync::OnceLock::new();
+	LINKS.get_or_init(|| {
+		let conn = Connection::open_in_memory().expect("an in-memory database opens");
+		conn.execute_batch(SCHEMA).expect("the schema is valid SQL");
+		let mut links = Vec::new();
+		for (table, _) in schema_shape() {
+			let mut stmt = conn
+				.prepare("SELECT \"from\", \"table\" FROM pragma_foreign_key_list(?1)")
+				.expect("foreign keys are queryable");
+			let keys = stmt
+				.query_map(params![table], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+				.and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
+				.expect("a table's foreign keys read");
+			links.extend(keys.into_iter().map(|(column, parent)| (table.clone(), column, parent)));
+		}
+		links
+	})
+}
+
+/// Every table whose rows name the source they came from.
+fn owning_tables() -> impl Iterator<Item = &'static str> {
+	schema_links()
+		.iter()
+		.filter(|(_, column, parent)| column == "source_id" && parent == "source")
+		.map(|(table, _, _)| table.as_str())
+}
+
+/// The tables only a VCDS installation writes, whose rows a cache migrated from before
+/// [`SCHEMA_VERSION`] 1 can hold with no source named ([`migrate`]).
+const VCDS_ONLY: &[&str] = &["label_file", "measurement"];
 
 fn not_a_database(e: &rusqlite::Error) -> bool {
 	matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::NotADatabase)
@@ -674,6 +737,21 @@ fn stored_key(dir: &str) -> Option<String> {
 /// Done here as well as in [`migrate`] because it is the spelling rule that decides
 /// which rows are the same, and the rule lives here.
 fn source_id(conn: &Connection, kind: &str, dir: &str) -> rusqlite::Result<i64> {
+	match held_source_id(conn, kind, dir)? {
+		Some(id) => Ok(id),
+		None => {
+			let wanted = normalise_dir(dir);
+			conn.execute("INSERT INTO source (kind, dir) VALUES (?1, ?2)", params![kind, wanted])?;
+			conn.query_row("SELECT id FROM source WHERE kind = ?1 AND dir = ?2", params![kind, wanted], |row| {
+				row.get(0)
+			})
+		}
+	}
+}
+
+/// [`source_id`] for a source that must already be there: `None`, and nothing made, when
+/// it is not. Other spellings of the directory are folded in as there.
+fn held_source_id(conn: &Connection, kind: &str, dir: &str) -> rusqlite::Result<Option<i64>> {
 	let wanted = normalise_dir(dir);
 	let mut same: Vec<i64> = {
 		let mut stmt = conn.prepare("SELECT id, dir FROM source WHERE kind = ?1 ORDER BY id")?;
@@ -686,10 +764,7 @@ fn source_id(conn: &Connection, kind: &str, dir: &str) -> rusqlite::Result<i64> 
 			.collect()
 	};
 	let Some(keep) = same.first().copied() else {
-		conn.execute("INSERT INTO source (kind, dir) VALUES (?1, ?2)", params![kind, wanted])?;
-		return conn.query_row("SELECT id FROM source WHERE kind = ?1 AND dir = ?2", params![kind, wanted], |row| {
-			row.get(0)
-		});
+		return Ok(None);
 	};
 	same.remove(0);
 	for other in same {
@@ -698,7 +773,7 @@ fn source_id(conn: &Connection, kind: &str, dir: &str) -> rusqlite::Result<i64> 
 	// The survivor is rewritten in the spelling this function will look for next
 	// time, so the merge happens once rather than on every run.
 	conn.execute("UPDATE source SET dir = ?1 WHERE id = ?2", params![wanted, keep])?;
-	Ok(keep)
+	Ok(Some(keep))
 }
 
 /// Insert every file + its records into `conn`, in one transaction. The
@@ -711,19 +786,6 @@ fn insert_files(conn: &mut Connection, files: &[LabelFile], labels_dir: &str) ->
 	let mut stats = BuildStats::default();
 	let tx = conn.transaction()?;
 	let source = source_id(&tx, VCDS, labels_dir)?;
-	// A second VCDS installation replaces the first in a project: the label files are
-	// wiped below, and the registry rows are replaced per kind. The first one's source
-	// row would be left naming a folder and a language for nothing — and `faults` reads
-	// the languages of the sources there are — so it goes, with anything left under it.
-	let others: Vec<i64> = {
-		let mut stmt = tx.prepare("SELECT id FROM source WHERE kind = ?1 AND id <> ?2")?;
-		stmt
-			.query_map(params![VCDS, source], |row| row.get(0))?
-			.collect::<rusqlite::Result<_>>()?
-	};
-	for other in others {
-		remove_source(&tx, other, false)?;
-	}
 	{
 		// Idempotent rebuild: clear any existing rows before inserting, so
 		// running `build_db` twice against the same path overwrites cleanly
@@ -1108,36 +1170,67 @@ pub fn drop_source(db_path: &Path, id: i64) -> Result<Rows, Error> {
 	let Some(kind) = kind else {
 		return Err(Error::NoSuchSource { id });
 	};
-	let others_of_kind: bool = tx.query_row(
-		"SELECT EXISTS (SELECT 1 FROM source WHERE kind = ?1 AND id <> ?2)",
-		params![kind, id],
-		|row| row.get(0),
-	)?;
+	// A stale row — a relative path no run can resolve — is no other source of the kind:
+	// it can claim nothing ([`Source::is_stale`]).
+	let others: Vec<String> = {
+		let mut stmt = tx.prepare("SELECT dir FROM source WHERE kind = ?1 AND id <> ?2")?;
+		stmt.query_map(params![kind, id], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?
+	};
+	let others_of_kind = others.iter().any(|dir| Path::new(dir).is_absolute());
 	let gone = remove_source(&tx, id, kind == VCDS && !others_of_kind)?;
 	tx.commit()?;
 	Ok(gone)
 }
 
-/// The deletion behind [`drop_source`], inside the caller's transaction. `unowned` also
-/// takes the label rows no source owns.
+/// The deletion behind [`drop_source`], inside the caller's transaction: every row of
+/// every table that names the source ([`owning_tables`]), with what hangs off them.
+/// `unowned` also takes the rows of [`VCDS_ONLY`] that name no source.
 fn remove_source(conn: &Connection, id: i64, unowned: bool) -> rusqlite::Result<Rows> {
-	let owned = match unowned {
+	let owned = |table: &str| match unowned && VCDS_ONLY.contains(&table) {
 		true => "(source_id = ?1 OR source_id IS NULL)",
 		false => "source_id = ?1",
 	};
-	let faults = delete_rows(conn, "fault", "source_id = ?1", id)?;
-	let readings = delete_rows(conn, "reading", "source_id = ?1", id)?;
-	// Measurements first, by their own column: deleting the label files below takes
-	// their records too, and would leave nothing here to count.
-	let measurements = delete_rows(conn, "measurement", owned, id)?;
-	let label_files = delete_rows(conn, "label_file", owned, id)?;
+	// Counted before anything goes: a label file's measurements go with it, and would
+	// leave nothing to count under their own column.
+	let count = |table: &str| -> rusqlite::Result<u64> {
+		let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE {}", owned(table)), params![id], |row| {
+			row.get(0)
+		})?;
+		Ok(n.max(0) as u64)
+	};
+	let gone = Rows {
+		label_files: count("label_file")?,
+		measurements: count("measurement")?,
+		readings: count("reading")?,
+		faults: count("fault")?,
+	};
+	for table in owning_tables() {
+		delete_rows(conn, table, owned(table), id)?;
+	}
 	conn.execute("DELETE FROM source WHERE id = ?1", params![id])?;
-	Ok(Rows {
-		label_files: label_files as u64,
-		measurements: measurements as u64,
-		readings: readings as u64,
-		faults: faults as u64,
-	})
+	Ok(gone)
+}
+
+/// The VCDS installation `labels_dir` is is the project's one: every other VCDS source
+/// goes, with everything under it. `setup`'s label step, and nothing else, says so — a
+/// second installation replaces the first in a project, and the first one's row would
+/// be left naming a folder and a language for nothing, which `faults` reads.
+///
+/// Not part of [`build_db`]: a build is also how a tool looks into some other folder's
+/// label files, and that must never cost the project a source.
+pub fn keep_only_vcds(db_path: &Path, labels_dir: &str) -> Result<(), Error> {
+	let mut conn = open_existing(db_path)?;
+	let tx = conn.transaction()?;
+	let keep = source_id(&tx, VCDS, labels_dir)?;
+	let others: Vec<i64> = {
+		let mut stmt = tx.prepare("SELECT id FROM source WHERE kind = ?1 AND id <> ?2")?;
+		stmt.query_map(params![VCDS, keep], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?
+	};
+	for other in others {
+		remove_source(&tx, other, false)?;
+	}
+	tx.commit()?;
+	Ok(())
 }
 
 /// Write what `setup` knows about a source on its row, stamped with the time now; the row
@@ -1232,16 +1325,24 @@ pub fn put_all_readings<'a>(
 /// the install's label files, which live in other tables. A variant here is the
 /// stem of the unit's `.rod` file, which `F19E`/`F1A2` pick the same way they
 /// pick an ODIS variant.
+///
+/// **Into a source that is already there, or nowhere.** `None`, with nothing written and
+/// no source made, when the cache holds no VCDS source for `install_dir` — `setup`'s label
+/// step makes it, and `vagcan setup --drop` removes it. A registry read is minutes long,
+/// and one that was running when its source was dropped must not bring it back: the check
+/// is inside the write's own transaction.
 pub fn put_all_vcds_readings<'a>(
 	db_path: &Path,
 	install_dir: &str,
 	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Reading])>,
-) -> Result<usize, Error> {
-	write_readings(db_path, install_dir, VCDS, variants, Replace::Kind)
+) -> Result<Option<usize>, Error> {
+	if !db_path.is_file() {
+		return Ok(None);
+	}
+	write_into(db_path, install_dir, VCDS, variants, Replace::Kind, false)
 }
 
-/// The one writer behind [`put_readings`], [`put_all_readings`] and
-/// [`put_all_vcds_readings`].
+/// The writer behind [`put_readings`] and [`put_all_readings`], which make their source.
 fn write_readings<'a>(
 	db_path: &Path,
 	source_dir: &str,
@@ -1249,14 +1350,34 @@ fn write_readings<'a>(
 	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Reading])>,
 	replace: Replace,
 ) -> Result<usize, Error> {
+	Ok(write_into(db_path, source_dir, kind, variants, replace, true)?.unwrap_or_default())
+}
+
+/// The one writer behind [`write_readings`] and [`put_all_vcds_readings`]: `make` says
+/// whether a source that is not there is made, or the write is `None`.
+fn write_into<'a>(
+	db_path: &Path,
+	source_dir: &str,
+	kind: &str,
+	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Reading])>,
+	replace: Replace,
+	make: bool,
+) -> Result<Option<usize>, Error> {
 	let mut conn = Connection::open(db_path)?;
 	create_schema(&conn, db_path)?;
 	conn.pragma_update(None, "synchronous", "FULL")?;
 	// Pages, negative meaning kibibytes: 64 MiB, so a whole project's rows
 	// stay in memory instead of being flushed page by page mid-transaction.
 	conn.pragma_update(None, "cache_size", -65536)?;
-	let tx = conn.transaction()?;
-	let source = source_id(&tx, kind, source_dir)?;
+	// Immediate, so the check below and the write are one: a drop cannot commit between.
+	let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+	let source = match make {
+		true => source_id(&tx, kind, source_dir)?,
+		false => match held_source_id(&tx, kind, source_dir)? {
+			Some(source) => source,
+			None => return Ok(None),
+		},
+	};
 
 	match replace {
 		Replace::Source => {
@@ -1327,7 +1448,7 @@ fn write_readings<'a>(
 		}
 	}
 	tx.commit()?;
-	Ok(written)
+	Ok(Some(written))
 }
 
 /// Record the language a source declares for itself, on its `source` row.
@@ -2126,6 +2247,7 @@ mod tests {
 			..reading(did, name, linear.clone())
 		};
 		put_readings(&ws.db_path, "/x/SK37X", "EV_Unit_001", &[with_id(0x2203, "the odis name", "IDE90001")]).unwrap();
+		record_language(&ws.db_path, VCDS, "/x/vcds-en", "eng").unwrap();
 		put_all_vcds_readings(
 			&ws.db_path,
 			"/x/vcds-en",
@@ -2153,6 +2275,8 @@ mod tests {
 		let linear = |factor| Scaling::Linear(vag_data_labels::LinearScale { factor, offset: 0.0 });
 		let variant = "EV_Brake1UDSContiMK100ESP_036";
 		put_readings(&ws.db_path, "/x/SK37X", variant, &[reading(0x1800, "odis", linear(0.1))]).unwrap();
+		record_language(&ws.db_path, VCDS, "/x/vcds-en", "eng").unwrap();
+		record_language(&ws.db_path, VCDS, "/x/vcds-ru", "rus").unwrap();
 		put_all_vcds_readings(
 			&ws.db_path,
 			"/x/vcds-en",
@@ -2866,20 +2990,28 @@ mod tests {
 	}
 
 	/// Every row in the cache points at something that is there: a source, a label file, a
-	/// reading. Asked of every table [`SCHEMA`] makes, by the columns it has, so a table
-	/// added later is asked too.
+	/// reading. Asked of every foreign key [`SCHEMA`] declares, so a table added later is
+	/// asked too.
 	fn assert_no_orphans(db_path: &Path, context: &str) {
 		let conn = Connection::open(db_path).unwrap();
-		for (table, held) in schema_shape() {
-			for (column, parent) in [("source_id", "source"), ("file_id", "label_file"), ("reading_id", "reading")] {
-				if !held.iter().any(|c| c == column) {
-					continue;
-				}
-				let sql = format!("SELECT COUNT(*) FROM {table} WHERE {column} IS NOT NULL AND {column} NOT IN (SELECT id FROM {parent})");
-				let orphans: i64 = conn.query_row(&sql, [], |row| row.get(0)).unwrap();
-				assert_eq!(orphans, 0, "{context}: {table}.{column} names a {parent} that is gone");
-			}
+		assert!(owning_tables().count() >= 4, "sanity: the schema's keys are read");
+		for (table, column, parent) in schema_links() {
+			let sql = format!("SELECT COUNT(*) FROM {table} WHERE {column} IS NOT NULL AND {column} NOT IN (SELECT id FROM {parent})");
+			let orphans: i64 = conn.query_row(&sql, [], |row| row.get(0)).unwrap();
+			assert_eq!(orphans, 0, "{context}: {table}.{column} names a {parent} that is gone");
 		}
+	}
+
+	/// How many rows each table of [`SCHEMA`] holds.
+	fn table_rows(db_path: &Path) -> Vec<(String, i64)> {
+		let conn = Connection::open(db_path).unwrap();
+		schema_shape()
+			.iter()
+			.map(|(table, _)| {
+				let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0)).unwrap();
+				(table.clone(), n)
+			})
+			.collect()
 	}
 
 	fn label_rows(db_path: &Path) -> i64 {
@@ -2899,15 +3031,10 @@ mod tests {
 			.collect();
 		assert_eq!(
 			shown,
-			[
-				(1, "vcds", "vendor/vcds-en/Labels", None),
-				(2, "odis", odis.as_str(), Some("deu")),
-				(3, "vcds", labels.as_str(), Some("eng")),
-			],
-			"the trailing-slash ODIS row is folded into the first, and nothing else changes"
+			[(2, "odis", odis.as_str(), Some("deu")), (3, "vcds", labels.as_str(), Some("eng"))],
+			"the trailing-slash ODIS row is folded into the first, the relative row that owned nothing is gone"
 		);
-		assert!(sources[0].is_stale(), "a relative path is reported as stale");
-		assert!(!sources[1].is_stale() && !sources[2].is_stale());
+		assert!(sources.iter().all(|s| !s.is_stale()));
 		// One copy of the ODIS rows, levels included, and the VCDS rows untouched.
 		assert_eq!(faults_of(&ws.db_path, "EV_Brake").unwrap().len(), 1);
 		assert_eq!(readings_of_kind(&ws.db_path, ODIS, "EV_Brake").unwrap().len(), 1);
@@ -2923,7 +3050,6 @@ mod tests {
 		};
 		assert_eq!(rows.get(&3).copied(), Some(expected));
 		assert_eq!(rows.get(&2).map(|r| (r.faults, r.readings)), Some((1, 1)));
-		assert_eq!(rows.get(&1), None, "the stale row holds nothing");
 		assert_eq!(unowned, Rows::default());
 		assert_eq!(
 			source_of(&ws.db_path).as_deref(),
@@ -2934,8 +3060,54 @@ mod tests {
 
 		// Once: a second open finds today's shape and changes nothing.
 		let before = std::fs::read(&ws.db_path).unwrap();
-		assert_eq!(crate::sources(&ws.db_path).unwrap().len(), 3);
+		assert_eq!(crate::sources(&ws.db_path).unwrap().len(), 2);
 		assert_eq!(std::fs::read(&ws.db_path).unwrap(), before, "the upgrade ran again");
+	}
+
+	#[test]
+	fn a_cache_upgraded_to_the_first_version_loses_the_rows_that_own_nothing_too() {
+		// The reference machine's cache was upgraded to 1 before the empty rows were
+		// removed (review of #37): its stale `vendor/vcds-en/Labels` row was still there.
+		let ws = TempWorkspace::new("version-one");
+		put_faults(&ws.db_path, "/x/SK37X", "EV_Brake", &[fault(297, "Fehler")]).unwrap();
+		let conn = Connection::open(&ws.db_path).unwrap();
+		conn
+			.execute_batch("INSERT INTO source (kind, dir) VALUES ('vcds', 'vendor/vcds-en/Labels'); PRAGMA user_version = 1;")
+			.unwrap();
+		drop(conn);
+		let held = sources(&ws.db_path).unwrap();
+		assert_eq!(held.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(), ["/x/SK37X"]);
+		let conn = Connection::open(&ws.db_path).unwrap();
+		assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
+	}
+
+	#[test]
+	fn a_relative_row_that_holds_rows_is_kept_as_stale_and_claims_nothing() {
+		// No path is guessed to delete it: the rows under it are kept, and it is reported.
+		// But it is no other source of its kind — dropping the real VCDS source is dropping
+		// the last one, and takes the label rows nobody owns.
+		let ws = TempWorkspace::new("stale-holds");
+		let conn = Connection::open(&ws.db_path).unwrap();
+		conn.execute_batch(PREVIOUS_SCHEMA).unwrap();
+		conn
+			.execute_batch(
+				"INSERT INTO source (id, kind, dir) VALUES (1, 'vcds', 'vendor/vcds-en/Labels'), (2, 'vcds', '/x/vcds-en/Labels');\
+				 INSERT INTO reading (source_id, variant, did, name, bit_offset, bit_length, signed, big_endian, scaling, factor, offset) \
+				     VALUES (1, 'EV_A', 1, 'a', 0, 8, 0, 1, 'linear', 1.0, 0.0), (2, 'EV_A', 2, 'b', 0, 8, 0, 1, 'linear', 1.0, 0.0);",
+			)
+			.unwrap();
+		drop(conn);
+		let held = sources(&ws.db_path).unwrap();
+		assert_eq!(held.len(), 2, "a relative row with rows under it is kept");
+		assert!(held[0].is_stale());
+		let conn = Connection::open(&ws.db_path).unwrap();
+		conn.execute("INSERT INTO label_file (name) VALUES ('orphan.lbl')", []).unwrap();
+		drop(conn);
+		assert_eq!(
+			drop_source(&ws.db_path, 2).unwrap().label_files,
+			1,
+			"the stale row counted as another VCDS source"
+		);
 	}
 
 	#[test]
@@ -2947,8 +3119,16 @@ mod tests {
 		assert!(Path::new(&here).is_absolute(), "sanity: `src` resolves from the test's directory");
 		let conn = Connection::open(&ws.db_path).unwrap();
 		conn.execute_batch(PREVIOUS_SCHEMA).unwrap();
-		conn.execute("INSERT INTO source (kind, dir) VALUES ('odis', 'src')", []).unwrap();
-		conn.execute("INSERT INTO source (kind, dir) VALUES ('odis', ?1)", params![here]).unwrap();
+		conn.execute("INSERT INTO source (id, kind, dir) VALUES (1, 'odis', 'src')", []).unwrap();
+		conn
+			.execute("INSERT INTO source (id, kind, dir) VALUES (2, 'odis', ?1)", params![here])
+			.unwrap();
+		// Each holds a row, or the upgrade would drop it as a note of nothing.
+		conn
+			.execute_batch(
+				"INSERT INTO fault (source_id, variant, dop, code, level, temporary) VALUES (1, 'EV_A', 'D', 1, 0, 0), (2, 'EV_A', 'D', 1, 0, 0);",
+			)
+			.unwrap();
 		drop(conn);
 		assert_eq!(sources(&ws.db_path).unwrap().len(), 2, "the upgrade merged a relative row by guessing");
 		// Nor does a write of the absolute directory claim the relative row.
@@ -2980,6 +3160,11 @@ mod tests {
 		let (vcds, odis) = (all[0].id, all[1].id);
 		let pristine = std::fs::read(&ws.db_path).unwrap();
 		let (rows, _) = source_rows(&ws.db_path).unwrap();
+		// The fixture fills every table the schema has: a table added later that it does
+		// not fill would pass the orphan check below while proving nothing. Fill it here.
+		for (table, n) in table_rows(&ws.db_path) {
+			assert!(n > 0, "the fixture leaves `{table}` empty: give it a row, so a drop is tested on it");
+		}
 
 		// The ODIS project: its channels, levels and fault text go; the VCDS rows stay
 		// and are what every reader now answers with.
@@ -3042,9 +3227,33 @@ mod tests {
 	}
 
 	#[test]
+	fn a_build_alone_never_costs_the_cache_a_source() {
+		// The defect (review of #37): `build_db` removed every other VCDS source, and
+		// `dev vcds labels <dir> --part` built through it — one lookup against a one-file
+		// folder took the project's installation, its registry channels and its metadata.
+		let ws = TempWorkspace::new("build-keeps");
+		write_fixture_labels(&ws);
+		build_db(&ws.labels_dir, &ws.db_path).unwrap();
+		let labels = ws.labels_dir.to_string_lossy().into_owned();
+		put_all_vcds_readings(&ws.db_path, &labels, [("EV_Brake1", &[unit_scale(0x1822, "vcds")][..])]).unwrap();
+		let other = ws.root().join("other-labels");
+		std::fs::create_dir_all(&other).unwrap();
+		std::fs::copy(ws.labels_dir.join("target.lbl"), other.join("target.lbl")).unwrap();
+		build_db(&other, &ws.db_path).unwrap();
+		let held = sources(&ws.db_path).unwrap();
+		assert_eq!(held.len(), 2, "{held:?}");
+		assert_eq!(
+			readings_of_kind(&ws.db_path, VCDS, "EV_Brake1").unwrap().len(),
+			1,
+			"the registry rows went"
+		);
+	}
+
+	#[test]
 	fn a_second_vcds_installation_replaces_the_first_source_row_and_all() {
 		// Its label files and registry rows were already replaced; the first one's row
-		// was left naming a folder and a language for nothing.
+		// was left naming a folder and a language for nothing — setup's label step says
+		// which installation is the project's.
 		let ws = TempWorkspace::new("second-install");
 		write_fixture_labels(&ws);
 		build_db(&ws.labels_dir, &ws.db_path).unwrap();
@@ -3053,6 +3262,7 @@ mod tests {
 		std::fs::create_dir_all(&other).unwrap();
 		std::fs::copy(ws.labels_dir.join("target.lbl"), other.join("target.lbl")).unwrap();
 		build_db(&other, &ws.db_path).unwrap();
+		keep_only_vcds(&ws.db_path, &other.to_string_lossy()).unwrap();
 		let held = sources(&ws.db_path).unwrap();
 		assert_eq!(held.len(), 1, "{held:?}");
 		assert_eq!(held[0].dir, normalise_dir(&other.to_string_lossy()));
@@ -3105,5 +3315,50 @@ mod tests {
 		assert_eq!(adopted.meta.root.as_deref(), Some("/x/vcds-en"));
 		assert_eq!(adopted.meta.detail.as_deref(), Some("from an older note"));
 		assert_eq!(adopted.meta.parsed_at, again[0].meta.parsed_at);
+	}
+
+	#[test]
+	fn a_registry_write_into_a_dropped_source_writes_nothing_and_makes_no_source() {
+		// A `watch` reading the registry for minutes while `setup --drop vcds` commits:
+		// its write must not bring the source back.
+		let ws = TempWorkspace::new("registry-race");
+		let rows = [unit_scale(0x1822, "vcds")];
+		assert_eq!(
+			put_all_vcds_readings(&ws.db_path, "/x/vcds-en/Labels", [("EV_A", &rows[..])]).unwrap(),
+			None
+		);
+		assert!(!ws.db_path.exists(), "a write with no cache made one");
+		record_language(&ws.db_path, VCDS, "/x/vcds-en/Labels", "eng").unwrap();
+		assert_eq!(
+			put_all_vcds_readings(&ws.db_path, "/x/vcds-en/Labels", [("EV_A", &rows[..])]).unwrap(),
+			Some(1)
+		);
+		let id = sources(&ws.db_path).unwrap()[0].id;
+		drop_source(&ws.db_path, id).unwrap();
+		assert_eq!(
+			put_all_vcds_readings(&ws.db_path, "/x/vcds-en/Labels", [("EV_A", &rows[..])]).unwrap(),
+			None
+		);
+		assert!(sources(&ws.db_path).unwrap().is_empty(), "the write made the dropped source again");
+		assert_eq!(reading_count_of(&ws.db_path, VCDS).unwrap(), 0);
+	}
+
+	#[test]
+	fn processes_opening_one_cache_to_upgrade_it_at_once_all_succeed() {
+		// The upgrade takes the write lock first: under a shared lock, two openers both
+		// read and then both fail to write, and one of them got `SQLITE_BUSY`.
+		let ws = TempWorkspace::new("concurrent-upgrade");
+		previous_cache(&ws);
+		let db = ws.db_path.clone();
+		let openers: Vec<_> = (0..6)
+			.map(|_| {
+				let db = db.clone();
+				std::thread::spawn(move || sources(&db).map(|s| s.len()))
+			})
+			.collect();
+		for opener in openers {
+			assert_eq!(opener.join().unwrap().unwrap(), 2);
+		}
+		assert_no_orphans(&db, "upgraded by six at once");
 	}
 }

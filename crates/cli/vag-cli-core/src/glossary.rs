@@ -322,7 +322,7 @@ mod tests {
 			&project,
 			crate::project::SourceEntry {
 				kind: vag_data_db::VCDS,
-				path: "vcds".to_string(),
+				path: "/nowhere/vcds".to_string(),
 				version: None,
 				detail: None,
 			},

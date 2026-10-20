@@ -94,7 +94,9 @@ fn select<'a>(sources: &'a [vag_data_db::Source], selector: &str) -> Result<&'a 
 			candidates(sources.iter())
 		);
 	}
-	let of_kind: Vec<&vag_data_db::Source> = sources.iter().filter(|s| s.kind == kind).collect();
+	// A stale row is not a source of its kind ([`crate::project::has_source`]): it is
+	// dropped by id, and never makes the kind ambiguous.
+	let of_kind: Vec<&vag_data_db::Source> = sources.iter().filter(|s| s.kind == kind && !s.is_stale()).collect();
 	match of_kind.as_slice() {
 		[one] => Ok(one),
 		[] => bail!("no {kind} source in this project. Its sources:\n{}", candidates(sources.iter())),
@@ -125,10 +127,16 @@ fn state(source: &vag_data_db::Source) -> &'static str {
 }
 
 /// `parsed_at` to the minute, as a column: `2026-10-20 07:26`.
+///
+/// With the `Z`: the stamp is UTC, and a time with no zone reads as local. A stamp of
+/// another shape — an older note's, hand-edited — is shown as it is, never cut inside a
+/// character.
 fn when(parsed_at: Option<&str>) -> String {
 	match parsed_at {
-		Some(stamp) if stamp.len() >= 16 => stamp[..16].replace('T', " "),
-		Some(stamp) => stamp.to_string(),
+		Some(stamp) => match stamp.get(..16) {
+			Some(minute) if minute.is_ascii() && minute.as_bytes()[10] == b'T' => format!("{}Z", minute.replace('T', " ")),
+			_ => stamp.to_string(),
+		},
 		None => "-".to_string(),
 	}
 }
@@ -249,7 +257,8 @@ fn dropped(source: &vag_data_db::Source, gone: &vag_data_db::Rows) -> String {
 /// removed where nothing else could use them, kept and named where the next `setup` of
 /// that kind reuses them. One note per file, for stderr.
 fn leftovers(project: &Project, kind: &str) -> Result<Vec<String>> {
-	if crate::project::sources(project)?.iter().any(|s| s.kind == kind) {
+	// A stale row left beside it is no source of the kind: the files go as if it were not.
+	if crate::project::has_source(project, kind)? {
 		return Ok(Vec::new());
 	}
 	// `registry.json` names the dropped installation and what was read from it: kept, it
@@ -266,7 +275,7 @@ fn leftovers(project: &Project, kind: &str) -> Result<Vec<String>> {
 	}
 	for file in keep.iter().filter(|f| f.is_file()) {
 		out.push(format!(
-			"kept: {} — unused without a {kind} source; the next {kind} setup reuses it",
+			"kept: {} — car commands no longer read it; `vagcan dev vcds` still can, and the next {kind} setup reuses it",
 			file.display()
 		));
 	}
@@ -304,14 +313,33 @@ mod tests {
 		assert_eq!(select(&sources, "ODIS").unwrap().id, 2);
 		assert_eq!(select(&sources, "1").unwrap().id, 1, "a stale row is droppable by id");
 		assert_eq!(select(&sources, " 3 ").unwrap().id, 3);
+		// Review of #37: the stale row beside the real installation made `vcds` two
+		// sources. It is no source of its kind, so `vcds` is the one real row.
+		assert_eq!(select(&sources, "vcds").unwrap().id, 3);
 	}
 
 	#[test]
 	fn a_kind_two_sources_share_is_refused_with_both_listed() {
-		let why = select(&reference(), "vcds").unwrap_err().to_string();
+		let mut sources = reference();
+		sources[0].dir = "/Users/x/vcds-ru/Labels".into();
+		let why = select(&sources, "vcds").unwrap_err().to_string();
 		assert!(why.contains("2 vcds sources") && why.contains("by id"), "{why}");
-		assert!(why.contains("vendor/vcds-en/Labels") && why.contains("/Users/x/vcds-en/Labels"), "{why}");
+		assert!(
+			why.contains("/Users/x/vcds-ru/Labels") && why.contains("/Users/x/vcds-en/Labels"),
+			"{why}"
+		);
 		assert!(!why.contains("SK37X"), "only the candidates: {why}");
+	}
+
+	#[test]
+	fn a_stamp_reads_to_the_minute_in_utc_and_an_odd_one_is_shown_as_it_is() {
+		assert_eq!(when(Some("2026-10-20T07:26:16.756Z")), "2026-10-20 07:26Z");
+		assert_eq!(when(Some("2026-10-20T07:26:16.756324+00:00")), "2026-10-20 07:26Z");
+		assert_eq!(when(None), "-");
+		// Review of #37: a byte slice through a character panicked.
+		for odd in ["2026-10-20Tö7:26", "2026-10-2ö", "zeit: gestern über Mittag"] {
+			assert_eq!(when(Some(odd)), odd, "{odd}");
+		}
 	}
 
 	#[test]
@@ -429,8 +457,8 @@ mod tests {
 		assert!(!project.odis_names().exists(), "the last ODIS source's pooled names stayed");
 		assert!(project.registry_log().exists(), "the VCDS installation's log went with the ODIS source");
 		// What is left answers on its own: the VCDS source is the one source there is.
-		assert!(!crate::project::has_source(&project, vag_data_db::ODIS));
-		assert!(crate::project::has_source(&project, vag_data_db::VCDS));
+		assert!(!crate::project::has_source(&project, vag_data_db::ODIS).unwrap());
+		assert!(crate::project::has_source(&project, vag_data_db::VCDS).unwrap());
 	}
 
 	#[test]
@@ -450,6 +478,34 @@ mod tests {
 		assert!(!project.registry_log().exists(), "the dropped installation's log would bring it back");
 		assert!(project.rod_keys().exists(), "the keys are kept for the next VCDS setup");
 		assert_eq!(vag_data_db::fault_variants(&project.cache()).unwrap(), ["EV_Brake"], "the ODIS rows stay");
+	}
+
+	#[test]
+	fn a_stale_row_beside_the_installation_neither_blocks_its_drop_nor_keeps_its_files() {
+		// Review of #37, on the reference machine's shape: a relative VCDS row beside the
+		// real one (one the upgrade keeps, or one written after it). `--drop vcds` is the
+		// real one, and once it is gone the project has no VCDS source: its log goes, and
+		// the stale row does not keep VCDS in use.
+		let here = tempfile::tempdir().unwrap();
+		let project = project_with_both(here.path());
+		vag_data_db::record_language(&project.cache(), vag_data_db::VCDS, "vendor/vcds-en/Labels", "eng").unwrap();
+		assert!(
+			crate::project::sources(&project)
+				.unwrap()
+				.iter()
+				.any(|s| s.kind == "vcds" && s.is_stale())
+		);
+
+		let mut io = Scripted::new(vec![]);
+		drop_with(&mut io, &project, "vcds", true, false).expect("`vcds` is the one real VCDS source");
+		assert!(
+			!crate::project::has_source(&project, vag_data_db::VCDS).unwrap(),
+			"the stale row counts as VCDS"
+		);
+		assert!(
+			!project.registry_log().exists(),
+			"the dropped installation's log stayed beside a stale row"
+		);
 	}
 
 	#[test]

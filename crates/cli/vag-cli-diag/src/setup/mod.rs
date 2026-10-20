@@ -570,30 +570,20 @@ fn prepare_cache(cache: &Path, refresh: bool, reads: &[(&str, String)]) -> Resul
 	let held = vag_data_db::remove_if_older(cache)
 		.map_err(|e| anyhow::anyhow!("clearing {}: {e}", cache.display()))?
 		.unwrap_or_default();
+	// A relative `dir` an older vagcan recorded matches nothing: resolving it here would
+	// be a guess about where that run was.
 	let read = |kind: &str, dir: &str| {
-		reads
-			.iter()
-			.any(|(k, d)| *k == kind && vag_data_db::normalise_dir(d) == vag_data_db::normalise_dir(dir))
+		Path::new(dir).is_absolute()
+			&& reads
+				.iter()
+				.any(|(k, d)| *k == kind && vag_data_db::normalise_dir(d) == vag_data_db::normalise_dir(dir))
 	};
 	let mut again: Vec<String> = Vec::new();
 	for (kind, dir) in &held {
 		if read(kind, dir) {
 			continue;
 		}
-		let line = match kind.as_str() {
-			vag_data_db::ODIS if Path::new(dir).is_dir() => {
-				format!("  vagcan setup --refresh {}", crate::missing::shell_word(dir))
-			}
-			vag_data_db::ODIS => format!("  {dir} — an ODIS project, not on this machine any more"),
-			vag_data_db::VCDS => match crate::registry::installation_holding(Path::new(dir)) {
-				Some(root) => format!("  vagcan setup --refresh {}", crate::missing::shell_word(&root.display().to_string())),
-				None => format!(
-					"  {dir} — a VCDS installation's labels, not on this machine any more \
-					 (`vagcan setup --refresh` with no folder offers to download one)"
-				),
-			},
-			other => format!("  {dir} — a {other} source"),
-		};
+		let line = read_again(kind, dir);
 		if !again.contains(&line) {
 			again.push(line);
 		}
@@ -603,6 +593,32 @@ fn prepare_cache(cache: &Path, refresh: bool, reads: &[(&str, String)]) -> Resul
 		said.push_str(&format!("\n{READ_AGAIN}\n{}", again.join("\n")));
 	}
 	Ok(Some(said))
+}
+
+/// The line that says how to read one source of a removed cache again: the command, or
+/// why there is none.
+///
+/// A relative `dir` — recorded by an older vagcan, true in the directory it ran in — is
+/// never looked for from this process's working directory: in a checkout it would name
+/// a folder there and suggest `setup --refresh vendor/…`, which is the guess this tool
+/// does not make (`CLAUDE.md`). It is named as a path nothing resolves.
+fn read_again(kind: &str, dir: &str) -> String {
+	let at = Path::new(dir);
+	if !at.is_absolute() {
+		return format!("  {dir} — a relative path an older vagcan recorded; nothing resolves it");
+	}
+	match kind {
+		vag_data_db::ODIS if at.is_dir() => format!("  vagcan setup --refresh {}", crate::missing::shell_word(dir)),
+		vag_data_db::ODIS => format!("  {dir} — an ODIS project, not on this machine any more"),
+		vag_data_db::VCDS => match crate::registry::installation_holding(at) {
+			Some(root) => format!("  vagcan setup --refresh {}", crate::missing::shell_word(&root.display().to_string())),
+			None => format!(
+				"  {dir} — a VCDS installation's labels, not on this machine any more \
+				 (`vagcan setup --refresh` with no folder offers to download one)"
+			),
+		},
+		other => format!("  {dir} — a {other} source"),
+	}
 }
 
 /// Whether `vagcan faults` will be able to name a code once this run is done:
@@ -1038,11 +1054,17 @@ fn collect_rod_files(src: &Path, dst: &Path, plan: &mut Vec<(PathBuf, PathBuf)>)
 fn label_cache(root: &Path, codes: Option<&Path>, project: &crate::project::Project, refresh: bool) -> Result<Step> {
 	println!("[2/5] Label files — parsing every .lbl and decrypting every .clb.");
 	let db = crate::labels::load_cached(root, &project.cache(), refresh)?;
+	// This installation is the project's VCDS installation now: a second one replaces
+	// the first in a project, and the first one's source goes with what it held. Said
+	// here, by setup, and never by a build — a build is also how `dev vcds labels`
+	// looked into another folder.
+	let labels = crate::labels::label_dir_under(root)?;
+	vag_data_db::keep_only_vcds(&project.cache(), &labels.to_string_lossy())
+		.map_err(|e| anyhow::anyhow!("replacing the earlier VCDS installation in {}: {e}", project.cache().display()))?;
 	// The language of this build's fault text, on the same source row the
 	// label files were written under, so that `faults` can tell a VCDS source
 	// in one language from an ODIS project in another.
 	if let Some(language) = codes.and_then(|codes| codes.file_name().and_then(|n| n.to_str()).and_then(codes_language)) {
-		let labels = crate::labels::label_dir_under(root)?;
 		vag_data_db::record_language(&project.cache(), vag_data_db::VCDS, &labels.to_string_lossy(), language)
 			.map_err(|e| anyhow::anyhow!("recording the language of {} in {}: {e}", root.display(), project.cache().display()))?;
 	}
@@ -1887,7 +1909,7 @@ mod tests {
 		for project in ["/x/read", &other.display().to_string(), "/gone/SK37X"] {
 			vag_data_db::put_readings(&cache, project, "EV_A", &[]).unwrap();
 		}
-		vag_data_db::put_all_vcds_readings(&cache, &labels.display().to_string(), std::iter::empty()).unwrap();
+		vag_data_db::record_language(&cache, vag_data_db::VCDS, &labels.display().to_string(), "eng").unwrap();
 		rusqlite::Connection::open(&cache).unwrap().execute_batch("DROP TABLE fault").unwrap();
 		let reads = vec![(vag_data_db::ODIS, "/x/read".to_string())];
 
@@ -2122,5 +2144,21 @@ mod tests {
 		assert!(!is_newer(Path::new("/definitely/not/here"), &here));
 		assert!(!is_newer(&here, Path::new("/definitely/not/here")));
 		assert!(is_newer(&here, &here), "a file is not older than itself");
+	}
+
+	#[test]
+	fn a_relative_source_of_a_removed_cache_is_never_looked_for_from_here() {
+		// Review of #37: `src` is a folder relative to where the tests run, as
+		// `vendor/vcds-en` is in a checkout — and that is exactly why it must not be
+		// offered as `setup --refresh src`.
+		assert!(Path::new("src").is_dir(), "sanity: `src` resolves from the test's directory");
+		for kind in [vag_data_db::ODIS, vag_data_db::VCDS] {
+			let line = read_again(kind, "src");
+			assert!(!line.contains("--refresh"), "{kind}: {line}");
+			assert!(line.contains("relative path"), "{kind}: {line}");
+		}
+		// An absolute one is still looked for.
+		let here = std::fs::canonicalize("src").unwrap().display().to_string();
+		assert!(read_again(vag_data_db::ODIS, &here).contains("vagcan setup --refresh"));
 	}
 }

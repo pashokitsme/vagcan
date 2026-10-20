@@ -377,8 +377,9 @@ pub fn sources(project: &Project) -> Result<Vec<vag_data_db::Source>> {
 	vag_data_db::sources(&cache).map_err(|e| anyhow::anyhow!("reading the sources of {}: {e}", cache.display()))
 }
 
-/// The project's sources, or none when they cannot be read — for the questions that
-/// take the cautious answer to a cache that cannot say.
+/// The project's sources, or none when they cannot be read — for the questions where
+/// "none" is the cautious answer: whether a folder is a reread, where a registry read
+/// would come from. Not for [`has_source`].
 fn sources_or_none(project: &Project) -> Vec<vag_data_db::Source> {
 	sources(project).unwrap_or_default()
 }
@@ -398,11 +399,29 @@ pub fn records_source(project: &Project, kind: &str, path: &str) -> bool {
 ///
 /// A file's *content* cannot say which parser produced it, and `names.json` on a
 /// project that has only ever seen ODIS runs is ODIS wording under a name that
-/// promises VCDS's. The `source` table is what knows. `false` when the cache is
-/// missing or will not open — a project that cannot say where its data came from
-/// gets the cautious answer, which is to trust nothing it did not have to.
-pub fn has_source(project: &Project, kind: &str) -> bool {
-	sources_or_none(project).iter().any(|s| s.kind == kind)
+/// promises VCDS's. The `source` table is what knows. `Ok(false)` when there is no
+/// cache: nothing has been read into the project.
+///
+/// A stale row — a relative path an older vagcan left, which nothing resolves — is
+/// not a source of its kind: it can be read from nowhere, and counting it kept a
+/// dropped installation's text in use.
+///
+/// **A cache that will not answer is an `Err`, not a "no"**: one an older vagcan
+/// wrote, or one a running `setup` holds locked. Taken as "no source", it turned
+/// every fault into a bare number with nothing said. The caller decides what that
+/// means for it, and says so once ([`say_unreadable`]).
+pub fn has_source(project: &Project, kind: &str) -> Result<bool> {
+	Ok(sources(project)?.iter().any(|s| s.kind == kind && !s.is_stale()))
+}
+
+/// Say on stderr, once per process, that a project's sources did not read and what
+/// is assumed instead. Every command that asks [`has_source`] may meet the same
+/// error, and one line is the whole of what a reader needs.
+pub fn say_unreadable(project: &Project, why: &anyhow::Error, instead: &str) {
+	static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+	if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+		eprintln!("note: the sources of {} did not read ({why:#}); {instead}", project.id);
+	}
 }
 
 /// Where every source of this kind was read from, **newest read first** — for a
@@ -828,7 +847,7 @@ mod tests {
 			vec!["/Applications/VCDS-old".to_string(), "/Applications/VCDS-new".to_string()]
 		);
 		assert!(sources_of_kind(&p, "odis").is_empty());
-		assert!(has_source(&p, "vcds") && !has_source(&p, "odis"));
+		assert!(has_source(&p, "vcds").unwrap() && !has_source(&p, "odis").unwrap());
 	}
 
 	#[test]
@@ -900,7 +919,7 @@ mod tests {
 			vag_data_db::Meta::default(),
 			"and nothing of another folder's entry is put on it"
 		);
-		assert!(has_source(&p, "odis") && has_source(&p, "vcds"));
+		assert!(has_source(&p, "odis").unwrap() && has_source(&p, "vcds").unwrap());
 		// The installation the registry falls back on is the root, from the table alone.
 		assert_eq!(sources_of_kind(&p, "vcds"), vec![install.display().to_string()]);
 	}
