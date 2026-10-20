@@ -18,7 +18,6 @@
 //! through five passes and this module is where that is kept.
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -247,10 +246,8 @@ pub fn offer_to_unseal(files: &[PathBuf], cache: &Path) -> Result<()> {
 		);
 		return Ok(());
 	}
-	print!("\nRecover them now? [y/N] ");
-	let _ = std::io::stdout().flush();
-	let mut answer = String::new();
-	if std::io::stdin().read_line(&mut answer).is_err() || !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+	println!();
+	if !unseal_now(&mut crate::ui::Console::new(String::new())) {
 		println!(
 			"Left sealed. When you want them:\n    vagcan dev vcds rod --cache {} <file>   (once per file above)",
 			cache.display()
@@ -265,9 +262,41 @@ pub fn offer_to_unseal(files: &[PathBuf], cache: &Path) -> Result<()> {
 	Ok(())
 }
 
+/// The question, as the person reads it. `[y/N]` in the text: the answer is a
+/// letter and the default is the empty line.
+const UNSEAL_QUESTION: &str = "Recover them now? [y/N]";
+
+/// Ask whether to start the key search. Anything short of a clear yes is a no —
+/// an empty line, Ctrl-D, a read that failed — because the price is minutes.
+///
+/// Through [`crate::ui::menu::Asker::line`], the one way a question is put to a
+/// person, rather than a `print!` and a `read_line` of its own: that is where the
+/// progress lines are held off the question (`crate::progress::hold`). This one's
+/// own `print!` was overdrawn by the walk's still-ticking line, and `faults`
+/// looked hung on "unit 18 of 18" while it waited for an answer to a question
+/// nobody could see (2026-10-20).
+fn unseal_now(io: &mut impl crate::ui::menu::Asker) -> bool {
+	io.line(UNSEAL_QUESTION, "")
+		.is_ok_and(|typed| matches!(typed.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::ui::menu::{Answer, Scripted};
+
+	#[test]
+	fn the_offer_to_unseal_is_asked_through_the_one_question_helper() {
+		// The helper is what holds the progress lines off the question; a
+		// `print!` of its own is what left this one under a spinner.
+		let mut io = Scripted::new(vec![Answer::Type("y".into())]);
+		assert!(unseal_now(&mut io));
+		assert_eq!(io.typed, vec![(UNSEAL_QUESTION.to_string(), String::new())]);
+		for typed in ["", "n", "later"] {
+			assert!(!unseal_now(&mut Scripted::new(vec![Answer::Type(typed.into())])), "{typed:?}");
+		}
+		assert!(!unseal_now(&mut Scripted::new(vec![Answer::Quit])), "Ctrl-D is a no");
+	}
 
 	#[test]
 	fn a_named_fault_reads_as_vcds_prints_it() {

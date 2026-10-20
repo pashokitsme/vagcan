@@ -211,6 +211,8 @@ impl Chooser for Console {
 		if !super::can_ask() {
 			bail!(list_needs_a_terminal(level.what, &self.instead));
 		}
+		// No progress line may tick over the list (`crate::progress::hold`).
+		let _held = crate::progress::hold();
 		let mut at = at.min(choices.len().saturating_sub(1));
 		let mut out = std::io::stdout();
 		// Everything below this line can leave through a `?` or a panic, and
@@ -270,6 +272,8 @@ impl Chooser for Console {
 		if !super::can_ask() {
 			bail!(list_needs_a_terminal("file to delete", &self.instead));
 		}
+		// No progress line may tick over the question (`crate::progress::hold`).
+		let _held = crate::progress::hold();
 		let mut out = std::io::stdout();
 		write!(out, "{question}")?;
 		out.flush()?;

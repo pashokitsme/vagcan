@@ -563,6 +563,12 @@ pub async fn run<L: UnitLink>(
 		}
 		backend = L::release(uds.into_transport());
 	}
+	// The walk is over, and so is its line: cleared and its ticker stopped
+	// before the summary and the offer below. The last unit has nothing to show
+	// more often than not, so nothing in the loop finished the line, and it
+	// ticked on over the offer's question (2026-10-20). Dropped rather than
+	// finished, so no ticker is left running either.
+	drop(progress);
 
 	if supported {
 		return Ok(());

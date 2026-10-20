@@ -26,10 +26,21 @@
 //! That is also what makes the line usable from a parallel loop: a
 //! [`Reporter`] is a cloneable handle onto the same message, so a worker on
 //! any thread can say what it just finished, and the one ticker draws it.
+//!
+//! ## A question is never asked under a live line
+//!
+//! The ticker redraws with `\r` on whatever line the cursor is on. A question
+//! printed while a line is still alive is overdrawn within 80 ms: `faults` left
+//! its walk's line running into the offer to unseal, and the person saw
+//! "reading faults — 777, unit 18 of 18" spin for ever over "Recover them now?
+//! [y/N]", the process waiting on an answer to a question nobody could see
+//! (reproduced in a pty, 2026-10-20). So every prompt in the tool takes a
+//! [`hold`] first: every live line is cleared and kept off the screen until the
+//! answer is in.
 
 use std::io::{IsTerminal, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -108,6 +119,8 @@ struct Shared {
 	elapsed: bool,
 	/// Tells the ticker to stop.
 	stop: AtomicBool,
+	/// How many [`Held`] guards cover this line. Nothing is drawn while any do.
+	held: AtomicUsize,
 }
 
 /// Whether every line in the process has been told to stop drawing — set once,
@@ -123,11 +136,63 @@ pub fn silence() {
 	SILENCED.store(true, Ordering::Relaxed);
 }
 
+/// Every line that may draw, so a prompt can reach the ones it does not own —
+/// a walk's line is the walk's, and the question after it is somebody else's.
+/// Weak, so a line that is dropped is not kept alive by being listed.
+static LIVE: Mutex<Vec<Weak<Shared>>> = Mutex::new(Vec::new());
+
+/// Every live line cleared and held off the screen until the guard drops.
+///
+/// Taken by each prompt before it writes its question (see the module note): a
+/// line still ticking would overdraw the question with `\r` before anybody
+/// read it. A held line is also inactive afterwards, as after
+/// [`Line::finish`]: it comes back on its owner's next message, not on a tick,
+/// so a stale message does not reappear under the answer.
+#[must_use = "the lines are held only while the guard lives"]
+pub struct Held {
+	lines: Vec<Weak<Shared>>,
+}
+
+/// Clear and hold every live line in the process. See [`Held`].
+pub fn hold() -> Held {
+	let lines = match LIVE.lock() {
+		Ok(mut live) => {
+			live.retain(|line| line.strong_count() > 0);
+			live.clone()
+		}
+		Err(_) => Vec::new(),
+	};
+	Held::over(lines)
+}
+
+impl Held {
+	/// Hold these lines. The count goes up before the line is cleared, under
+	/// the line's lock: a redraw already under way finishes first and is then
+	/// cleared, and one that starts after sees the hold and draws nothing.
+	fn over(lines: Vec<Weak<Shared>>) -> Held {
+		for shared in lines.iter().filter_map(Weak::upgrade) {
+			shared.held.fetch_add(1, Ordering::SeqCst);
+			if let Ok(mut state) = shared.state.lock() {
+				shared.finish(&mut state);
+			}
+		}
+		Held { lines }
+	}
+}
+
+impl Drop for Held {
+	fn drop(&mut self) {
+		for shared in self.lines.iter().filter_map(Weak::upgrade) {
+			shared.held.fetch_sub(1, Ordering::SeqCst);
+		}
+	}
+}
+
 impl Shared {
 	/// Whether drawing is allowed at all right now: on a terminal, past the
 	/// threshold, and not silenced.
 	fn may_draw(&self) -> bool {
-		self.tty && self.started.elapsed() >= THRESHOLD && !SILENCED.load(Ordering::Relaxed)
+		self.tty && self.started.elapsed() >= THRESHOLD && !SILENCED.load(Ordering::Relaxed) && self.held.load(Ordering::SeqCst) == 0
 	}
 
 	/// Redraw the current message on stderr, if drawing is allowed and the
@@ -221,7 +286,14 @@ impl Line {
 			started: Instant::now(),
 			elapsed,
 			stop: AtomicBool::new(false),
+			held: AtomicUsize::new(0),
 		});
+		// Only a line that can draw is listed: one off a terminal has nothing on
+		// screen for a prompt to clear.
+		if tty && let Ok(mut live) = LIVE.lock() {
+			live.retain(|line| line.strong_count() > 0);
+			live.push(Arc::downgrade(&shared));
+		}
 		let worker = tty.then(|| {
 			let shared = Arc::clone(&shared);
 			thread::spawn(move || {
@@ -377,6 +449,7 @@ mod tests {
 			started: Instant::now() - THRESHOLD - Duration::from_millis(1),
 			elapsed: line.reporter.shared.elapsed,
 			stop: AtomicBool::new(false),
+			held: AtomicUsize::new(0),
 		});
 		Line {
 			reporter: Reporter { shared },
@@ -536,6 +609,42 @@ mod tests {
 		line.update("sweeping 713");
 		assert_eq!(out.len(), after_notice, "the redraw wrote nothing over the notice");
 		line.finish();
+	}
+
+	#[test]
+	fn a_held_line_is_cleared_and_draws_nothing_until_the_hold_ends() {
+		// The defect: `faults` asked "Recover them now? [y/N]" under its walk's
+		// line, and the next tick drew "reading faults — 777, unit 18 of 18" over
+		// the question. A prompt holds every line first; a held line is cleared
+		// at once and neither a tick nor a new message draws it.
+		let mut line = drawing_line();
+		line.update("reading faults — 777, unit 18 of 18");
+		assert!(line.state().drawn, "there is a line up");
+		let held = Held::over(vec![Arc::downgrade(&line.reporter.shared)]);
+		assert!(!line.state().drawn, "the line is cleared before the question is written");
+		assert_eq!(line.state().width, 0);
+		{
+			let mut state = line.state();
+			line.reporter.shared.draw(&mut state, true);
+		}
+		assert!(!line.state().drawn, "a tick under the hold draws nothing");
+		line.update("a worker's message");
+		assert!(!line.state().drawn, "nor does a new message");
+		drop(held);
+		line.update("the next unit");
+		assert!(line.state().drawn, "the line comes back once the answer is in");
+		line.finish();
+	}
+
+	#[test]
+	fn a_hold_stays_off_a_line_that_was_dropped() {
+		// The list is weak: a walk that is over is not kept alive by it, and a
+		// hold taken after it went is a hold over nothing.
+		let line = drawing_line();
+		let weak = Arc::downgrade(&line.reporter.shared);
+		drop(line);
+		let held = Held::over(vec![weak]);
+		drop(held);
 	}
 
 	#[test]
