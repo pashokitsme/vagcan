@@ -579,7 +579,6 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 			line.set(&format!("finding the measurement lists — {finished} of {} units", units.len()));
 		}
 	});
-	drop(shared);
 	keys.save();
 	for (at, ((odx, version), found)) in units.iter().zip(lists).enumerate() {
 		// The list is found already; this numbers the unit's line.
