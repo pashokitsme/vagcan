@@ -25,6 +25,12 @@ pub fn parse_unit(flag: &str, text: &str) -> Result<UnitAddress> {
 	vag_uds_client::address::parse(text).map_err(|e| anyhow::anyhow!("{flag}: {e}"))
 }
 
+/// A unit's short number as every table writes it — `01` — and `--` for one with none,
+/// rather than a blank that reads as a column out of place.
+pub fn unit_number(number: Option<u8>) -> String {
+	number.map(|n| format!("{n:02X}")).unwrap_or_else(|| "--".to_string())
+}
+
 /// Address one control unit over UDS.
 fn address_unit<L: UnitLink>(link: L, unit: UnitAddress) -> AsyncUdsClient<L::Channel> {
 	AsyncUdsClient::new(link.to_unit(
@@ -146,19 +152,19 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 				// each number *is*. Which id answers it is learned below, from the
 				// car.
 				labels::install_unit_numbers(&db);
-				note!("names  the label files of project {}", project.id);
+				say!("names    {} label files", project.id);
 				Some(db)
 			}
 			Err(e) if identify => return Err(e),
 			// The plain listing only borrows names from them, and a list of ids is
 			// still the answer without.
 			Err(e) => {
-				note!("names  the label files of project {} would not open: {e:#}", project.id);
+				say!("names    none — the label files of {} would not open: {e:#}", project.id);
 				None
 			}
 		},
 		None => {
-			note!("names  no project with label files: `vagcan setup` names the units");
+			say!("names    none — `vagcan setup` names the units");
 			None
 		}
 	};
@@ -201,7 +207,7 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 		);
 		// The record is the one source here that may not be this car's: say whose it is.
 		if let Some(car) = record {
-			note!("names  and what {}'s units said to `vagcan units --identify`", car.vin);
+			note!("names    and what {}'s units said to `vagcan units --identify`", car.vin);
 		}
 		return Ok(());
 	}
@@ -219,10 +225,7 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 	// `setup`'s registry step, and the dash build — this is the command a dash
 	// owner runs once. A write that fails is one line, and so is a car that gave
 	// no VIN to file it under.
-	match &vin {
-		Some(vin) => walk::record_quietly(vin, &found),
-		None => say!("{}", walk::NOT_RECORDED_WITHOUT_A_VIN),
-	}
+	walk::record_for(vin.as_deref(), &found);
 	// And the channels of the units nothing has read yet, out of the VCDS
 	// installation the project was set up from — as `watch` and `measure` do,
 	// so that a dash owner who ran this once has channels to build from.
@@ -238,7 +241,7 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 		(None, true) => say!("the gateway listed no control units: only the gateway and the powertrain were asked"),
 		(None, false) => {}
 	}
-	let mut table = vag_cli_core::table::Table::new(&["id", "unit", "part", "component", "name"]);
+	let mut table = vag_cli_core::table::Table::new(&["unit", "id", "part", "component", "name"]);
 	let mut answered = 0usize;
 	let mut resolved = 0usize;
 	for id in &asked {
@@ -252,8 +255,8 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 		let component = unit.and_then(|u| u.component.clone()).unwrap_or_default();
 		if part.is_empty() && component.is_empty() {
 			table.row(vec![
+				unit_number(vag_uds_client::address::short_number(id)),
 				format!("{id:03X}"),
-				vag_uds_client::address::short_number(id).map(|n| format!("{n:02X}")).unwrap_or_default(),
 				String::new(),
 				String::new(),
 				"(no answer)".to_string(),
@@ -286,14 +289,19 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 		}
 		// The number in force — the label files' and the car's, then the
 		// built-in fallback's — or nothing when nothing has paired one with it.
-		let number = vag_uds_client::address::short_number(id).map(|n| format!("{n:02X}")).unwrap_or_default();
-		table.row(vec![format!("{id:03X}"), number, part, component, name]);
+		table.row(vec![
+			unit_number(vag_uds_client::address::short_number(id)),
+			format!("{id:03X}"),
+			part,
+			component,
+			name,
+		]);
 	}
 	out!("{}", table.render(vag_cli_core::table::terminal_width()));
 	out!(
-		"\n{} listed · {} asked · {answered} answered{}\n",
-		ids.len(),
+		"\n{} asked · {answered} answered · {} on the gateway's list{}\n",
 		asked.len(),
+		ids.len(),
 		match &label_files_dir {
 			Some(_) => format!(" · {resolved} named"),
 			None => String::new(),
@@ -335,7 +343,7 @@ pub fn render_listing(
 	by_number: impl Fn(u8) -> Option<String>,
 	short: impl Fn(u16) -> Option<u8>,
 ) -> String {
-	let mut table = vag_cli_core::table::Table::new(&["id", "unit", "part", "name"]);
+	let mut table = vag_cli_core::table::Table::new(&["unit", "id", "part", "name"]);
 	for &id in ids {
 		let said = record.and_then(|units| units.iter().find(|u| u.request == id));
 		let part = said.and_then(|u| u.part_number.clone());
@@ -345,8 +353,12 @@ pub fn render_listing(
 			.map(|(_, name)| name)
 			.or_else(|| number.and_then(&by_number))
 			.or_else(|| said.and_then(|u| u.component.clone()));
-		let number = number.map(|n| format!("{n:02X}")).unwrap_or_default();
-		table.row(vec![format!("{id:03X}"), number, part.unwrap_or_default(), name.unwrap_or_default()]);
+		table.row(vec![
+			unit_number(number),
+			format!("{id:03X}"),
+			part.unwrap_or_default(),
+			name.unwrap_or_default(),
+		]);
 	}
 	let mut out = table.render(vag_cli_core::table::terminal_width());
 	out.push_str(&format!("\n{} {}\n", ids.len(), render::plural(ids.len(), "unit")));
@@ -450,10 +462,10 @@ mod tests {
 		let listing = render_listing(&[0x7E0, 0x713, 0x70A], Some(&record), by_part, by_number, short);
 		assert_eq!(
 			listing,
-			"id   unit  part    name\n\
-			 7E0  01    PART-E  Engine by number\n\
-			 713  03    PART-B  Brakes by part\n\
-			 70A\n\
+			"unit  id   part    name\n\
+			 01    7E0  PART-E  Engine by number\n\
+			 03    713  PART-B  Brakes by part\n\
+			 --    70A\n\
 			 \n\
 			 3 units\n"
 		);
@@ -461,15 +473,15 @@ mod tests {
 		let listing = render_listing(&[0x7E0, 0x713], Some(&record), |_| None, |_| None, short);
 		assert_eq!(
 			listing,
-			"id   unit  part    name\n\
-			 7E0  01    PART-E  ENGINE SELF\n\
-			 713        PART-B  BRAKES SELF\n\
+			"unit  id   part    name\n\
+			 01    7E0  PART-E  ENGINE SELF\n\
+			 --    713  PART-B  BRAKES SELF\n\
 			 \n\
 			 2 units\n"
 		);
 		// Nothing on this machine: the ids, as before.
 		let listing = render_listing(&[0x7E0, 0x713], None, |_| None, |_| None, |_| None);
-		assert_eq!(listing, "id   unit  part  name\n7E0\n713\n\n2 units\n");
+		assert_eq!(listing, "unit  id   part  name\n--    7E0\n--    713\n\n2 units\n");
 	}
 
 	#[test]

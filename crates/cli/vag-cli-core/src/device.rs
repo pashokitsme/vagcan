@@ -54,11 +54,14 @@ pub const SLCAN_OVER_BLE: &str =
 
 /// How to reach an adapter over Bluetooth, said wherever no USB device was found:
 /// nothing looks for it unasked.
-pub const BLE_HINT: &str = "An adapter over Bluetooth: --ble";
+pub const BLE_HINT: &str = "Over Bluetooth: add --ble";
 
 /// [`BLE_HINT`] where no car command is running — `vagcan devices` and the bare `vagcan`,
 /// which take no `--device` — so it names a command that does.
-pub const BLE_COMMAND_HINT: &str = "An adapter over Bluetooth: vagcan info --ble";
+pub const BLE_COMMAND_HINT: &str = "an adapter over Bluetooth: `vagcan info --ble`";
+
+/// No USB device to use at all, in the form every error takes: what failed, then the fix.
+const NO_ADAPTER: &str = "no USB-CAN adapter found\nFix: plug one in and check `vagcan devices`; plugged in but not listed: unplug and replug it";
 
 // `--device` and its shorthand `--ble`, flattened into every command that reads through
 // whatever [`resolve`] picks. `--ble` is `--device ble` and nothing else, so the rule is
@@ -187,7 +190,10 @@ pub async fn resolve_with<H>(
 	};
 	// No scan: Bluetooth is looked at only when `--device ble…` asks (module docs).
 	match slcan {
+		// The fix line, when there is one, carries the way over Bluetooth too.
+		true if no_cable == NO_ADAPTER => bail!("{no_cable} (--slcan asks for a USB adapter)"),
 		true => bail!("{no_cable}\n--slcan asks for a USB adapter."),
+		false if no_cable == NO_ADAPTER => bail!("{no_cable}. {BLE_HINT}"),
 		false => bail!("{no_cable}\n{BLE_HINT}"),
 	}
 }
@@ -437,11 +443,7 @@ fn choose_usb(listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) -> 
 	// thing somebody plugged in meaning to use.
 	let (silent, others): (Vec<&AdapterInfo>, Vec<&AdapterInfo>) = found.iter().partition(|a| a.board);
 	match (others.as_slice(), silent.as_slice()) {
-		([], []) => Ok(Found::Nothing(
-			"no USB-CAN adapter found.\n\
-             Plug one in; one that is in and not listed by `vagcan devices`: unplug and replug it."
-				.to_string(),
-		)),
+		([], []) => Ok(Found::Nothing(NO_ADAPTER.to_string())),
 		([], boards) if boards.iter().any(|b| dash.contains(&b.path)) => Ok(Found::OnlyThroughTheBoard),
 		([], boards) => {
 			let (busy, silent): (Vec<&AdapterInfo>, Vec<&AdapterInfo>) = boards.iter().partition(|b| unopened.contains(&b.path));
@@ -574,7 +576,8 @@ pub fn list_notes(found: &[AdapterInfo]) -> Vec<(u8, String)> {
 			));
 		}
 	}
-	notes.push((1, BLE_COMMAND_HINT.to_string()));
+	// With nothing on USB the way over Bluetooth is the next thing to try, said at once.
+	notes.push((if found.is_empty() { 0 } else { 1 }, BLE_COMMAND_HINT.to_string()));
 	notes
 }
 
@@ -1064,6 +1067,18 @@ mod tests {
 	/// Bluetooth is scanned only when `--device ble…` asks for it: on macOS a scan from an
 	/// app not allowed Bluetooth gets the process killed, and it prompts somebody who has
 	/// no board at all.
+	/// What every car command says with nothing plugged in: what failed, then one `Fix:`
+	/// line (UX review of PR #38).
+	#[tokio::test]
+	async fn no_adapter_is_what_failed_and_one_fix_line() {
+		let err = refused(resolve_as(None, Ok(vec![]), never, no_scan(), true, &mut Scripted::new(vec![])).await);
+		assert_eq!(
+			err,
+			"no USB-CAN adapter found\n\
+			 Fix: plug one in and check `vagcan devices`; plugged in but not listed: unplug and replug it. Over Bluetooth: add --ble"
+		);
+	}
+
 	#[tokio::test]
 	async fn with_no_cable_nothing_is_scanned_and_the_error_says_how_to_ask_for_ble() {
 		let cases = [
@@ -1074,7 +1089,7 @@ mod tests {
 		for (listing, answer) in cases {
 			let err = refused(resolve_as(None, Ok(listing), answering(answer), no_scan(), true, &mut Scripted::new(vec![])).await);
 			assert!(err.contains("no USB-CAN adapter found"), "{err}");
-			assert!(err.ends_with("An adapter over Bluetooth: --ble"), "{err}");
+			assert!(err.ends_with("Over Bluetooth: add --ble"), "{err}");
 		}
 	}
 
@@ -1085,7 +1100,7 @@ mod tests {
 			assert!(!render_list(&found).contains("Bluetooth"));
 			let notes = list_notes(&found);
 			assert!(
-				notes.contains(&(1, "An adapter over Bluetooth: vagcan info --ble".to_string())),
+				notes.contains(&(if found.is_empty() { 0 } else { 1 }, BLE_COMMAND_HINT.to_string())),
 				"{notes:?}"
 			);
 		}

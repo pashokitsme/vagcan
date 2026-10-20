@@ -72,7 +72,7 @@ pub fn say_nothing_answered() {
 /// Only regular plurals, because every count in this tool is of something with
 /// one — identifiers, columns, changes, control units.
 pub fn plural(n: usize, singular: &str) -> String {
-	if n == 1 { singular.to_string() } else { format!("{singular}s") }
+	vag_cli_core::table::plural(n, singular)
 }
 
 /// Bytes for a person to read: `0B 34`.
@@ -118,19 +118,21 @@ pub enum SensorLine {
 
 /// The whole `vagcan sensors` report: the data, and the notes for `-v`.
 ///
-/// One table, converted rows first: `did`, `value`, `unit`, `name`. An identifier whose
-/// bytes the tool refuses to interpret is a row too, its bytes as the value, `raw` as the
-/// unit and the reason in short where the name would be — the J1979 name would assert the
+/// One table, converted rows first: `did`, `value` (the physical unit in it: `40.00 °C` —
+/// `unit` is the control unit everywhere in this tool), `name`. An identifier whose
+/// bytes the tool refuses to interpret is a row too, its bytes and `raw` as the value and
+/// the reason in short where the name would be — the J1979 name would assert the
 /// very thing in doubt. A summary line closes it. Why such rows are not converted, in
 /// words, is a note.
 pub fn render_sensors(unit_label: &str, lines: &[SensorLine]) -> (String, Vec<String>) {
-	let mut table = Table::new(&["did", "value", "unit", "name"]).right(1);
+	let mut table = Table::new(&["did", "value", "name"]).right(1);
 	let mut converted = 0usize;
 	for line in lines {
 		if let SensorLine::Converted { did, reading } = line {
 			converted += 1;
 			let (value, unit) = sensor_cells(reading);
-			table.row(vec![format!("{did:04X}"), value, unit, reading.name.clone()]);
+			let value = if unit.is_empty() { value } else { format!("{value} {unit}") };
+			table.row(vec![format!("{did:04X}"), value, reading.name.clone()]);
 		}
 	}
 	let mut notes = Vec::new();
@@ -144,7 +146,7 @@ pub fn render_sensors(unit_label: &str, lines: &[SensorLine]) -> (String, Vec<St
 			}
 			Unconverted::WrongWidth { expected, got } => format!("not J1979: {got} {}, standard {expected}", plural(*got, "byte")),
 		};
-		table.row(vec![format!("{did:04X}"), hex_spaced(bytes), "raw".to_string(), reason]);
+		table.row(vec![format!("{did:04X}"), format!("{} raw", hex_spaced(bytes)), reason]);
 	}
 	if off_block {
 		notes.push(format!(
@@ -276,9 +278,9 @@ mod tests {
 		let (text, notes) = render_sensors("746", &lines);
 		assert_eq!(
 			text,
-			"did   value  unit  name\n\
-			 F405     57  raw   not J1979: unit outside 7E0–7E7\n\
-			 F40C     00  raw   not J1979: unit outside 7E0–7E7\n\
+			"did    value  name\n\
+			 F405  57 raw  not J1979: unit outside 7E0–7E7\n\
+			 F40C  00 raw  not J1979: unit outside 7E0–7E7\n\
 			 \n\
 			 0 of 2 converted · unit 746\n"
 		);
@@ -309,9 +311,9 @@ mod tests {
 		let (text, notes) = render_sensors("02", &lines);
 		assert_eq!(
 			text,
-			"did   value  unit  name\n\
-			 F405  89.00  °C    Coolant temperature\n\
-			 F40D  9C 02  raw   not J1979: 2 bytes, standard 1\n\
+			"did       value  name\n\
+			 F405   89.00 °C  Coolant temperature\n\
+			 F40D  9C 02 raw  not J1979: 2 bytes, standard 1\n\
 			 \n\
 			 1 of 2 converted · unit 02\n"
 		);

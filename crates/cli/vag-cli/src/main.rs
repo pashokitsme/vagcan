@@ -158,6 +158,9 @@ const GLOBALS_APPLY: &[(&str, &[&str])] = &[
 	),
 ];
 
+/// `--verbose`'s help on a command that opens no adapter: nothing to say about the bus.
+const VERBOSE_OFFLINE: &str = "More on stderr. -v: where the data came from, why a row is unnamed or skipped, caveats and timings; -vv: more detail where the command has it. Data stays on stdout.";
+
 /// Whether global flag `id` is shown on the command at `path`. `--verbose` means
 /// something on every command, and is shown on every one.
 fn global_applies(id: &str, path: &str) -> bool {
@@ -192,7 +195,12 @@ fn scope_globals(mut command: clap::Command, globals: &[clap::Arg], path: &str) 
 		command = command.mut_subcommand(&name, |mut sub| {
 			for flag in globals {
 				let shown = global_applies(flag.get_id().as_str(), &here);
-				sub = sub.arg(flag.clone().hide(!shown));
+				let mut flag = flag.clone().hide(!shown);
+				// `-vv`'s bus traffic means something only where a command talks to a car.
+				if flag.get_id() == "verbose" && !global_applies("slcan", &here) {
+					flag = flag.help(VERBOSE_OFFLINE).long_help(VERBOSE_OFFLINE);
+				}
+				sub = sub.arg(flag);
 			}
 			scope_globals(sub, globals, &here)
 		});
@@ -354,8 +362,8 @@ enum Command {
 		#[arg(long)]
 		extended: bool,
 		/// Where the recovered `.rod` section keys are cached. A fault
-		/// catalogue is sealed with one, and recovering one costs ~95 s of
-		/// every core — so they are kept as data, not searched for per run.
+		/// catalogue is sealed with one, and recovering one takes about 3 min per
+		/// file — so they are kept as data, not searched for per run.
 		/// Default: this project's `rod-keys.json`, written by `vagcan setup`.
 		//
 		// Not on `-h`: nobody reading a car needs it, and `--help` still has it.
@@ -1587,6 +1595,19 @@ mod tests {
 		assert!(help.contains("`failing`"), "{help}");
 		assert!(help.contains("car's clock"), "{help}");
 		assert!(help.contains("-v"), "{help}");
+	}
+
+	#[test]
+	fn the_verbose_help_names_the_bus_only_where_a_command_talks_to_a_car() {
+		let verbose = |path: &[&str]| flag_help(path, "verbose");
+		for path in [&["devices"][..], &["setup"], &["dev", "glossary"], &["dev", "vcds", "rod"]] {
+			let help = verbose(path);
+			assert!(!help.contains("bus"), "{path:?}: {help}");
+			assert!(help.contains("-v:"), "{path:?}: {help}");
+		}
+		for path in [&["faults"][..], &["watch"], &["units"]] {
+			assert!(verbose(path).contains("every request and answer on the bus"), "{path:?}");
+		}
 	}
 
 	#[test]
