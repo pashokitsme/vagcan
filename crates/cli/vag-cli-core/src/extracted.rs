@@ -83,6 +83,9 @@ pub struct Extracted {
 	/// VCDS rows read for that car's project ([`best_variants`]). Empty until
 	/// [`Self::for_car`] names the car, or when its project is not known.
 	car_projects: Vec<String>,
+	/// Per unit `(F19E, F1A2)`, trimmed, the stem the registry read stored the car's VCDS rows
+	/// under ([`crate::registry::CarJoin`]): joined exactly, before any rank rule.
+	car_stems: BTreeMap<(String, String), String>,
 }
 
 /// One channel a unit offers, with everything known about how to name it.
@@ -162,6 +165,7 @@ pub fn open(project: &crate::project::Project) -> Extracted {
 		mine: crate::glossary::load(),
 		language: crate::config::language(&crate::config::load()),
 		car_projects: Vec::new(),
+		car_stems: BTreeMap::new(),
 	}
 }
 
@@ -214,6 +218,7 @@ impl Extracted {
 			mine: BTreeMap::new(),
 			language: Language::default(),
 			car_projects: Vec::new(),
+			car_stems: BTreeMap::new(),
 		}
 	}
 
@@ -232,6 +237,7 @@ impl Extracted {
 			mine: BTreeMap::new(),
 			language: Language::default(),
 			car_projects: Vec::new(),
+			car_stems: BTreeMap::new(),
 		}
 	}
 
@@ -242,18 +248,39 @@ impl Extracted {
 		self
 	}
 
-	/// The same project, for the car with this VIN: a unit joins to the VCDS rows read
-	/// for the car's project, through the installation's `chassis.clb`
-	/// ([`crate::registry::car_project`]). No VIN, no project or no installation on
-	/// record: the join is by the unit's own identification alone, as before.
+	/// The same project, for the car with this VIN: a unit joins to the VCDS rows the
+	/// registry read stored for this car's lookup — the stem the log names for the car's
+	/// project, a car of no known project included ([`crate::registry::car_join`]) — and
+	/// with no stem logged, by the rank rule with the car's project. No VIN, or no log and
+	/// installation to say the project: the join is by the unit's own identification alone.
 	pub fn for_car(mut self, vin: Option<&str>) -> Extracted {
 		let home = self.project.clone().zip(self.cache.parent().map(Path::to_path_buf));
-		self.car_projects = vin
+		let join = vin
 			.zip(home)
-			.and_then(|(vin, (id, dir))| crate::registry::car_project(&crate::project::Project { id, dir }, vin))
+			.and_then(|(vin, (id, dir))| crate::registry::car_join(&crate::project::Project { id, dir }, vin))
+			.unwrap_or_default();
+		self.car_projects = join.project.into_iter().collect();
+		self.car_stems = join
+			.stems
 			.into_iter()
+			.map(|((odx, version), stem)| ((trimmed(&odx), trimmed(&version)), stem))
 			.collect();
 		self
+	}
+
+	/// The variants one source's rows for a unit are read from: for VCDS, the stem the car's
+	/// own lookup stored ([`Self::for_car`]) when the cache holds it; otherwise the rank rule
+	/// ([`best_variants`]). Exact, because a car of no known project ranks every
+	/// project's variant alike, and merging them hands it rows of cars it is not.
+	fn variants_of<'a>(&self, kind: &str, names: &'a [String], odx_name: Option<&str>, version: Option<&str>) -> Vec<&'a String> {
+		if kind == vag_data_db::VCDS
+			&& let Some(odx_name) = odx_name
+			&& let Some(stem) = self.car_stems.get(&(trimmed(odx_name), trimmed(version.unwrap_or(""))))
+			&& let Some(name) = names.iter().find(|name| name.eq_ignore_ascii_case(stem))
+		{
+			return vec![name];
+		}
+		best_variants(names, odx_name, version, &self.car_projects)
 	}
 
 	/// The language the owner's glossary is read in.
@@ -320,8 +347,9 @@ impl Extracted {
 	/// stale level on a unit that is not in the car is not worth a sentence.
 	pub fn levels_predate_bounds(&self, odx_name: Option<&str>, version: Option<&str>) -> bool {
 		!self.is_empty()
-			&& self.variants.iter().any(|(_, names)| {
-				best_variants(names, odx_name, version, &self.car_projects)
+			&& self.variants.iter().any(|(kind, names)| {
+				self
+					.variants_of(kind, names, odx_name, version)
 					.into_iter()
 					.any(|name| vag_data_db::levels_predate_bounds(&self.cache, name).unwrap_or(false))
 			})
@@ -399,7 +427,7 @@ impl Extracted {
 			// channel and gives up the id, and `unit:IDE…` picks out the one
 			// field it picked out with ODIS alone.
 			let claimed: std::collections::BTreeSet<String> = out.iter().filter_map(|(_, id)| id.clone()).collect();
-			for name in best_variants(names, odx_name, version, &self.car_projects) {
+			for name in self.variants_of(kind, names, odx_name, version) {
 				let Ok(readings) = vag_data_db::readings_of_kind(&self.cache, kind, name) else {
 					continue;
 				};
@@ -424,6 +452,12 @@ impl Extracted {
 		}
 		out
 	}
+}
+
+/// An identifier as the car answered it, without the NULs and spaces it pads with — the key
+/// [`Extracted::for_car`]'s stems are held by, whichever padding the log and the caller carry.
+fn trimmed(identifier: &str) -> String {
+	identifier.trim_end_matches(['\0', ' ']).to_string()
 }
 
 /// The variant names a unit's `F19E`/`F1A2` pick out of a list, best rank only.
@@ -610,6 +644,7 @@ mod tests {
 			mine: BTreeMap::new(),
 			language: Language::default(),
 			car_projects: Vec::new(),
+			car_stems: BTreeMap::new(),
 		}
 	}
 
@@ -691,6 +726,43 @@ mod tests {
 			best_variants(&variants, Some("EV_InvGatew"), Some("013020"), &["SK37".into()]),
 			[&variants[0]]
 		);
+	}
+
+	/// An SK37 car and a car whose model code `chassis.clb` does not list carry one unit:
+	/// the read stores `_006_SK37` for the one and `_006_VW27` for the other, which tie for
+	/// a car of no project. That car joins by the stem its own lookup stored, so the SK37
+	/// rows never fill the fields VW27 lacks (found in review, 2026-10-20).
+	#[test]
+	fn a_car_of_no_known_project_joins_the_stem_its_own_lookup_stored() {
+		let here = tempfile::tempdir().unwrap();
+		let cache = here.path().join("cache.sqlite");
+		let sk = [reading(0x2201, "sk", 0, 8, true), reading(0x2202, "sk only", 0, 8, true)];
+		let vw = [reading(0x2201, "vw", 0, 8, true)];
+		vag_data_db::put_readings(&cache, "/nowhere/SK37X", "EV_Other_001", &[reading(0x1000, "odis", 0, 8, true)]).unwrap();
+		vag_data_db::record_language(&cache, vag_data_db::VCDS, "/nowhere/vcds-en", "eng").unwrap();
+		vag_data_db::put_all_vcds_readings(
+			&cache,
+			"/nowhere/vcds-en",
+			[("EV_InvACC_006_SK37", &sk[..]), ("EV_InvACC_006_VW27", &vw[..])],
+		)
+		.unwrap();
+		let mut x = Extracted::synthetic(cache, BTreeMap::new());
+		let names = |x: &Extracted| -> Vec<String> {
+			x.for_unit(Some("EV_InvACC\0"), Some("006145 "))
+				.into_iter()
+				.map(|def| def.name.to_string())
+				.collect()
+		};
+		assert_eq!(names(&x), ["sk", "sk only"], "by rank alone the two tie, and merge");
+		x.car_stems = [(("EV_InvACC".into(), "006145".into()), "EV_InvACC_006_VW27".into())].into();
+		assert_eq!(names(&x), ["vw"], "the stem its own lookup stored, padding and all");
+		// The SK37 car's own stem is its own, project and all.
+		x.car_projects = vec!["SK37".into()];
+		x.car_stems = [(("EV_InvACC".into(), "006145".into()), "EV_InvACC_006_SK37".into())].into();
+		assert_eq!(names(&x), ["sk", "sk only"]);
+		// A stem the cache does not hold (its list read no channel): the rank rule.
+		x.car_stems = [(("EV_InvACC".into(), "006145".into()), "EV_InvACC_006_GONE".into())].into();
+		assert_eq!(names(&x), ["sk", "sk only"]);
 	}
 
 	#[test]
@@ -1190,6 +1262,7 @@ mod tests {
 			mine: BTreeMap::new(),
 			language: Language::default(),
 			car_projects: Vec::new(),
+			car_stems: BTreeMap::new(),
 		};
 		assert!(x.is_empty());
 		assert!(x.for_unit(Some("EV_TCMDQ200021"), Some("001")).is_empty());

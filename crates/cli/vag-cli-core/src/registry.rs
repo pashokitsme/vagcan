@@ -202,6 +202,45 @@ pub struct Tried {
 	/// two cars of two projects carry is read once per project.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub project: Option<String>,
+	/// The variant name this lookup's rows are stored under — a redirect's source or the
+	/// file stem — when its list was read: what a car of this project joins its rows by
+	/// ([`car_join`]), so it is never handed another lookup's rows that tie at its rank.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub stem: Option<String>,
+}
+
+/// How a car joins its units to the VCDS rows the registry read stored for it: its project
+/// (`SK37`, `None` when its model code is not in `chassis.clb`) and, per unit
+/// `(F19E, F1A2)`, the stem the lookup made for that project chose ([`Tried::stem`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CarJoin {
+	pub project: Option<String>,
+	pub stems: BTreeMap<(String, String), String>,
+}
+
+/// [`CarJoin`] for the car with this VIN, out of the project's log and the `chassis.clb` of
+/// the installation it names. `None` with no log, or no table to say the car's project —
+/// the installation gone: the join is then by the rank rule alone, since the stems of a
+/// car of no known project are not this car's if it has one.
+pub fn car_join(project: &Project, vin: &str) -> Option<CarJoin> {
+	let log = Log::load(project).ok()??;
+	let table = vag_data_labels::chassis::load_projects(&log.installation)?;
+	let car = table.of_vin(vin).map(str::to_string);
+	Some(CarJoin {
+		stems: stems_for(&log, car.as_deref()),
+		project: car,
+	})
+}
+
+/// The stems the log names for one car project's lookups (`None`: a car of no known
+/// project), per unit.
+fn stems_for(log: &Log, project: Option<&str>) -> BTreeMap<(String, String), String> {
+	log
+		.units
+		.iter()
+		.filter(|t| t.project.as_deref() == project)
+		.filter_map(|t| Some(((t.odx_name.clone(), t.odx_version.clone()), t.stem.clone()?)))
+		.collect()
 }
 
 /// A project's `registry.json`: the installation its VCDS channels were read
@@ -231,7 +270,10 @@ pub struct Log {
 /// 1 (2026-10-20): units looked up in VCDS's own order — version and project before the
 /// bare name — and through `ReDir.rod`. A machine read before then holds the files the old
 /// order picked (`EV_GatewNF_SK26` where VCDS reads `EV_GatewNF_SK37 → EV_GatewNF_VW37`).
-pub const READ_VERSION: u32 = 1;
+///
+/// 2 (2026-10-20): each lookup logs the stem its rows are stored under ([`Tried::stem`]),
+/// which a car joins by; a version-1 log has none, and its cars would join by rank.
+pub const READ_VERSION: u32 = 2;
 
 impl Log {
 	/// The project's log, or `None` when no read has been made into it — an
@@ -567,6 +609,7 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 					odx_version: version.clone(),
 					outcome: word.clone(),
 					project: None,
+					stem: None,
 				})
 				.collect();
 			// The log before the rows go, on this path: a kill between the two
@@ -704,6 +747,7 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 			}
 			.to_string(),
 			project: car.clone(),
+			stem: None,
 		});
 		let UnitMeasurements::Found { file, rows, via, .. } = found else {
 			if !extracted.for_unit_from(vag_data_db::ODIS, Some(odx), Some(version)).is_empty() {
@@ -721,6 +765,10 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 		let stem = via
 			.clone()
 			.unwrap_or_else(|| file.file_stem().and_then(|s| s.to_str()).unwrap_or(odx).to_string());
+		// What this car project's lookup joins by ([`car_join`]).
+		if let Some(tried) = log.units.last_mut() {
+			tried.stem = Some(stem.clone());
+		}
 		// Two cars can carry one unit at two versions that come to the same
 		// file. Its rows are written once.
 		if variants.contains_key(&stem) {
@@ -1451,6 +1499,7 @@ mod tests {
 			odx_version: version.into(),
 			outcome: outcome.into(),
 			project: None,
+			stem: None,
 		}
 	}
 
@@ -1711,6 +1760,36 @@ mod tests {
 		assert_eq!(projects_of(&with_unknown, "EV_Other", "001"), [None]);
 		let unknown = log(vec![tried_for(None)]);
 		assert!(pending(&unknown, &identities, |_, _| false, Some(&BTreeMap::new()), false).is_empty());
+	}
+
+	/// Each car project's lookup keeps the stem it stored, and a car joins by its own
+	/// project's: a car of no known project gets the no-project lookup's stem, never the
+	/// SK37 car's that ties with it.
+	#[test]
+	fn a_car_joins_by_the_stem_its_own_projects_lookup_stored() {
+		let line = |project: Option<&str>, stem: Option<&str>| Tried {
+			project: project.map(str::to_string),
+			stem: stem.map(str::to_string),
+			..tried("EV_InvACC", "006145", "read")
+		};
+		let log = Log {
+			units: vec![
+				line(Some("SK37"), Some("EV_InvACC_006_SK37")),
+				line(None, Some("EV_InvACC_006_VW27")),
+				Tried {
+					stem: None,
+					..tried("EV_InvGone", "001001", NO_FILE)
+				},
+			],
+			..Log::new(PathBuf::from("/vcds"))
+		};
+		let unit = ("EV_InvACC".to_string(), "006145".to_string());
+		assert_eq!(stems_for(&log, Some("SK37")), [(unit.clone(), "EV_InvACC_006_SK37".to_string())].into());
+		assert_eq!(stems_for(&log, None), [(unit, "EV_InvACC_006_VW27".to_string())].into());
+		assert!(stems_for(&log, Some("VW48")).is_empty(), "a project nothing was read for joins by rank");
+		// A log from before the field reads with no stem.
+		let old: Tried = serde_json::from_str(r#"{"odx_name": "EV_A", "outcome": "read"}"#).unwrap();
+		assert_eq!(old.stem, None);
 	}
 
 	/// The read and the pending check take the cars' projects from the recorded cars, and in a
