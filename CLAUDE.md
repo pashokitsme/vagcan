@@ -323,8 +323,16 @@ of our own (owner, 2026-10-21: «это должно быть актуально
 - **A table only for genuinely tabular data**: every row the same few short columns, no
   free-text column, fitting 80 columns (`setup --list`, `devices`). A wide table with a text
   column at the end is a grouped record instead.
-- **Progress and status are cargo-style lines on stderr**: a right-aligned verb (`Copying`,
-  `Reading`, `Finished`, `Failed`) and a plain clause; one `Finished` line at the end.
+- **Lists are `gh pr list`'s**: a one-line summary first, a blank line, headers in CAPITALS,
+  short columns; a status mark (`✓`/`✗`) as the first column where a row can fail.
+- **One object is a card, `gh pr view`'s**: what it is on the first line, a meta line of facts,
+  then titled sections with their lines indented.
+- **A multi-step command reports as `git` does**, on stderr: a heading line saying what it
+  works on, indented past-tense step lines, one result line, and a hint in parentheses
+  indented under the line it belongs to (`  (use "vagcan faults" with the car connected)`).
+- **Facts on one line are joined with ` · `** (U+00B7 with a space each side) — never `•`, `|`
+  or `/`. The separator and the marks live in one module of `vag-cli-core`; write them through
+  it, never as literals (a test holds it). Paths are shortened with `~`.
 - **Streams and levels:** data on stdout, notes and status on stderr; `-v` adds provenance and
   reasons, `-vv` the per-item detail and the wire, in the same line style. Colour only on a tty.
 - **Errors are cargo's:** `error: <what failed>` in lower case, one short line; then a blank
@@ -335,35 +343,57 @@ of our own (owner, 2026-10-21: «это должно быть актуально
 - A change to a command's output is checked against the e2e goldens (`just e2e`, trycmd cases
   under `tests/e2e/`) once they exist, and the golden diff is shown in the PR.
 
-**Examples — the shape to copy.** Results, grouped (`faults`):
+**Examples — the shape to copy** (each picked by the owner from alternatives, 2026-10-21).
+
+Grouped results, summary first (`faults`):
 
 ```
-70C  Lenks.Modul
-  B145501  Unterbrechung des Signalpfades "Init"
-           confirmed · 254 times · 214592 km · last 2026-09-28 14:20
+2 stored codes on 2 of 15 units · 1 failing now
 
-713  ESC
-  B1168F2  Steering Angle Sensor: Not Initialized
-           stored · 3 times · 210101 km
+70C  Lenks.Modul  5Q0953521KM
+  ✗ B145501  Unterbrechung des Signalpfades "Init"
+             failing · 254 times · 214592 km · last 2026-09-28 14:20
 
-2 stored codes · 1 failing now · 15 units read
+713  ESC  5Q0614517AQ
+  · B1168F2  Steering Angle Sensor: Not Initialized
+             stored · 3 times · 210101 km
 ```
 
-Status, on stderr (`setup`):
+A list (`units`; `setup --list` and `devices` the same way):
 
 ```
-     Copying 16577 .rod files (all up to date)
-     Parsing 3035 label files
-     Reading channels of 15 units: 6085 channels
-    Finished SK37X in 3.1s: fault text, scalings
+15 control units on XW8AD4NE9JH008917
+
+UNIT  ID   PART         NAME
+01    7E0  8V0906264H   1.8l R4 TFSI
+02    7E1  0CW300041G   GSG DQ200G2_M
+03    713  5Q0614517AQ  ESC
 ```
 
-A table, because the data is a table (`setup --list`):
+A card (`info`):
 
 ```
-id  kind  state  lang  read               channels  path
- 2  odis  ok     deu   -                    399283  /Users/…/SK37X
- 3  vcds  ok     eng   2026-10-20 07:26Z      5304  /Users/…/vcds-en
+XW8AD4NE9JH008917 · SK37
+15 control units · read 2026-10-21 14:02
+
+ENGINE  01 · 7E0
+  1.8l R4 TFSI
+  part 8V0906264H · software 0008 · EV_ECM18TFS0208V0906264H
+
+GEARBOX  02 · 7E1
+  GSG DQ200G2_M
+  part 0CW300041G · software 0516 · EV_TCMDQ200021
+```
+
+A multi-step command, on stderr (`setup`):
+
+```
+Read the VCDS installation at ~/Source/repos/vcds/vendor/vcds-en
+  copied 16577 .rod files, all up to date
+  parsed 3035 label files
+  read 6085 channels of 15 units
+Ready: fault text and scalings for every car.
+  (use "vagcan faults" with the car connected)
 ```
 
 Errors:
