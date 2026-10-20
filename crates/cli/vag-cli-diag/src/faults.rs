@@ -511,41 +511,96 @@ pub struct Row {
 	pub src: &'static str,
 }
 
-/// The fault table, as `faults` prints it on stdout. `width`: the terminal's, when known —
-/// the text column is cut to it.
+/// The fault table, as `faults` prints it on stdout. `width`: the terminal's, when known.
+///
+/// One row per code, the text last. Nothing but the text is ever shortened, and the text is
+/// never cut: with too little room it goes whole on an indented line under its row
+/// ([`Table::render`]). When even the columns before the text are wider than the screen —
+/// an 80-column terminal — each code takes two lines and its text a third
+/// ([`render_narrow`]), so no line wraps.
 pub fn render_rows(rows: &[Row], width: Option<usize>) -> String {
 	let mut table = Table::new(&["unit", "id", "name", "code", "dtc", "status", "km", "count", "last seen", "src", "text"])
 		.right(6)
 		.right(7);
 	for row in rows {
-		let (km, count, when) = match &row.context {
-			Some(c) => (
-				c.mileage_km.to_string(),
-				match c.occurrences {
-					0xFF => "255+".to_string(),
-					n => n.to_string(),
-				},
-				describe_when(c),
-			),
-			None => (String::new(), String::new(), String::new()),
-		};
-		table.row(vec![
-			row.unit.clone(),
-			format!("{:03X}", row.request),
-			row.name.clone(),
-			code_hex(row.code),
-			row.dtc.clone(),
-			short_status(row.status),
-			km,
-			count,
-			when,
-			row.src.to_string(),
-			row.text.clone(),
-		]);
+		let (km, count, when) = context_cells(row, describe_when);
+		let mut cells = head_cells(row);
+		cells.extend([short_status(row.status), km, count, when, row.src.to_string(), row.text.clone()]);
+		table.row(cells);
 	}
-	table.render(width)
+	match width {
+		Some(width) if table.width_before_last() > width => render_narrow(rows, width),
+		_ => table.render(width),
+	}
 }
 
+/// What names a code: unit, id, name, code, dtc.
+fn head_cells(row: &Row) -> Vec<String> {
+	vec![
+		row.unit.clone(),
+		format!("{:03X}", row.request),
+		row.name.clone(),
+		code_hex(row.code),
+		row.dtc.clone(),
+	]
+}
+
+/// A code's record — km, count, when — with `when` written by `when`.
+fn context_cells(row: &Row, when: fn(&FaultContext) -> String) -> (String, String, String) {
+	match &row.context {
+		Some(c) => (
+			c.mileage_km.to_string(),
+			match c.occurrences {
+				0xFF => "255+".to_string(),
+				n => n.to_string(),
+			},
+			when(c),
+		),
+		None => (String::new(), String::new(), String::new()),
+	}
+}
+
+/// When a fault was stored, to the minute: the two-line layout's `last seen`.
+fn describe_when_minute(context: &FaultContext) -> String {
+	let full = describe_when(context);
+	// `YYYY-MM-DD HH:MM:SS` loses its seconds; `—` stays as it is.
+	match full.len() {
+		19 => full[..16].to_string(),
+		_ => full,
+	}
+}
+
+/// The table for a screen narrower than one row: per code a line of what names it, an
+/// indented line of its record, and its text under them, wrapped at spaces to the screen.
+fn render_narrow(rows: &[Row], width: usize) -> String {
+	let mut head = Table::new(&["unit", "id", "name", "code", "dtc"]);
+	let mut record = Table::new(&["status", "km", "count", "last seen", "src"]).right(1).right(2);
+	for row in rows {
+		head.row(head_cells(row));
+		let (km, count, when) = context_cells(row, describe_when_minute);
+		record.row(vec![short_status(row.status), km, count, when, row.src.to_string()]);
+	}
+	let indent = "      ";
+	let head = head.render(None);
+	let record = record.render(None);
+	let mut out = String::new();
+	for (at, (first, second)) in head.lines().zip(record.lines()).enumerate() {
+		out.push_str(first);
+		out.push('\n');
+		out.push_str(indent);
+		out.push_str(second);
+		out.push('\n');
+		// The header pair has no text under it; row `at - 1` does.
+		if let Some(row) = at.checked_sub(1).and_then(|n| rows.get(n)) {
+			for line in vag_cli_core::table::wrap(&row.text, width.saturating_sub(indent.len()).max(20)) {
+				out.push_str(indent);
+				out.push_str(&line);
+				out.push('\n');
+			}
+		}
+	}
+	out
+}
 /// The one stderr line under a table with guessed rows (`src` [`ODIS_GUESSED`]): which
 /// units, and where the variant was picked by family, what F1A2 did — the identifier that
 /// settles it. `by_family`: those units, and whether each answered F1A2. `None` when every
@@ -562,7 +617,7 @@ pub fn guessed_line(rows: &[Row], by_family: &[(u16, bool)]) -> Option<String> {
 	let unmatched: Vec<u16> = by_family.iter().filter(|(_, read)| *read).map(|(r, _)| *r).collect();
 	if !silent.is_empty() {
 		line.push_str(&format!(
-			"; F1A2 not read from {} — read again with the unit awake to settle it",
+			"; F1A2 not read from {}: run `vagcan faults` again with the ignition on",
 			ids(&silent)
 		));
 	}
@@ -843,14 +898,14 @@ pub async fn run<L: UnitLink>(
 	if !rows.is_empty() {
 		out!("{}\n", render_rows(&rows, width));
 	}
-	// A guessed variant is marked in the table; what settles it, once, here.
-	if let Some(line) = guessed_line(&rows, &guessed_by_family) {
-		say!("{line}");
-	}
 	if details && !raw_table.is_empty() {
 		out!("{}\n", raw_table.render(width));
 	}
 	out!("{}\n", summary(rows.len(), failing, read, all_codes));
+	// A guessed variant is marked in the table; what settles it, once, under the summary.
+	if let Some(line) = guessed_line(&rows, &guessed_by_family) {
+		say!("{line}");
+	}
 	crate::faultnames::offer_to_unseal(&sealed, &keys)?;
 	Ok(())
 }
@@ -1263,20 +1318,45 @@ mod tests {
 		let cut = render_rows(&rows, Some(125));
 		assert!(cut.lines().all(|l| l.chars().count() <= 125), "{cut}");
 		assert!(cut.contains("2026-07-27 00:00:03  odis   Unterbrechung des Signalpfade…"), "{cut}");
-		// On an 80-column terminal the text goes whole under its row, never cut inside the
-		// columns before it (both reviews of PR #38).
+		// At 100 columns the row fits and the text goes whole under it, never cut inside
+		// the columns before it (both reviews of PR #38).
+		let wide = render_rows(&rows, Some(100));
 		assert_eq!(
-			render_rows(&rows, Some(80)),
+			wide,
 			"unit  id   name         code    dtc      status         km  count  last seen            src\n\
 			 16    70C  Lenks.Modul  047120  B145501  confirmed  214592    254  2026-07-27 00:00:03  odis\n\
 			 \x20     Unterbrechung des Signalpfades \"Init\"\n\
 			 17    714  KOMBI        FFFF3C  U111000  failing    214634     13  2026-07-28 23:50:02  odis?\n\
 			 \x20     BAP_TEL_0x28 keine Kommunikation\n"
 		);
+		assert!(wide.lines().all(|l| l.chars().count() <= 100), "{wide}");
+		// At 80 the columns before the text alone are wider than the screen: two lines a
+		// code, the seconds dropped, the text under them — no line wraps.
+		let narrow = render_rows(&rows, Some(80));
+		assert_eq!(
+			narrow,
+			"unit  id   name         code    dtc\n\
+			 \x20     status         km  count  last seen         src\n\
+			 16    70C  Lenks.Modul  047120  B145501\n\
+			 \x20     confirmed  214592    254  2026-07-27 00:00  odis\n\
+			 \x20     Unterbrechung des Signalpfades \"Init\"\n\
+			 17    714  KOMBI        FFFF3C  U111000\n\
+			 \x20     failing    214634     13  2026-07-28 23:50  odis?\n\
+			 \x20     BAP_TEL_0x28 keine Kommunikation\n"
+		);
+		assert!(narrow.lines().all(|l| l.chars().count() <= 80), "{narrow}");
+		// A long text is wrapped at spaces to the screen, not run past it.
+		let long = Row {
+			text: "a fault text long enough that one indented line of an eighty column screen will not hold it".into(),
+			..rows[0].clone()
+		};
+		let wrapped = render_rows(&[long], Some(80));
+		assert!(wrapped.lines().all(|l| l.chars().count() <= 80), "{wrapped}");
+		assert!(wrapped.contains("hold it"), "{wrapped}");
 		// A guessed variant is said under the table, with what F1A2 did.
 		assert_eq!(
 			guessed_line(&rows, &[(0x714, false)]).as_deref(),
-			Some("odis?    714: the ODIS variant is a guess; F1A2 not read from 714 — read again with the unit awake to settle it")
+			Some("odis?    714: the ODIS variant is a guess; F1A2 not read from 714: run `vagcan faults` again with the ignition on")
 		);
 		assert_eq!(
 			guessed_line(&rows, &[]).as_deref(),

@@ -57,13 +57,25 @@ impl Table {
 		self
 	}
 
+	/// How many columns the cells before the last take on a line, separators included —
+	/// for a caller that lays a table out another way when they alone pass the screen.
+	pub fn width_before_last(&self) -> usize {
+		let columns = self.headers.len();
+		(0..columns.saturating_sub(1))
+			.map(|at| {
+				let widest = self.rows.iter().map(|r| chars(&r[at])).max().unwrap_or(0);
+				widest.max(chars(&self.headers[at])) + 2
+			})
+			.sum()
+	}
+
 	/// The table as lines, each ending in a newline, no trailing spaces. `width`: the
 	/// columns the screen has, if known ([`terminal_width`]).
 	///
 	/// Only the last cell is ever shortened, and only to a known width: the columns before
-	/// it are whole. When the last column would get fewer than [`MIN_LAST`] columns, it
-	/// leaves the row and goes on an indented line under it, whole, and its header goes
-	/// too; a [`Table::no_cut`] cell that does not fit does the same rather than being cut.
+	/// it are whole. When the last column would get fewer than [`MIN_LAST`] columns and one
+	/// of its cells does not fit them, it leaves the row and goes on an indented line under
+	/// it, whole, and its header goes too; a [`Table::no_cut`] cell that does not fit does the same rather than being cut.
 	pub fn render(&self, width: Option<usize>) -> String {
 		let columns = self.headers.len();
 		let mut widths: Vec<usize> = self.headers.iter().map(|h| chars(h)).collect();
@@ -75,7 +87,10 @@ impl Table {
 		// What the columns before the last take, separators included.
 		let before: usize = widths[..columns.saturating_sub(1)].iter().map(|w| w + 2).sum();
 		let room = width.map(|w| w.saturating_sub(before));
-		let under = columns > 1 && room.is_some_and(|room| room < MIN_LAST);
+		// Every last cell under its row only when the room is short AND one of them does not
+		// fit in it: a narrow column that fits stays where it is.
+		let longest_last = self.rows.iter().map(|r| r.last().map_or(0, |c| chars(c))).max().unwrap_or(0);
+		let under = columns > 1 && room.is_some_and(|room| room < MIN_LAST && longest_last > room);
 		let indent = " ".repeat(widths.first().map_or(0, |w| w + 2));
 		let mut out = String::new();
 		for (index, row) in std::iter::once(&self.headers).chain(&self.rows).enumerate() {
@@ -126,6 +141,26 @@ impl Table {
 /// The fewest columns the last cell of a row is cut to; with less room it goes on a line
 /// of its own under the row.
 pub const MIN_LAST: usize = 30;
+
+/// `text` broken at spaces into lines of at most `width` columns; a word longer than that
+/// is a line of its own, whole.
+pub fn wrap(text: &str, width: usize) -> Vec<String> {
+	let mut lines: Vec<String> = Vec::new();
+	let mut line = String::new();
+	for word in text.split(' ').filter(|w| !w.is_empty()) {
+		if !line.is_empty() && chars(&line) + 1 + chars(word) > width {
+			lines.push(std::mem::take(&mut line));
+		}
+		if !line.is_empty() {
+			line.push(' ');
+		}
+		line.push_str(word);
+	}
+	if !line.is_empty() {
+		lines.push(line);
+	}
+	lines
+}
 
 /// `text` cut to `width` columns with `…` as its last, when it is longer.
 fn cut(text: &str, width: usize) -> String {
@@ -219,6 +254,17 @@ mod tests {
 			 \x20     Unterbrechung des Signalpfades \"Init\"\n\
 			 17    2026-09-28 22:14:20\n"
 		);
+	}
+
+	#[test]
+	fn a_short_last_column_that_fits_stays_in_its_row() {
+		// `devices` at 60 columns: the device column has under 30 columns of room and
+		// every cell fits it — nothing moves (review of PR #38).
+		let mut table = Table::new(&["path", "adapter", "device"]);
+		table.row(vec!["/dev/cu.usbmodem206E37A148451".into(), "yes".into(), "CANable 2.0 (slcan)".into()]);
+		let out = table.render(Some(60));
+		assert_eq!(out.lines().nth(1), Some("/dev/cu.usbmodem206E37A148451  yes      CANable 2.0 (slcan)"));
+		assert!(out.lines().all(|l| l.chars().count() <= 60), "{out}");
 	}
 
 	#[test]
