@@ -325,9 +325,74 @@ of our own (owner, 2026-10-21: «это должно быть актуально
   `Reading`, `Finished`, `Failed`) and a plain clause; one `Finished` line at the end.
 - **Streams and levels:** data on stdout, notes and status on stderr; `-v` adds provenance and
   reasons, `-vv` the per-item detail and the wire, in the same line style. Colour only on a tty.
-- **Errors:** `Error: <what failed>`, then `Fix: <what to type>`.
+- **Errors are cargo's:** `error: <what failed>` in lower case, one short line; then a blank
+  line and `help: <one action>` lines, each with the command to type in backticks; `note:` only
+  for a reason the reader needs to act. Never prose paragraphs, never an example file inside an
+  error. Exit code 1. (owner, 2026-10-21, after comparing `cargo`, `rustc`, `uv`, `fd`/`clap`,
+  `deno`, `git` and `gh` side by side; `Error:`/`Fix:` was ours and is retired.)
 - A change to a command's output is checked against the e2e goldens (`just e2e`, trycmd cases
   under `tests/e2e/`) once they exist, and the golden diff is shown in the PR.
+
+**Examples — the shape to copy.** Results, grouped (`faults`):
+
+```
+70C  Lenks.Modul
+  B145501  Unterbrechung des Signalpfades "Init"
+           confirmed · 254 times · 214592 km · last 2026-09-28 14:20
+
+713  ESC
+  B1168F2  Steering Angle Sensor: Not Initialized
+           stored · 3 times · 210101 km
+
+2 stored codes · 1 failing now · 15 units read
+```
+
+Status, on stderr (`setup`):
+
+```
+     Copying 16577 .rod files (all up to date)
+     Parsing 3035 label files
+     Reading channels of 15 units: 6085 channels
+    Finished SK37X in 3.1s: fault text, scalings
+```
+
+A table, because the data is a table (`setup --list`):
+
+```
+id  kind  state  lang  read               channels  path
+ 2  odis  ok     deu   -                    399283  /Users/…/SK37X
+ 3  vcds  ok     eng   2026-10-20 07:26Z      5304  /Users/…/vcds-en
+```
+
+Errors:
+
+```
+error: no USB-CAN adapter found
+
+help: plug one in and check `vagcan devices`
+help: plugged in but not listed? unplug it and plug it back in
+help: over Bluetooth, add `--ble`
+```
+
+```
+error: the car is moving (42 km/h)
+
+note: adaptations are read only on a parked car
+help: stop the car and run `vagcan adaptations 713` again
+```
+
+Not this — a home-made step table, a wide table with a text column, prose in an error:
+
+```
+source  step      state    detail
+vcds    copy      current  16577 files, all current
+```
+
+```
+Error: /tmp/nope is not a directory — there is nothing at that path.
+    An extracted ODIS project is the folder holding `AStringData.data.gz` and …
+With no path, `vagcan setup` asks which, and offers to download an installation; …
+```
 
 ## Tech stack & architecture (locked)
 
