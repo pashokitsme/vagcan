@@ -107,8 +107,8 @@ fn time_left(elapsed: std::time::Duration, done: usize, of: usize) -> Option<Str
 /// `select!` it would sit between Ctrl-C and the branch that acts on it — the
 /// signal arrives, and nothing can run until the read is over (found in review,
 /// 2026-09-28, on `dev dash build`'s copy of the same shape). Every key found
-/// is saved as it is found, so a run ended this way leaves the next one less
-/// to search for.
+/// is saved after its table, or after the units' lists, so a run ended this way
+/// leaves the next one less to search for.
 pub(super) async fn registry_channels(root: &Path, project: &crate::project::Project, units: &BTreeSet<(String, String)>) -> Result<Step> {
 	if units.is_empty() {
 		println!(
@@ -128,8 +128,7 @@ pub(super) async fn registry_channels(root: &Path, project: &crate::project::Pro
 		});
 	}
 	println!(
-		"[5/5] Channels — reading the VCDS registry for {} unit{}; a key not cached\n      \
-         yet is searched for, minutes, once.",
+		"[5/5] Channels — reading the VCDS registry for {} unit{}.",
 		units.len(),
 		plural(units.len())
 	);

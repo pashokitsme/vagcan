@@ -10,7 +10,10 @@
 //!
 //! **Which units.** An installation cannot be read for every unit up front: `UDS_EV` holds
 //! twelve thousand unit files, each with its own section keys, and the keys for one car's
-//! fifteen units took five minutes on the reference machine. Only the car can say which units
+//! fifteen units took five minutes on the reference machine — until 2026-10-20, when the keys
+//! turned out to be the file names ([`vag_data_labels::rod::name_product`]): the fifteen read in
+//! a fraction of a second now, and a whole installation is still a lot of work for units no car
+//! here has. Only the car can say which units
 //! it has — so the list is the record `watch`, `measure` and `units --identify` write
 //! (`~/.vagcan/cars/<VIN>/units.json`, [`crate::units`]), and the read happens in two places:
 //! `setup`'s step 5, for the units of every car recorded on this machine, and [`ensure`],
@@ -311,8 +314,10 @@ pub trait Progress {
 	}
 }
 
-/// The key cache, saved after every search so an interrupted run keeps what it
-/// found, and a save that failed said once rather than dropped.
+/// The key cache, saved after every table and after the units' lists, so an
+/// interrupted run keeps what it found, and a save that failed said once rather
+/// than dropped. A file under its own name needs no key, so on a genuine
+/// installation there is nothing to save.
 struct Keys<'a> {
 	path: &'a Path,
 	cache: IvCache,
@@ -440,8 +445,9 @@ fn forget_log(project: &Project) {
 /// installation at `root`, write their channels into the project's cache, and
 /// log what came of every unit.
 ///
-/// Every key found is saved as it is found, so a run that is interrupted
-/// leaves the next one less to search for.
+/// Every key found is saved after the table it opened, and the units' keys once
+/// their lists are found, so a run that is interrupted leaves the next one less
+/// to search for.
 pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, progress: &mut impl Progress) -> Result<Read> {
 	let _reading = Reading::start();
 	let path = project.rod_keys();
@@ -543,12 +549,17 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 	let extracted = crate::extracted::open(project);
 	let mut variants: BTreeMap<String, Vec<vag_data_labels::odis::Reading>> = BTreeMap::new();
 	let (mut read, mut not_channels, mut unread, mut dropped, mut lossy) = (0usize, 0usize, 0usize, 0usize, 0usize);
-	for (at, (odx, version)) in units.iter().enumerate() {
-		// "unit N of M": the searches can take minutes each, and a count is what
-		// tells somebody watching how much of the wait is left.
+	// Every unit's list is found at once, on rayon's pool: each is a walk of the
+	// installation and a file or two, and one after another they were most of
+	// what this read cost once the keys came from the file names. What came of
+	// each is then said in order, as before.
+	progress.waiting(&format!("finding the measurement lists of {} units", units.len()));
+	let wanted: Vec<(&str, &str)> = units.iter().map(|(odx, version)| (odx.as_str(), version.as_str())).collect();
+	let lists = registry::units_measurements(root, &wanted, &mut keys.cache, true, &registry);
+	keys.save();
+	for (at, ((odx, version), found)) in units.iter().zip(lists).enumerate() {
+		// The list is found already; this numbers the unit's line.
 		progress.unit(at, units.len(), odx);
-		let found = registry::unit_measurements(root, odx, version, &mut keys.cache, true, &registry);
-		keys.save();
 		log.units.push(Tried {
 			odx_name: odx.clone(),
 			odx_version: version.clone(),
@@ -596,8 +607,7 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 			}
 		}
 		dropped += usize::from(rows.first_row_dropped);
-		// Said as each unit is done: the searches can take minutes, and a run that
-		// prints nothing for that long reads as hung.
+		// A line per unit, in order, whatever order their lists were found in.
 		progress.done(&format!("{odx}: {} channel{}", channels.len(), plural(channels.len())));
 		variants.insert(stem, channels);
 	}
@@ -1040,7 +1050,7 @@ fn try_ensure(identities: &[UnitIdentity]) -> Result<()> {
 	// Both numbers: what this car still lacks, and how many units the read
 	// covers — every recorded one, since the rows are replaced at once.
 	eprintln!(
-		"Reading the VCDS registry for {} recorded control unit{} — {} of this car not read yet; the first time only, and a key not cached yet is searched for, minutes.",
+		"Reading the VCDS registry for {} recorded control unit{} — {} of this car not read yet; the first time only.",
 		units.len(),
 		plural(units.len()),
 		wanted.len()
@@ -1284,7 +1294,7 @@ mod tests {
 		// Up to the unit loop, and no further: past it the text runs on into
 		// this test, whose own list names every load again, and the last
 		// table's search would then reach the per-unit saves and pass on them.
-		let read = &read[..read.find("for (at, (odx, version))").expect("the unit loop")];
+		let read = &read[..read.find("for (at, ((odx, version), found))").expect("the unit loop")];
 		let loads = ["load_registry(", "load_text_tables(", "= words(", "load_unit_strings("];
 		let mut from = 0;
 		for load in loads {

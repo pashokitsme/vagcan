@@ -98,10 +98,8 @@ use crate::registry::{ODX_DIR, TEXT_TABLES, build_of, codes_language, text_page}
 /// its own file in identifier `F19E`.
 const SHARED_ROD_FILES: &[&str] = &["RD.rod", "MUX.rod"];
 
-/// What the first read of a VCDS installation into a project costs, said
-/// before it starts.
-const FIRST_READ_TAKES_LONG: &str = "The first read can take tens of minutes, most of it searching for keys.\n\
-                                     Later runs reuse what it finds.";
+/// How many threads copy the raw files: see [`copy_label_files`].
+const COPY_WORKERS: usize = 4;
 
 pub struct Options<'a> {
 	/// The VCDS installation root. Without one, an installation is offered for
@@ -236,10 +234,15 @@ fn fetched(source: source::Source, opts: &Options<'_>) -> Result<source::Source>
 fn timed<T>(stage: &str, work: impl FnOnce() -> T) -> T {
 	let started = std::time::Instant::now();
 	let out = work();
+	took(stage, started);
+	out
+}
+
+/// [`timed`]'s line, for a stage that is awaited rather than called.
+fn took(stage: &str, started: std::time::Instant) {
 	if std::env::var_os("VAGCAN_TIMING").is_some() {
 		eprintln!("[timing] {stage}: {:.2}s", started.elapsed().as_secs_f64());
 	}
-	out
 }
 
 /// Open an ODIS project and say which one it turned out to be.
@@ -670,13 +673,9 @@ fn read_vcds_files(root: &Path, project: &crate::project::Project, refresh: bool
 	let pool = crate::project::rod_pool()?;
 	replace_if_another_build(root, &pool, refresh)?;
 	std::fs::create_dir_all(&pool).with_context(|| format!("creating {}", pool.display()))?;
+	// No warning that this takes long: it took tens of minutes while the keys were
+	// searched for, and seconds since they come from the file names (2026-10-20).
 	println!("Reading the VCDS installation at {}", root.display());
-	// Said before the wait, not during it: a first read is mostly key searches,
-	// and nothing on screen says how long those are until the units' lines
-	// start counting down in step 5. A project with keys already has had it.
-	if !project.rod_keys().is_file() {
-		println!("{FIRST_READ_TAKES_LONG}");
-	}
 
 	// The copy runs first and the derivations then read from it, so afterwards
 	// `~/.vagcan` is the one set of raw files the car commands read. The
@@ -685,12 +684,12 @@ fn read_vcds_files(root: &Path, project: &crate::project::Project, refresh: bool
 	// The fault text is looked for once, in step [1/5], and handed on: finding
 	// it can mean asking the person which file it is, and one run must ask
 	// that once.
-	let (copied, codes) = copy_label_files(root, &pool, refresh)?;
+	let (copied, codes) = timed("vcds: raw files", || copy_label_files(root, &pool, refresh))?;
 	Ok(vec![
 		copied,
-		label_cache(root, codes.as_deref(), project, refresh)?,
-		names(&pool, project)?,
-		rod_keys(&pool, project)?,
+		timed("vcds: label files", || label_cache(root, codes.as_deref(), project, refresh))?,
+		timed("vcds: names", || names(&pool, project))?,
+		timed("vcds: .rod keys", || rod_keys(&pool, project))?,
 	])
 }
 
@@ -708,8 +707,13 @@ async fn read_vcds_registry(root: &Path, project: &crate::project::Project) -> R
 	// next `setup`, or the first command with a car, reads from the right one
 	// — and what was tried with the same one is kept: nothing was read here,
 	// and a log wiped clean made every unit count as unread (found in review).
+	let started = std::time::Instant::now();
 	let step = match registry::recorded_units() {
-		Ok(units) => registry::registry_channels(root, project, &units).await?,
+		Ok(units) => {
+			let step = registry::registry_channels(root, project, &units).await?;
+			took("vcds: channels", started);
+			step
+		}
 		Err(e) => {
 			println!(
 				"[5/5] Channels — a car's record on this machine does not read, so nothing\n      \
@@ -994,22 +998,67 @@ fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<(Step, 
 		));
 	}
 
-	let total = plan.len();
-	let (mut copied, mut skipped) = (0usize, 0usize);
-	let mut progress = crate::progress::Line::new();
-	for (at, (src, dst)) in plan.iter().enumerate() {
-		if !refresh && is_newer(dst, src) {
-			skipped += 1;
-			continue;
+	// On rayon's pool: sixteen thousand small files are almost all file-system
+	// calls — a stat, a create, a clone, a rename — which the file system serves
+	// side by side, and one at a time they were most of a cold setup once the
+	// keys came from the file names. Every file lands under its own name, so the
+	// order they land in changes nothing.
+	use rayon::prelude::*;
+	use std::sync::atomic::{AtomicUsize, Ordering};
+	// Two files of one name in two directories land on one name in the flat
+	// pool, and two threads writing one name would share its staging file — so
+	// one is kept per name, compared as the file system compares names (APFS
+	// ignores case). The newer source, the first listed on a tie: what the loop
+	// this replaced ended up with, since it skipped a source older than the copy
+	// already made.
+	let mut landing: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+	let mut keep = vec![true; plan.len()];
+	let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+	for at in 0..plan.len() {
+		let name = plan[at].1.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+		match landing.get(&name).copied() {
+			None => {
+				landing.insert(name, at);
+			}
+			Some(held) if modified(&plan[at].0) > modified(&plan[held].0) => {
+				keep[held] = false;
+				landing.insert(name, at);
+			}
+			Some(_) => keep[at] = false,
 		}
-		progress.update(&format!("copying — {} of {total}", at + 1));
-		// Staged and renamed into place: a copy cut short by Ctrl-C must not
-		// leave a truncated file under the final name, newer than its source and
-		// so skipped as current by the next run (see `datadir::copy_file`).
-		crate::datadir::copy_file(src, dst)?;
-		copied += 1;
 	}
+	let mut kept = keep.into_iter();
+	plan.retain(|_| kept.next().unwrap_or(false));
+	let total = plan.len();
+	let (copied, skipped, done) = (AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0));
+	let mut progress = crate::progress::Line::new();
+	let reporter = progress.reporter();
+	// Four workers, not one per core: the file system, not the CPU, is what the
+	// copy waits on. Measured on the M4 (2026-10-20, cold, 16,577 files): one
+	// worker 3.7–4.1 s, two 2.1–2.5 s, four 2.0–2.6 s, ten 2.5 s — and ten spent
+	// 10–12 s of system time to get there where four spent 6.
+	let workers = rayon::ThreadPoolBuilder::new()
+		.num_threads(COPY_WORKERS)
+		.build()
+		.context("starting the copy's workers")?;
+	workers.install(|| {
+		plan.par_iter().try_for_each(|(src, dst)| -> Result<()> {
+			let at = done.fetch_add(1, Ordering::Relaxed) + 1;
+			if !refresh && is_newer(dst, src) {
+				skipped.fetch_add(1, Ordering::Relaxed);
+				return Ok(());
+			}
+			reporter.set(&format!("copying — {at} of {total}"));
+			// Staged and renamed into place: a copy cut short by Ctrl-C must not
+			// leave a truncated file under the final name, newer than its source and
+			// so skipped as current by the next run (see `datadir::copy_file`).
+			crate::datadir::copy_file(src, dst)?;
+			copied.fetch_add(1, Ordering::Relaxed);
+			Ok(())
+		})
+	})?;
 	progress.finish();
+	let (copied, skipped) = (copied.into_inner(), skipped.into_inner());
 	Ok((
 		Step::Wrote {
 			what: "the raw files",
@@ -1242,7 +1291,7 @@ fn rod_keys(pool: &Path, project: &crate::project::Project) -> Result<Step> {
 			why: format!("none of {SHARED_ROD_FILES:?} is in {}", pool.display()),
 		});
 	}
-	println!("[4/5] .rod section keys — searching for the ones not already cached.");
+	println!("[4/5] .rod section keys — opening the shared tables.");
 	let mut shut = Vec::new();
 	for file in &present {
 		for section in crate::vcds::rod::open(&file.to_string_lossy(), true, Some(&cache.to_string_lossy()), None)? {
@@ -1256,16 +1305,22 @@ fn rod_keys(pool: &Path, project: &crate::project::Project) -> Result<Step> {
 		.and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
 		.and_then(|v| v.as_object().map(|m| m.len()))
 		.unwrap_or(0);
+	// The cache holds only what a file's name does not give, so on an install
+	// whose files carry their own names it holds nothing, and says why.
+	let detail = match (keys, shut.is_empty()) {
+		(0, true) => "every section opened by its file name, nothing to cache".to_string(),
+		(n, _) => format!("{n} keys"),
+	};
 	Ok(match shut.is_empty() {
 		true => Step::Wrote {
 			what: "the .rod section keys",
 			path: cache,
-			detail: format!("{keys} keys"),
+			detail,
 		},
 		false => Step::Partial {
 			what: "the .rod section keys",
 			path: cache,
-			detail: format!("{keys} keys"),
+			detail,
 			why: shut.join("\n    "),
 		},
 	})
@@ -2061,6 +2116,24 @@ mod tests {
 		// --refresh copies everything regardless of mtimes.
 		let forced = copy_label_files(&install.0, &target.0, true).unwrap().0;
 		assert_eq!(detail(&forced), "3 files copied, 0 already current");
+	}
+
+	#[test]
+	fn one_name_in_two_directories_is_copied_once_from_the_newer_file() {
+		// The copy runs on several threads, and two of them writing one name would
+		// share its staging file; APFS ignores case, so `ev_a.rod` is that name too.
+		let install = TempDir::new("twice");
+		install.write("UDS_EV/a/EV_A.rod", b"older");
+		install.write("UDS_EV/b/ev_a.rod", b"newer");
+		let past = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
+		let older = install.0.join("UDS_EV/a/EV_A.rod");
+		std::fs::File::options().write(true).open(&older).unwrap().set_modified(past).unwrap();
+		let target = TempDir::new("twice-out");
+		let step = copy_label_files(&install.0, &target.0, false).unwrap().0;
+		assert_eq!(detail(&step), "1 files copied, 0 already current");
+		let landed: Vec<_> = std::fs::read_dir(&target.0).unwrap().flatten().map(|e| e.path()).collect();
+		assert_eq!(landed.len(), 1, "{landed:?}");
+		assert_eq!(std::fs::read(&landed[0]).unwrap(), b"newer");
 	}
 
 	#[test]

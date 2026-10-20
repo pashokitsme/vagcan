@@ -351,7 +351,7 @@ pub fn find_named(root: &Path, name: &str) -> Option<PathBuf> {
 		let Ok(entries) = std::fs::read_dir(&dir) else { continue };
 		for entry in entries.flatten() {
 			let path = entry.path();
-			if path.is_dir() {
+			if crate::label_files::is_dir(&entry) {
 				dirs.push(path);
 			} else if path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.eq_ignore_ascii_case(name)) {
 				return Some(path);

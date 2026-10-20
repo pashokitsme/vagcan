@@ -375,6 +375,40 @@ pub fn unit_measurements(
 	})
 }
 
+/// [`unit_measurements`] for many units at once, on rayon's pool, in the order
+/// given.
+///
+/// Every lookup is a walk of the install's directory and a read of one or two
+/// files, independent of every other, so they run side by side. Each searches
+/// with its own copy of `cache`, and the keys any of them found — only those, so
+/// one copy's stale key cannot undo another's fresh one — are taken back into
+/// `cache` once all are done. Two units that share a store whose key is not
+/// cached would both search for it; a file under its own name needs no search.
+pub fn units_measurements(
+	root: &Path,
+	units: &[(&str, &str)],
+	cache: &mut IvCache,
+	crack: bool,
+	registry: &MeasurementRegistry,
+) -> Vec<UnitMeasurements> {
+	use rayon::prelude::*;
+	let held: &IvCache = cache;
+	let looked: Vec<(UnitMeasurements, IvCache)> = units
+		.par_iter()
+		.map(|(odx_name, version)| {
+			let mut own = held.clone();
+			let found = unit_measurements(root, odx_name, version, &mut own, crack, registry);
+			(found, own.since(held))
+		})
+		.collect();
+	let mut out = Vec::with_capacity(looked.len());
+	for (found, own) in looked {
+		cache.absorb(own);
+		out.push(found);
+	}
+	out
+}
+
 /// The outcome of reading one `[MWB]` list.
 enum Listed {
 	Found(UnitMeasurements),

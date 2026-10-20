@@ -206,28 +206,33 @@ zlib-deflated. Inside are several tables:
 Payloads are encoded in **base-14** over the charset `0123456789,.-_`, established by
 disassembling VCDS rather than guessed at.
 
-A section whose `product` field is nonzero cannot be decrypted from the file alone:
-five bytes of its first-block IV are missing and have to be searched for — about
-fourteen seconds a section on a laptop. That is why the recovered keys are cached: the
-live path reads the answer out of the project's `rod-keys.json` and never searches.
+Five bytes of a section's first-block IV come from a `product` VCDS computes, and since
+2026-10-20 that is known to be **the file name**: the name up to its first `.`, upper-cased,
+`product = stem[0] · ∏ stem[i]` (`vag_data_labels::rod::name_product`). So a section opens
+with no key and no search; over the English 26.3 `UDS_EV` that is 10,372 of 16,576 files,
+every section of them. The brute force is kept for what the name does not give — a file under
+another name than its own, and the masked files below — and its answers go in the project's
+`rod-keys.json`, which the live path reads and never searches.
 
 **Two fifths of the corpus are searchable in principle and not in practice, and the
 reason is worth knowing.** Some files XOR an eight-byte mask over the *finished* IV,
 read off VCDS's own code (`0x140033b70`) rather than guessed at. Three facts about that
 mask decide everything:
 
-- **It is a runtime global.** Not a field of the file, not a function of its name, not a
-  checksum — a value filled elsewhere in VCDS's process. Measured from the outside it
-  looks exactly like that: 348 distinct values across 349 such files, matching nothing
-  structural. The files are simply not self-describing here; VCDS knows something they
-  do not say.
+- **It is the interface's answer.** A file is masked exactly when the number its `[CMP]`
+  section starts with has eight digits (6,204 of 6,204 files; the six-digit ones never are).
+  VCDS builds a 32-byte challenge from that number and the file name, sends it to the cable
+  (command `0x45`) and takes the mask from the reply (2026-10-20,
+  `.archive/research/labels/tttext2.md` §3.3b). The function is the hardware's: offline it
+  cannot be computed, and measured from the outside it matches nothing structural.
 - **It is eight bytes wide, so it reaches `IV[3..8]`.** Provable without cracking
   anything: byte 6 of a `<6-digit id>,<2-char code>` record is a comma, its multiplier
   is odd so the map inverts uniquely, and the value it yields is a property of the whole
   file — so two sections of one file must agree. Across the corpus the unmasked files
   agree 292 times out of 292, and the masked ones disagree 179 times out of 196.
-- **It is skipped for the `CMP` tag** (467 of 467), and it is one mask per file — so
-  opening any one section hands the rest of that file over for free.
+- **It is skipped for the `CMP` tag** (467 of 467), and it is one mask per file, all eight
+  bytes: the IV of one opened section XOR its name's IV is the mask, and it opens the rest of
+  that file with no search.
 
 The cost follows from the second point. An ordinary file's deflate anchor is free
 (the tag-derived IV is exact) and its candidate bytes are reduced by the multiplicative
@@ -340,8 +345,9 @@ none.
 
 **4. `RD.rod` and `MUX.rod` → `rod-keys.json`.** The label files-wide sections whose keys
 every car needs. Per-unit files are deliberately not swept: there are over sixteen
-thousand of them, a blocked section costs about a minute of every core, and which
-handful a given car needs is a question only that car can answer.
+thousand of them, which handful a given car needs is a question only that car can answer,
+and a file under its own name needs no key cached. With keys from the file names this step
+caches nothing on a genuine installation.
 
 **5. `RM.rod` → the car's channels in `cache.sqlite`.** For every unit of every car recorded on
 this machine (`~/.vagcan/cars/<VIN>/units.json`, written by `watch`, `measure` and
@@ -350,8 +356,9 @@ this machine (`~/.vagcan/cars/<VIN>/units.json`, written by `watch`, `measure` a
 rows of `RM.rod`, and each row gives the DID, bit layout and scaling, named from `TTTEXT`, with
 units from `UNIT.ROD` and text tables from `TTDOP.rod`. Read from the installation being set
 up, not from the pool: a list and the registry it points into mean something only together,
-and the pool can hold two builds' files under one name. A classic section's key is searched
-for once (minutes); a shifted one never. With no car recorded the step is *not yet*, not a
+and the pool can hold two builds' files under one name. A section opens by its file name; a
+classic one under another name is searched for once (minutes), a shifted one never. The units'
+lists are found side by side on rayon's pool. With no car recorded the step is *not yet*, not a
 gap: it says what to type. A table that does not open, a row that does not read, a list
 that lost its first row — each is said, never left as a smaller number — and a unit the
 installation has nothing for is not a gap when the ODIS project describes it. When the step
