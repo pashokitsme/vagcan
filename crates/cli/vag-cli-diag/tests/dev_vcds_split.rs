@@ -293,7 +293,7 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 	let stats = levels("stats", || Tool::Stats { catalog: None });
 	assert_eq!(
 		stats[0].stdout,
-		"what         count\nlabel_file       2\nmeasurement      2\nredirect         0\nadaptation       0\nlong_coding      0\n"
+		"what            count\nlabel_file          2\nmeasurement         2\nredirect            0\nadaptation          0\nlong_coding         0\nregistry_row        0\nregistry_level      0\n"
 	);
 	assert_eq!(stats[0].stderr, "");
 	assert!(

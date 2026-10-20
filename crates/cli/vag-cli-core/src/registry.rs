@@ -50,6 +50,8 @@ use vag_data_labels::unit_strings::{self, UnitsLoad};
 use crate::plan::UnitIdentity;
 use crate::project::Project;
 
+mod others;
+
 /// Where a VCDS installation keeps the ODX files, relative to its root.
 ///
 /// A property of Ross-Tech's layout, not of any car. Its presence is what says an
@@ -202,11 +204,18 @@ pub struct Tried {
 	/// two cars of two projects carry is read once per project.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub project: Option<String>,
-	/// The variant name this lookup's rows are stored under — a redirect's source or the
-	/// file stem — when its list was read: what a car of this project joins its rows by
-	/// ([`car_join`]), so it is never handed another lookup's rows that tie at its rank.
+	/// The variant name this lookup's channels are stored under — a redirect's source or
+	/// the file stem — when its measurement list was read: what a car of this project joins
+	/// its channels by ([`car_join`]), so it is never handed another lookup's rows that tie
+	/// at its rank. `None` when the measurement list did not open, whatever the other
+	/// registries gave: such a unit joins its channels by rank.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub stem: Option<String>,
+	/// The variant name this lookup's rows of the other registries (`registry_row`) are
+	/// stored under, when it has any: the same name [`Self::stem`] would be, logged apart
+	/// so that a unit whose measurement list did not open still joins its channels by rank.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub registry_stem: Option<String>,
 }
 
 /// How a car joins its units to the VCDS rows the registry read stored for it: its project
@@ -283,7 +292,11 @@ pub struct Log {
 ///
 /// 2 (2026-10-20): each lookup logs the stem its rows are stored under ([`Tried::stem`]),
 /// which a car joins by; a version-1 log has none, and its cars would join by rank.
-pub const READ_VERSION: u32 = 2;
+///
+/// 3 (2026-10-20): the other registries — every unit's adaptation, basic-setting,
+/// output-test, freeze-frame and XPL rows, and their MUX cases, read with its channels
+/// (`registry_row`) and stored under the same stem. A read of 2 wrote none.
+pub const READ_VERSION: u32 = 3;
 
 impl Log {
 	/// The project's log, or `None` when no read has been made into it — an
@@ -486,6 +499,9 @@ pub struct Summary {
 	pub not_channels: usize,
 	/// Listed rows that did not read.
 	pub unread: usize,
+	/// Rows written from the other registries — adaptations, basic settings,
+	/// output tests, freeze frames, XPL bits, MUX cases ([`others`]).
+	pub other_rows: usize,
 	/// Keys this run searched for and found.
 	pub keys_found: usize,
 	/// Whether the keys found were saved — `None` when they were.
@@ -517,6 +533,9 @@ impl Summary {
 		}
 		if self.unread > 0 {
 			detail.push_str(&format!("; {} listed row{} did not read", self.unread, plural(self.unread)));
+		}
+		if self.other_rows > 0 {
+			detail.push_str(&format!("; {} rows of VCDS's other registries", self.other_rows));
 		}
 		if self.keys_found > 0 {
 			let kept = match self.keys_unsaved {
@@ -555,6 +574,9 @@ pub fn clear(root: &Path, project: &Project) -> Result<Option<String>> {
 	if vag_data_db::put_all_vcds_readings(&project.cache(), &source_of(root), std::iter::empty())?.is_none() {
 		return Ok(None);
 	}
+	// The other registries' rows go with the channels: they are the same
+	// installation's, read in the same run.
+	vag_data_db::put_all_vcds_registry_rows(&project.cache(), &source_of(root), std::iter::empty())?;
 	Ok(Some(match held {
 		0 => String::new(),
 		n => format!(
@@ -620,6 +642,7 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 					outcome: word.clone(),
 					project: None,
 					stem: None,
+					registry_stem: None,
 				})
 				.collect();
 			// The log before the rows go, on this path: a kill between the two
@@ -697,6 +720,8 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 		.iter()
 		.flat_map(|(odx, version)| projects_of(&projects, odx, version).into_iter().map(move |car| (odx, version, car)))
 		.collect();
+	// The other registries, read for the same units in the same run.
+	let mut others = others::Others::open(root, &mut keys, &mut notes, progress);
 
 	// A unit the project's ODIS rows describe is not a gap when this
 	// installation has nothing for it: its channels are there already.
@@ -739,7 +764,27 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 		}
 	});
 	keys.save();
-	for (at, ((odx, version, car), found)) in lookups.iter().zip(lists).enumerate() {
+	// The rest of each unit's work, side by side again: its other lists, from the
+	// file its measurement list was found in. Keys saved as each unit finishes.
+	progress.waiting(&format!("reading the other registries — 0 of {} units", lookups.len()));
+	let line = progress.reporter();
+	let base = keys.cache.clone();
+	let done = std::sync::atomic::AtomicUsize::new(0);
+	let shared = std::sync::Mutex::new(&mut keys);
+	let other_lists = others.read_units(root, &wanted, &lists, &registry, &base, &|found| {
+		let finished = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+		if !found.is_empty()
+			&& let Ok(mut keys) = shared.lock()
+		{
+			keys.cache.absorb(found);
+			keys.save();
+		}
+		if let Some(line) = &line {
+			line.set(&format!("reading the other registries — {finished} of {} units", lookups.len()));
+		}
+	});
+	keys.save();
+	for (at, (((odx, version, car), found), other)) in lookups.iter().zip(lists).zip(other_lists).enumerate() {
 		let (odx, version) = (*odx, *version);
 		// The list is found already; this numbers the unit's line.
 		progress.unit(at, lookups.len(), odx);
@@ -758,7 +803,15 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 			.to_string(),
 			project: car.clone(),
 			stem: None,
+			registry_stem: None,
 		});
+		// Whatever came of its measurement list: a unit whose `[MWB]` is shut may
+		// still list adaptations. Its rows go under the name its channels would, logged
+		// apart from the channels' stem, which stays what the channel join reads.
+		let registry_stem = others.absorb(other, &words, &units_of, &tables);
+		if let Some(tried) = log.units.last_mut() {
+			tried.registry_stem = registry_stem;
+		}
 		let UnitMeasurements::Found { file, rows, via, .. } = found else {
 			if !extracted.for_unit_from(vag_data_db::ODIS, Some(odx), Some(version)).is_empty() {
 				progress.done(&format!("{odx}: {}; the ODIS project describes it", unit_gap(&found)));
@@ -832,26 +885,47 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 			if dropped == 1 { "its" } else { "their" }
 		));
 	}
+	if others.unread > 0 {
+		notes.push(format!(
+			"{} listed row{} of the other registries did not read",
+			others.unread,
+			plural(others.unread)
+		));
+	}
+	if others.shut > 0 {
+		notes.push(format!(
+			"{} list{} of adaptations, basic settings, output tests, freeze frames or XPL bits did not open: \
+			 a key not found, a file only VCDS itself opens, or a unit file of another install",
+			others.shut,
+			plural(others.shut)
+		));
+	}
 	if let Some(unsaved) = &keys.unsaved {
 		notes.push(format!("{unsaved} ({})", keys.path.display()));
 	}
 
 	let batch: Vec<(&str, &[vag_data_labels::odis::Reading])> = variants.iter().map(|(v, r)| (v.as_str(), r.as_slice())).collect();
-	// Into the project's VCDS source, checked inside the write: a source dropped while
-	// this read ran is not made again, and the log is not written for it either.
-	let written = match vag_data_db::put_all_vcds_readings(&project.cache(), &source_of(root), batch)? {
+	let (written, other_rows) = match vag_data_db::put_all_vcds_readings(&project.cache(), &source_of(root), batch)? {
 		Some(written) => {
+			// Into the same source, under the same rule: `None` is a source dropped
+			// between the two writes, and its rows went with it.
+			let other_rows = vag_data_db::put_all_vcds_registry_rows(
+				&project.cache(),
+				&source_of(root),
+				others.rows.iter().map(|(v, r)| (v.as_str(), r.as_slice())),
+			)?
+			.unwrap_or(0);
 			// After the rows and never before: see `Log`.
 			if let Err(e) = log.save(project) {
 				notes.push(format!(
 					"what was tried was not written down ({e:#}): the next run tries every unit again"
 				));
 			}
-			written
+			(written, other_rows)
 		}
 		None => {
 			notes.push(SOURCE_GONE.to_string());
-			0
+			(0, 0)
 		}
 	};
 	Ok(Read::Done(Summary {
@@ -860,6 +934,7 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 		written,
 		not_channels,
 		unread,
+		other_rows,
 		keys_found: keys.found(),
 		keys_unsaved: keys.unsaved.clone(),
 		notes,
@@ -1527,6 +1602,7 @@ mod tests {
 			outcome: outcome.into(),
 			project: None,
 			stem: None,
+			registry_stem: None,
 		}
 	}
 
@@ -1684,7 +1760,7 @@ mod tests {
 		// Up to the unit loop, and no further: past it the text runs on into
 		// this test, whose own list names every load again, and the last
 		// table's search would then reach the per-unit saves and pass on them.
-		let read = &read[..read.find("for (at, ((odx, version, car), found))").expect("the unit loop")];
+		let read = &read[..read.find("for (at, (((odx, version, car), found), other))").expect("the unit loop")];
 		let loads = ["load_registry(", "load_text_tables(", "= words(", "load_unit_strings("];
 		let mut from = 0;
 		for load in loads {
@@ -1805,6 +1881,7 @@ mod tests {
 				line(None, Some("EV_InvACC_006_VW27")),
 				Tried {
 					stem: None,
+					registry_stem: None,
 					..tried("EV_InvGone", "001001", NO_FILE)
 				},
 			],
@@ -1817,6 +1894,29 @@ mod tests {
 		// A log from before the field reads with no stem.
 		let old: Tried = serde_json::from_str(r#"{"odx_name": "EV_A", "outcome": "read"}"#).unwrap();
 		assert_eq!(old.stem, None);
+	}
+
+	#[test]
+	fn the_other_registries_stem_never_changes_how_a_car_joins_its_channels() {
+		// Found in review of #42: a unit whose `[MWB]` did not open but whose other lists
+		// did logged their stem as `stem`, and its channels then joined that stem exactly —
+		// none — where the rank rule had found a sibling version's. Logged apart, the
+		// channel join is #43's, whatever the other registries gave.
+		let shut = Tried {
+			registry_stem: Some("EV_InvACC_006_SK37".into()),
+			..tried("EV_InvACC", "006145", "key not found")
+		};
+		let log = Log {
+			units: vec![shut.clone()],
+			..Log::new(PathBuf::from("/vcds"))
+		};
+		assert!(stems_for(&log, None).is_empty(), "the channels join by rank, as before");
+		let text = serde_json::to_string(&shut).unwrap();
+		assert!(text.contains("\"registry_stem\"") && !text.contains("\"stem\""), "{text}");
+		assert_eq!(serde_json::from_str::<Tried>(&text).unwrap(), shut);
+		// A log from before the field reads with none.
+		let old: Tried = serde_json::from_str(r#"{"odx_name": "EV_A", "outcome": "read", "stem": "EV_A"}"#).unwrap();
+		assert_eq!((old.stem.as_deref(), old.registry_stem), (Some("EV_A"), None));
 	}
 
 	/// The read and the pending check take the cars' projects from the recorded cars, and in a
@@ -1857,6 +1957,39 @@ mod tests {
 		let old: Log = serde_json::from_str(r#"{"installation": "/vcds", "units": []}"#).unwrap();
 		assert!(!old.is_current());
 		assert!(Log::new(PathBuf::new()).is_current());
+	}
+
+	#[test]
+	fn a_log_written_before_the_other_registries_brings_one_more_read_and_then_none() {
+		// Version 2 read channels and no `registry_row`. Every unit of the car, read and
+		// ODIS-described as they are, is read once more; the log that read writes is
+		// current, and the next `ensure` reads nothing — whatever the installation has
+		// of the other registries, so one with none of them is not read forever.
+		assert_eq!(READ_VERSION, 3, "the other registries are version 3");
+		let dir = tempfile::tempdir().unwrap();
+		let project = project(dir.path());
+		std::fs::create_dir_all(&project.dir).unwrap();
+		let root = install_at(dir.path());
+		let identities = [unit(0x7E0, Some("EV_Engine"), Some("001")), unit(0x713, Some("EV_Brake"), Some("002"))];
+		let mut log = Log {
+			units: vec![tried("EV_Engine", "001", "read"), tried("EV_Brake", "002", "read")],
+			..Log::new(root.clone())
+		};
+		log.read_version = 2;
+		log.save(&project).unwrap();
+		let all: BTreeSet<(String, String)> = [("EV_Brake".to_string(), "002".to_string()), ("EV_Engine".to_string(), "001".to_string())].into();
+		// Outdated, not unread: a build goes ahead on the rows the cache has (#43), and
+		// `ensure` reads them once.
+		assert_eq!(
+			unread(&project, &identities, |_, _| true).unwrap(),
+			Unread::Outdated {
+				units: all,
+				root: root.clone()
+			}
+		);
+		log.read_version = READ_VERSION;
+		log.save(&project).unwrap();
+		assert_eq!(unread(&project, &identities, |_, _| true).unwrap(), Unread::Nothing);
 	}
 
 	/// A directory that passes for an installation: `UDS_EV` in place, nothing in it.
@@ -2081,6 +2214,7 @@ mod tests {
 			written: 2310,
 			not_channels: 0,
 			unread: 0,
+			other_rows: 0,
 			keys_found: 0,
 			keys_unsaved: None,
 			notes: Vec::new(),
@@ -2096,6 +2230,8 @@ mod tests {
 		assert!(detail.ends_with("1 key found, cached"), "{detail}");
 		summary.keys_unsaved = Some("not saved".into());
 		assert!(summary.detail().ends_with("1 key found, not saved"));
+		summary.other_rows = 412;
+		assert!(summary.detail().contains("; 412 rows of VCDS's other registries"), "{}", summary.detail());
 	}
 
 	#[test]

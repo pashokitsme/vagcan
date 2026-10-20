@@ -367,6 +367,11 @@ gap: it says what to type. A table that does not open, a row that does not read,
 that lost its first row — each is said, never left as a smaller number — and a unit the
 installation has nothing for is not a gap when the ODIS project describes it. When the step
 writes nothing (no car, no registry) it leaves no rows of an earlier installation behind.
+The same read stores, from the same unit file, the unit's rows of VCDS's other registries —
+adaptations (`RA.rod`), basic settings (`RG.rod`), output tests (`RS.rod`), freeze-frame fields
+(`RF.rod`), `XPL` bits (`RX.rod`) and the `MUX.rod` cases they defer to — in `registry_row`
+(`vag_data_labels::registries`); nothing reads them back yet, and basic settings and output
+tests are names only (`0x31`/`0x2F` stay outside the allowlist).
 The same read runs from `watch`, `measure` and `units --identify` with the car, and from
 `dev dash build` offline (`vag_cli_core::registry::ensure`), for the units of the car in front of
 them that the installation has not been tried for — the first time, with a line, a spinner and a
