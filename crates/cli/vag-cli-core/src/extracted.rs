@@ -325,6 +325,27 @@ impl Extracted {
 		self.names.clone()
 	}
 
+	/// The fields of a unit's own extended-data records — its freeze frames — as the VCDS
+	/// rows stored for it describe them, with the variant they were read under; `None` where
+	/// the cache holds none for this unit.
+	///
+	/// The unit's variant is picked as its channels' is ([`Self::variants_of`]): the stem the
+	/// car's own lookup stored, else the rank rule. VCDS alone: the ODIS project keeps these
+	/// layouts in multiplexer cases, a type this reader refuses
+	/// (`vag_data_labels::odis::loaders::REFUSED`).
+	pub fn freeze_frames(&self, odx_name: Option<&str>, version: Option<&str>) -> Option<(String, Vec<vag_data_db::FreezeField>)> {
+		let names = vag_data_db::freeze_frame_variants(&self.cache).ok()?;
+		let variant = self.variants_of(vag_data_db::VCDS, &names, odx_name, version).into_iter().next()?.clone();
+		let fields = vag_data_db::freeze_frame_fields(&self.cache, &variant).ok()?;
+		(!fields.is_empty()).then_some((variant, fields))
+	}
+
+	/// Whether the cache holds freeze-frame rows for any unit at all — so whether a unit's
+	/// identity is worth reading to look its own up.
+	pub fn knows_freeze_frames(&self) -> bool {
+		vag_data_db::freeze_frame_variants(&self.cache).is_ok_and(|v| !v.is_empty())
+	}
+
 	/// Whether this project knows any channels at all.
 	pub fn is_empty(&self) -> bool {
 		self.variants.iter().all(|(_, names)| names.is_empty())

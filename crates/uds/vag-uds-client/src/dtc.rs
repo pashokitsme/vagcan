@@ -41,35 +41,122 @@ pub struct DtcExtendedData {
 	pub data: Vec<u8>,
 }
 
-/// When a fault happened, as the control unit recorded it.
+/// VW's first standard extended-data record, as every UDS unit's description declares it.
 ///
-/// This is extended-data record `0x01`, which every unit on the reference car
-/// answers with the same layout:
+/// A `19 06 <DTC> FF` answer is `59 06 <DTC> <status>` and then records back to back, each
+/// its one-byte number followed by that record's bytes — with **no length**: a reader splits
+/// them by knowing each record's layout (ISO 14229-1, `DTCExtendedDataRecord`). The numbers
+/// `0x01`–`0x8F` are the manufacturer's (ISO 14229-1, "vehicleManufacturerSpecific"), and
+/// VW's protocol layer, `PR_UDSOnCAN` in an ODIS project, fixes the first two for every UDS
+/// unit it describes:
+///
+/// | record | name in the project | bytes | fields |
+/// |---|---|---|---|
+/// | `0x01` | Standard DTC Information | 2 | priority, occurrence counter |
+/// | `0x02` | Standard Freeze Frame#1 | 10 | central aging counter, km mileage (u24), time indication, time stamp (5 bytes) |
+///
+/// Measured on the reference project's extended-data multiplexers
+/// (`research/odis-dtc/freeze-frames.md`): of the 169 that carry both, record `0x01` is 2
+/// bytes in 169 and record `0x02` 10 bytes in 168 — the exception is one rear-view camera variant
+/// (`EV_CamSysRVAV2ARCE2MQBAB_003`, 12 bytes), which this split reads wrong. A unit's other
+/// records are its own, described per unit by the label data.
+pub const STANDARD_DTC_INFORMATION: u8 = 0x01;
+/// VW's second standard extended-data record — see [`STANDARD_DTC_INFORMATION`].
+pub const STANDARD_FREEZE_FRAME: u8 = 0x02;
+
+/// The length VW's protocol layer gives one of its two standard records, `None` for any other.
+pub fn standard_length(record: u8) -> Option<usize> {
+	match record {
+		STANDARD_DTC_INFORMATION => Some(2),
+		STANDARD_FREEZE_FRAME => Some(10),
+		_ => None,
+	}
+}
+
+/// How much of an extended-data answer one record took.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Extent {
+	/// Exactly its described length.
+	Whole,
+	/// Its length is not known, so it holds everything to the end of the answer — the rule
+	/// VW's own protocol layer gives a record it does not describe ("unknown freeze frame",
+	/// bytes to the end of the PDU). Nothing after it can be told apart from it.
+	ToEnd,
+	/// The answer ended before its described length did.
+	Short,
+}
+
+/// One record of an extended-data answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtendedRecord<'a> {
+	pub number: u8,
+	pub data: &'a [u8],
+	pub extent: Extent,
+}
+
+/// Split an extended-data answer into its records.
+///
+/// `answer` is what [`DtcExtendedData`] holds — the first record's number, then every byte
+/// after it. `length_of` says how long a record is, `None` where that is not known: such a
+/// record takes the rest ([`Extent::ToEnd`]), since guessing where it stops would report the
+/// next record's bytes as this one's.
+pub fn split_records(answer: &DtcExtendedData, length_of: impl Fn(u8) -> Option<usize>) -> Vec<ExtendedRecord<'_>> {
+	let mut out = Vec::new();
+	let (mut number, mut rest) = (answer.record, answer.data.as_slice());
+	loop {
+		match length_of(number) {
+			Some(len) if len <= rest.len() => {
+				out.push(ExtendedRecord {
+					number,
+					data: &rest[..len],
+					extent: Extent::Whole,
+				});
+				rest = &rest[len..];
+			}
+			known => {
+				out.push(ExtendedRecord {
+					number,
+					data: rest,
+					extent: if known.is_some() { Extent::Short } else { Extent::ToEnd },
+				});
+				return out;
+			}
+		}
+		match rest.split_first() {
+			Some((&next, tail)) => (number, rest) = (next, tail),
+			None => return out,
+		}
+	}
+}
+
+/// When a fault happened, as the control unit recorded it: VW's two standard records
+/// ([`STANDARD_DTC_INFORMATION`], [`STANDARD_FREEZE_FRAME`]).
 ///
 /// ```text
-/// 06 09  02B8  033F1B  0000  69F9044B
-/// ^  ^   ^     ^       ^     ^
-/// |  |   |     |       |     the car's own date and time, packed — see CarTime
-/// |  |   |     |       two bytes, zero in every sample seen
-/// |  |   |     odometer, km, u24 big-endian
-/// |  |   a counter that rises with time, shared across units
-/// |  how many times it happened (saturates at 0xFF)
-/// priority
+/// 01  06 09                    record 0x01: priority, occurrences (saturates at 0xFF)
+/// 02  B8 033F1B 00 0069F9044B  record 0x02: aging counter, odometer km (u24 big-endian),
+///                              time indication, time stamp — see CarTime
 /// ```
+///
+/// An earlier reading took the two as one 13-byte record `0x01`, with "a counter that rises
+/// with time, shared across units" at its bytes 2–3 (`02B8`). That was record `0x02`'s
+/// number and its aging counter read as one `u16`. The project's protocol layer names both
+/// records and their lengths, and the body control module's answer splits on them with its
+/// third record, `0x70`, left exactly the five bytes VCDS's own description of that unit
+/// gives it (`research/odis-dtc/freeze-frames.md`).
 ///
 /// Evidence for the two fields that matter, from 17 stored faults across six
 /// control units:
 ///
 /// * **Mileage.** No fault's value exceeds the instrument cluster's odometer
-///   (`0x033F45` = 212 805 km when this was written), the newest faults equal
-///   it exactly, and older faults order the same way by mileage and by
-///   counter. A three-byte field landing on the odometer in every one of 17
+///   (`0x033F45` = 212 805 km when this was written), and the newest faults equal
+///   it exactly. A three-byte field landing on the odometer in every one of 17
 ///   records is not available to another reading.
 /// * **The clock is a date, not a tally.** See [`CarTime`]; the same field is
 ///   answered live at [`UnitStamp::DID`], where it decodes to the instrument
 ///   cluster's own displayed date and time.
 ///
-/// **This field looked like a free-running 1 Hz counter, and it is not.** The
+/// **The clock looked like a free-running 1 Hz counter, and it is not.** The
 /// appearance comes from subtracting two raw stamps: the seconds field is six
 /// bits but wraps at 60, so a raw difference overshoots the elapsed time by 4
 /// per minute boundary crossed, 256 per hour and 32 768 per day. Across seven
@@ -83,9 +170,12 @@ pub struct FaultContext {
 	pub priority: u8,
 	/// Occurrences, saturating: `0xFF` means "at least 255".
 	pub occurrences: u8,
-	pub cycle_counter: u16,
+	/// The central aging counter — what VCDS prints as "reset counter".
+	pub aging_counter: u8,
 	pub mileage_km: u32,
-	/// The car's own date and time, packed — see [`CarTime`].
+	/// The car's own date and time, packed — see [`CarTime`]: the low four bytes of the
+	/// five-byte time stamp. The byte above them holds only the year's seventh bit, zero
+	/// until 2064.
 	pub clock: u32,
 }
 
@@ -181,21 +271,25 @@ pub fn seconds_between(earlier: u32, later: u32) -> Option<i64> {
 }
 
 impl FaultContext {
-	/// Parse extended-data record `0x01`.
+	/// Read the two standard records out of a split answer.
 	///
-	/// Records shorter than the stamp are rejected rather than padded: a
-	/// half-read record would produce a mileage that is simply wrong.
-	pub fn parse(data: &[u8]) -> Option<FaultContext> {
-		if data.len() < 13 {
-			return None;
-		}
+	/// Both must be there and whole — a half-read record is rejected rather than padded,
+	/// since it would produce a mileage that is simply wrong.
+	pub fn from_records(records: &[ExtendedRecord<'_>]) -> Option<FaultContext> {
+		let whole = |n: u8| records.iter().find(|r| r.number == n && r.extent == Extent::Whole).map(|r| r.data);
+		let (info, frame) = (whole(STANDARD_DTC_INFORMATION)?, whole(STANDARD_FREEZE_FRAME)?);
 		Some(FaultContext {
-			priority: data[0],
-			occurrences: data[1],
-			cycle_counter: u16::from_be_bytes([data[2], data[3]]),
-			mileage_km: u32::from_be_bytes([0, data[4], data[5], data[6]]),
-			clock: u32::from_be_bytes([data[9], data[10], data[11], data[12]]),
+			priority: info[0],
+			occurrences: info[1],
+			aging_counter: frame[0],
+			mileage_km: u32::from_be_bytes([0, frame[1], frame[2], frame[3]]),
+			clock: u32::from_be_bytes([frame[6], frame[7], frame[8], frame[9]]),
 		})
+	}
+
+	/// [`Self::from_records`] over a whole answer, split by the two standard records alone.
+	pub fn parse(answer: &DtcExtendedData) -> Option<FaultContext> {
+		Self::from_records(&split_records(answer, standard_length))
 	}
 }
 
@@ -244,15 +338,24 @@ impl UnitStamp {
 mod tests {
 	use super::*;
 
-	/// Extended record 0x01 read off the body control module, verbatim.
+	/// The body control module's `19 06 000107 FF` answer after `59 06 00 01 07 <status>`,
+	/// verbatim: record `0x01`, then the bytes after it.
 	const BCM_000107: [u8; 19] = [
 		0x06, 0x09, 0x02, 0xB8, 0x03, 0x3F, 0x1B, 0x00, 0x00, 0x69, 0xF9, 0x04, 0x4B, 0x70, 0x04, 0x04, 0x0A, 0x7B, 0x91,
 	];
 
+	fn answer(data: &[u8]) -> DtcExtendedData {
+		DtcExtendedData {
+			record: STANDARD_DTC_INFORMATION,
+			data: data.to_vec(),
+		}
+	}
+
 	#[test]
 	fn a_fault_records_its_mileage_and_how_often_it_happened() {
-		let ctx = FaultContext::parse(&BCM_000107).unwrap();
-		assert_eq!(ctx.occurrences, 9);
+		let ctx = FaultContext::parse(&answer(&BCM_000107)).unwrap();
+		assert_eq!((ctx.priority, ctx.occurrences), (6, 9));
+		assert_eq!(ctx.aging_counter, 0xB8);
 		assert_eq!(ctx.mileage_km, 212_763);
 		assert_eq!(ctx.clock, 0x69F9_044B);
 		// The odometer read from the cluster at the same time was 212 805 km,
@@ -261,19 +364,43 @@ mod tests {
 	}
 
 	#[test]
+	fn the_answer_splits_into_the_two_standard_records_and_the_units_own() {
+		// What the earlier reading called a 13-byte record 0x01 is two records, and the
+		// five bytes after them are a third — the length VCDS's description of the unit
+		// gives its record (research/odis-dtc/freeze-frames.md).
+		let answer = answer(&BCM_000107);
+		let records = split_records(&answer, standard_length);
+		let shape: Vec<(u8, usize, Extent)> = records.iter().map(|r| (r.number, r.data.len(), r.extent)).collect();
+		assert_eq!(shape, vec![(0x01, 2, Extent::Whole), (0x02, 10, Extent::Whole), (0x70, 5, Extent::ToEnd)]);
+		assert_eq!(records[2].data, &[0x04, 0x04, 0x0A, 0x7B, 0x91]);
+		// Told its length, the third is whole, and nothing is left over.
+		let told = split_records(&answer, |n| standard_length(n).or((n == 0x70).then_some(5)));
+		assert_eq!(told.last().map(|r| r.extent), Some(Extent::Whole));
+		assert_eq!(told.len(), 3);
+	}
+
+	#[test]
 	fn an_occurrence_count_saturates_rather_than_wrapping() {
 		// Read off the steering assist: 0xFF, not a count of 255 exactly.
 		let mut data = BCM_000107;
 		data[1] = 0xFF;
-		assert_eq!(FaultContext::parse(&data).unwrap().occurrences, 0xFF);
+		assert_eq!(FaultContext::parse(&answer(&data)).unwrap().occurrences, 0xFF);
 	}
 
 	#[test]
 	fn a_truncated_record_is_refused_rather_than_padded() {
 		// Padding would invent a mileage, which is the one field a reader
 		// would act on.
-		assert!(FaultContext::parse(&BCM_000107[..12]).is_none());
-		assert!(FaultContext::parse(&[]).is_none());
+		let short = answer(&BCM_000107[..12]);
+		assert_eq!(split_records(&short, standard_length)[1].extent, Extent::Short);
+		assert!(FaultContext::parse(&short).is_none());
+		assert!(FaultContext::parse(&answer(&[])).is_none());
+		// A unit that answers record 0x02 alone has no priority to give.
+		let alone = DtcExtendedData {
+			record: STANDARD_FREEZE_FRAME,
+			data: BCM_000107[3..13].to_vec(),
+		};
+		assert!(FaultContext::parse(&alone).is_none());
 	}
 
 	#[test]
@@ -447,7 +574,7 @@ mod tests {
 		// And it is what turns a stamp into an age: 2026-07-28 16:17:11 to
 		// 2026-07-29 00:01:28 by the car's clock, seven and three quarter
 		// hours.
-		let ctx = FaultContext::parse(&BCM_000107).unwrap();
+		let ctx = FaultContext::parse(&answer(&BCM_000107)).unwrap();
 		assert_eq!(seconds_between(ctx.clock, stamp.clock), Some(27_857));
 		assert_eq!(stamp.mileage_km - ctx.mileage_km, 42);
 	}

@@ -159,12 +159,53 @@ fn car() -> Car {
 	records.insert((GEARBOX, 0xF40D), vec![0x9C, 0x02]);
 	script.dtcs.insert(ENGINE, vec![([0x00, 0x01, 0x29], 0x09), ([0x00, 0x01, 0x07], 0x10)]);
 	script.dtcs.insert(ESC, vec![([0x04, 0x71, 0x20], 0x08)]);
-	// Priority, count 3, cycle counter, 123456 km, two bytes, 2026-07-27 00:00:03.
-	let record = vec![0x06, 0x03, 0x00, 0x10, 0x01, 0xE2, 0x40, 0x00, 0x00, 0x69, 0xF6, 0x00, 0x03];
-	script.extended.insert((ENGINE, [0x00, 0x01, 0x29]), record.clone());
-	script.extended.insert((ESC, [0x04, 0x71, 0x20]), record);
+	// The engine and the ESC name their description files, so a freeze-frame layout can be
+	// looked up for them.
+	records.insert((ENGINE, 0xF19E), text("EV_TestEngine"));
+	records.insert((ENGINE, 0xF1A2), text("001001"));
+	records.insert((ESC, 0xF19E), text("EV_TestBrake"));
+	records.insert((ESC, 0xF1A2), text("001001"));
+	// Record 01: priority 6, count 3. Record 02: aging counter 16, 123456 km, time
+	// indication, 2026-07-27 00:00:03.
+	let standard = [0x06, 0x03, 0x02, 0x10, 0x01, 0xE2, 0x40, 0x00, 0x00, 0x69, 0xF6, 0x00, 0x03];
+	// The engine's own record 0x70: 1000 /min, 12.3 V, a reserved byte — described.
+	let engine = [&standard[..], &[0x70, 0x0F, 0xA0, 0x7B, 0x00]].concat();
+	// The ESC's own record 0x71, which nothing describes.
+	let esc = [&standard[..], &[0x71, 0xAA, 0xBB]].concat();
+	script.extended.insert((ENGINE, [0x00, 0x01, 0x29]), engine);
+	script.extended.insert((ESC, [0x04, 0x71, 0x20]), esc);
 	Car {
 		script: Arc::new(Mutex::new(script)),
+	}
+}
+
+/// One field of the made-up engine's record 0x70, as the cache stores a VCDS freeze-frame
+/// row: lead 104, the record's four bytes plus 100.
+fn freeze_row(bit: u32, bits: u32, kind: u8, scale: Option<(f64, f64)>, unit: &str, name: &str) -> vag_data_labels::registries::Described {
+	use vag_data_labels::registries::{Described, Entry, Value};
+	Described {
+		section: vag_data_db::FREEZE_FRAME_SECTION,
+		entry: Entry {
+			row: 1,
+			key: 0x70,
+			identifier: None,
+			ordinal: None,
+			lead: Some(104),
+			case: None,
+			value: Value {
+				kind: Some(kind),
+				big_endian: true,
+				bit_offset: Some(bit),
+				bit_length: Some(bits),
+				scale,
+				..Default::default()
+			},
+			raw: String::new(),
+		},
+		name: Some(name.to_string()),
+		text_id: None,
+		unit: (!unit.is_empty()).then(|| unit.to_string()),
+		levels: Vec::new(),
 	}
 }
 
@@ -296,7 +337,18 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	);
 
 	// `faults` keeps its keys per project: one, set up from nothing yet, so no code has a name.
-	std::fs::create_dir_all(home.path().join(".vagcan/data/TESTPROJECT")).unwrap();
+	// Its cache holds the engine's freeze-frame layout, as `setup` stores a VCDS install's
+	// (`RF.rod [FFMUX]`): record 0x70, four bytes. Invented rows, no install's.
+	let project = home.path().join(".vagcan/data/TESTPROJECT");
+	std::fs::create_dir_all(&project).unwrap();
+	let cache = project.join("cache.sqlite");
+	vag_data_db::record_language(&cache, vag_data_db::VCDS, "/x/vcds-test", "eng").unwrap();
+	let rows = [
+		freeze_row(0, 16, 0, Some((0.25, 0.0)), "/min", "Engine speed"),
+		freeze_row(16, 8, 0, Some((0.1, 0.0)), "V", "Voltage"),
+		freeze_row(24, 8, 11, None, "", "Reserved"),
+	];
+	vag_data_db::put_all_vcds_registry_rows(&cache, "/x/vcds-test", [("EV_TestEngine", &rows[..])]).unwrap();
 	let faults = levels!("faults", faults::run(open, None, false, false, false, false, None).await);
 	assert_eq!(
 		faults[0].stdout,
@@ -304,8 +356,27 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 		 01    7E0  ENGINE SELF  000129       failing    123456      3  2026-07-27 00:00:03\n\
 		 --    713  ESC SELF     047120       confirmed  123456      3  2026-07-27 00:00:03\n\
 		 \n\
+		 7E0  000129\n\
+		 \x20   priority       6\n\
+		 \x20   aging counter  16\n\
+		 \x20   Engine speed   1000 /min\n\
+		 \x20   Voltage        12.3 V\n\
+		 713  047120\n\
+		 \x20   priority       6\n\
+		 \x20   aging counter  16\n\
+		 \x20   record 71      AA BB (not described, not decoded)\n\
+		 \n\
 		 2 stored · 1 failing now · 4 units read\n"
 	);
+	assert!(
+		faults[1]
+			.stderr
+			.contains("7E0  freeze frames described by the VCDS rows of EV_TestEngine"),
+		"where the layout came from is a -v note: {:?}",
+		faults[1].stderr
+	);
+	// One `19 06` per stored code and no other fault read: the freeze frame is in it.
+	assert!(!faults[2].stderr.contains("19 04"), "{:?}", faults[2].stderr);
 	// A unit whose fault list did not come back is said at level 0, and not counted as
 	// read: 70E is on the gateway's list and never answers (review of PR #38).
 	assert!(faults[0].stderr.contains("70E  fault list not read: "), "{:?}", faults[0].stderr);

@@ -371,7 +371,10 @@ The same read stores, from the same unit file, the unit's rows of VCDS's other r
 adaptations (`RA.rod`), basic settings (`RG.rod`), output tests (`RS.rod`), freeze-frame fields
 (`RF.rod`), `XPL` bits (`RX.rod`) and the `MUX.rod` cases they defer to — in `registry_row`
 (`vag_data_labels::registries`); `vagcan adaptations` reads the `RA.rod` rows back, and basic
-settings and output tests are names only (`0x31`/`0x2F` stay outside the allowlist).
+settings and output tests are names only (`0x31`/`0x2F` stay outside the allowlist). `faults`
+reads the freeze-frame rows back: a fault's `19 06` answer splits into VW's two standard records
+and the unit's own, each own record laid out by its `RF.rod` key (`vag_cli_diag::freezeframe`,
+`research/odis-dtc/freeze-frames.md`).
 The same read runs from `watch`, `measure` and `units --identify` with the car, and from
 `dev dash build` offline (`vag_cli_core::registry::ensure`), for the units of the car in front of
 them that the installation has not been tried for — the first time, with a line, a spinner and a

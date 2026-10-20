@@ -515,6 +515,9 @@ pub struct Row {
 	pub text: String,
 	/// Whose words `text` is: [`ODIS`], [`ODIS_GUESSED`], [`VCDS`], or empty.
 	pub src: &'static str,
+	/// The freeze frame stored with the code ([`crate::freezeframe::lines`]); empty when
+	/// the unit gave none.
+	pub freeze: Vec<crate::freezeframe::Line>,
 }
 
 /// The fault table, as `faults` prints it on stdout. `width`: the terminal's, when known.
@@ -607,6 +610,20 @@ fn render_narrow(rows: &[Row], width: usize) -> String {
 	}
 	out
 }
+/// The freeze frames of the codes that carry one: per code a heading — its unit's id, the
+/// code, the code a tester prints — and the frame indented under it
+/// ([`crate::freezeframe::render`]). Empty when no code has one.
+pub fn render_freeze_frames(rows: &[Row], width: Option<usize>) -> String {
+	let mut out = String::new();
+	for row in rows.iter().filter(|r| !r.freeze.is_empty()) {
+		let heading = [format!("{:03X}", row.request), code_hex(row.code), row.dtc.clone()];
+		out.push_str(heading.iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("  ").as_str());
+		out.push('\n');
+		out.push_str(&crate::freezeframe::render(&row.freeze, "    ", width));
+	}
+	out
+}
+
 /// The one stderr line under a table with guessed rows (`src` [`ODIS_GUESSED`]): which
 /// units, and where the variant was picked by family, what F1A2 did — the identifier that
 /// settles it. `by_family`: those units, and whether each answered F1A2. `None` when every
@@ -674,6 +691,10 @@ pub async fn run<L: UnitLink>(
 	let requested = only.map(|spec| unit_list("--unit", spec)).transpose()?;
 	let keys = crate::datadir::or_default(iv_cache, || Ok(crate::project::current()?.rod_keys()))?;
 	let mut namers = Namers::open(&keys, iv_cache.is_some())?;
+	// The freeze-frame layouts `setup` stored from a VCDS install, looked up per unit by the
+	// same identifiers that name its codes.
+	let extracted = crate::extracted::current().for_car(None);
+	let freeze_known = extracted.knows_freeze_frames();
 
 	let mut backend = open().await?;
 
@@ -823,7 +844,9 @@ pub async fn run<L: UnitLink>(
 			// read only once something has to be named out of them.
 			// What the unit answered for F1A2, for the line a guessed variant gets.
 			let mut f1a2 = String::new();
-			let lookup = match namers.is_empty() {
+			// Read when something can be looked up by them: the names, or the freeze-frame
+			// layouts.
+			let identity = match namers.is_empty() && !freeze_known {
 				true => None,
 				false => {
 					let read = |data: Option<Vec<u8>>| data.map(|b| ident_text(&b)).unwrap_or_default();
@@ -831,9 +854,20 @@ pub async fn run<L: UnitLink>(
 					let version = read(uds.read_data_by_identifier(ODX_VERSION).await.ok());
 					vag_cli_core::wire!("   {request:03X}  names looked up by F19E {odx:?} F1A2 {version:?}");
 					f1a2 = version.clone();
-					Some(namers.unit(&odx, &version))
+					Some((odx, version))
 				}
 			};
+			let lookup = identity
+				.as_ref()
+				.filter(|_| !namers.is_empty())
+				.map(|(odx, version)| namers.unit(odx, version));
+			let layout = identity
+				.as_ref()
+				.and_then(|(odx, version)| extracted.freeze_frames(Some(odx), Some(version)))
+				.map(|(variant, fields)| {
+					note!("{request:03X}  freeze frames described by the VCDS rows of {variant}");
+					crate::freezeframe::Layout::new(fields)
+				});
 			if let Some(file) = lookup.as_ref().and_then(Namers::sealed)
 				&& !sealed.contains(&file)
 			{
@@ -850,10 +884,16 @@ pub async fn run<L: UnitLink>(
 				// Extended data carries when it happened: the odometer at the
 				// time and how often. Read for every fault, since that is the
 				// question a stored code raises.
+				// The same answer holds the freeze frame: the unit's own records after the two
+				// standard ones (`crate::freezeframe`). No read beyond this one.
 				let records = uds.read_dtc_extended(dtc.code).await.unwrap_or_default();
 				let mut context = None;
+				let mut freeze = Vec::new();
 				for record in &records {
-					let parsed = FaultContext::parse(&record.data);
+					let (split, parsed) = crate::freezeframe::split(record, layout.as_ref());
+					if freeze.is_empty() {
+						freeze = crate::freezeframe::lines(&split, parsed.as_ref(), layout.as_ref());
+					}
 					if let Some(parsed) = &parsed {
 						note!(
 							"{request:03X}  {}  {}{SEP}{}",
@@ -882,6 +922,7 @@ pub async fn run<L: UnitLink>(
 					context,
 					text: named.text.unwrap_or_default(),
 					src: named.src,
+					freeze,
 				});
 				if named.needs_f1a2 && !guessed_by_family.iter().any(|(r, _)| *r == request) {
 					guessed_by_family.push((request, !f1a2.is_empty()));
@@ -912,6 +953,10 @@ pub async fn run<L: UnitLink>(
 	let failing = rows.iter().filter(|r| r.status & FAILED_NOW != 0).count();
 	if !rows.is_empty() {
 		out!("{}\n", render_rows(&rows, width));
+	}
+	let frames = render_freeze_frames(&rows, width);
+	if !frames.is_empty() {
+		out!("{frames}\n");
 	}
 	if details && !raw_table.is_empty() {
 		out!("{}\n", raw_table.render(width));
@@ -1212,7 +1257,7 @@ mod tests {
 		let context = FaultContext {
 			priority: 6,
 			occurrences: 9,
-			cycle_counter: 0x02B8,
+			aging_counter: 0xB8,
 			mileage_km: 212_763,
 			clock: 0x69F9_044B,
 		};
@@ -1244,7 +1289,7 @@ mod tests {
 			describe_when(&FaultContext {
 				priority: 1,
 				occurrences: 1,
-				cycle_counter: 0,
+				aging_counter: 0,
 				mileage_km: 1,
 				clock,
 			})
@@ -1260,7 +1305,7 @@ mod tests {
 		let context = FaultContext {
 			priority: 6,
 			occurrences: 0xFF,
-			cycle_counter: 0x02B9,
+			aging_counter: 0xB9,
 			mileage_km: 212_795,
 			clock: 0x69F9_68D9,
 		};
@@ -1295,7 +1340,7 @@ mod tests {
 			Some(FaultContext {
 				priority: 1,
 				occurrences: n,
-				cycle_counter: 0,
+				aging_counter: 0,
 				mileage_km: km,
 				clock,
 			})
@@ -1311,6 +1356,7 @@ mod tests {
 				context: context(214_592, 254, 0x69F6_0003),
 				text: "Unterbrechung des Signalpfades \"Init\"".into(),
 				src: ODIS,
+				freeze: Vec::new(),
 			},
 			Row {
 				unit: "17".into(),
@@ -1322,6 +1368,7 @@ mod tests {
 				context: context(214_634, 13, 0x69F9_7C82),
 				text: "BAP_TEL_0x28 keine Kommunikation".into(),
 				src: ODIS_GUESSED,
+				freeze: Vec::new(),
 			},
 		];
 		assert_eq!(
