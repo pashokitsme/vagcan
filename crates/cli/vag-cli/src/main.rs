@@ -460,6 +460,9 @@ enum Command {
 	///
 	/// There is no `--hz`: the rate is measured and reported, never asserted in
 	/// advance, and a flag that throttled a stopwatch could only make it worse.
+	///
+	/// A mark from a standstill prints as a range, its middle first — not a ±.
+	/// `-v` says how to read the tables and gives the rate.
 	#[cfg(feature = "measure")]
 	Measure(#[command(flatten)] measure::args::Args),
 
@@ -601,7 +604,7 @@ async fn run() -> Result<ExitCode> {
 	// It reads no more than `~/.vagcan/data/` and opens no adapter.
 	let Some(command) = cli.command else {
 		let facts = overview::gather();
-		print!("{}", overview::render(&facts));
+		vag_cli_core::out!("{}", overview::render(&facts));
 		return Ok(if overview::settled(&facts) {
 			ExitCode::SUCCESS
 		} else {
