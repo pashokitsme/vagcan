@@ -204,11 +204,18 @@ pub struct Tried {
 	/// two cars of two projects carry is read once per project.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub project: Option<String>,
-	/// The variant name this lookup's rows are stored under — a redirect's source or the
-	/// file stem — when its list was read: what a car of this project joins its rows by
-	/// ([`car_join`]), so it is never handed another lookup's rows that tie at its rank.
+	/// The variant name this lookup's channels are stored under — a redirect's source or
+	/// the file stem — when its measurement list was read: what a car of this project joins
+	/// its channels by ([`car_join`]), so it is never handed another lookup's rows that tie
+	/// at its rank. `None` when the measurement list did not open, whatever the other
+	/// registries gave: such a unit joins its channels by rank.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub stem: Option<String>,
+	/// The variant name this lookup's rows of the other registries (`registry_row`) are
+	/// stored under, when it has any: the same name [`Self::stem`] would be, logged apart
+	/// so that a unit whose measurement list did not open still joins its channels by rank.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub registry_stem: Option<String>,
 }
 
 /// How a car joins its units to the VCDS rows the registry read stored for it: its project
@@ -528,10 +535,7 @@ impl Summary {
 			detail.push_str(&format!("; {} listed row{} did not read", self.unread, plural(self.unread)));
 		}
 		if self.other_rows > 0 {
-			detail.push_str(&format!(
-				"; {} rows of adaptations, basic settings, output tests and freeze frames",
-				self.other_rows
-			));
+			detail.push_str(&format!("; {} rows of VCDS's other registries", self.other_rows));
 		}
 		if self.keys_found > 0 {
 			let kept = match self.keys_unsaved {
@@ -638,6 +642,7 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 					outcome: word.clone(),
 					project: None,
 					stem: None,
+					registry_stem: None,
 				})
 				.collect();
 			// The log before the rows go, on this path: a kill between the two
@@ -798,15 +803,14 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 			.to_string(),
 			project: car.clone(),
 			stem: None,
+			registry_stem: None,
 		});
 		// Whatever came of its measurement list: a unit whose `[MWB]` is shut may
-		// still list adaptations. Its rows go under the name its channels would, and a
-		// unit with no channels logs that name, so a car joins its other rows by it too.
-		let other_stem = others.absorb(other, &words, &units_of, &tables);
-		if !matches!(found, UnitMeasurements::Found { .. })
-			&& let Some(tried) = log.units.last_mut()
-		{
-			tried.stem = other_stem;
+		// still list adaptations. Its rows go under the name its channels would, logged
+		// apart from the channels' stem, which stays what the channel join reads.
+		let registry_stem = others.absorb(other, &words, &units_of, &tables);
+		if let Some(tried) = log.units.last_mut() {
+			tried.registry_stem = registry_stem;
 		}
 		let UnitMeasurements::Found { file, rows, via, .. } = found else {
 			if !extracted.for_unit_from(vag_data_db::ODIS, Some(odx), Some(version)).is_empty() {
@@ -891,7 +895,7 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 	if others.shut > 0 {
 		notes.push(format!(
 			"{} list{} of adaptations, basic settings, output tests, freeze frames or XPL bits did not open: \
-			 a key not found, or a file only VCDS itself opens",
+			 a key not found, a file only VCDS itself opens, or a unit file of another install",
 			others.shut,
 			plural(others.shut)
 		));
@@ -1598,6 +1602,7 @@ mod tests {
 			outcome: outcome.into(),
 			project: None,
 			stem: None,
+			registry_stem: None,
 		}
 	}
 
@@ -1876,6 +1881,7 @@ mod tests {
 				line(None, Some("EV_InvACC_006_VW27")),
 				Tried {
 					stem: None,
+					registry_stem: None,
 					..tried("EV_InvGone", "001001", NO_FILE)
 				},
 			],
@@ -1888,6 +1894,29 @@ mod tests {
 		// A log from before the field reads with no stem.
 		let old: Tried = serde_json::from_str(r#"{"odx_name": "EV_A", "outcome": "read"}"#).unwrap();
 		assert_eq!(old.stem, None);
+	}
+
+	#[test]
+	fn the_other_registries_stem_never_changes_how_a_car_joins_its_channels() {
+		// Found in review of #42: a unit whose `[MWB]` did not open but whose other lists
+		// did logged their stem as `stem`, and its channels then joined that stem exactly —
+		// none — where the rank rule had found a sibling version's. Logged apart, the
+		// channel join is #43's, whatever the other registries gave.
+		let shut = Tried {
+			registry_stem: Some("EV_InvACC_006_SK37".into()),
+			..tried("EV_InvACC", "006145", "key not found")
+		};
+		let log = Log {
+			units: vec![shut.clone()],
+			..Log::new(PathBuf::from("/vcds"))
+		};
+		assert!(stems_for(&log, None).is_empty(), "the channels join by rank, as before");
+		let text = serde_json::to_string(&shut).unwrap();
+		assert!(text.contains("\"registry_stem\"") && !text.contains("\"stem\""), "{text}");
+		assert_eq!(serde_json::from_str::<Tried>(&text).unwrap(), shut);
+		// A log from before the field reads with none.
+		let old: Tried = serde_json::from_str(r#"{"odx_name": "EV_A", "outcome": "read", "stem": "EV_A"}"#).unwrap();
+		assert_eq!((old.stem.as_deref(), old.registry_stem), (Some("EV_A"), None));
 	}
 
 	/// The read and the pending check take the cars' projects from the recorded cars, and in a
@@ -2202,13 +2231,7 @@ mod tests {
 		summary.keys_unsaved = Some("not saved".into());
 		assert!(summary.detail().ends_with("1 key found, not saved"));
 		summary.other_rows = 412;
-		assert!(
-			summary
-				.detail()
-				.contains("; 412 rows of adaptations, basic settings, output tests and freeze frames"),
-			"{}",
-			summary.detail()
-		);
+		assert!(summary.detail().contains("; 412 rows of VCDS's other registries"), "{}", summary.detail());
 	}
 
 	#[test]

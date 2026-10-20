@@ -225,8 +225,10 @@ pub struct Entry {
 	/// RA, RG, RS, RX: the field's 1-based place among the fields of one
 	/// identifier, empty where the identifier has one field.
 	pub ordinal: Option<u32>,
-	/// RF: the record's length in bytes (the first field, less 100).
-	pub record_length: Option<u32>,
+	/// RF: the first field, as written. In 917 of 1,001 of `RF.rod`'s records it is 100
+	/// plus the record's length in bytes (`research/vcds-registry/README.md` §9.4), which
+	/// is not enough to read it as that: it is kept, not decoded.
+	pub lead: Option<u32>,
 	/// MUX: which raw values of the selector this case is for.
 	pub case: Option<Case>,
 	pub value: Value,
@@ -306,9 +308,9 @@ fn read(shape: Shape, index: usize, row: &DtcRow<'_>) -> Result<Entry, RowError>
 		unit_id: small(b + 5),
 		name_id: small(b + 9),
 	};
-	let (identifier, ordinal, record_length, case) = match shape {
+	let (identifier, ordinal, lead, case) = match shape {
 		Shape::Identified { .. } => (small(1), small(0), None, None),
-		Shape::Record => (None, None, small(0).and_then(|n| n.checked_sub(100)), None),
+		Shape::Record => (None, None, small(0), None),
 		Shape::Mux => {
 			let bound = |i: usize| text(i).and_then(|t| t.parse::<i64>().ok());
 			let case = match (text(5), text(6)) {
@@ -324,7 +326,7 @@ fn read(shape: Shape, index: usize, row: &DtcRow<'_>) -> Result<Entry, RowError>
 		key: row.key,
 		identifier,
 		ordinal,
-		record_length,
+		lead,
 		case,
 		value,
 		raw: fields.join(","),
@@ -530,9 +532,9 @@ mod tests {
 	}
 
 	#[test]
-	fn a_freeze_frame_row_has_a_record_length_and_no_identifier() {
+	fn a_freeze_frame_row_keeps_its_first_field_as_written_and_has_no_identifier() {
 		let e = entry(Section::FreezeFrame, 114, "114,2,0,0,0.1,1,9,0,0,8,930131").unwrap();
-		assert_eq!((e.identifier, e.ordinal, e.record_length), (None, None, Some(14)));
+		assert_eq!((e.identifier, e.ordinal, e.lead), (None, None, Some(114)));
 		assert_eq!(e.value.scale, Some((0.1, 0.0)));
 		assert_eq!(e.value.name_id, Some(930_131));
 		// A field deferring to the multiplexer names its key in the table field.

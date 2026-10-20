@@ -284,7 +284,9 @@ CREATE INDEX IF NOT EXISTS idx_reading_level  ON reading_level(reading_id);
 -- 1-based number in its registry and `key` its key there. `identifier` is the
 -- DID (ADP), routine id (GES) or input/output DID (SOT). For a MUX case,
 -- `identifier` is the MUX key and `case_lower`/`case_upper` its raw range, both
--- NULL for the default case. `table_id` is the TTDOP table of a type-3 row and
+-- NULL for the default case. `lead` is an FFMUX row's first field as written: 100
+-- plus the record's length in bytes in 917 of 1,001 records, which is not enough to
+-- store it as a length. `table_id` is the TTDOP table of a type-3 row and
 -- the MUX key of a type-6 row. `raw` is every field deciphered, comma-joined:
 -- the columns nobody established a meaning for live there and nowhere else.
 CREATE TABLE IF NOT EXISTS registry_row (
@@ -296,7 +298,7 @@ CREATE TABLE IF NOT EXISTS registry_row (
     key           INTEGER NOT NULL,
     identifier    INTEGER,
     ordinal       INTEGER,
-    record_length INTEGER,
+    lead          INTEGER,
     case_lower    INTEGER,
     case_upper    INTEGER,
     kind          INTEGER,
@@ -1543,7 +1545,7 @@ pub fn put_all_vcds_registry_rows<'a>(
 	{
 		let mut insert = tx.prepare(
 			"INSERT INTO registry_row \
-                (source_id, variant, section, line, key, identifier, ordinal, record_length, case_lower, case_upper, \
+                (source_id, variant, section, line, key, identifier, ordinal, lead, case_lower, case_upper, \
                  kind, signed, big_endian, bit_offset, bit_length, factor, offset, table_id, constant, unit, name, text_id, raw) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
 		)?;
@@ -1563,7 +1565,7 @@ pub fn put_all_vcds_registry_rows<'a>(
 					e.key,
 					e.identifier,
 					e.ordinal,
-					e.record_length,
+					e.lead,
 					lower,
 					upper,
 					v.kind,
@@ -2899,7 +2901,7 @@ mod tests {
 				key: 930_001,
 				identifier: Some(identifier),
 				ordinal: Some(1),
-				record_length: None,
+				lead: None,
 				case: None,
 				value: Value {
 					kind: Some(3),

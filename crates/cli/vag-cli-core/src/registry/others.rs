@@ -129,6 +129,13 @@ impl Others {
 			},
 			// VCDS's own word that it has no data for the unit.
 			UnitMeasurements::NoData { .. } => return unit,
+			// The unit's file is another install's than the registries: its other lists
+			// would point into registries they were not written against. Each one this
+			// install has is a list that did not open.
+			UnitMeasurements::Mismatched { .. } => {
+				unit.shut = self.opened.len();
+				return unit;
+			}
 			_ => match vag_data_labels::find_rod_by_odx_variant(root, odx, version, lookup)
 				.ok()
 				.and_then(|found| found.files.into_iter().next())
@@ -246,11 +253,36 @@ mod tests {
 			key: 930_001,
 			identifier: Some(identifier),
 			ordinal: None,
-			record_length: None,
+			lead: None,
 			case: None,
 			value: Default::default(),
 			raw: String::new(),
 		}
+	}
+
+	#[test]
+	fn a_unit_file_from_another_install_has_its_other_lists_counted_shut_not_read() {
+		// A newer unit file in an older install: its `[MWB]` names rows `RM.rod` does not
+		// have, and its other lists would be read into registries they were not written
+		// against. None is read; each registry that opened counts one list shut.
+		let others = Others {
+			opened: Section::ALL.iter().map(|&section| (section, Registry::parse(""))).collect(),
+			..Default::default()
+		};
+		let found = UnitMeasurements::Mismatched {
+			file: "/nowhere/UDS_EV/EV_Unit.rod".into(),
+			listed: 9,
+			outside: 3,
+		};
+		let unit = others.read_unit(
+			Path::new("/nowhere"),
+			("EV_Unit", "001", Lookup::direct()),
+			&mut IvCache::default(),
+			&found,
+			&vag_data_labels::MeasurementRegistry::default(),
+		);
+		assert!(unit.sections.is_empty() && unit.muxes.is_empty() && unit.stem.is_none());
+		assert_eq!(unit.shut, Section::ALL.len());
 	}
 
 	#[test]
