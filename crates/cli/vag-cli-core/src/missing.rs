@@ -123,28 +123,19 @@ impl std::fmt::Display for NoLabelData {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		writeln!(f, "{}", self.headline)?;
 		if let Some((preposition, path)) = &self.looked {
-			writeln!(f, "\n{preposition}: {path}")?;
+			writeln!(f, "{preposition}: {path}")?;
 		}
 		// The fix. One copy, and the only copy — a second one anywhere is the
-		// bug this type exists to have already fixed.
-		writeln!(
-			f,
-			"\n\
-             vagcan reads a car model's data from an extracted ODIS-Service project:\n    \
-             vagcan setup <path to the ODIS project folder>\n\n\
-             A VCDS installation works too — names and fault text, and the channels of the\n\
-             units of every car `vagcan watch`, `measure` or `units --identify` records:\n    \
-             vagcan setup <path to the VCDS installation>\n\
-             Neither to hand? Leave the path off: it asks which, and can fetch VCDS.\n\n\
-             It is offline — no adapter, no car, and it takes seconds. What it reads lands\n\
-             in a project under ~/.vagcan/data/. An ODIS project\n\
-             can be deleted afterwards; keep a VCDS installation: a unit the tool meets\n\
-             later — swapped, updated, or asleep the first time — is read from it.\n\n\
-             VCDS is Ross-Tech's, and free from them directly:\n    \
-             {VCDS_DOWNLOAD}"
-		)
+		// bug this type exists to have already fixed. What `setup` does and what to
+		// keep afterwards is `vagcan setup --help`'s.
+		write!(f, "{FIX}")
 	}
 }
+
+/// What to type when the label data is not here: the second line of every
+/// [`NoLabelData`].
+pub const FIX: &str = "Fix: `vagcan setup <ODIS project folder | VCDS installation>` — offline; with no path it asks which \
+                       and can fetch VCDS (`vagcan setup --help`)";
 
 /// Nothing to add — the whole message is [`Display`](std::fmt::Display). The
 /// impl exists so the type reaches an `anyhow::Error` intact; see the type docs.
@@ -194,18 +185,10 @@ pub fn no_catalog(subject: &str, dir: &Path) -> String {
 	let mut out = String::new();
 	let _ = writeln!(
 		out,
-		"{subject} has no scalings on this machine: no row proven on a car, and no channel\n\
-         read from an ODIS project or a VCDS installation."
+		"{subject} has no scalings on this machine: no row proven on a car, no channel from an ODIS project or a VCDS installation."
 	);
-	let _ = writeln!(out, "\nLooked in: {}", dir.display());
-	let _ = writeln!(
-		out,
-		"\n\
-         A scaling says what an identifier's bytes mean: the raw form, the factor and the\n\
-         offset. `vagcan setup` brings them:\n\
-         {}",
-		scalings_path()
-	);
+	let _ = writeln!(out, "Looked in: {}", dir.display());
+	let _ = writeln!(out, "{}", scalings_path());
 	out
 }
 
@@ -263,11 +246,14 @@ mod tests {
 	#[test]
 	fn the_label_shortage_names_setup_and_where_the_data_comes_from() {
 		let m = no_label_data("The measurement names", "`vagcan dev vcds names`", Path::new("/x/n.json")).to_string();
-		assert!(m.contains("vagcan setup <path to the ODIS project folder>"), "{m}");
-		assert!(m.contains("vagcan setup <path to the VCDS installation>"), "{m}");
-		assert!(m.contains("/x/n.json"), "the reader must see which file was looked for:\n{m}");
-		assert!(m.contains(VCDS_DOWNLOAD), "no VCDS install is a case, not an oversight:\n{m}");
-		assert!(m.contains("Ross-Tech"), "{m}");
+		// What failed, where it looked, what to type: three lines, the rest in
+		// `vagcan setup --help`.
+		assert_eq!(
+			m,
+			format!("The measurement names are not on this machine, and `vagcan dev vcds names` needs them.\nLooked for: /x/n.json\n{FIX}")
+		);
+		assert!(m.contains("vagcan setup <ODIS project folder | VCDS installation>"), "{m}");
+		assert!(m.contains("can fetch VCDS"), "no VCDS install is a case, not an oversight:\n{m}");
 		// The one thing it must never do is send a reader down the other path.
 		assert!(!m.contains("calibrate"), "a label shortage is not fixed by driving:\n{m}");
 	}
@@ -302,7 +288,7 @@ mod tests {
 		// setup-then-the-car path.
 		let label = no_label_data("The names", "this", Path::new("/n")).to_string();
 		let catalog = no_catalog("This car", Path::new("/d"));
-		assert!(label.contains("vagcan setup <path"));
+		assert!(label.contains("vagcan setup <ODIS project folder"));
 		assert!(!label.contains(scalings_path()), "{label}");
 		assert!(!label.contains("calibrate"), "{label}");
 		assert!(catalog.contains(scalings_path()), "{catalog}");
@@ -316,16 +302,11 @@ mod tests {
 		// not copied the labels in yet. It must send the reader to `setup`, name
 		// the directory it looked in, and never to a drive — the numbers are
 		// real, only the names are absent, so a drive would be the wrong loop.
+		// Where setup puts it, and what to keep afterwards, is `setup --help`'s now
+		// (`vag-cli`'s `setup_help_says_what_lands_where_and_what_to_keep`).
 		let m = no_fault_labels(Path::new("/home/x/.vagcan/rod"));
-		assert!(m.contains("vagcan setup <path to the ODIS project folder>"), "{m}");
+		assert!(m.contains("vagcan setup <ODIS project folder | VCDS installation>"), "{m}");
 		assert!(m.contains("/home/x/.vagcan/rod"), "the reader must see where it looked:\n{m}");
-		assert!(m.contains(VCDS_DOWNLOAD), "no VCDS install is a case, not an oversight:\n{m}");
-		assert!(m.contains("~/.vagcan/data/"), "the point is that setup copies what it read in:\n{m}");
-		assert!(m.contains("deleted afterwards"), "an ODIS project is then disposable:\n{m}");
-		assert!(
-			m.contains("keep a VCDS installation"),
-			"a VCDS installation is not — a unit met later is read from it:\n{m}"
-		);
 		// The one thing it must never do is send a reader driving.
 		assert!(!m.contains("calibrate"), "a missing name is not fixed by a drive:\n{m}");
 		assert!(!m.contains("measurement rows"), "{m}");
@@ -373,9 +354,7 @@ mod tests {
 	/// The fix line, cut out of a rendered message so two of them can be
 	/// compared without the part that is meant to differ.
 	fn fix_only(message: &str) -> String {
-		let at = message
-			.find("vagcan reads a car model")
-			.unwrap_or_else(|| panic!("no fix in:\n{message}"));
+		let at = message.find("Fix: ").unwrap_or_else(|| panic!("no fix in:\n{message}"));
 		message[at..].to_string()
 	}
 
@@ -406,18 +385,12 @@ mod tests {
 		// the tool is heading for — then a VCDS installation, which it can fetch.
 		// Each with the argument spelled as what to type, since a bare
 		// `vagcan setup` under "point it at an ODIS project" was no instruction.
-		let odis = first.find("vagcan setup <path to the ODIS project folder>").expect(&first);
-		let vcds = first.find("vagcan setup <path to the VCDS installation>").expect(&first);
+		let odis = first.find("ODIS project folder").expect(&first);
+		let vcds = first.find("VCDS installation").expect(&first);
 		assert!(odis < vcds, "ODIS comes first:\n{first}");
-		assert!(first.contains(VCDS_DOWNLOAD), "{first}");
-		// And the time it takes is said per source: an ODIS project reads in
-		// seconds, and "a few minutes over all the label files" was only ever
-		// true of a VCDS installation.
-		assert!(first.contains("seconds"), "{first}");
-		assert!(!first.contains("few minutes over all the label files"), "{first}");
-		for line in first.lines() {
-			assert!(line.chars().count() <= 80, "{} columns: {line:?}", line.chars().count());
-		}
+		assert!(first.contains("can fetch VCDS"), "{first}");
+		// One line: what to type, not how the tool works.
+		assert_eq!(first.lines().count(), 1, "{first}");
 		// Never the other shortage's fix. That is the mistake this module exists
 		// to prevent, and it must hold for the sites that build their own
 		// headline as much as for the two named ones.

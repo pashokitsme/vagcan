@@ -64,7 +64,8 @@ impl Terminal for Crossterm {
 		let mut out = std::io::stdout();
 		match switch {
 			Switch::Raw => terminal::enable_raw_mode()?,
-			Switch::Cursor => execute!(out, cursor::Hide)?,
+			// On stderr, where the in-place menus draw: stdout may be a file.
+			Switch::Cursor => execute!(std::io::stderr(), cursor::Hide)?,
 			Switch::Alternate => execute!(out, terminal::EnterAlternateScreen)?,
 			Switch::Mouse => execute!(out, event::EnableMouseCapture)?,
 		}
@@ -75,7 +76,7 @@ impl Terminal for Crossterm {
 		let mut out = std::io::stdout();
 		match switch {
 			Switch::Raw => terminal::disable_raw_mode()?,
-			Switch::Cursor => execute!(out, cursor::Show)?,
+			Switch::Cursor => execute!(std::io::stderr(), cursor::Show)?,
 			Switch::Alternate => execute!(out, terminal::LeaveAlternateScreen)?,
 			Switch::Mouse => execute!(out, event::DisableMouseCapture)?,
 		}

@@ -4,7 +4,6 @@
 //! every full-screen command and the picker enter through, and the file chooser
 //! `measure view` and `recording` both offer when a path was left off.
 
-use std::io::Write as _;
 
 pub mod bars;
 pub mod chart;
@@ -86,7 +85,7 @@ pub fn erase(out: &mut impl std::io::Write, drawn: usize) -> anyhow::Result<()> 
 	Ok(())
 }
 
-/// The screen a person actually uses: a list on stdout, keys off the terminal.
+/// The screen a person actually uses: a list on stderr, keys off the terminal.
 ///
 /// **One type for both screens, where there were two.** [`menu`] and [`picker`]
 /// each had a `Console` holding one `String`, a `new` that wrapped it and a
@@ -109,10 +108,10 @@ impl Console {
 	}
 
 	/// Say one line. Both traits below declare a `say`, and both are this.
+	///
+	/// On stderr, with the questions it goes with: stdout is a command's data.
 	pub(crate) fn say_line(&mut self, line: &str) -> anyhow::Result<()> {
-		let mut out = std::io::stdout();
-		writeln!(out, "{line}")?;
-		out.flush()?;
+		crate::verbosity::say(0, line);
 		Ok(())
 	}
 }

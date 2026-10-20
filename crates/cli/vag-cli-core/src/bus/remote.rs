@@ -415,7 +415,10 @@ impl Remote {
 		let (period, wire_priority) = (asked.period_ms, asked.priority);
 		match self.send(&Message::Subscribe(asked)) {
 			Ok(()) => {
-				crate::wire!("+  {:03X}  {did:04X} every {period} ms, sub {sub} ({wire_priority:?}), by the board", unit.request);
+				crate::wire!(
+					"+  {:03X}  {did:04X} every {period} ms, sub {sub} ({wire_priority:?}), by the board",
+					unit.request
+				);
 				self.subs.insert(sub, Sub { unit, did, priority, to });
 				self.wire.insert(key, sub);
 			}
