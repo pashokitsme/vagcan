@@ -179,9 +179,11 @@ refused on a moving car and never through the dash board.
   report speed counts as moving.
 - **Never pass `--extended` casually.** The extended diagnostic session is workshop
   mode, and a unit that assists the driver may stop assisting while it is in one.
-- **Never reach for a sweep to answer a small question.** `units --identify 01` is the
-  one sweep left — 256 reads of one unit. `vagcan units --identify`, `faults --unit` and
-  `watch` answer most questions with four reads a unit, or none.
+- **Never reach for a sweep to answer a small question.** There are two, each of one
+  unit: `units --identify 01` (256 reads), and `sensors --unit <unit>` on a unit outside
+  7E0–7E7 (the standard OBD-II list). Both need a parked car and a cable adapter.
+  `vagcan units --identify`, `faults --unit` and `watch` answer most questions with four
+  reads a unit, or none.
 - **Never suggest adding a write service** — coding, adaptation, clearing faults,
   flashing. `CLAUDE.md` forbids it outright.
 - **Never hardcode a car's identifier, scaling or unit name into the code** to make a

@@ -80,10 +80,13 @@ pub enum Reach {
 /// `obd::conversion_for`, per parameter, from the unit's block and the width of
 /// what it actually answered.
 ///
-/// **Where it is a sweep, and where it is not.** Inside the emissions block (`7E0`–`7E7`)
-/// these are the identifiers J1979 legislates on that unit: every generic scan tool reads
-/// them off a running car, at the roadside and on the move, and the moving-car check
-/// itself is one of them (`F40D` off `7E0`, [`safety::require_stationary`]). Plain
+/// **Where it is a sweep, and where it is not.** `7E0`–`7E7` is the block ISO 15765-4
+/// gives the legislated OBD servers, the emissions-related units. `F400`–`F4FF` is where
+/// ISO 14229-1 (Annex C) and SAE J1979-2 put the J1979 parameters under `0x22`: the same
+/// parameters a generic scan tool asks with service `01` of a running, moving car. Read off
+/// a unit in that block they are what the regulation has that unit serve, and the
+/// moving-car check is itself one of them (`F40D` off `7E0`,
+/// [`safety::require_stationary`]). Plain
 /// `sensors` is the engine (`--unit 01`), so it is not a sweep: it runs on any link and at
 /// any speed, and over BLE the board's own guards apply. Outside the block nothing binds a
 /// unit to these identifiers — the climate unit answers `F405` and means something else
@@ -105,7 +108,7 @@ pub async fn sensors<L: UnitLink>(open: impl AsyncFnOnce(Reach) -> Result<L>, un
 		backend = match safety::require_stationary(backend).await {
 			Ok(backend) => backend,
 			Err((_, why)) => anyhow::bail!(
-				"{why}\n\
+				"{why}.\n\
                  Read it parked: {} standard identifiers asked of a unit outside the emissions block \
                  (7E0–7E7) are a sweep, and a sweep can stop a unit doing its job while the car moves.",
 				PIDS.len()
@@ -449,7 +452,7 @@ pub async fn identification<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, 
 		backend = match safety::require_stationary(backend).await {
 			Ok(backend) => backend,
 			Err((_, why)) => anyhow::bail!(
-				"{why}\n\
+				"{why}.\n\
                  Read it parked: 256 reads of one unit can stop it doing its job while the car moves \
                  (--while-driving lifts this)."
 			),

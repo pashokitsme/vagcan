@@ -682,7 +682,10 @@ pub async fn run<L: UnitLink>(
 		// An extended session is workshop mode; see `crate::safety`.
 		backend = match crate::safety::require_stationary(backend).await {
 			Ok(backend) => backend,
-			Err((_, why)) => anyhow::bail!("--extended refused: {why}"),
+			Err((_, why)) => anyhow::bail!(
+				"--extended refused: {why}. An extended diagnostic session can make a control unit stop \
+                 assisting the driver. Stop the car first."
+			),
 		};
 	}
 

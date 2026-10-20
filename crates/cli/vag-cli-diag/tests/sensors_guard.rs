@@ -4,7 +4,9 @@
 //! OBD-II identifiers that nothing binds it to answer — a sweep, guarded as `units
 //! --identify <unit>` is (`CLAUDE.md`, Safety; `car::sensors`). Each test proves one part of
 //! that guard; the refusal through the dash board and its `--slcan` exception are the
-//! device's, proven in `vag-cli`'s `main.rs` with the words this command refuses in.
+//! device's, proven in `vag-cli`'s `main.rs` with the words this command refuses in. The
+//! last test holds `units --identify <unit>` to the same line between a unit going quiet and
+//! the link refusing (`anomaly::Answer::Withheld`).
 //!
 //! The cars are made up: two units and the bytes they answer, none of them any car's. A
 //! whole-PDU link, as `levels.rs`'s, that writes down every request it is sent. Nothing here
@@ -32,6 +34,10 @@ struct Script {
 	records: BTreeMap<(u16, u16), Vec<u8>>,
 	/// A unit that answers its first so many requests and then nothing at all.
 	quiet_after: Option<(u16, usize)>,
+	/// A link that carries a unit's first so many requests and refuses the rest itself, as
+	/// the dash board over BLE refuses past `MAX_DISTINCT_IDENTIFIERS` of one unit — which
+	/// reaches the client as `TransportError::Protocol` (`vag_cli_core::bus`).
+	refused_after: Option<(u16, usize)>,
 	/// Every request, in order: the unit's request id and the PDU.
 	asked: Vec<(u16, Vec<u8>)>,
 }
@@ -49,6 +55,11 @@ impl Car {
 
 	fn quiet_after(self, unit: u16, requests: usize) -> Car {
 		self.script.lock().unwrap().quiet_after = Some((unit, requests));
+		self
+	}
+
+	fn refused_by_the_link_after(self, unit: u16, requests: usize) -> Car {
+		self.script.lock().unwrap().refused_after = Some((unit, requests));
 		self
 	}
 
@@ -114,6 +125,14 @@ impl AsyncIsoTpTransport for CarChannel {
 			return Err(TransportError::Timeout);
 		};
 		let script = self.car.script.lock().unwrap();
+		if let Some((unit, after)) = script.refused_after {
+			let so_far = script.asked.iter().filter(|(to, _)| *to == unit).count();
+			if unit == self.request && so_far > after {
+				return Err(TransportError::Protocol(
+					"the dash board refused it: too many different identifiers asked of one unit".into(),
+				));
+			}
+		}
 		// A unit that is not there says nothing at all; one gone quiet says nothing more.
 		if !script.records.keys().any(|(unit, _)| *unit == self.request) {
 			return Err(TransportError::Timeout);
@@ -165,6 +184,7 @@ async fn off_the_emissions_block_it_is_refused_on_a_moving_car() {
 	let refused = format!("{:#}", result.expect_err("refused at 30 km/h"));
 	assert!(refused.contains("moving at 30 km/h"), "{refused}");
 	assert!(refused.contains("Read it parked"), "{refused}");
+	assert!(!refused.contains("session"), "sensors changes no session: {refused}");
 	assert_eq!(reaches, [Reach::CableOnly]);
 	assert_eq!(car.asked(), [speed_read()], "the speed and nothing else: the unit is never asked");
 }
@@ -244,4 +264,48 @@ async fn a_unit_that_does_not_parse_opens_nothing() {
 	assert!(format!("{:#}", result.expect_err("refused")).starts_with("--unit: "));
 	assert!(reaches.is_empty());
 	assert!(car.asked().is_empty());
+}
+
+#[tokio::test]
+async fn the_dash_board_refusing_past_its_cap_is_not_the_unit_going_quiet() {
+	// Over BLE the board remembers what an earlier command asked of a unit: `info` leaves
+	// seven of the engine's identifiers, and a `sensors` inside that memory takes the
+	// distinct set past its cap. From there the board refuses each one itself. That is the
+	// link's no, not the engine falling silent: the read finishes, with what it got.
+	let car = Car::at(0)
+		.answers(ENGINE, did_for_pid(PIDS[0].pid), &[0x20])
+		.answers(ENGINE, did_for_pid(PIDS[1].pid), &[0x50])
+		.refused_by_the_link_after(ENGINE, 2);
+	let (result, reaches) = sensors(&car, "01").await;
+	result.unwrap_or_else(|e| panic!("a board refusal ended the read: {e:#}"));
+	assert_eq!(reaches, [Reach::AnyLink]);
+	assert_eq!(car.asked_of(ENGINE).len(), PIDS.len(), "every identifier asked, none halted");
+}
+
+#[tokio::test]
+async fn units_identify_still_stops_on_real_silence_and_not_on_the_links_refusal() {
+	// The same classification is `units --identify <unit>`'s: a unit that answers, then
+	// says nothing, ends the read after the run of silences ...
+	let car = Car::at(0).answers(ESC, 0xF100, &[0x01]).answers(ESC, 0xF101, &[0x02]).quiet_after(ESC, 2);
+	let open = {
+		let car = car.clone();
+		async move || Ok(car)
+	};
+	let stopped = format!("{:#}", car::identification(open, "713", false).await.expect_err("stopped"));
+	assert!(stopped.contains("the read was stopped"), "{stopped}");
+	assert_eq!(car.asked_of(ESC).len(), 2 + QUIET_RUN);
+
+	// ... and a link that refuses the rest itself does not.
+	let car = Car::at(0)
+		.answers(ESC, 0xF100, &[0x01])
+		.answers(ESC, 0xF101, &[0x02])
+		.refused_by_the_link_after(ESC, 2);
+	let open = {
+		let car = car.clone();
+		async move || Ok(car)
+	};
+	car::identification(open, "713", false)
+		.await
+		.unwrap_or_else(|e| panic!("a link refusal ended the read: {e:#}"));
+	assert!(car.asked_of(ESC).len() >= 0x100, "the whole block was asked: {}", car.asked_of(ESC).len());
 }

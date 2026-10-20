@@ -220,7 +220,8 @@ crates/            all Rust. Three families and the product.
                        the link: a cable, or the dash board over USB or BLE), where
                        its files live, the terminal widgets. Knows no command.
     vag-cli-diag       reading a car and the files that explain it: identify,
-                       faults, the one guarded sweep (`units --identify <unit>`),
+                       faults, the guarded sweeps (`units --identify <unit>`,
+                       `sensors --unit <unit>` off 7E0–7E7),
                        watch, setup, dash build and edit, vcds tooling
     vag-cli-measure    binary `vagcan-measure` — the acceleration stopwatch.
                        Depends on `core` **alone**, checked symbol by symbol,
