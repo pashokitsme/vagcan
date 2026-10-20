@@ -218,14 +218,24 @@ pub struct CarJoin {
 	pub stems: BTreeMap<(String, String), String>,
 }
 
-/// [`CarJoin`] for the car with this VIN, out of the project's log and the `chassis.clb` of
-/// the installation it names. `None` with no log, or no table to say the car's project —
-/// the installation gone: the join is then by the rank rule alone, since the stems of a
-/// car of no known project are not this car's if it has one.
-pub fn car_join(project: &Project, vin: &str) -> Option<CarJoin> {
+/// [`CarJoin`] for a car, out of the project's log and the `chassis.clb` of the
+/// installation it names: the car's project from its VIN, and that project's stems.
+///
+/// A car with no VIN has no project and is never recorded, so it joins by the stems of
+/// the lookups made with no project — those of recorded cars whose model code the table
+/// does not list. A unit no such car carries has none, and joins by the rank rule.
+///
+/// `None` with no log, or for a VIN with no table to say its project — the installation
+/// gone: the join is then by the rank rule alone, since the stems of a car of no known
+/// project are not this car's if it has one.
+pub fn car_join(project: &Project, vin: Option<&str>) -> Option<CarJoin> {
 	let log = Log::load(project).ok()??;
-	let table = vag_data_labels::chassis::load_projects(&log.installation)?;
-	let car = table.of_vin(vin).map(str::to_string);
+	let car = match vin {
+		Some(vin) => vag_data_labels::chassis::load_projects(&log.installation)?
+			.of_vin(vin)
+			.map(str::to_string),
+		None => None,
+	};
 	Some(CarJoin {
 		stems: stems_for(&log, car.as_deref()),
 		project: car,
@@ -975,17 +985,6 @@ pub fn recorded_projects(project: &Project) -> BTreeMap<(String, String), Vec<St
 	}
 }
 
-/// The project code of the car with this VIN (`SK37`), out of the `chassis.clb` of the
-/// installation the project's VCDS rows were read from — the project those rows were read
-/// for ([`crate::extracted::Extracted::for_car`]). `None` with no log, the installation
-/// gone, or a model its table does not list.
-pub fn car_project(project: &Project, vin: &str) -> Option<String> {
-	let log = Log::load(project).ok()??;
-	vag_data_labels::chassis::load_projects(&log.installation)?
-		.of_vin(vin)
-		.map(str::to_string)
-}
-
 /// Why a shifted file did not open, in words a reader needs: its mask is the
 /// answer the VCDS interface gives to a challenge (cable command `0x45`), which
 /// nothing offline computes, and `setup` never runs the hours-long search for it
@@ -1223,6 +1222,10 @@ pub enum Unread {
 	Readable { units: BTreeSet<(String, String)>, root: PathBuf },
 	/// `units` have not been read, and cannot be: `why`.
 	Unreadable { units: BTreeSet<(String, String)>, why: String },
+	/// Every unit was tried, but by an older read ([`READ_VERSION`]): the cache holds what
+	/// it found, and `units` are worth reading again from the installation at `root`. Not a
+	/// gap — [`ensure`] reads them once; a build goes ahead on the rows there are.
+	Outdated { units: BTreeSet<(String, String)>, root: PathBuf },
 }
 
 /// Which of this car's units the project's VCDS installation has not been tried
@@ -1251,9 +1254,19 @@ pub fn unread(project: &Project, identities: &[UnitIdentity], described: impl Fn
 		}
 		_ => (None, false),
 	};
-	let units = pending(&untried, identities, described, projects.as_ref(), open);
+	// The units never read, as if the log were this read's; then, when there are none, the
+	// ones only an older read tried. The second is no gap: their rows are in the cache.
+	let current = Log {
+		read_version: untried.read_version.max(READ_VERSION),
+		..untried.clone()
+	};
+	let units = pending(&current, identities, &described, projects.as_ref(), open);
 	if units.is_empty() {
-		return Ok(Unread::Nothing);
+		let again = pending(&untried, identities, &described, projects.as_ref(), open);
+		return Ok(match where_from {
+			Installation::At(root) if !again.is_empty() => Unread::Outdated { units: again, root },
+			_ => Unread::Nothing,
+		});
 	}
 	Ok(match where_from {
 		Installation::At(root) => Unread::Readable { units, root },
@@ -1362,13 +1375,16 @@ fn try_ensure(identities: &[UnitIdentity]) -> Result<()> {
 		return Ok(());
 	};
 	let extracted = crate::extracted::open(&project);
-	let (wanted, root) = match unread(&project, identities, described_by(&extracted))? {
+	let (wanted, root, outdated) = match unread(&project, identities, described_by(&extracted))? {
 		Unread::Nothing => return Ok(()),
 		Unread::Unreadable { units, why } => {
 			crate::say!("{}", unreadable(units.len(), &why));
 			return Ok(());
 		}
-		Unread::Readable { units, root } => (units, root),
+		Unread::Readable { units, root } => (units, root, false),
+		// An older read tried them: read again once, since what it found may not be what
+		// this read finds.
+		Unread::Outdated { units, root } => (units, root, true),
 	};
 	// Every unit recorded on this machine, plus these: the rows are replaced
 	// per kind, so a read of these alone would drop every other car's. Loaded
@@ -1384,7 +1400,10 @@ fn try_ensure(identities: &[UnitIdentity]) -> Result<()> {
 	};
 	let mut units: BTreeSet<(String, String)> = cars.iter().flat_map(|car| car.units.iter()).filter_map(key).collect();
 	units.extend(wanted.iter().cloned());
-	crate::say!("{}", announce(units.len(), wanted.len()));
+	match outdated {
+		true => crate::say!("{}", announce_again(units.len())),
+		false => crate::say!("{}", announce(units.len(), wanted.len())),
+	}
 	crate::note!("vcds registry: {}", root.display());
 	let mut progress = Quietly {
 		spinner: None,
@@ -1420,6 +1439,14 @@ fn try_ensure(identities: &[UnitIdentity]) -> Result<()> {
 fn announce(units: usize, wanted: usize) -> String {
 	format!(
 		"reading the VCDS registry: {units} unit{} ({wanted} of this car new), the first time only",
+		plural(units)
+	)
+}
+
+/// The line for a read made again because an older version of this tool made the last one.
+fn announce_again(units: usize) -> String {
+	format!(
+		"reading the VCDS registry again: {units} unit{}, once, since this version finds their files differently",
 		plural(units)
 	)
 }
@@ -1952,6 +1979,29 @@ mod tests {
 		.save(&project)
 		.unwrap();
 		assert_eq!(unread(&project, &identities, |_, _| false).unwrap(), Unread::Nothing);
+		// The same log written by an older read: every unit was tried, so nothing is a gap —
+		// a build goes ahead on the rows in the cache — and both are worth reading again.
+		let mut old = Log::load(&project).unwrap().unwrap();
+		old.read_version = READ_VERSION - 1;
+		old.save(&project).unwrap();
+		let both: BTreeSet<(String, String)> = [("EV_Brake".to_string(), "002".to_string()), ("EV_Engine".to_string(), "001".to_string())].into();
+		assert_eq!(
+			unread(&project, &identities, |_, _| false).unwrap(),
+			Unread::Outdated {
+				units: both,
+				root: root.clone()
+			}
+		);
+		// A unit no read ever tried, beside them: that one is the gap, refused as before.
+		old.units.retain(|t| t.odx_name == "EV_Engine");
+		old.save(&project).unwrap();
+		assert_eq!(
+			unread(&project, &identities, |_, _| false).unwrap(),
+			Unread::Readable {
+				units: [("EV_Brake".to_string(), "002".to_string())].into(),
+				root: root.clone()
+			}
+		);
 		// A log that does not read is an error, not a silence.
 		std::fs::write(project.registry_log(), "not json").unwrap();
 		let err = unread(&project, &identities, |_, _| false).unwrap_err().to_string();
