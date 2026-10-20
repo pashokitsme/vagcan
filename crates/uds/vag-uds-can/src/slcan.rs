@@ -631,9 +631,16 @@ impl SlcanBackend<tokio_serial::SerialStream> {
 	/// [`SlcanMode::Silent`] is the safe way onto a bus somebody else is using.
 	pub async fn open_mode(path: &str, baud: u32, bitrate: SlcanBitrate, mode: SlcanMode) -> Result<Self, CanError> {
 		use tokio_serial::SerialPortBuilderExt;
-		let stream = tokio_serial::new(path, baud)
-			.open_native_async()
-			.map_err(|e| CanError::Io(e.to_string()))?;
+		let opened = tokio_serial::new(path, baud).open_native_async();
+		// macOS sets a port's speed with an ioctl a pseudo-terminal does not have (ENOTTY),
+		// so a pseudo-terminal — `vagcan dev sim`, the virtual car — fails the open above.
+		// Speed 0 is serialport's "leave the speed alone" there, and a pseudo-terminal has
+		// no line speed to set. Only on macOS: elsewhere speed 0 is B0, which hangs up.
+		// A port that fails for any other reason fails again here, and its first error is
+		// the one reported.
+		#[cfg(target_os = "macos")]
+		let opened = opened.or_else(|first| tokio_serial::new(path, 0).open_native_async().map_err(|_| first));
+		let stream = opened.map_err(|e| CanError::Io(e.to_string()))?;
 		let mut backend = SlcanBackend::new(stream).closing_on_drop();
 		backend.open_channel_mode(bitrate, mode).await?;
 		Ok(backend)

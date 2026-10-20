@@ -6,6 +6,7 @@ members = [
   "crates/uds/vag-uds-can",
   "crates/uds/vag-uds-client",
   "crates/uds/vag-uds-capture",
+  "crates/uds/vag-uds-sim",
   # data/ — somebody else's diagnostic files, parsed and cached.
   "crates/data/vag-data-labels",
   "crates/data/vag-data-db",
@@ -39,7 +40,7 @@ members = [
 # The families are not layers. Four crates depend on nothing at all, and layers
 # exist only *inside* a family:
 #
-#   uds/    transport -> can, client, capture
+#   uds/    transport -> can, client, capture -> sim
 #   data/   labels    -> db
 #   dash/   render, ble             (each depends on nothing of ours)
 #
