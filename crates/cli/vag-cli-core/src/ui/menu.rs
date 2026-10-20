@@ -33,7 +33,7 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 
 use anyhow::{Result, bail};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::style::Attribute;
 use crossterm::terminal;
 
@@ -103,7 +103,12 @@ impl Asker for Console {
 			if key.kind != KeyEventKind::Press {
 				continue;
 			}
-			let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+			// Raw mode swallows the interrupt, so the key is handed on by hand: the
+			// same Ctrl-C as anywhere else, which ends the process, not a `no`.
+			if term::interrupts(&key) {
+				erase(&mut out, drawn)?;
+				return Err(crate::interrupt::raise());
+			}
 			match key.code {
 				KeyCode::Up => at = moved(at, items.len(), false),
 				KeyCode::Down => at = moved(at, items.len(), true),
@@ -118,9 +123,6 @@ impl Asker for Console {
 				// `ssh` lands on. The legend says so.
 				KeyCode::Char(digit) if picked(digit, items.len()).is_some() => break picked(digit, items.len()),
 				KeyCode::Char('q') | KeyCode::Esc => break None,
-				// Raw mode swallows the interrupt, so the key has to be honoured
-				// by hand or there is no way out of here.
-				KeyCode::Char('c') if ctrl => break None,
 				_ => {}
 			}
 		};

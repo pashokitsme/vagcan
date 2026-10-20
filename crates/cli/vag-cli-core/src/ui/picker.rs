@@ -42,7 +42,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::style::Attribute;
 use crossterm::terminal;
 
@@ -239,7 +239,12 @@ impl Chooser for Console {
 			if key.kind != KeyEventKind::Press {
 				continue;
 			}
-			let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+			// Raw mode swallows the interrupt, so the key is handed on by hand: the
+			// same Ctrl-C as anywhere else, which ends the process, not a `quit`.
+			if term::interrupts(&key) {
+				erase(&mut out, drawn)?;
+				return Err(crate::interrupt::raise());
+			}
 			match key.code {
 				KeyCode::Up => at = at.saturating_sub(1),
 				KeyCode::Down => at = (at + 1).min(choices.len().saturating_sub(1)),
@@ -255,9 +260,6 @@ impl Chooser for Console {
 				KeyCode::Char('o') => break Decision::Copy(at),
 				KeyCode::Char('O') => break Decision::Reveal(at),
 				KeyCode::Char('q') | KeyCode::Esc => break Decision::Quit,
-				// Raw mode swallows the interrupt, so the key has to be honoured
-				// by hand or there is no way out of here.
-				KeyCode::Char('c') if ctrl => break Decision::Quit,
 				_ => {}
 			}
 		};

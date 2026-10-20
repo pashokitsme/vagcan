@@ -5,7 +5,10 @@ FOR: a command that spends minutes on the main task can lose a SIGINT: `main.rs`
 against `ctrl_c()` in a `select!`, and a branch that blocks never gives it back. Found on
 2026-09-28 that `dev dash build` and `setup` ignored Ctrl-C in about half the runs while they read
 a VCDS registry (fixed by running the read off the main task). Written by review subagents; kept
-per the cleanup skill's 2026-09-22 and 2026-09-27 rules.
+per the cleanup skill's 2026-09-22 and 2026-09-27 rules. Since 2026-10-21 Ctrl-C is heard on a
+thread of its own (`vag-cli-core/src/interrupt.rs`) and `crates/cli/vag-cli/tests/ctrl_c.rs` holds
+it in a pseudo-terminal; this stays for a long command on real data. It runs the binary without a
+terminal, so menus and full screens (raw mode, Ctrl-C as a key) are not what it measures.
 
 IN: the binary, a HOME to run it in (a scratch copy — the command may write there), the command's
 arguments after `--`, and when to send the signal: `--after SECONDS`, or `--marker TEXT` (a line

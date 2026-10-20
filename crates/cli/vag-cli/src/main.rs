@@ -17,12 +17,11 @@
 mod overview;
 
 use vag_cli_core::device::{ADAPTER_BAUD, DeviceArg, NotThroughTheBoard, Target};
-use vag_cli_core::{config, datadir, device, glossary, plan, project};
+use vag_cli_core::{config, datadir, device, glossary, interrupt, plan, project};
 use vag_cli_diag::{car, dash, faults, labels, recording, rescue, setup, sniff, vcds, watch};
 #[cfg(feature = "measure")]
 use vag_cli_measure as measure;
 
-use std::io::IsTerminal as _;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -600,6 +599,9 @@ async fn main() -> ExitCode {
 		Ok(code) => code,
 		// `vagcan watch … | head`: the reader had what it wanted; the run ends quietly.
 		Err(err) if vag_cli_core::verbosity::is_broken_pipe(&err) => ExitCode::SUCCESS,
+		// Ctrl-C at a menu of `dev sniff`, the one command whose first Ctrl-C does not end
+		// the process by itself: it ends it, as it would have anywhere else.
+		Err(err) if interrupt::is_interrupted(&err) => ExitCode::from(interrupt::EXIT_CODE),
 		Err(err) => {
 			report(&err);
 			ExitCode::FAILURE
@@ -633,42 +635,19 @@ async fn run() -> Result<ExitCode> {
 			ExitCode::FAILURE
 		});
 	};
-	// `dev sniff` watches Ctrl-C itself, to stop and print what it saw.
+	// Ctrl-C is heard on a thread of its own, installed before the command runs, so a
+	// command that blocks its thread cannot keep it from ending the process
+	// (`vag_cli_core::interrupt`). `dev sniff` is the exception: the first Ctrl-C stops it
+	// and it prints what it saw; a second ends it.
 	if matches!(command, Command::Dev { tool: Dev::Sniff { .. } }) {
+		interrupt::install(interrupt::First::Stops);
 		return dispatch_or_offer(command, cli.slcan).await;
 	}
-	tokio::select! {
-		finished = dispatch_or_offer(command, cli.slcan) => finished,
-		_ = tokio::signal::ctrl_c() => {
-			// A spinner a blocking read is drawing cannot hear this and would be
-			// left frozen mid-line, ticking on until the process ends: stop every
-			// line drawing, end the one on screen, and where a key search was
-			// running say what it leaves behind — every key found is saved as it
-			// is found, so the next run does not search for it again.
-			vag_cli_core::progress::silence();
-			if std::io::stderr().is_terminal() {
-				vag_cli_core::say!();
-			}
-			if vag_cli_core::registry::reading() {
-				// Saved after the tables and after each unit — not after each key,
-				// so a unit that needs two searches and was cut short between them
-				// is searched for again.
-				vag_cli_core::say!("interrupted: the VCDS registry keys found so far are cached; the next run goes on from them");
-			}
-			// The command is dropped here, and every bus handle with it: each bus task ends
-			// and drops its link, and a serial link closes its channel on the way
-			// (`SlcanBackend::closing_on_drop`) — which is what takes the dash board out of
-			// the adapter mode `--slcan` put it in. Those tasks run on the blocking pool,
-			// whose shutdown would also wait for anything else parked there, so the process
-			// ends after a moment instead.
-			tokio::time::sleep(INTERRUPT_GRACE).await;
-			std::process::exit(130);
-		}
-	}
+	interrupt::install(interrupt::First::Ends);
+	// On Ctrl-C the command is dropped inside, and every bus handle with it, which closes
+	// the links; the handler ends the process after a moment.
+	interrupt::run(dispatch_or_offer(command, cli.slcan)).await
 }
-
-/// How long an interrupted command's links get to close before the process ends.
-const INTERRUPT_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Run one command; if it stopped for want of label data, offer to make the
 /// data and then run it again.

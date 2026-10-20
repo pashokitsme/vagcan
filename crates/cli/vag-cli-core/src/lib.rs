@@ -32,6 +32,7 @@ pub mod desktop;
 pub mod device;
 pub mod extracted;
 pub mod glossary;
+pub mod interrupt;
 pub mod missing;
 pub mod plan;
 pub mod progress;

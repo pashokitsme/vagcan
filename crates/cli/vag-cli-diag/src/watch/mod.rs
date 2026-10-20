@@ -1072,7 +1072,8 @@ fn drain_keys(app: &mut App) -> io::Result<bool> {
 	while event::poll(Duration::from_millis(0))? {
 		match event::read()? {
 			Event::Key(k) if k.kind == KeyEventKind::Press => {
-				if !on_key(app, k.code) {
+				// Ctrl-C quits as `q` does; on its own it is `c`, the channel list.
+				if term::interrupts(&k) || !on_key(app, k.code) {
 					return Ok(false);
 				}
 			}
@@ -2000,6 +2001,10 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, vin: Option<&st
 					continue;
 				}
 				Event::Key(k) if k.kind == KeyEventKind::Press => {
+					// Ctrl-C quits as `q` does, on either screen.
+					if term::interrupts(&k) {
+						break Ok(());
+					}
 					// Playback keys only mean something on the live screen;
 					// on the selection screen they are ordinary input.
 					if app.screen == Screen::Live {

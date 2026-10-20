@@ -303,10 +303,12 @@ pub async fn run(
 	// never interrupted mid-frame.
 	let stop = Arc::new(AtomicBool::new(false));
 	let signalled = stop.clone();
+	// Through the process's own handler (`vag_cli_core::interrupt`, installed for this
+	// command to stop it and not end it), which also remembers a Ctrl-C pressed while the
+	// port was still opening.
 	tokio::spawn(async move {
-		if tokio::signal::ctrl_c().await.is_ok() {
-			signalled.store(true, Ordering::Relaxed);
-		}
+		vag_cli_core::interrupt::requested().await;
+		signalled.store(true, Ordering::Relaxed);
 	});
 	// Markers are read on a plain OS thread, NOT `tokio::io::stdin()`. That
 	// reads on a runtime blocking thread, and dropping the runtime waits for

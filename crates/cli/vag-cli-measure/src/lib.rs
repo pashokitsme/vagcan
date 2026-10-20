@@ -1990,7 +1990,13 @@ fn drain(
 		if let TermEvent::Key(key) = event::read()?
 			&& key.kind == KeyEventKind::Press
 		{
-			match ui::on_key(controls, key.code, unsaved) {
+			// Ctrl-C is `q`, with `q`'s guard: runs not saved yet are not lost to one
+			// keystroke, and a second Ctrl-C quits. On its own it is `c`, cancel.
+			let code = match term::interrupts(&key) {
+				true => crossterm::event::KeyCode::Char('q'),
+				false => key.code,
+			};
+			match ui::on_key(controls, code, unsaved) {
 				ui::Action::Nothing => {}
 				ui::Action::Session(command) => {
 					// Handed back rather than swallowed: a cancel closes a run,

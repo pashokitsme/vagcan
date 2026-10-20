@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use crossterm::cursor::MoveTo;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::queue;
 use crossterm::style::Print;
 use crossterm::terminal::{self, Clear, ClearType};
@@ -82,7 +82,7 @@ fn wait_until(due: Instant) -> Result<bool> {
 
 /// `q`, `Esc`, and Ctrl-C — which in raw mode is a key like any other, not a signal.
 fn leaves(key: KeyEvent) -> bool {
-	matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
+	matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) || term::interrupts(&key)
 }
 
 /// How the panel is drawn as text.
