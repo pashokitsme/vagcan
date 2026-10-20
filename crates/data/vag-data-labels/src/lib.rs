@@ -19,6 +19,7 @@ pub mod mwb;
 pub mod obd;
 pub mod odis;
 pub mod redirect;
+pub mod registries;
 pub mod registry;
 pub mod rod;
 mod tea;

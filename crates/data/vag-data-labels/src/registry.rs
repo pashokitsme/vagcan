@@ -326,7 +326,47 @@ pub fn unit_measurements(
 	if let Some(source) = found.nothing {
 		return UnitMeasurements::NoData { source };
 	}
-	let candidates = found.files;
+	if found.files.is_empty() {
+		return UnitMeasurements::NoFile;
+	}
+	search(&found.files, cache, crack, MWB_SECTION, registry.len())
+}
+
+/// The letter a shared store's file stem ends in for the section it supplies:
+/// `IV_EV_ACClimaBHBVW37X_006_VW37_A3` holds `[ADP]`. Read off the stores the
+/// reference car's units include — 51 of 51 that opened hold the section their
+/// letter names (`research/vcds-registry/README.md` §9).
+pub fn store_letter(section: &str) -> Option<char> {
+	Some(match section {
+		MWB_SECTION => 'M',
+		"DTC" => 'D',
+		"ADP" => 'A',
+		"GES" => 'G',
+		"SOT" => 'S',
+		"FFMUX" => 'F',
+		"XPL" => 'X',
+		_ => return None,
+	})
+}
+
+/// One unit file's list of `section`: its own `[section]`, else the one in the
+/// store its `[INC]` names by [`store_letter`]. `registry_len` is the length of
+/// the registry the list points into, which a list from another install overruns.
+///
+/// One file and no other: the file a unit's `[MWB]` list was found in, or its best
+/// match. Searching the other candidates, as [`unit_measurements`] does, would
+/// take a section from another version's file when this one has none — on the
+/// reference car the brake unit's `_036` file lists no freeze frames and `_032`
+/// does. `unit` carries the redirect the file came through, which the answer keeps.
+pub fn list_in(unit: &crate::label_files::UnitRod, cache: &mut IvCache, crack: bool, section: &str, registry_len: usize) -> UnitMeasurements {
+	search(std::slice::from_ref(unit), cache, crack, section, registry_len)
+}
+
+/// Try each candidate file, best first, for its `section` list.
+fn search(candidates: &[crate::label_files::UnitRod], cache: &mut IvCache, crack: bool, section: &str, registry_len: usize) -> UnitMeasurements {
+	let Some(letter) = store_letter(section) else {
+		return UnitMeasurements::NoList { candidates: 0 };
+	};
 	if candidates.is_empty() {
 		return UnitMeasurements::NoFile;
 	}
@@ -355,9 +395,9 @@ pub fn unit_measurements(
 			why = Some(answer);
 		}
 	};
-	for candidate in &candidates {
+	for candidate in candidates {
 		let file = &candidate.path;
-		match list_of(file, file, None, cache, crack, registry) {
+		match list_of(file, file, None, cache, crack, section, registry_len) {
 			Listed::Found(found) => return through(found, &candidate.via),
 			Listed::Failed(answer) => keep(answer),
 			Listed::Absent => {}
@@ -367,7 +407,7 @@ pub fn unit_measurements(
 				let (stores, unread) = included(&text, tea, &stems_beside(file));
 				let lists: Vec<PathBuf> = stores
 					.into_iter()
-					.filter(|s| s.section == 'M')
+					.filter(|s| s.section == letter)
 					.map(|s| file.with_file_name(format!("{}.rod", s.stem)))
 					.collect();
 				if lists.is_empty() {
@@ -381,7 +421,7 @@ pub fn unit_measurements(
 					}
 				}
 				for store in lists {
-					match list_of(&store, file, Some(&store), cache, crack, registry) {
+					match list_of(&store, file, Some(&store), cache, crack, section, registry_len) {
 						Listed::Found(found) => return through(found, &candidate.via),
 						Listed::Failed(answer) => keep(answer),
 						Listed::Absent => keep(UnitMeasurements::Unresolved { file: file.clone() }),
@@ -439,18 +479,18 @@ pub fn units_measurements(
 		.collect()
 }
 
-/// The outcome of reading one `[MWB]` list.
+/// The outcome of reading one list.
 enum Listed {
 	Found(UnitMeasurements),
 	Failed(UnitMeasurements),
 	Absent,
 }
 
-/// Read the `[MWB]` list in `path`, which is `unit`'s own file or a store it includes.
-fn list_of(path: &Path, unit: &Path, store: Option<&Path>, cache: &mut IvCache, crack: bool, registry: &MeasurementRegistry) -> Listed {
-	match read_section(path, MWB_SECTION, cache, crack) {
+/// Read the `[section]` list in `path`, which is `unit`'s own file or a store it includes.
+fn list_of(path: &Path, unit: &Path, store: Option<&Path>, cache: &mut IvCache, crack: bool, section: &str, registry_len: usize) -> Listed {
+	match read_section(path, section, cache, crack) {
 		SectionRead::Text { text, tea } => {
-			let rows = UnitRows::parse(&text, registry.len(), tea);
+			let rows = UnitRows::parse(&text, registry_len, tea);
 			match rows.outside {
 				0 => Listed::Found(UnitMeasurements::Found {
 					file: unit.to_path_buf(),
@@ -467,11 +507,11 @@ fn list_of(path: &Path, unit: &Path, store: Option<&Path>, cache: &mut IvCache, 
 		}
 		SectionRead::Locked => Listed::Failed(UnitMeasurements::Locked {
 			file: path.to_path_buf(),
-			section: MWB_SECTION.to_string(),
+			section: section.to_string(),
 		}),
 		SectionRead::Shifted => Listed::Failed(UnitMeasurements::Shifted {
 			file: path.to_path_buf(),
-			section: MWB_SECTION.to_string(),
+			section: section.to_string(),
 		}),
 		SectionRead::Absent => Listed::Absent,
 	}
