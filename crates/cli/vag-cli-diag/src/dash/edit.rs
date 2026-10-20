@@ -150,7 +150,7 @@ fn channels(vin: &str, dir: &Path, language: Option<Language>, units: &[UnitIden
 		return Ok(Made::Kept(rows.len()));
 	}
 	let store = CatalogStore::open(project.measurements_dir());
-	let extracted = vag_cli_core::extracted::open(&project);
+	let extracted = vag_cli_core::extracted::open(&project).for_car(Some(vin));
 	let rows = catalog::rows(&catalog::Sources {
 		vin,
 		language,

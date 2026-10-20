@@ -6,6 +6,7 @@
 //! textual format `label::parse_label` understands.
 
 pub mod catalog;
+pub mod chassis;
 pub mod clb;
 pub mod codes;
 pub mod db;
@@ -17,6 +18,7 @@ pub mod measure;
 pub mod mwb;
 pub mod obd;
 pub mod odis;
+pub mod redirect;
 pub mod registry;
 pub mod rod;
 mod tea;

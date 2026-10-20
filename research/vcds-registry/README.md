@@ -160,7 +160,7 @@ shifted section will search for hours (§6).
   radar `MRRCONTI`. The reference car needs none of them. Route for those: ODIS (`calibrate`,
   the other route named here, was removed on 2026-09-28, owner).
 - **BCM (`EV_BCMMQB`) has no file in any of the three installs of §6a** — a missing file, not
-  encryption. Whether `ReDir.rod` sends its variant to another file is unchecked.
+  encryption. `ReDir.rod` sends its variant to another file: §6b (2026-10-20).
 - **Undecoded:** `f2` types 1/5/6/12, fields `f11`/`f12`, ~620 RM rows with an empty DID; the
   first row of a TEA `MWB` (block 0 not repaired); 3 unresolved `INC` first rows; how VCDS
   assembles the `ECM00*`/`GV_` engine lists.
@@ -198,6 +198,81 @@ shifted section will search for hours (§6).
   scaling), but its names and units are in shifted files. Russian measurement names would need
   the runtime mask (§6); Russian fault texts already work.
 - **The reference car's units** are present and in the same regime in all three.
+
+### 6b. `ReDir.rod` and `chassis.clb` — the unit names with no file (2026-10-20)
+
+**`UDS_EV/ReDir.rod`** says which file VCDS reads for a unit name the installation has no file
+of. Read by `vag-data-labels::redirect`; `label_files::find_rod_by_odx_variant` treats a source
+as it treats a file name, so `setup`'s step 5 and the faults chain see it. `dev vcds labels
+--odx` takes a file name, not a unit: it looks that exact name up, and with no file follows the
+redirect of that very name (`Redirects::target`), not the ranked rule.
+
+- **Container:** an ordinary `.rod`, 2 sections: `CMP` (TEA) and `DIR` (zlib, 1.1 MB, 18,478
+  lines in EN 25.12). Classic, key in `rod-keys.json` under `ReDir.rod\tDIR`; opens in ~75 ms
+  (release) with the key cached.
+- **Line:** `NNNNNN,<glyphs>\r\n`. The decimal digits are the line's own key:
+  `TableAlphabet::for_key(NNNNNN)` reads the rest as `<source name>,<target name>`, e.g.
+  `EV_BCMMQB_017,EV_BCMBOSCH_017`, `EV_BCMMQB_016_SK37,EV_BCMBOSCH_016_VW37`,
+  `CRFT1_ESP_3_12289,CRFT1_ESP_3_12288`. All 18,478 lines read.
+- **`EMPTY`** as target (100 lines, e.g. `CRFT1_EPH_3_768,EMPTY`): VCDS has no data for that unit.
+  A definite "no data", logged as `no data` — not "no file", and no sibling variant is guessed.
+  Only at a rank VCDS tries for the car; another project's `EMPTY` says nothing about this car.
+- **Measured on EN 25.12 only, not assumed by the code:** no source exists as a file; every
+  target except `EMPTY` does; no target is itself redirected. The reader follows chains (8 hops),
+  treats a missing target as no file, and when a source *is* a file the file wins.
+
+**The order VCDS tries names in** — `OdxMatch`, one `rank` for file stems, redirect sources and
+ODIS variant names:
+
+1. `<name>_<vvv>_<project>` — `vvv` the first three digits of `F1A2`, the project the car's
+2. `<name>_<vvv>`
+3. `<name>_<project>`
+4. `<name>`
+5. `<name>_<vvv>_<other tag>` — the version under another localisation (this tool's guess)
+6. `<name>_<anything else>` — the family (this tool's guess)
+
+Within a rank: a file before a redirect, then by path. Ranks 1–4 name one name each, so the first
+candidate is the name VCDS opens.
+
+- **Evidence (`ReDir.rod` itself):** 154 lines redirect `<name>_<vvv>` and 59 lines
+  `<name>_<project>` although `<name>` exists as a file or source — e.g.
+  `EV_ACCBOSCHAU736_002 → EV_ACCBOSCHAU49X_002`, `EV_AIRBAVW10SMEVW360_SK37 →
+  EV_AirbaVW10SMEVW360`. With the bare name first they would be dead lines. No line becomes
+  dead under either order of 2 and 3 (0 lines `<name>_<vvv>_<p>` redirected beside an existing
+  `<name>_<vvv>` or `<name>_<p>`), so 2 before 3 is the likelier order, not a measured one.
+  `VCDS.exe` builds the names at run time; its strings hold only
+  `Unable to find a .ROD file for: %s`.
+- **Reachability census** (`ReDir.rod` sources parsed as `<name>[_<vvv>][_<project>]`, projects
+  from `chassis.clb`; a line is reachable when, for some version and project, the lookup's first
+  answer is that line): the first rule of this branch (bare name first, project a tie-break)
+  left **213** lines unreachable (154 `<name>_<vvv>`, 59 `<name>_<project>`); this order leaves
+  **0**, through the shipped `RodIndex::find` too. 9,859 sources have no such suffix and are
+  reachable as their own `F19E`.
+- **Joining rows:** a redirected unit's rows are stored under the **source** name, the name the
+  unit joins on; the read looks a unit up once per recorded project that carries it, and a
+  command naming the car joins with the car's project (`Extracted::for_car`), so two cars of two
+  projects never share VCDS rows.
+- **The log** (`registry.json`) records each unit per project, and a unit is untried until every
+  project a read would look it up with has a line — a car of no known project is a lookup with
+  none. A log with an older `read_version` (`READ_VERSION`, 1 since this order) has tried
+  nothing, so a machine read under the old order re-reads every unit once by itself. A "no
+  file" logged while `ReDir.rod` did not open is read again only once the table opens.
+
+**`UDS_EV/chassis.clb`** gives the project. A plain label file once decrypted: 282 lines
+`<model code>,<project>` (18 with a numeric model code), the model code being VIN characters
+7–8 by the VW group's convention (`NE`→`SK37`, `5E`→`SK37`, `8V`→`AU37`). The reference car's
+`NE` gives `SK37`. Read by `vag-data-labels::chassis`; parsed on its own because `parse_label`
+takes a numeric model code for a measurement block. `setup`'s step 5 takes the project of each
+recorded car's VIN; `faults`, which reads no VIN, takes the projects of the recorded cars that
+carry the unit. No project known: ranks 1 and 3 do not occur.
+
+**On the reference car (copy of `~/.vagcan`, EN 25.12):** 70E (`EV_BCMMQB 017001`) →
+`EV_BCMMQB_017 → EV_BCMBOSCH_017.rod`, 775 channels; against the ODIS variant `EV_BCMMQB_017`
+(868 rows) joined on DID and bit offset, 769 agree on length, sign, byte order, scaling, factor and
+offset, 0 disagree, 6 are VCDS-only. All 15 units: 4,905 agree, 0 disagree, 6,085 channels. The
+project moved nine units to their `_SK37` names (eight through `ReDir`), with identical rows except
+the gateway (`EV_GatewNF_SK37 → EV_GatewNF_VW37.rod`: 1,129 rows, the 1,123 of `EV_GatewNF_SK26`
+plus 6), and needed 5 more section keys (one search each on first run).
 
 ## 7. Next — implementation (its own branch, reviewed)
 

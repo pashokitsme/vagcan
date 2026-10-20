@@ -234,12 +234,23 @@ impl UnitCatalogue {
 /// name", and the caller is expected to print the reason.
 #[derive(Debug, Clone)]
 pub enum UnitLookup {
-	/// The catalogue, and the file it came from.
-	Found { file: PathBuf, catalogue: UnitCatalogue },
-	/// No file of that ODX name anywhere in the label files. On the reference car
-	/// this is the body control module, whose `F19E` is `EV_BCMMQB` and which
-	/// the English label files simply does not ship.
+	/// The catalogue, and the file it came from — through the redirect source
+	/// `via` when `ReDir.rod` named the file ([`crate::label_files::UnitRod::via`]).
+	/// `sealed_before` is a better-ranked candidate whose `[DTC]` is still sealed: the
+	/// catalogue is then another variant's, standing in, and the caller says so.
+	Found {
+		file: PathBuf,
+		via: Option<String>,
+		sealed_before: Option<PathBuf>,
+		catalogue: UnitCatalogue,
+	},
+	/// No file of that ODX name anywhere in the label files, and no redirect
+	/// to one. On the reference car the body control module (`F19E` is
+	/// `EV_BCMMQB`) was this until `ReDir.rod` was read: the installation has no
+	/// file of that name and redirects it to `EV_BCMBOSCH_017`.
 	NoFile,
+	/// `ReDir.rod` redirects the unit to `EMPTY`: VCDS has no data for it.
+	NoData { source: String },
 	/// The family is there and no member of it carries a `[DTC]` section.
 	/// Within a family exactly one file does, and the variants carry an `INC`
 	/// reference to it instead (§10.5) — following that reference is not
@@ -265,19 +276,36 @@ pub enum UnitLookup {
 /// ([`crate::label_files::find_rod_by_odx_variant`]) and the first with a readable
 /// `[DTC]` section wins — which is also how the one file in a family that
 /// carries the section gets picked out, without a list of which one it is.
-pub fn unit_catalogue(root: &Path, odx_name: &str, version: &str, cache: &IvCache, registry: &DtcRegistry) -> UnitLookup {
-	let candidates = crate::label_files::find_rod_by_odx_variant(root, odx_name, version).unwrap_or_default();
+/// `lookup` carries the installation's redirect table and the car's project. A better
+/// candidate whose `[DTC]` is still sealed does not stop the walk, but rides on the answer
+/// (`Found::sealed_before`): another variant's catalogue is never this unit's unannounced.
+pub fn unit_catalogue(
+	root: &Path,
+	odx_name: &str,
+	version: &str,
+	lookup: crate::label_files::Lookup<'_>,
+	cache: &IvCache,
+	registry: &DtcRegistry,
+) -> UnitLookup {
+	let found = crate::label_files::find_rod_by_odx_variant(root, odx_name, version, lookup).unwrap_or_default();
+	if let Some(source) = found.nothing {
+		return UnitLookup::NoData { source };
+	}
+	let candidates = found.files;
 	if candidates.is_empty() {
 		return UnitLookup::NoFile;
 	}
 	let (mut locked, mut mismatched) = (None, None);
-	for (_, path) in &candidates {
+	for candidate in &candidates {
+		let path = &candidate.path;
 		match section_of(path, cache) {
 			Section::Text(text) => {
 				let catalogue = UnitCatalogue::parse(&text, registry);
 				if catalogue.is_consistent_with_registry() {
 					return UnitLookup::Found {
 						file: path.clone(),
+						via: candidate.via.clone(),
+						sealed_before: locked.clone(),
 						catalogue,
 					};
 				}
@@ -378,6 +406,38 @@ mod tests {
 	const SECTION: &str = "000531,.-0238,3P,,,,,\r\n\
                            000531,.0374730,F0,--4.03,,,,\r\n\
                            000297,.,.9140,,00000\r\n";
+
+	/// A better-ranked variant whose catalogue is sealed does not hide behind the
+	/// next one that opens: the answer carries it, so the caller can say whose text
+	/// stands in. Invented names; the section is framed as VCDS frames one.
+	#[test]
+	fn a_sealed_better_variant_rides_on_the_catalogue_that_stands_in() {
+		use crate::rod::testkit::{named, section};
+		let root = tempfile::tempdir().unwrap();
+		let uds = root.path().join("UDS_EV");
+		std::fs::create_dir_all(&uds).unwrap();
+		std::fs::write(
+			uds.join("EV_InvUnit_016.rod"),
+			section("DTC", b"000003,00\r\n", true, Some([1, 2, 3, 4, 5])),
+		)
+		.unwrap();
+		std::fs::write(
+			uds.join("EV_InvUnit_017.rod"),
+			section("DTC", b"000003,00\r\n", true, named("EV_InvUnit_017.rod")),
+		)
+		.unwrap();
+		let registry = DtcRegistry::parse(SECTION);
+		let lookup = crate::label_files::Lookup::direct();
+		let found = unit_catalogue(root.path(), "EV_InvUnit", "016001", lookup, &IvCache::default(), &registry);
+		let UnitLookup::Found { file, sealed_before, .. } = found else {
+			panic!("the family member that opens answers: {found:?}")
+		};
+		assert!(file.ends_with("EV_InvUnit_017.rod"));
+		assert!(sealed_before.is_some_and(|f| f.ends_with("EV_InvUnit_016.rod")));
+		// The unit's own version opening: nothing rides on it.
+		let found = unit_catalogue(root.path(), "EV_InvUnit", "017001", lookup, &IvCache::default(), &registry);
+		assert!(matches!(found, UnitLookup::Found { sealed_before: None, .. }), "{found:?}");
+	}
 
 	#[test]
 	fn a_row_is_found_by_its_one_based_number() {

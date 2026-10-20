@@ -427,7 +427,7 @@ impl OdisFaults {
 		if let Some(found) = self.units.get(&key) {
 			return found.clone();
 		}
-		let variants: Vec<String> = crate::extracted::best_variants(&self.variants, Some(odx_name), Some(version))
+		let variants: Vec<String> = crate::extracted::best_variants(&self.variants, Some(odx_name), Some(version), &[])
 			.into_iter()
 			.cloned()
 			.collect();
@@ -437,7 +437,7 @@ impl OdisFaults {
 		// reported as one on every line taken from it.
 		let confirmed = variants
 			.first()
-			.and_then(|name| vag_data_labels::label_files::odx_match(name, odx_name, version))
+			.and_then(|name| vag_data_labels::label_files::odx_match(name, odx_name, version, &[]))
 			.is_some_and(|rank| rank != vag_data_labels::label_files::OdxMatch::Family);
 		let mut rows = Vec::new();
 		for variant in &variants {

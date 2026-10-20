@@ -25,7 +25,7 @@
 //! here picks a winner on the strength of an argument.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use vag_data_labels::catalog::{MeasurementDef, ReadId};
 use vag_data_labels::label_files::{OdxMatch, odx_match};
@@ -79,6 +79,10 @@ pub struct Extracted {
 	/// Which of `mine`'s columns [`Self::name_of`] reads: the one `config.toml`
 	/// names, unless a reader asks for another ([`Self::in_language`]).
 	language: Language,
+	/// The project codes of the car these channels are for (`SK37`), which pick the
+	/// VCDS rows read for that car's project ([`best_variants`]). Empty until
+	/// [`Self::for_car`] names the car, or when its project is not known.
+	car_projects: Vec<String>,
 }
 
 /// One channel a unit offers, with everything known about how to name it.
@@ -157,6 +161,7 @@ pub fn open(project: &crate::project::Project) -> Extracted {
 		// this platform's.
 		mine: crate::glossary::load(),
 		language: crate::config::language(&crate::config::load()),
+		car_projects: Vec::new(),
 	}
 }
 
@@ -208,6 +213,7 @@ impl Extracted {
 			names: BTreeMap::new(),
 			mine: BTreeMap::new(),
 			language: Language::default(),
+			car_projects: Vec::new(),
 		}
 	}
 
@@ -225,6 +231,7 @@ impl Extracted {
 			names,
 			mine: BTreeMap::new(),
 			language: Language::default(),
+			car_projects: Vec::new(),
 		}
 	}
 
@@ -232,6 +239,20 @@ impl Extracted {
 	#[cfg(any(test, feature = "test-util"))]
 	pub fn with_glossary(mut self, csv: &str) -> Extracted {
 		self.mine = crate::glossary::parse_all(csv);
+		self
+	}
+
+	/// The same project, for the car with this VIN: a unit joins to the VCDS rows read
+	/// for the car's project, through the installation's `chassis.clb`
+	/// ([`crate::registry::car_project`]). No VIN, no project or no installation on
+	/// record: the join is by the unit's own identification alone, as before.
+	pub fn for_car(mut self, vin: Option<&str>) -> Extracted {
+		let home = self.project.clone().zip(self.cache.parent().map(Path::to_path_buf));
+		self.car_projects = vin
+			.zip(home)
+			.and_then(|(vin, (id, dir))| crate::registry::car_project(&crate::project::Project { id, dir }, vin))
+			.into_iter()
+			.collect();
 		self
 	}
 
@@ -300,7 +321,7 @@ impl Extracted {
 	pub fn levels_predate_bounds(&self, odx_name: Option<&str>, version: Option<&str>) -> bool {
 		!self.is_empty()
 			&& self.variants.iter().any(|(_, names)| {
-				best_variants(names, odx_name, version)
+				best_variants(names, odx_name, version, &self.car_projects)
 					.into_iter()
 					.any(|name| vag_data_db::levels_predate_bounds(&self.cache, name).unwrap_or(false))
 			})
@@ -378,7 +399,7 @@ impl Extracted {
 			// channel and gives up the id, and `unit:IDE…` picks out the one
 			// field it picked out with ODIS alone.
 			let claimed: std::collections::BTreeSet<String> = out.iter().filter_map(|(_, id)| id.clone()).collect();
-			for name in best_variants(names, odx_name, version) {
+			for name in best_variants(names, odx_name, version, &self.car_projects) {
 				let Ok(readings) = vag_data_db::readings_of_kind(&self.cache, kind, name) else {
 					continue;
 				};
@@ -417,12 +438,17 @@ impl Extracted {
 /// `Exact` or a `Version` match exists the family ones are guesses standing
 /// next to an answer; so only the best rank is kept, sorted by name so a run
 /// reports the same variant every time.
-pub fn best_variants<'a>(variants: &'a [String], odx_name: Option<&str>, version: Option<&str>) -> Vec<&'a String> {
+///
+/// `projects` are the car's project codes (`SK37`, [`Extracted::for_car`]), empty when
+/// not known. A project-suffixed VCDS variant is the one the registry read chose for a
+/// car of that project, and ranks first only for such a car: two recorded cars of two
+/// projects never have their rows merged.
+pub fn best_variants<'a>(variants: &'a [String], odx_name: Option<&str>, version: Option<&str>, projects: &[String]) -> Vec<&'a String> {
 	let Some(odx_name) = odx_name else { return Vec::new() };
 	let version = version.unwrap_or("");
 	let mut ranked: Vec<(OdxMatch, &String)> = variants
 		.iter()
-		.filter_map(|name| odx_match(name, odx_name, version).map(|rank| (rank, name)))
+		.filter_map(|name| odx_match(name, odx_name, version, projects).map(|rank| (rank, name)))
 		.collect();
 	let Some(best) = ranked.iter().map(|(rank, _)| *rank).min() else {
 		return Vec::new();
@@ -583,6 +609,7 @@ mod tests {
 			// Never the owner's real one: a test must not read `~/.vagcan`.
 			mine: BTreeMap::new(),
 			language: Language::default(),
+			car_projects: Vec::new(),
 		}
 	}
 
@@ -603,8 +630,8 @@ mod tests {
 	#[test]
 	fn an_odis_row_wins_its_field_and_a_vcds_row_fills_only_what_odis_lacks() {
 		// The owner's decision of 2026-09-28. The VCDS file stem ranks `Exact`
-		// and the ODIS variant only `Version` — the source ranks first, so that
-		// is not a reason for VCDS to win.
+		// and the ODIS variant `Version`, each among its own source's variants —
+		// the source ranks first, so neither rank is a reason for VCDS to win.
 		let here = tempfile::tempdir().unwrap();
 		let cache = here.path().join("cache.sqlite");
 		vag_data_db::put_readings(&cache, "/nowhere/SK37X", "EV_TCMDQ200021_001", &[reading(0x380A, "odis", 0, 16, false)]).unwrap();
@@ -633,6 +660,37 @@ mod tests {
 		);
 		// A unit only VCDS knows reads from VCDS alone.
 		assert_eq!(named("EV_Brake1UDS", "036010"), [(0x1822, "vcds".to_string())]);
+	}
+
+	/// Two recorded cars of two projects carry one unit at one version: the registry read
+	/// stores each car's rows under the name it chose for that car's project, and each car
+	/// joins to its own — never to both merged.
+	#[test]
+	fn two_projects_of_one_unit_never_mix_their_rows() {
+		let here = tempfile::tempdir().unwrap();
+		let cache = here.path().join("cache.sqlite");
+		let sk = [reading(0x2201, "sk", 0, 8, true)];
+		let vw = [reading(0x2201, "vw", 0, 8, true), reading(0x2202, "vw only", 0, 8, true)];
+		vag_data_db::put_readings(&cache, "/nowhere/SK37X", "EV_Other_001", &[reading(0x1000, "odis", 0, 8, true)]).unwrap();
+		vag_data_db::record_language(&cache, vag_data_db::VCDS, "/nowhere/vcds-en", "eng").unwrap();
+		vag_data_db::put_all_vcds_readings(&cache, "/nowhere/vcds-en", [("EV_InvGatew_SK37", &sk[..]), ("EV_InvGatew_VW48", &vw[..])]).unwrap();
+		let mut x = Extracted::synthetic(cache, BTreeMap::new());
+		let mut names = |projects: &[&str]| -> Vec<String> {
+			x.car_projects = projects.iter().map(|p| p.to_string()).collect();
+			x.for_unit(Some("EV_InvGatew"), Some("013020"))
+				.into_iter()
+				.map(|def| def.name.to_string())
+				.collect()
+		};
+		assert_eq!(names(&["SK37"]), ["sk"]);
+		assert_eq!(names(&["VW48"]), ["vw", "vw only"]);
+		// No car named: the family as before, the first variant's field first.
+		assert_eq!(names(&[]), ["sk", "vw only"]);
+		let variants = ["EV_InvGatew_SK37".to_string(), "EV_InvGatew_VW48".to_string()];
+		assert_eq!(
+			best_variants(&variants, Some("EV_InvGatew"), Some("013020"), &["SK37".into()]),
+			[&variants[0]]
+		);
 	}
 
 	#[test]
@@ -1131,6 +1189,7 @@ mod tests {
 			names: BTreeMap::new(),
 			mine: BTreeMap::new(),
 			language: Language::default(),
+			car_projects: Vec::new(),
 		};
 		assert!(x.is_empty());
 		assert!(x.for_unit(Some("EV_TCMDQ200021"), Some("001")).is_empty());

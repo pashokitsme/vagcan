@@ -272,6 +272,9 @@ impl Namers {
 					None => "",
 				}
 			));
+			if let Some(note) = vcds.redirect_note() {
+				out.push(note.to_string());
+			}
 		}
 		out
 	}
@@ -310,6 +313,10 @@ impl Namers {
 	pub fn sealed(unit: &UnitNamers) -> Option<std::path::PathBuf> {
 		match &unit.vcds {
 			Some(vag_data_labels::UnitLookup::Locked { file }) => Some(file.clone()),
+			// A better variant sealed, another's text standing in: opening it gives the unit's own.
+			Some(vag_data_labels::UnitLookup::Found {
+				sealed_before: Some(file), ..
+			}) => Some(file.clone()),
 			_ => None,
 		}
 	}
