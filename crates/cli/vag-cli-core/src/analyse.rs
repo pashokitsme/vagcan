@@ -546,159 +546,236 @@ pub fn run(capture_path: &str, log_path: &str, out: Option<&str>, limits: Thresh
 	let offset =
 		log_offset_seconds(anchor, log.started_hms).ok_or_else(|| anyhow::anyhow!("the capture's wall-clock anchor is not a valid local time"))?;
 
-	println!(
-		"capture: {} identifiers, {} samples\nlog:     {} measurements from {}",
+	crate::note!(
+		"capture {capture_path}: {} identifiers, {} samples",
 		series.len(),
-		series.iter().map(|s| s.samples.len()).sum::<usize>(),
-		log.measurements.len(),
-		log.part_number.as_deref().unwrap_or("an unnamed control unit"),
+		series.iter().map(|s| s.samples.len()).sum::<usize>()
 	);
-	println!("the log starts {offset:+.1}s into the capture\n");
-
+	crate::note!(
+		"log {log_path}: {} measurements from {}",
+		log.measurements.len(),
+		log.part_number.as_deref().unwrap_or("an unnamed control unit")
+	);
+	crate::note!("the log starts {offset:+.1} s into the capture, from the two files' wall-clock stamps");
 	if series.is_empty() {
-		println!(
-			"No read identifiers were recovered from the capture. Either nothing queried the \
-             car while it recorded, or the traffic rode identifiers this build does not treat \
-             as diagnostic."
-		);
+		crate::say!("no read identifiers in the capture: nothing queried the car while it recorded");
+		crate::note!("or the traffic rode identifiers this build does not treat as diagnostic");
 		return Ok(());
 	}
 
-	let (fits, rejected) = fit_all(&series, &log.measurements, offset, limits);
-
-	if fits.is_empty() {
-		println!(
-			"Nothing cleared the bar (R² ≥ {:.3}, ≥ {} points over ≥ {} distinct raw values).",
-			limits.min_r2, limits.min_points, limits.min_levels
-		);
-		let mut why: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
-		for r in &rejected {
-			*why
-				.entry(match r {
-					Rejected::TooFewPoints { .. } => "too few overlapping samples",
-					Rejected::RawConstant { .. } => "the raw bytes never moved",
-					Rejected::RawTooFewLevels { .. } => "too few distinct raw values",
-					Rejected::ValueConstant { .. } => "the logged value never moved",
-					Rejected::PoorFit { .. } => "the fit was too poor",
-					Rejected::Outranked { .. } => "something explained it better",
-				})
-				.or_default() += 1;
-		}
-		println!("\nWhy:");
-		for (reason, count) in why {
-			println!("  {count:4}  {reason}");
-		}
-		let best_overlap = rejected
-			.iter()
-			.filter_map(|r| match r {
-				Rejected::TooFewPoints { points, .. } => Some(*points),
-				_ => None,
-			})
-			.max();
-		if let Some(points) = best_overlap {
-			println!(
-				"\nThe best overlap was {points} samples. Either the log covers a shorter window \
-                 than the capture, or the two barely overlap — check that both were recorded at \
-                 the same time."
-			);
-		}
-	} else {
-		println!("Proven scalings:\n");
-		for f in &fits {
-			println!(
-				"  {:03X}/{:04X}  {:?}  × {:.6} {:+.4}   → {} [{}]   R²={:.5} over {} points",
-				f.ecu, f.did, f.form, f.scale.factor, f.scale.offset, f.ide, f.unit, f.r2, f.points
-			);
-		}
-	}
-
-	// What the log carried but the run could not explain. This is the list
-	// that tells you what to record next, so it is printed even on a
-	// successful run — a bare list of wins hides the gaps.
-	let unmatched: Vec<&crate::vcdslog::LoggedMeasurement> = log.measurements.iter().filter(|m| !fits.iter().any(|f| f.ide == m.ide)).collect();
-	if !unmatched.is_empty() {
-		println!("\nLogged but not proven:");
-		for m in &unmatched {
-			let span = m
-				.samples
-				.iter()
-				.map(|(_, v)| *v)
-				.fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
-			let levels = {
-				let mut v: Vec<String> = m.samples.iter().map(|(_, x)| format!("{x:.3}")).collect();
-				v.sort();
-				v.dedup();
-				v.len()
-			};
-			let why = if levels <= 1 {
-				"never moved".to_string()
-			} else if levels < limits.min_levels {
-				format!("only {levels} distinct values")
-			} else {
-				// Report the CLOSEST any identifier came, not whichever
-				// rejection happened to be recorded first — most identifiers
-				// in a capture never overlap this measurement's window at all,
-				// and quoting one of those says nothing about the ones that
-				// did.
-				let best_r2 = rejected
-					.iter()
-					.filter_map(|r| match r {
-						Rejected::PoorFit { ide, r2, .. } if *ide == m.ide => Some(*r2),
-						_ => None,
-					})
-					.fold(None, |acc: Option<f64>, r| Some(acc.map_or(r, |a: f64| a.max(r))));
-				let most_points = rejected
-					.iter()
-					.filter_map(|r| match r {
-						Rejected::TooFewPoints { ide, points, .. } if *ide == m.ide => Some(*points),
-						_ => None,
-					})
-					.max();
-				match (best_r2, most_points) {
-					(Some(r2), _) => format!("best fit only R²={r2:.3}"),
-					(None, Some(points)) => {
-						format!("no identifier overlapped it by more than {points} samples")
-					}
-					(None, None) => "no identifier explained it".to_string(),
-				}
-			};
-			println!("  {:<22} {:>9.2}..{:<9.2} [{}]  — {why}", m.ide, span.0, span.1, m.unit);
-		}
-	}
-
-	let outranked: Vec<&Rejected> = rejected.iter().filter(|r| matches!(r, Rejected::Outranked { .. })).collect();
-	if !outranked.is_empty() {
-		println!("\nFitted but not kept — a better explanation exists for the same identifier");
-		println!("or the same measurement (proportional quantities fit each other):");
-		for r in &outranked {
-			if let Rejected::Outranked { ecu, did, ide, r2 } = r {
-				println!("  {ecu:03X}/{did:04X}  vs {ide}  R²={r2:.5}");
-			}
-		}
-	}
-
-	// Near misses are leads, and a stated rejection beats a silent drop.
-	let poor: Vec<&Rejected> = rejected
-		.iter()
-		.filter(|r| matches!(r, Rejected::PoorFit { r2, .. } if *r2 > 0.8))
-		.collect();
-	if !poor.is_empty() {
-		println!("\nClosest rejected candidates:");
-		for r in poor.iter().take(10) {
-			if let Rejected::PoorFit { did, ide, form, r2 } = r {
-				println!("  {did:04X}  {form:?}  vs {ide}  R²={r2:.3} — below the threshold");
-			}
-		}
-	}
+	let fits = report(&series, &log.measurements, offset, limits);
 
 	if let Some(path) = out {
 		let catalog = to_catalog(&fits);
 		std::fs::write(path, catalog.to_json()?).with_context(|| format!("writing the catalog {path:?}"))?;
-		println!("\nwrote {} catalog rows to {path}", catalog.len());
+		crate::say!("wrote {} catalog rows to {path}", catalog.len());
 	}
 	Ok(())
 }
 
+/// Fit, print the table on stdout and the notes on stderr, and hand back the fits.
+fn report(series: &[RawSeries], logged: &[crate::vcdslog::LoggedMeasurement], offset: f64, limits: Thresholds) -> Vec<Fitted> {
+	let (fits, rejected) = fit_all(series, logged, offset, limits);
+	crate::out!("{}", render(logged, &fits, &rejected, limits));
+	for (level, text) in notes(&fits, &rejected, limits) {
+		crate::verbosity::say(level, &text);
+	}
+	fits
+}
+
+/// The table `analyse` prints: one row per logged measurement — its fit, or why there
+/// is none — and one per fit that cleared the bar and was outranked; the summary line.
+fn render(logged: &[crate::vcdslog::LoggedMeasurement], fits: &[Fitted], rejected: &[Rejected], limits: Thresholds) -> String {
+	use crate::table::{self, Table};
+
+	let mut table = Table::new(&["ide", "unit", "range", "did", "form", "factor", "offset", "r2", "points", "verdict"])
+		.right(5)
+		.right(6)
+		.right(7)
+		.right(8);
+	for m in logged {
+		let (lo, hi) = m
+			.samples
+			.iter()
+			.map(|(_, v)| *v)
+			.fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
+		let range = format!("{lo:.2}..{hi:.2}");
+		let lead = |cells: &[String]| -> Vec<String> {
+			let mut row = vec![m.ide.clone(), m.unit.clone(), range.clone()];
+			row.extend_from_slice(cells);
+			row
+		};
+		match fits.iter().find(|f| f.ide == m.ide) {
+			Some(f) => table.row(lead(&[
+				format!("{:03X}/{:04X}", f.ecu, f.did),
+				format!("{:?}", f.form),
+				format!("{:.6}", f.scale.factor),
+				format!("{:+.4}", f.scale.offset),
+				format!("{:.5}", f.r2),
+				f.points.to_string(),
+				"proven".to_string(),
+			])),
+			None => {
+				let (r2, points, verdict) = why_unproven(m, rejected, limits);
+				table.row(lead(&[
+					String::new(),
+					String::new(),
+					String::new(),
+					String::new(),
+					r2.map(|r| format!("{r:.3}")).unwrap_or_default(),
+					points.map(|p| p.to_string()).unwrap_or_default(),
+					verdict,
+				]));
+			}
+		}
+		for r in rejected {
+			if let Rejected::Outranked { ecu, did, ide, r2 } = r
+				&& *ide == m.ide
+			{
+				table.row(lead(&[
+					format!("{ecu:03X}/{did:04X}"),
+					String::new(),
+					String::new(),
+					String::new(),
+					format!("{r2:.5}"),
+					String::new(),
+					"outranked".to_string(),
+				]));
+			}
+		}
+	}
+	let mut out = table.render(table::terminal_width());
+	let outranked = rejected.iter().filter(|r| matches!(r, Rejected::Outranked { .. })).count();
+	let proven = logged.iter().filter(|m| fits.iter().any(|f| f.ide == m.ide)).count();
+	out.push_str(&format!("{proven} of {} measurements proven", logged.len()));
+	if outranked > 0 {
+		out.push_str(&format!(" · {outranked} outranked"));
+	}
+	out.push('\n');
+	out
+}
+
+/// Why a logged measurement has no fit: the closest `R²` any identifier came, the most
+/// samples any overlapped it by, and the verdict in words.
+///
+/// The CLOSEST any identifier came, not whichever rejection happened to be recorded first
+/// — most identifiers in a capture never overlap this measurement's window at all, and
+/// quoting one of those says nothing about the ones that did.
+fn why_unproven(m: &crate::vcdslog::LoggedMeasurement, rejected: &[Rejected], limits: Thresholds) -> (Option<f64>, Option<usize>, String) {
+	let levels = {
+		let mut v: Vec<String> = m.samples.iter().map(|(_, x)| format!("{x:.3}")).collect();
+		v.sort();
+		v.dedup();
+		v.len()
+	};
+	if levels <= 1 {
+		return (None, None, "never moved".to_string());
+	}
+	if levels < limits.min_levels {
+		return (None, None, format!("only {levels} distinct values"));
+	}
+	let best_r2 = rejected
+		.iter()
+		.filter_map(|r| match r {
+			Rejected::PoorFit { ide, r2, .. } if *ide == m.ide => Some(*r2),
+			_ => None,
+		})
+		.fold(None, |acc: Option<f64>, r| Some(acc.map_or(r, |a: f64| a.max(r))));
+	let most_points = rejected
+		.iter()
+		.filter_map(|r| match r {
+			Rejected::TooFewPoints { ide, points, .. } if *ide == m.ide => Some(*points),
+			_ => None,
+		})
+		.max();
+	match (best_r2, most_points) {
+		(Some(r2), _) => (Some(r2), None, format!("best fit below R² {:.3}", limits.min_r2)),
+		(None, Some(points)) => (None, Some(points), format!("too few overlapping samples (< {})", limits.min_points)),
+		(None, None) => (None, None, "no identifier explained it".to_string()),
+	}
+}
+
+/// What `analyse` says on stderr beside the table: at `-v` the bar, the rejections by
+/// reason, the near misses; at `-vv` every rejected pairing.
+fn notes(fits: &[Fitted], rejected: &[Rejected], limits: Thresholds) -> Vec<(u8, String)> {
+	use crate::verbosity::{NOTES, WIRE};
+
+	let reason = |r: &Rejected| match r {
+		Rejected::TooFewPoints { .. } => "too few overlapping samples",
+		Rejected::RawConstant { .. } => "the raw bytes never moved",
+		Rejected::RawTooFewLevels { .. } => "too few distinct raw values",
+		Rejected::ValueConstant { .. } => "the logged value never moved",
+		Rejected::PoorFit { .. } => "the fit was too poor",
+		Rejected::Outranked { .. } => "something explained it better",
+	};
+	let mut notes = vec![(
+		NOTES,
+		format!(
+			"bar: R² ≥ {:.3}, ≥ {} points over ≥ {} distinct raw values",
+			limits.min_r2, limits.min_points, limits.min_levels
+		),
+	)];
+	let mut why: BTreeMap<&str, usize> = BTreeMap::new();
+	for r in rejected {
+		*why.entry(reason(r)).or_default() += 1;
+	}
+	if !why.is_empty() {
+		let tally: Vec<String> = why.iter().map(|(reason, n)| format!("{n} {reason}")).collect();
+		notes.push((NOTES, format!("rejected: {}", tally.join(", "))));
+	}
+	let best_overlap = rejected
+		.iter()
+		.filter_map(|r| match r {
+			Rejected::TooFewPoints { points, .. } => Some(*points),
+			_ => None,
+		})
+		.max();
+	if let (true, Some(points)) = (fits.is_empty(), best_overlap) {
+		notes.push((
+			NOTES,
+			format!("best overlap {points} samples: the log covers a shorter window than the capture, or the two were not recorded together"),
+		));
+	}
+	if rejected.iter().any(|r| matches!(r, Rejected::Outranked { .. })) {
+		notes.push((
+			NOTES,
+			"outranked: cleared the bar, but a better fit exists for the same identifier or measurement (proportional quantities fit each other)"
+				.to_string(),
+		));
+	}
+	// Near misses are leads, and a stated rejection beats a silent drop.
+	for r in rejected
+		.iter()
+		.filter(|r| matches!(r, Rejected::PoorFit { r2, .. } if *r2 > 0.8))
+		.take(10)
+	{
+		if let Rejected::PoorFit { did, ide, form, r2 } = r {
+			notes.push((NOTES, format!("near miss: {did:04X} {form:?} vs {ide} R²={r2:.3}")));
+		}
+	}
+	for r in rejected {
+		let line = match r {
+			Rejected::TooFewPoints { did, ide, points } => {
+				format!("{did:04X} vs {ide}: {points} overlapping samples")
+			}
+			Rejected::RawConstant { did, ide } => {
+				format!("{did:04X} vs {ide}: the raw bytes never moved")
+			}
+			Rejected::RawTooFewLevels { did, ide, levels } => {
+				format!("{did:04X} vs {ide}: {levels} distinct raw values")
+			}
+			Rejected::ValueConstant { ide } => format!("{ide}: the logged value never moved"),
+			Rejected::PoorFit { did, ide, form, r2 } => {
+				format!("{did:04X} {form:?} vs {ide}: R²={r2:.5}")
+			}
+			Rejected::Outranked { ecu, did, ide, r2 } => {
+				format!("{ecu:03X}/{did:04X} vs {ide}: R²={r2:.5}, outranked")
+			}
+		};
+		notes.push((WIRE, line));
+	}
+	notes
+}
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -905,5 +982,39 @@ mod tests {
 		// The round trip the product path actually uses.
 		let def = &catalog.defs[0];
 		assert_eq!(def.interpret(&[0x0B, 0x34]), Some(717.0));
+	}
+
+	/// One identifier carrying rpm, a log with rpm, a coolant reading too short to fit and
+	/// a constant: the fit, then a verdict for each of the others.
+	fn session() -> (Vec<RawSeries>, Vec<LoggedMeasurement>) {
+		let raw: Vec<(f64, u16)> = (0..200).map(|i| (i as f64 * 0.1, 3200 + i as u16 * 8)).collect();
+		let rpm: Vec<(f64, f64)> = (0..40)
+			.map(|i| {
+				let t = i as f64 * 0.5;
+				(t, (3200.0 + (t / 0.1) * 8.0) * 0.25)
+			})
+			.collect();
+		let short: Vec<(f64, f64)> = (0..5).map(|i| (i as f64 * 0.5, 70.0 + i as f64)).collect();
+		let flat: Vec<(f64, f64)> = (0..5).map(|i| (i as f64, 0.0)).collect();
+		let mut coolant = logged("IDE00025", short);
+		coolant.unit = "°C".into();
+		let mut angle = logged("IDE00155", flat);
+		angle.unit = "°".into();
+		(vec![series(0xF40C, &raw)], vec![logged("IDE00405", rpm), coolant, angle])
+	}
+
+	#[test]
+	fn the_answer_is_one_row_per_logged_measurement_and_a_summary() {
+		let (series, logged) = session();
+		let limits = Thresholds::default();
+		let (fits, rejected) = fit_all(&series, &logged, 0.0, limits);
+		assert_eq!(
+			render(&logged, &fits, &rejected, limits),
+			"ide       unit  range            did       form     factor   offset       r2  points  verdict\n\
+			 IDE00405  /min  800.00..1190.00  7E8/F40C  U16Be  0.250000  +0.0000  1.00000      40  proven\n\
+			 IDE00025  °C    70.00..74.00                                                       5  too few overlapping samples (< 20)\n\
+			 IDE00155  °     0.00..0.00                                                            never moved\n\
+			 1 of 3 measurements proven\n"
+		);
 	}
 }
