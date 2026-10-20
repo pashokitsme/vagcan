@@ -1649,6 +1649,150 @@ pub struct Built {
 	/// The lines of `notes` that say what the input lacks and what to write — a page nothing
 	/// opens, a strip on no page: what `dev dash build` says by default.
 	pub advice: Vec<String>,
+	/// How each channel resolved, one row a channel in the order `notes` logs them: what
+	/// `dev dash build -v` prints as a table.
+	pub channels: Vec<ChannelRow>,
+	/// The bus estimate, one row a run: what `dev dash build -v` prints as a table.
+	pub bus: Vec<BusRow>,
+	/// What the bus would serve slower than the board asks, in plan order — a row of
+	/// `dev dash build`'s own block when there is any.
+	pub over_budget: Vec<OverBudget>,
+	/// The lines of `notes` that `channels` and `bus` hold as rows: the firmware build prints
+	/// them as lines, `dev dash build -v` as the tables.
+	pub tabled: Vec<String>,
+}
+
+impl Built {
+	/// The lines of the log that are neither advice nor a table's row, in order: what
+	/// `dev dash build -v` prints as lines.
+	pub fn prose(&self) -> impl Iterator<Item = &String> {
+		self.notes.iter().filter(|n| !self.advice.contains(n) && !self.tabled.contains(n))
+	}
+}
+
+/// One channel as the build resolved it: a row of `dev dash build -v`'s channel table, and a
+/// line of the firmware build's log.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChannelRow {
+	pub label: String,
+	/// As the input wrote it: `01:IDE00191`.
+	pub reference: String,
+	pub did: u16,
+	pub bit_offset: u32,
+	pub bit_length: u32,
+	pub signed: bool,
+	pub big_endian: bool,
+	pub factor: f64,
+	pub offset: f64,
+	pub hz: f64,
+	/// Measured on a car, rather than declared by the project's data.
+	pub proven: bool,
+	/// The row's own name: its text id, else the definition's name.
+	pub source: String,
+}
+
+impl ChannelRow {
+	/// The table's header, the cells' order.
+	pub const HEADERS: [&'static str; 8] = ["label", "channel", "did@bit/width", "type", "scale", "offset", "hz", "source"];
+
+	/// The cells under [`ChannelRow::HEADERS`].
+	pub fn cells(&self) -> Vec<String> {
+		vec![
+			self.label.clone(),
+			self.reference.clone(),
+			format!("{:04X}@{}/{}", self.did, self.bit_offset, self.bit_length),
+			format!("{} {}", if self.signed { "i" } else { "u" }, if self.big_endian { "BE" } else { "LE" }),
+			self.factor.to_string(),
+			self.offset.to_string(),
+			self.hz.to_string(),
+			format!("{} {}", if self.proven { "measured" } else { "declared" }, self.source),
+		]
+	}
+
+	/// The row as one line of the log: `BOOST ← 01:IDE00191 202A@0/16 u BE ×0.001 +0 at 2 Hz, …`.
+	pub fn line(&self) -> String {
+		format!(
+			"{} ← {} {:04X}@{}/{} {} {}{} ×{} {:+} at {} Hz, {} ({})",
+			self.label,
+			self.reference,
+			self.did,
+			self.bit_offset,
+			self.bit_length,
+			if self.signed { "i" } else { "u" },
+			if self.big_endian { "BE" } else { "LE" },
+			if self.bit_length % 8 == 0 { "" } else { " bits" },
+			self.factor,
+			self.offset,
+			self.hz,
+			if self.proven { "measured on a car" } else { "from the project's data" },
+			self.source
+		)
+	}
+}
+
+/// One run of the bus estimate: what is on the glass, its share of the bus, and the reads it
+/// would serve slower than their rate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BusRow {
+	/// `1 "MAIN"`, `1 "MAIN" cruise on`, `stopwatch`.
+	pub page: String,
+	/// `~88 %`.
+	pub load: String,
+	/// `01:202A BOOST 8.3/s of 10`, empty when the bus serves every read at its rate.
+	pub short_of: String,
+}
+
+impl BusRow {
+	/// The table's header, the cells' order.
+	pub const HEADERS: [&'static str; 3] = ["page", "load", "short-of"];
+
+	/// The cells under [`BusRow::HEADERS`].
+	pub fn cells(&self) -> Vec<String> {
+		vec![self.page.clone(), self.load.clone(), self.short_of.clone()]
+	}
+}
+
+/// What the bus estimate finds short: a read the board wants at its rate and would not get.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverBudget {
+	/// A plan page, numbered from 1 as the input's `page #n`.
+	Page(usize),
+	/// A stopwatch run.
+	Stopwatch,
+}
+
+/// `page 1, 3, stopwatch` — the over-budget row's value.
+pub fn over_budget_text(over: &[OverBudget]) -> String {
+	let pages: Vec<String> = over
+		.iter()
+		.filter_map(|o| match o {
+			OverBudget::Page(n) => Some(n.to_string()),
+			OverBudget::Stopwatch => None,
+		})
+		.collect();
+	let mut parts = Vec::new();
+	if !pages.is_empty() {
+		parts.push(format!("page {}", pages.join(", ")));
+	}
+	if over.contains(&OverBudget::Stopwatch) {
+		parts.push("stopwatch".to_string());
+	}
+	parts.join(", ")
+}
+
+/// What one channel's resolution logs: its lines, and its row of the channel table.
+#[derive(Debug, Default)]
+struct Resolution {
+	notes: Vec<String>,
+	rows: Vec<ChannelRow>,
+}
+
+impl Resolution {
+	/// Into the build's log, once the channel is in the plan.
+	fn into_log(self, notes: &mut Vec<String>, rows: &mut Vec<ChannelRow>) {
+		notes.extend(self.notes);
+		rows.extend(self.rows);
+	}
 }
 
 /// One line of the log that is also advice: what the input lacks and what to write.
@@ -1708,7 +1852,7 @@ fn index_by_row(
 		return named(usize::from(*index));
 	}
 	let probe = ChannelInput::bare(reference.clone());
-	let Ok(resolved) = resolve_channel(&probe, offered, units, &mut Vec::new()) else {
+	let Ok(resolved) = resolve_channel(&probe, offered, units, &mut Resolution::default()) else {
 		return Named::Unknown;
 	};
 	match channels.iter().position(|c| read_of(c) == read_of(&resolved)) {
@@ -1719,7 +1863,7 @@ fn index_by_row(
 
 /// One `[[channel]]` against what the car reported and what the project knows: the same rules
 /// for a channel the owner named and for a specified value it paired with (`todo/dash/18`).
-fn resolve_channel(wanted: &ChannelInput, offered: &[poll::Channel], units: &[UnitIdentity], notes: &mut Vec<String>) -> Result<Channel, Error> {
+fn resolve_channel(wanted: &ChannelInput, offered: &[poll::Channel], units: &[UnitIdentity], log: &mut Resolution) -> Result<Channel, Error> {
 	let request = wanted.reference.request();
 	if !units.iter().any(|u| u.request == request) {
 		return Err(Error::UnknownUnit(request));
@@ -1785,7 +1929,7 @@ fn resolve_channel(wanted: &ChannelInput, offered: &[poll::Channel], units: &[Un
 	// another field, and one from an install whose text table is shut carries
 	// none.
 	if found.is_standard() {
-		notes.push(format!(
+		log.notes.push(format!(
 			"{}: a standard OBD-II row, which the standard mandates and this car may still not carry",
 			wanted.reference
 		));
@@ -1795,15 +1939,22 @@ fn resolve_channel(wanted: &ChannelInput, offered: &[poll::Channel], units: &[Un
 	let decimals = wanted.decimals.unwrap_or_else(|| decimals_for(factor));
 	let source = found.text_id.clone().unwrap_or_else(|| def.name.to_string());
 	let hz = wanted.hz.unwrap_or(DEFAULT_HZ);
-	notes.push(format!(
-		"{label} ← {} {did:04X}@{bit_offset}/{bit_length} {} {}{} ×{factor} {offset:+} at {hz} Hz, {} ({})",
-		wanted.reference,
-		if signed { "i" } else { "u" },
-		if big_endian { "BE" } else { "LE" },
-		if bit_length % 8 == 0 { "" } else { " bits" },
-		if found.proven { "measured on a car" } else { "from the project's data" },
-		source
-	));
+	let row = ChannelRow {
+		label: label.clone(),
+		reference: wanted.reference.to_string(),
+		did,
+		bit_offset,
+		bit_length,
+		signed,
+		big_endian,
+		factor,
+		offset,
+		hz,
+		proven: found.proven,
+		source: source.clone(),
+	};
+	log.notes.push(row.line());
+	log.rows.push(row);
 	Ok(Channel {
 		unit: request,
 		did,
@@ -1893,12 +2044,12 @@ fn catalog_lookups(offered: &[poll::Channel], units: &[UnitIdentity]) -> Vec<Str
 			let rows: Vec<&poll::Channel> = offered.iter().filter(|c| c.request == unit.request && c.def.is_some()).collect();
 			let measured = rows.iter().filter(|c| c.proven).count();
 			format!(
-				"catalog {}: part {}, odx {} {} → {} rows, {measured} measured on a car",
+				"catalog {}: part {}, odx {} {} → {}, {measured} measured on a car",
 				unit_label(unit.request),
 				or_none(&unit.part_number),
 				or_none(&unit.odx_name),
 				or_none(&unit.odx_version),
-				rows.len(),
+				count(rows.len(), "row"),
 			)
 		})
 		.collect()
@@ -1921,8 +2072,16 @@ fn candidate_lookup(reference: &Reference, candidates: &[&poll::Channel], on_uni
 		})
 		.collect();
 	match rows.as_slice() {
-		[] => format!("lookup {reference}: none of the {on_unit} rows on its unit"),
-		_ => format!("lookup {reference}: {} of {on_unit} rows — {}", rows.len(), rows.join("; ")),
+		[] => format!("lookup {reference}: none of the {} on its unit", count(on_unit, "row")),
+		_ => format!("lookup {reference}: {} of {} — {}", rows.len(), count(on_unit, "row"), rows.join("; ")),
+	}
+}
+
+/// A count and its noun: `1 row`, `2 rows`.
+fn count(n: usize, singular: &str) -> String {
+	match n {
+		1 => format!("1 {singular}"),
+		n => format!("{n} {singular}s"),
 	}
 }
 
@@ -1970,6 +2129,7 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 	}
 	let mut notes = Vec::new();
 	let mut advice = Vec::new();
+	let mut rows = Vec::new();
 	let mut channels: Vec<Channel> = Vec::new();
 	let mut index_of: BTreeMap<Reference, u16> = BTreeMap::new();
 
@@ -1977,7 +2137,7 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 		if index_of.contains_key(&wanted.reference) {
 			return Err(Error::Duplicate(wanted.reference.clone()));
 		}
-		let mut resolution = Vec::new();
+		let mut resolution = Resolution::default();
 		let resolved = resolve_channel(wanted, &offered, units, &mut resolution)?;
 		// The same row under its other spelling is the same row: `01:IDE00191` and `01:202A`
 		// would otherwise both be added, both subscribed and both drawable (review,
@@ -1988,7 +2148,7 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 				second: wanted.reference.clone(),
 			});
 		}
-		notes.append(&mut resolution);
+		resolution.into_log(&mut notes, &mut rows);
 		let index = channels.len() as u16;
 		channels.push(resolved);
 		index_of.insert(wanted.reference.clone(), index);
@@ -2027,7 +2187,7 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 		};
 		// Resolved into a log of its own: a setpoint that turns out to be a channel the input
 		// already has is not added, and a build log saying it was would be a lie.
-		let mut resolution = Vec::new();
+		let mut resolution = Resolution::default();
 		let resolved = match index_of.get(&reference) {
 			// Already a `[[channel]]`: the owner's own, with the rate they gave it.
 			Some(index) => channels[*index as usize].clone(),
@@ -2073,7 +2233,7 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 				let index = channels.len() as u16;
 				channels.push(resolved);
 				index_of.insert(reference.clone(), index);
-				notes.append(&mut resolution);
+				resolution.into_log(&mut notes, &mut rows);
 				index
 			}
 		};
@@ -2302,8 +2462,19 @@ pub fn build(input: &Input, store: &CatalogStore, extracted: &Extracted, units: 
 	plan.joins().map_err(Error::Parse)?;
 	// Bus time, the board's planner run over the plan at one constant cost an exchange: an
 	// estimate, said and never refused (2026-10-20: the plan it refused runs on the car).
-	notes.extend(bus_notes(&plan, &input.channels));
-	Ok(Built { plan, notes, advice })
+	let bus = bus_log(&plan, &input.channels);
+	notes.push(bus.header);
+	notes.extend(bus.lines.iter().cloned());
+	let tabled = rows.iter().map(ChannelRow::line).chain(bus.lines).collect();
+	Ok(Built {
+		plan,
+		notes,
+		advice,
+		channels: rows,
+		bus: bus.rows,
+		over_budget: bus.over_budget,
+		tabled,
+	})
 }
 
 /// Every `[[channel]]`'s alarms, in priority order — `alarm_priority` ascending, then the file's
@@ -2449,7 +2620,7 @@ fn resolve_alarms(input: &Input, channels: &[Channel], pages: &[Page], notes: &m
 /// **Said, never refused** (2026-10-20). The cost an exchange is an upper bound from a BLE
 /// recording; at it every page of the owner's plan came out short, and that plan runs on the
 /// car. A strict check waits for the board's own `exch_ms=` from a drive.
-fn bus_notes(plan: &Plan, inputs: &[ChannelInput]) -> Vec<String> {
+fn bus_log(plan: &Plan, inputs: &[ChannelInput]) -> BusLog {
 	use bus_time::{EXCHANGE_MS, Glass};
 	use vag_dash_render::plan::{LEVER_CLOSED_PERIOD_MS, LEVER_OPEN_PERIOD_MS};
 	let device = plan.to_device();
@@ -2481,19 +2652,22 @@ fn bus_notes(plan: &Plan, inputs: &[ChannelInput]) -> Vec<String> {
 		),
 		None => String::new(),
 	};
-	let mut notes = vec![format!(
-		"bus: an estimate at {EXCHANGE_MS} ms an exchange, an upper bound from a BLE recording on the reference car; it refuses nothing{lever}"
-	)];
+	let header =
+		format!("bus: an estimate at {EXCHANGE_MS} ms an exchange, an upper bound from a BLE recording on the reference car; it refuses nothing{lever}");
+	// The reads a run would serve slower than their rate: `the lever 18.9/s of 20`.
+	let short = |run: &bus_time::Run| -> Vec<String> {
+		run
+			.thinned
+			.iter()
+			.map(|t| format!("{} {}/s of {}", what(t.channel), shown(t.got_per_s), shown(t.asked_per_s)))
+			.collect()
+	};
 	// One run's share, the reads it would serve slower than their rate, and whether it thins the
 	// pages behind the glass: `~88 % — reads the lever 18.9/s of 20`.
 	let said = |run: &bus_time::Run| {
 		let mut text = percent(run.busy);
-		if !run.thinned.is_empty() {
-			let reads: Vec<String> = run
-				.thinned
-				.iter()
-				.map(|t| format!("{} {}/s of {}", what(t.channel), shown(t.got_per_s), shown(t.asked_per_s)))
-				.collect();
+		let reads = short(run);
+		if !reads.is_empty() {
 			text.push_str(&format!(" — reads {}", reads.join(", ")));
 		}
 		if run.behind_thinned {
@@ -2501,21 +2675,64 @@ fn bus_notes(plan: &Plan, inputs: &[ChannelInput]) -> Vec<String> {
 		}
 		text
 	};
+	// The same run as a row: `1 "MAIN"  ~88 %  the lever 18.9/s of 20`.
+	let row = |page: String, run: &bus_time::Run| {
+		let mut short_of = short(run).join(", ");
+		if run.behind_thinned {
+			if !short_of.is_empty() {
+				short_of.push_str("; ");
+			}
+			short_of.push_str("other pages under 1/s");
+		}
+		BusRow {
+			page,
+			load: percent(run.busy),
+			short_of,
+		}
+	};
+	let mut log = BusLog {
+		header,
+		lines: Vec::new(),
+		rows: Vec::new(),
+		over_budget: Vec::new(),
+	};
 	for estimate in bus_time::estimate(&device, EXCHANGE_MS) {
 		let off = &estimate.cruise_off;
-		let glass = match off.glass {
-			Glass::Page(page) => match device.pages[page].title() {
-				"" => format!("page {}", page + 1),
-				title => format!("page {} {title:?}", page + 1),
-			},
-			Glass::Run => "a stopwatch run".to_string(),
+		let (glass, page, over) = match off.glass {
+			Glass::Page(page) => {
+				let cell = match device.pages[page].title() {
+					"" => format!("{}", page + 1),
+					title => format!("{} {title:?}", page + 1),
+				};
+				(format!("page {cell}"), cell, OverBudget::Page(page + 1))
+			}
+			Glass::Run => ("a stopwatch run".to_string(), "stopwatch".to_string(), OverBudget::Stopwatch),
 		};
-		notes.push(match &estimate.cruise_on {
-			Some(on) => format!("bus: {glass} cruise off {}; cruise on {}", said(off), said(on)),
-			None => format!("bus: {glass} {}", said(off)),
-		});
+		if std::iter::once(off).chain(&estimate.cruise_on).any(|run| !run.thinned.is_empty()) {
+			log.over_budget.push(over);
+		}
+		match &estimate.cruise_on {
+			Some(on) => {
+				log.lines.push(format!("bus: {glass} cruise off {}; cruise on {}", said(off), said(on)));
+				log.rows.push(row(format!("{page} cruise off"), off));
+				log.rows.push(row(format!("{page} cruise on"), on));
+			}
+			None => {
+				log.lines.push(format!("bus: {glass} {}", said(off)));
+				log.rows.push(row(page, off));
+			}
+		}
 	}
-	notes
+	log
+}
+
+/// The bus estimate as the build logs it: the line that says what it is, one line an estimate,
+/// the same as one row a run, and what comes out short.
+struct BusLog {
+	header: String,
+	lines: Vec<String>,
+	rows: Vec<BusRow>,
+	over_budget: Vec<OverBudget>,
 }
 /// What the build says of the strip: which pages show the voltage, and a channel that does not
 /// read in volts, which the strip writes it as.
@@ -4243,6 +4460,14 @@ mod tests {
 		assert_eq!(c.label, "Boost (driven)");
 		assert!(built.notes[0].contains("at 2 Hz, measured on a car (IDE00191)"), "{}", built.notes[0]);
 		assert!(built.advice.is_empty(), "how a channel resolved is no advice: {:?}", built.advice);
+		// The same as a row of `-v`'s channel table, and a line of the firmware build's log only.
+		assert_eq!(built.channels.len(), 1);
+		assert_eq!(built.channels[0].line(), built.notes[0]);
+		assert_eq!(
+			built.channels[0].cells(),
+			["Boost (driven)", "01:202A", "202A@0/16", "u BE", "0.002", "0", "2", "measured IDE00191"]
+		);
+		assert!(!built.prose().any(|n| *n == built.notes[0]));
 	}
 
 	/// What each unit's catalog held and which rows a `ref` was chosen from: on stderr at `-vv`,
@@ -5074,6 +5299,25 @@ mod tests {
 				"bus: page 3 ~100 % — reads 01:IDE00001 One 29.4/s of 50, 01:IDE00002 Two 29.4/s of 50, 01:IDE00003 Three 29.4/s of 50",
 			]
 		);
+		// The same as rows, and every page among the over-budget ones.
+		let reads = "01:IDE00001 One 29.4/s of 50, 01:IDE00002 Two 29.4/s of 50, 01:IDE00003 Three 29.4/s of 50";
+		let row = |page: &str| BusRow {
+			page: page.into(),
+			load: "~100 %".into(),
+			short_of: reads.into(),
+		};
+		assert_eq!(built.bus, [row("1 \"A\""), row("2 \"B\""), row("3")]);
+		assert_eq!(built.over_budget, [OverBudget::Page(1), OverBudget::Page(2), OverBudget::Page(3)]);
+		// Each row's line is in the log for the firmware build, and not in what `-v` prints as lines.
+		assert!(built.tabled.iter().all(|t| built.notes.contains(t)));
+		assert!(
+			!built.prose().any(|n| n.starts_with("bus: page")),
+			"{:?}",
+			built.prose().collect::<Vec<_>>()
+		);
+		assert!(built.prose().any(|n| n.starts_with("bus: an estimate")));
+		let calm = build_with_alarms(NO_ALARMS, "").unwrap();
+		assert!(calm.over_budget.is_empty(), "{:?}", calm.over_budget);
 	}
 
 	/// With the lever, each page is estimated with cruise off — the lever at 20 a second — and on,
@@ -5089,6 +5333,20 @@ mod tests {
 				"bus: a stopwatch run ~100 % — reads 01:IDE00010 Speed 14.4/s of 50",
 			]
 		);
+		let row = |page: &str, load: &str, short_of: &str| BusRow {
+			page: page.into(),
+			load: load.into(),
+			short_of: short_of.into(),
+		};
+		assert_eq!(
+			built.bus,
+			[
+				row("1 \"T\" cruise off", "~85 %", ""),
+				row("1 \"T\" cruise on", "~24 %", ""),
+				row("stopwatch", "~100 %", "01:IDE00010 Speed 14.4/s of 50"),
+			]
+		);
+		assert_eq!(built.over_budget, [OverBudget::Stopwatch]);
 	}
 
 	/// Shaped like the owner's plan, which runs on the car: eight full values pages, a strip, the

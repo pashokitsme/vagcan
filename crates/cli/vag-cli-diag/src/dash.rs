@@ -21,6 +21,7 @@ use anyhow::Result;
 use clap::Subcommand;
 
 use vag_cli_core::dash;
+use vag_cli_core::table::Table;
 use vag_cli_core::{note, outln, say};
 
 pub mod catalog;
@@ -52,9 +53,11 @@ pub enum Tool {
 	/// OUT: `plan.json` for a person to read, `plan.rs` for the
 	/// firmware, both under the car in `~/.vagcan/dash/<VIN>/` — wherever the
 	/// input was read from — and the plan's id, which a board flashed with it
-	/// names in `vagcan devices` and `dashcfg`. `-v` adds how each channel resolved (row,
-	/// bits, scaling, measured or declared), the alarms and the bus estimate per page; `-vv`
-	/// what each unit's catalog held and which rows each `ref` was chosen from.
+	/// names in `vagcan devices` and `dashcfg`. An `over budget` row names the pages the bus
+	/// estimate would serve slower than they ask. `-v` adds a table of how each channel
+	/// resolved (identifier, bits, type, scaling, rate, measured or declared), the alarms, and
+	/// a table of the bus estimate per page; `-vv` what each unit's catalog held and which
+	/// rows each `ref` was chosen from.
 	///
 	/// If there is no input yet, the smallest one that builds is at the end of
 	/// this help. A channel is `<unit>:<text id>` or
@@ -149,31 +152,48 @@ pub async fn run(tool: Tool) -> Result<()> {
 	}
 }
 
-/// What a build says: the plan as a `key  value` block on stdout; on stderr each line of
-/// advice — what the input lacks and what to write — and at `-v` the rest of the build log,
-/// one line per channel, alarm, page's bus share and input.
+/// What a build says: the plan as a `key  value` block on stdout — with an `over budget` row
+/// when the bus estimate comes out short on a page; on stderr each line of advice — what the
+/// input lacks and what to write — and at `-v` the rest of the build log: a table of how each
+/// channel resolved, the lines on alarms and inputs, and a table of each page's bus share.
 pub fn report(written: &dash::Written) {
-	let plan = &written.built.plan;
-	let advice = &written.built.advice;
-	for line in written.built.notes.iter().filter(|n| !advice.contains(n)) {
-		note!("{line}");
+	let built = &written.built;
+	let plan = &built.plan;
+	if vag_cli_core::verbosity::at(vag_cli_core::verbosity::NOTES) {
+		let mut channels = Table::new(&dash::ChannelRow::HEADERS).right(4).right(5).right(6);
+		for row in &built.channels {
+			channels.row(row.cells());
+		}
+		if !channels.is_empty() {
+			note!("{}\n", channels.render(None).trim_end());
+		}
+		for line in built.prose() {
+			note!("{line}");
+		}
+		let mut bus = Table::new(&dash::BusRow::HEADERS).right(1);
+		for row in &built.bus {
+			bus.row(row.cells());
+		}
+		if !bus.is_empty() {
+			note!("{}", bus.render(None).trim_end());
+		}
 	}
 	let count = |n: usize, what: &str| format!("{n} {}", crate::render::plural(n, what));
-	outln!(
-		"{}",
-		vag_cli_core::table::pairs(&[
-			("vin", plan.vin.clone()),
-			// What a board flashed with it names in `vagcan devices` and `dashcfg`.
-			("plan", format!("{:016x}", dash::plan_id(plan))),
-			("pages", plan.pages.len().to_string()),
-			("channels", format!("{} on {}", plan.channels.len(), count(plan.units.len(), "unit"))),
-			("alarms", plan.alarms.len().to_string()),
-			("plan.json", written.json.display().to_string()),
-			("plan.rs", written.rust.display().to_string()),
-		])
-		.trim_end()
-	);
-	for line in advice {
+	let mut block = vec![
+		("vin", plan.vin.clone()),
+		// What a board flashed with it names in `vagcan devices` and `dashcfg`.
+		("plan", format!("{:016x}", dash::plan_id(plan))),
+		("pages", plan.pages.len().to_string()),
+		("channels", format!("{} on {}", plan.channels.len(), count(plan.units.len(), "unit"))),
+		("alarms", plan.alarms.len().to_string()),
+	];
+	if !built.over_budget.is_empty() {
+		block.push(("over budget", dash::over_budget_text(&built.over_budget)));
+	}
+	block.push(("plan.json", written.json.display().to_string()));
+	block.push(("plan.rs", written.rust.display().to_string()));
+	outln!("{}", vag_cli_core::table::pairs(&block).trim_end());
+	for line in &built.advice {
 		say!("{line}");
 	}
 }
@@ -198,14 +218,39 @@ mod tests {
 			standstill: None,
 		};
 		let advice = "stalk: there is no [stopwatch] — a press of measure only silences an alarm".to_string();
+		let boost = dash::ChannelRow {
+			label: "BOOST".into(),
+			reference: "01:IDE00191".into(),
+			did: 0x202A,
+			bit_offset: 0,
+			bit_length: 16,
+			signed: false,
+			big_endian: true,
+			factor: 0.001,
+			offset: 0.0,
+			hz: 2.0,
+			proven: true,
+			source: "IDE00191".into(),
+		};
+		let bus_line = "bus: page 1 \"MAIN\" ~120 % — reads 01:IDE00191 BOOST 1.5/s of 2".to_string();
 		dash::Written {
 			built: dash::Built {
 				plan,
 				notes: vec![
-					"BOOST ← 01:IDE00191 202A@0/16 u BE ×0.001 +0 at 2 Hz, measured on a car (IDE00191)".into(),
+					boost.line(),
 					advice.clone(),
+					"bus: an estimate at 34 ms an exchange".into(),
+					bus_line.clone(),
 				],
 				advice: vec![advice],
+				tabled: vec![boost.line(), bus_line],
+				channels: vec![boost],
+				bus: vec![dash::BusRow {
+					page: "1 \"MAIN\"".into(),
+					load: "~120 %".into(),
+					short_of: "01:IDE00191 BOOST 1.5/s of 2".into(),
+				}],
+				over_budget: vec![dash::OverBudget::Page(1), dash::OverBudget::Page(3), dash::OverBudget::Stopwatch],
 			},
 			dir: "/cars/X".into(),
 			json: "/cars/X/plan.json".into(),
@@ -214,7 +259,8 @@ mod tests {
 		}
 	}
 
-	/// The plan as a block on stdout, the advice by default and the log at `-v`, on stderr.
+	/// The plan as a block on stdout, the pages the bus comes out short on among it; the advice
+	/// by default and the log at `-v`, its channels and its bus estimate as tables, on stderr.
 	#[test]
 	fn a_build_is_a_block_of_data_with_its_advice_and_its_log_at_v() {
 		let written = written();
@@ -227,13 +273,14 @@ mod tests {
 		assert_eq!(
 			runs[0].stdout,
 			format!(
-				"vin        TESTVIN0000000001\n\
-				 plan       {:016x}\n\
-				 pages      0\n\
-				 channels   0 on 0 units\n\
-				 alarms     0\n\
-				 plan.json  /cars/X/plan.json\n\
-				 plan.rs    /cars/X/plan.rs\n",
+				"vin          TESTVIN0000000001\n\
+				 plan         {:016x}\n\
+				 pages        0\n\
+				 channels     0 on 0 units\n\
+				 alarms       0\n\
+				 over budget  page 1, 3, stopwatch\n\
+				 plan.json    /cars/X/plan.json\n\
+				 plan.rs      /cars/X/plan.rs\n",
 				dash::plan_id(&written.built.plan)
 			)
 		);
@@ -243,10 +290,30 @@ mod tests {
 		);
 		assert_eq!(
 			runs[1].stderr,
-			"BOOST ← 01:IDE00191 202A@0/16 u BE ×0.001 +0 at 2 Hz, measured on a car (IDE00191)\n\
+			"label  channel      did@bit/width  type  scale  offset  hz  source\n\
+			 BOOST  01:IDE00191  202A@0/16      u BE  0.001       0   2  measured IDE00191\n\
+			 \n\
+			 bus: an estimate at 34 ms an exchange\n\
+			 page        load  short-of\n\
+			 1 \"MAIN\"  ~120 %  01:IDE00191 BOOST 1.5/s of 2\n\
 			 stalk: there is no [stopwatch] — a press of measure only silences an alarm\n",
-			"the advice once, not again in the log"
+			"the advice once, not again in the log; no row of a table again as a line"
 		);
 		assert_split("dev dash build", &runs);
+
+		// Nothing short, no row for it.
+		let mut calm = written;
+		calm.built.over_budget.clear();
+		let capture = Capture::start(0);
+		report(&calm);
+		assert!(!capture.finish().stdout.contains("over budget"));
+	}
+
+	#[test]
+	fn the_over_budget_row_names_pages_then_a_stopwatch_run() {
+		use dash::OverBudget::{Page, Stopwatch};
+		assert_eq!(dash::over_budget_text(&[Page(2)]), "page 2");
+		assert_eq!(dash::over_budget_text(&[Stopwatch]), "stopwatch");
+		assert_eq!(dash::over_budget_text(&[Page(1), Page(3), Stopwatch]), "page 1, 3, stopwatch");
 	}
 }
