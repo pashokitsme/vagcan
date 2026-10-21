@@ -178,6 +178,8 @@ CREATE INDEX IF NOT EXISTS idx_long_coding_file   ON long_coding(file_id);
 --   file name, an ODIS project's `VWMCD_ProjectVersionInfo`.
 -- - `detail`: one line more, as `setup` wrote it.
 -- - `parsed_at`: when `setup` last read it, RFC 3339 in UTC.
+-- - `adaptations_at`: when `setup` last read an ODIS project's adaptation
+--   channels, even none; NULL for a project read before they were kept (schema 5).
 --
 -- `dir` is stored absolute. A relative one is a row an older vagcan wrote from a
 -- checkout; nothing resolves it against the working directory (`stored_key`).
@@ -190,6 +192,7 @@ CREATE TABLE IF NOT EXISTS source (
     version   TEXT,
     detail    TEXT,
     parsed_at TEXT,
+    adaptations_at TEXT,
     UNIQUE (kind, dir)
 );
 -- One fault code of one ECU variant, as an ODIS project describes it.
@@ -272,6 +275,38 @@ CREATE TABLE IF NOT EXISTS reading_level (
 );
 CREATE INDEX IF NOT EXISTS idx_reading_lookup ON reading(variant, did);
 CREATE INDEX IF NOT EXISTS idx_reading_level  ON reading_level(reading_id);
+-- One adaptation channel of one ECU variant, as an ODIS project describes it: a field
+-- of what the variant's `ReadDataByIdentCalibData` service reads with `0x22`.
+-- `reading`'s columns with `reading`'s meanings, in a table of its own so that no
+-- reader of channels meets an adaptation, nor the other way round. Only ODIS writes
+-- here; a VCDS installation's adaptations are its `RA.rod` rows in `registry_row`.
+CREATE TABLE IF NOT EXISTS adaptation_channel (
+    id           INTEGER PRIMARY KEY,
+    source_id    INTEGER NOT NULL REFERENCES source(id),
+    variant      TEXT NOT NULL,
+    did          INTEGER NOT NULL,
+    name         TEXT NOT NULL,
+    unit         TEXT,
+    bit_offset   INTEGER NOT NULL,
+    bit_length   INTEGER NOT NULL,
+    signed       INTEGER NOT NULL,
+    big_endian   INTEGER NOT NULL DEFAULT 1,
+    text_id      TEXT,
+    scaling      TEXT NOT NULL,
+    factor       REAL,
+    offset       REAL,
+    anchor_raw   INTEGER,
+    anchor_value REAL
+);
+-- An adaptation channel's text-table states, as `reading_level` holds a channel's.
+CREATE TABLE IF NOT EXISTS adaptation_level (
+    adaptation_id INTEGER NOT NULL REFERENCES adaptation_channel(id),
+    raw           INTEGER NOT NULL,
+    meaning       TEXT NOT NULL,
+    upper         INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_adaptation_lookup ON adaptation_channel(variant, did);
+CREATE INDEX IF NOT EXISTS idx_adaptation_level  ON adaptation_level(adaptation_id);
 -- One row a VCDS unit selects from a global registry other than RM.rod:
 -- adaptations (ADP, RA.rod), basic settings (GES, RG.rod), output tests (SOT,
 -- RS.rod), freeze-frame fields (FFMUX, RF.rod), XPL bits (RX.rod), and the MUX.rod
@@ -347,15 +382,18 @@ fn create_schema(conn: &Connection, db_path: &Path) -> Result<(), Error> {
 /// 3 (2026-10-20): `registry_row` and `registry_level`, the rows of VCDS's other
 /// registries ([`MIGRATED_TABLES`]), created empty; the next read of a VCDS
 /// installation fills them.
-const SCHEMA_VERSION: i64 = 3;
+/// 4 (2026-10-21): `adaptation_channel` and `adaptation_level`, an ODIS project's
+/// adaptation channels, created empty; the next `vagcan setup` of the project fills them.
+const SCHEMA_VERSION: i64 = 5;
 
 /// The tables [`migrate`] creates in a cache that predates them. Nothing in them is
 /// derived from what the cache holds, so a missing one is made, empty, rather than the
-/// cache refused: the registry read that fills them runs with the next read of the
-/// installation.
-const MIGRATED_TABLES: &[&str] = &["registry_row", "registry_level"];
+/// cache refused: the read that fills them runs with the next read of the source —
+/// the VCDS installation for the registry rows, the ODIS project for the adaptations.
+const MIGRATED_TABLES: &[&str] = &["registry_row", "registry_level", "adaptation_channel", "adaptation_level"];
 
-/// The columns [`migrate`] adds to a cache of the shape before [`SCHEMA_VERSION`] 1. A
+/// The columns [`migrate`] adds to a cache that predates them: the five of the shape before
+/// [`SCHEMA_VERSION`] 1, and `source.adaptations_at` of the shape before 5. A
 /// cache lacking only these is upgraded rather than refused.
 const MIGRATED: &[(&str, &str)] = &[
 	("label_file", "source_id"),
@@ -363,6 +401,7 @@ const MIGRATED: &[(&str, &str)] = &[
 	("source", "version"),
 	("source", "detail"),
 	("source", "parsed_at"),
+	("source", "adaptations_at"),
 ];
 
 /// Refuse a cache an older vagcan wrote: one holding some of this schema's tables but
@@ -553,7 +592,8 @@ fn merge_into(conn: &Connection, keep: i64, other: i64) -> rusqlite::Result<()> 
 		     root      = COALESCE(root,      (SELECT root      FROM source WHERE id = ?2)), \
 		     version   = COALESCE(version,   (SELECT version   FROM source WHERE id = ?2)), \
 		     detail    = COALESCE(detail,    (SELECT detail    FROM source WHERE id = ?2)), \
-		     parsed_at = COALESCE(parsed_at, (SELECT parsed_at FROM source WHERE id = ?2)) \
+		     parsed_at = COALESCE(parsed_at, (SELECT parsed_at FROM source WHERE id = ?2)), \
+		     adaptations_at = COALESCE(adaptations_at, (SELECT adaptations_at FROM source WHERE id = ?2)) \
 		 WHERE id = ?1",
 		params![keep, other],
 	)?;
@@ -1402,8 +1442,62 @@ pub fn put_all_vcds_readings<'a>(
 	if !db_path.is_file() {
 		return Ok(None);
 	}
-	write_into(db_path, install_dir, VCDS, variants, Replace::Kind, false)
+	write_into(db_path, install_dir, VCDS, variants, Replace::Kind, false, READINGS)
 }
+
+/// Everything one ODIS source says about adaptation channels, in one transaction,
+/// replacing everything that source said about them before — [`put_all_readings`] for
+/// the variants' adaptation reads ([`vag_data_labels::odis::Project::adaptations`]),
+/// into their own table. Returns how many landed.
+pub fn put_all_adaptations<'a>(
+	db_path: &Path,
+	project_dir: &str,
+	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Reading])>,
+) -> Result<usize, Error> {
+	let landed = write_into(db_path, project_dir, ODIS, variants, Replace::Source, true, ADAPTATIONS)?.unwrap_or_default();
+	// Kept even when nothing landed: a project that describes no adaptations is read, not
+	// one read before they were kept ([`odis_sources_without_adaptations`]).
+	let conn = Connection::open(db_path)?;
+	if let Some(source) = held_source_id(&conn, ODIS, project_dir)? {
+		conn.execute(
+			"UPDATE source SET adaptations_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1",
+			params![source],
+		)?;
+	}
+	Ok(landed)
+}
+
+/// The ODIS sources whose adaptation channels were never read — read before they were
+/// kept — by directory. A source whose read found none is not among them.
+pub fn odis_sources_without_adaptations(db_path: &Path) -> Result<Vec<String>, Error> {
+	let conn = open_existing(db_path)?;
+	let mut stmt = conn.prepare("SELECT dir FROM source WHERE kind = ?1 AND adaptations_at IS NULL ORDER BY id")?;
+	let rows = stmt.query_map(params![ODIS], |row| row.get(0))?;
+	Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Where one kind of channel is kept: its rows, its text-table states, and the column
+/// the states name their row by. Every name is the schema's own.
+#[derive(Clone, Copy)]
+struct Channels {
+	rows: &'static str,
+	levels: &'static str,
+	link: &'static str,
+}
+
+/// A unit's measurement channels.
+const READINGS: Channels = Channels {
+	rows: "reading",
+	levels: "reading_level",
+	link: "reading_id",
+};
+
+/// A unit's adaptation channels, as an ODIS project describes them.
+const ADAPTATIONS: Channels = Channels {
+	rows: "adaptation_channel",
+	levels: "adaptation_level",
+	link: "adaptation_id",
+};
 
 /// The writer behind [`put_readings`] and [`put_all_readings`], which make their source.
 fn write_readings<'a>(
@@ -1413,7 +1507,7 @@ fn write_readings<'a>(
 	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Reading])>,
 	replace: Replace,
 ) -> Result<usize, Error> {
-	Ok(write_into(db_path, source_dir, kind, variants, replace, true)?.unwrap_or_default())
+	Ok(write_into(db_path, source_dir, kind, variants, replace, true, READINGS)?.unwrap_or_default())
 }
 
 /// The one writer behind [`write_readings`] and [`put_all_vcds_readings`]: `make` says
@@ -1425,7 +1519,9 @@ fn write_into<'a>(
 	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Reading])>,
 	replace: Replace,
 	make: bool,
+	table: Channels,
 ) -> Result<Option<usize>, Error> {
+	let Channels { rows, levels, link } = table;
 	let mut conn = Connection::open(db_path)?;
 	create_schema(&conn, db_path)?;
 	conn.pragma_update(None, "synchronous", "FULL")?;
@@ -1442,36 +1538,36 @@ fn write_into<'a>(
 		},
 	};
 
+	// The table names are [`Channels`]' constants, never anything a caller supplied.
 	match replace {
 		Replace::Source => {
 			tx.execute(
-				"DELETE FROM reading_level WHERE reading_id IN (SELECT id FROM reading WHERE source_id = ?1)",
+				&format!("DELETE FROM {levels} WHERE {link} IN (SELECT id FROM {rows} WHERE source_id = ?1)"),
 				params![source],
 			)?;
-			tx.execute("DELETE FROM reading WHERE source_id = ?1", params![source])?;
+			tx.execute(&format!("DELETE FROM {rows} WHERE source_id = ?1"), params![source])?;
 		}
 		Replace::Kind => {
-			let of_kind = "SELECT id FROM reading WHERE source_id IN (SELECT id FROM source WHERE kind = ?1)";
-			tx.execute(&format!("DELETE FROM reading_level WHERE reading_id IN ({of_kind})"), params![kind])?;
-			tx.execute(&format!("DELETE FROM reading WHERE id IN ({of_kind})"), params![kind])?;
+			let of_kind = format!("SELECT id FROM {rows} WHERE source_id IN (SELECT id FROM source WHERE kind = ?1)");
+			tx.execute(&format!("DELETE FROM {levels} WHERE {link} IN ({of_kind})"), params![kind])?;
+			tx.execute(&format!("DELETE FROM {rows} WHERE id IN ({of_kind})"), params![kind])?;
 		}
 		Replace::EachVariant => {}
 	}
 
 	let mut written = 0usize;
 	{
-		let mut delete_levels = tx.prepare(
-			"DELETE FROM reading_level WHERE reading_id IN \
-             (SELECT id FROM reading WHERE source_id = ?1 AND variant = ?2)",
-		)?;
-		let mut delete = tx.prepare("DELETE FROM reading WHERE source_id = ?1 AND variant = ?2")?;
-		let mut insert = tx.prepare(
-			"INSERT INTO reading \
+		let mut delete_levels = tx.prepare(&format!(
+			"DELETE FROM {levels} WHERE {link} IN (SELECT id FROM {rows} WHERE source_id = ?1 AND variant = ?2)"
+		))?;
+		let mut delete = tx.prepare(&format!("DELETE FROM {rows} WHERE source_id = ?1 AND variant = ?2"))?;
+		let mut insert = tx.prepare(&format!(
+			"INSERT INTO {rows} \
                 (source_id, variant, did, name, unit, bit_offset, bit_length, signed, big_endian, text_id, \
                  scaling, factor, offset, anchor_raw, anchor_value) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-		)?;
-		let mut insert_level = tx.prepare("INSERT INTO reading_level (reading_id, raw, upper, meaning) VALUES (?1, ?2, ?3, ?4)")?;
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"
+		))?;
+		let mut insert_level = tx.prepare(&format!("INSERT INTO {levels} ({link}, raw, upper, meaning) VALUES (?1, ?2, ?3, ?4)"))?;
 		for (variant, readings) in variants {
 			if let Replace::EachVariant = replace {
 				delete_levels.execute(params![source, variant])?;
@@ -1599,6 +1695,80 @@ pub fn registry_row_counts(db_path: &Path) -> Result<Vec<(String, u64)>, Error> 
 	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare("SELECT section, COUNT(*) FROM registry_row GROUP BY section ORDER BY section")?;
 	let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?.max(0) as u64)))?;
+	Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// One registry row as the cache keeps it: the columns `RA.rod` and its siblings were
+/// established to mean (`research/vcds-registry/README.md` §9), with its states.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegistryEntry {
+	/// The DID (ADP), routine id (GES) or input/output DID (SOT).
+	pub identifier: Option<u32>,
+	/// The field's 1-based place among one identifier's fields; `None` for a one-field one.
+	pub ordinal: Option<u32>,
+	/// `RM.rod`'s value type, `flags & 63` ([`vag_data_labels::registries::Value::kind`]).
+	pub kind: Option<u8>,
+	pub signed: bool,
+	pub big_endian: bool,
+	pub bit_offset: Option<u32>,
+	pub bit_length: Option<u32>,
+	/// `(factor, offset)`, for the linear and identity types.
+	pub scale: Option<(f64, f64)>,
+	pub unit: Option<String>,
+	pub name: Option<String>,
+	pub text_id: Option<String>,
+	/// A text table's states, in the registry's order.
+	pub levels: Vec<vag_data_labels::Level>,
+}
+
+/// One variant's rows of one registry section (`ADP`, …), in the order they were stored.
+pub fn registry_entries(db_path: &Path, variant: &str, section: &str) -> Result<Vec<RegistryEntry>, Error> {
+	let conn = open_existing(db_path)?;
+	let mut stmt = conn.prepare(
+		"SELECT id, identifier, ordinal, kind, signed, big_endian, bit_offset, bit_length, factor, offset, unit, name, text_id \
+         FROM registry_row WHERE variant = ?1 AND section = ?2 ORDER BY id",
+	)?;
+	type Row = (i64, RegistryEntry);
+	let rows: Vec<Row> = stmt
+		.query_map(params![variant, section], |row| {
+			let (factor, offset): (Option<f64>, Option<f64>) = (row.get(8)?, row.get(9)?);
+			Ok((
+				row.get(0)?,
+				RegistryEntry {
+					identifier: row.get(1)?,
+					ordinal: row.get(2)?,
+					kind: row.get(3)?,
+					signed: row.get(4)?,
+					big_endian: row.get(5)?,
+					bit_offset: row.get(6)?,
+					bit_length: row.get(7)?,
+					scale: factor.map(|f| (f, offset.unwrap_or(0.0))),
+					unit: row.get(10)?,
+					name: row.get(11)?,
+					text_id: row.get(12)?,
+					levels: Vec::new(),
+				},
+			))
+		})?
+		.collect::<rusqlite::Result<_>>()?;
+	let mut levels = conn.prepare("SELECT raw, upper, meaning FROM registry_level WHERE registry_row_id = ?1 ORDER BY rowid")?;
+	let mut out = Vec::with_capacity(rows.len());
+	for (id, mut entry) in rows {
+		entry.levels = levels
+			.query_map(params![id], |row| {
+				Ok(vag_data_labels::Level::range(row.get(0)?, row.get(1)?, row.get::<_, String>(2)?))
+			})?
+			.collect::<rusqlite::Result<_>>()?;
+		out.push(entry);
+	}
+	Ok(out)
+}
+
+/// Every variant (a unit's `.rod` stem) holding rows of one registry section, in name order.
+pub fn registry_variants(db_path: &Path, section: &str) -> Result<Vec<String>, Error> {
+	let conn = open_existing(db_path)?;
+	let mut stmt = conn.prepare("SELECT DISTINCT variant FROM registry_row WHERE section = ?1 ORDER BY variant")?;
+	let rows = stmt.query_map(params![section], |row| row.get(0))?;
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
@@ -1796,7 +1966,7 @@ type ReadingRow = (
 /// asks each with [`readings_of_kind`].
 #[cfg(test)]
 fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data_labels::odis::Reading>, Error> {
-	read_variant(db_path, variant, None)
+	read_variant(db_path, variant, None, READINGS)
 }
 
 /// The channels one kind of source ([`ODIS`], [`VCDS`]) knows for one variant.
@@ -1806,20 +1976,36 @@ fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data_labels::odi
 /// variant — and a reader that ranks one source above the other has to be able
 /// to ask for each on its own.
 pub fn readings_of_kind(db_path: &Path, kind: &str, variant: &str) -> Result<Vec<vag_data_labels::odis::Reading>, Error> {
-	read_variant(db_path, variant, Some(kind))
+	read_variant(db_path, variant, Some(kind), READINGS)
 }
 
-/// The reader behind [`readings_of`] and [`readings_of_kind`].
-fn read_variant(db_path: &Path, variant: &str, kind: Option<&str>) -> Result<Vec<vag_data_labels::odis::Reading>, Error> {
+/// The adaptation channels an ODIS project describes for one variant, by DID and field
+/// ([`put_all_adaptations`]).
+pub fn odis_adaptations_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data_labels::odis::Reading>, Error> {
+	read_variant(db_path, variant, Some(ODIS), ADAPTATIONS)
+}
+
+/// Every ECU variant an ODIS project holds adaptation channels for, in name order.
+pub fn adaptation_variants(db_path: &Path) -> Result<Vec<String>, Error> {
 	let conn = open_existing(db_path)?;
-	let mut stmt = conn.prepare(
+	let mut stmt = conn.prepare("SELECT DISTINCT variant FROM adaptation_channel ORDER BY variant")?;
+	let rows = stmt.query_map([], |row| row.get(0))?;
+	Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The reader behind [`readings_of`], [`readings_of_kind`] and [`odis_adaptations_of`].
+fn read_variant(db_path: &Path, variant: &str, kind: Option<&str>, table: Channels) -> Result<Vec<vag_data_labels::odis::Reading>, Error> {
+	let Channels { rows, levels, link } = table;
+	let conn = open_existing(db_path)?;
+	// The table names are [`Channels`]' constants, never anything a caller supplied.
+	let mut stmt = conn.prepare(&format!(
 		"SELECT id, did, name, unit, bit_offset, bit_length, signed, big_endian, text_id, \
                 scaling, factor, offset, anchor_raw, anchor_value \
-         FROM reading WHERE variant = ?1 \
+         FROM {rows} WHERE variant = ?1 \
            AND (?2 IS NULL OR source_id IN (SELECT id FROM source WHERE kind = ?2)) \
-         ORDER BY did, bit_offset",
-	)?;
-	let rows: Vec<ReadingRow> = stmt
+         ORDER BY did, bit_offset"
+	))?;
+	let found: Vec<ReadingRow> = stmt
 		.query_map(params![variant, kind], |row| {
 			Ok((
 				row.get(0)?,
@@ -1840,9 +2026,9 @@ fn read_variant(db_path: &Path, variant: &str, kind: Option<&str>) -> Result<Vec
 		})?
 		.collect::<rusqlite::Result<_>>()?;
 
-	let mut levels = conn.prepare("SELECT raw, upper, meaning FROM reading_level WHERE reading_id = ?1 ORDER BY rowid")?;
-	let mut out = Vec::with_capacity(rows.len());
-	for (id, did, name, unit, bit_offset, bit_length, signed, big_endian, text_id, kind, factor, offset, anchor_raw, anchor_value) in rows {
+	let mut levels = conn.prepare(&format!("SELECT raw, upper, meaning FROM {levels} WHERE {link} = ?1 ORDER BY rowid"))?;
+	let mut out = Vec::with_capacity(found.len());
+	for (id, did, name, unit, bit_offset, bit_length, signed, big_endian, text_id, kind, factor, offset, anchor_raw, anchor_value) in found {
 		// A row whose scaling columns disagree with its kind is skipped rather
 		// than repaired: a channel reported with a scaling nobody wrote is worse
 		// than a channel not reported at all.
@@ -2714,6 +2900,30 @@ mod tests {
 	}
 
 	#[test]
+	fn adaptations_are_kept_apart_from_channels_and_replaced_per_source() {
+		// Synthetic rows. An adaptation is never a channel, and a channel never an
+		// adaptation, whichever DID the two share.
+		let ws = TempWorkspace::new("adaptations");
+		put_all_readings(&ws.db_path, "/x/SK37X", [("EV_Unit", &[banded(0x1000)][..])]).unwrap();
+		let first = [banded(0x0550), banded(0x1000)];
+		assert_eq!(put_all_adaptations(&ws.db_path, "/x/SK37X", [("EV_Unit", &first[..])]).unwrap(), 2);
+		assert_eq!(
+			odis_adaptations_of(&ws.db_path, "EV_Unit").unwrap(),
+			first,
+			"layout, scaling and states come back"
+		);
+		assert_eq!(readings_of(&ws.db_path, "EV_Unit").unwrap(), [banded(0x1000)]);
+		assert_eq!(adaptation_variants(&ws.db_path).unwrap(), ["EV_Unit"]);
+		// A second read of the project replaces what it said, every variant of it.
+		put_all_adaptations(&ws.db_path, "/x/SK37X", [("EV_Other", &[banded(0x0551)][..])]).unwrap();
+		assert_eq!(adaptation_variants(&ws.db_path).unwrap(), ["EV_Other"]);
+		// Another project's rows are its own.
+		put_all_adaptations(&ws.db_path, "/y/SK38X", [("EV_Unit", &[banded(0x0552)][..])]).unwrap();
+		assert_eq!(adaptation_variants(&ws.db_path).unwrap(), ["EV_Other", "EV_Unit"]);
+		assert_no_orphans(&ws.db_path, "adaptations replaced");
+	}
+
+	#[test]
 	fn a_levels_interval_survives_the_cache() {
 		let ws = TempWorkspace::new("level-bounds");
 		put_readings(&ws.db_path, "/x/SK37X", "EV_Switch", &[banded(0x1000)]).unwrap();
@@ -2953,6 +3163,26 @@ mod tests {
 			registry_row_counts(&ws.db_path).unwrap(),
 			vec![("ADP".to_string(), 2), ("GES".to_string(), 1)]
 		);
+		// Read back as the columns were established to mean, states and all.
+		assert_eq!(
+			registry_entries(&ws.db_path, "EV_UnitA", "ADP").unwrap(),
+			[RegistryEntry {
+				identifier: Some(0x1075),
+				ordinal: Some(1),
+				kind: Some(3),
+				signed: false,
+				big_endian: true,
+				bit_offset: Some(0),
+				bit_length: Some(8),
+				scale: None,
+				unit: None,
+				name: Some("invented".into()),
+				text_id: Some("IDE90001".into()),
+				levels: vec![Level::point(0, "state 0"), Level::point(1, "state 1")],
+			}]
+		);
+		assert_eq!(registry_variants(&ws.db_path, "ADP").unwrap(), ["EV_UnitA", "EV_UnitB"]);
+		assert_eq!(registry_variants(&ws.db_path, "GES").unwrap(), ["EV_UnitA"]);
 		// An ODIS write beside it touches none of them.
 		put_readings(&ws.db_path, "/x/SK37X", "EV_ECM", &[]).unwrap();
 		assert_eq!(registry_row_counts(&ws.db_path).unwrap().len(), 2);
@@ -3011,6 +3241,39 @@ mod tests {
 		assert_eq!(total, (1, 1), "nothing left behind");
 		drop(conn);
 		assert_no_orphans(&ws.db_path, "merged");
+	}
+
+	#[test]
+	fn a_cache_from_before_the_adaptation_tables_is_upgraded_in_place_not_refused() {
+		// Schema version 3: today's shape without `adaptation_channel` and `adaptation_level`.
+		let ws = TempWorkspace::new("before-adaptations");
+		put_readings(&ws.db_path, "/x/SK37X", "EV_BCM", &[banded(0x1000)]).unwrap();
+		{
+			let conn = Connection::open(&ws.db_path).unwrap();
+			conn
+				.execute_batch("DROP TABLE adaptation_level; DROP TABLE adaptation_channel; PRAGMA user_version = 3;")
+				.unwrap();
+		}
+		assert!(check(&ws.db_path).is_ok(), "not refused");
+		assert_eq!(readings_of(&ws.db_path, "EV_BCM").unwrap().len(), 1, "nothing lost");
+		assert!(adaptation_variants(&ws.db_path).unwrap().is_empty(), "made, empty");
+		let conn = Connection::open(&ws.db_path).unwrap();
+		assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
+		drop(conn);
+		put_all_adaptations(&ws.db_path, "/x/SK37X", [("EV_BCM", &[banded(0x0550)][..])]).unwrap();
+		assert_eq!(odis_adaptations_of(&ws.db_path, "EV_BCM").unwrap().len(), 1);
+	}
+
+	/// A project read before adaptations were kept is told from one whose read found none:
+	/// the read is recorded even when no row lands.
+	#[test]
+	fn a_read_of_adaptations_is_recorded_even_when_none_land() {
+		let ws = TempWorkspace::new("adaptations-read");
+		put_readings(&ws.db_path, "/x/SK37X", "EV_BCM", &[banded(0x1000)]).unwrap();
+		assert_eq!(odis_sources_without_adaptations(&ws.db_path).unwrap(), ["/x/SK37X"], "not read yet");
+		put_all_adaptations(&ws.db_path, "/x/SK37X", std::iter::empty()).unwrap();
+		assert!(odis_sources_without_adaptations(&ws.db_path).unwrap().is_empty(), "read, none found");
+		assert!(adaptation_variants(&ws.db_path).unwrap().is_empty());
 	}
 
 	#[test]
@@ -3487,6 +3750,7 @@ mod tests {
 		put_all_vcds_registry_rows(&ws.db_path, &labels, [("EV_Brake1", &[described("ADP", 0x1075, 1)][..])]).unwrap();
 		put_all_readings(&ws.db_path, "/x/SK37X", [("EV_Brake1", &[banded(0x1000)][..])]).unwrap();
 		put_all_faults(&ws.db_path, "/x/SK37X", [("EV_Brake1", &[fault(297, "Fehler")][..])]).unwrap();
+		put_all_adaptations(&ws.db_path, "/x/SK37X", [("EV_Brake1", &[banded(0x0550)][..])]).unwrap();
 		let all = sources(&ws.db_path).unwrap();
 		let (vcds, odis) = (all[0].id, all[1].id);
 		let pristine = std::fs::read(&ws.db_path).unwrap();
@@ -3505,6 +3769,10 @@ mod tests {
 		assert_eq!(sources(&ws.db_path).unwrap().iter().map(|s| s.id).collect::<Vec<_>>(), [vcds]);
 		assert!(fault_variants(&ws.db_path).unwrap().is_empty());
 		assert!(readings_of_kind(&ws.db_path, ODIS, "EV_Brake1").unwrap().is_empty());
+		assert!(
+			odis_adaptations_of(&ws.db_path, "EV_Brake1").unwrap().is_empty(),
+			"its adaptations went with it"
+		);
 		assert_eq!(readings_of_kind(&ws.db_path, VCDS, "EV_Brake1").unwrap().len(), 1);
 		assert_eq!(load_db(&ws.db_path).unwrap().measurement("022-906-032-C", 2, 2).unwrap().name, "Coolant");
 		let levels: i64 = Connection::open(&ws.db_path)
@@ -3529,6 +3797,7 @@ mod tests {
 		assert!(source_of(&ws.db_path).is_none());
 		assert_eq!(faults_of(&ws.db_path, "EV_Brake1").unwrap().len(), 1);
 		assert_eq!(readings_of_kind(&ws.db_path, ODIS, "EV_Brake1").unwrap().len(), 1);
+		assert_eq!(odis_adaptations_of(&ws.db_path, "EV_Brake1").unwrap(), [banded(0x0550)]);
 		assert!(registry_row_counts(&ws.db_path).unwrap().is_empty(), "the registry rows went with it");
 		assert_no_orphans(&ws.db_path, "VCDS dropped");
 

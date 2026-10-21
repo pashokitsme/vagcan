@@ -326,7 +326,7 @@ after one or two fields of its own each carries **RM's value description in RM's
 `flags & 63`, bit 6 little-endian, bit 7 signed; value = `(raw·num + off)/den`). Read by
 `vag-data-labels::registries`, stored by `setup`'s step 5 and `registry::ensure` in
 `cache.sqlite`'s `registry_row` / `registry_level` under the name the unit's channels go by
-(the file stem, or the `ReDir.rod` source), beside them. Nothing reads them back yet.
+(the file stem, or the `ReDir.rod` source), beside them. `vagcan adaptations` reads the `[ADP]` rows back (2026-10-21), in a run of VCDS (never mixed with an ODIS project's rows, CLAUDE.md); nothing reads the others yet.
 
 **What may ever use them.** Adaptations are read with `0x22` and freeze frames with `0x19`.
 Basic settings are routines (`0x31`) and output tests input/output control (`0x2F`): both are
@@ -454,7 +454,7 @@ row alone names a key of 327 cases).
 - RF ↔ fault: which record a stored fault's environment data is read as.
 - XPL: which bytes the bits describe.
 - RA/RG/RS f12, every 6-hex and 4-hex field, MUX f0–f3: stored in `registry_row.raw` only.
-- No reader. A cache from before the two tables is upgraded in place (schema version 3,
+- No reader but `vagcan adaptations` (ADP, 2026-10-21). A cache from before the two tables is upgraded in place (schema version 3,
   `vag_data_db::migrate`): they are created empty, and the next `ensure` fills them —
   `registry.json`'s `READ_VERSION` is 3 for "the other registries", so a log an older read
   wrote has every unit read once more (`vag_cli_core::registry::READ_VERSION`; outdated, so

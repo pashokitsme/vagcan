@@ -370,8 +370,8 @@ writes nothing (no car, no registry) it leaves no rows of an earlier installatio
 The same read stores, from the same unit file, the unit's rows of VCDS's other registries —
 adaptations (`RA.rod`), basic settings (`RG.rod`), output tests (`RS.rod`), freeze-frame fields
 (`RF.rod`), `XPL` bits (`RX.rod`) and the `MUX.rod` cases they defer to — in `registry_row`
-(`vag_data_labels::registries`); nothing reads them back yet, and basic settings and output
-tests are names only (`0x31`/`0x2F` stay outside the allowlist).
+(`vag_data_labels::registries`); `vagcan adaptations` reads the `RA.rod` rows back, and basic
+settings and output tests are names only (`0x31`/`0x2F` stay outside the allowlist).
 The same read runs from `watch`, `measure` and `units --identify` with the car, and from
 `dev dash build` offline (`vag_cli_core::registry::ensure`), for the units of the car in front of
 them that the installation has not been tried for — the first time, with a line, a spinner and a
@@ -489,11 +489,14 @@ identifiers its data declared, with a blind sweep on request — was removed on 
 (owner). What it supplied is supplied otherwise: which units a car has, `watch`, `measure` and
 `units --identify` record (`~/.vagcan/cars/<VIN>/units.json`), asking every unit again on every
 run and merging what it answered into its entry field by field; which identifiers they answer, a
-source `setup` reads declares. Two sweeps are left, each of one unit: `units --identify <unit>`, a
-unit's identification block (`F100`–`F1FF`), and `sensors --unit <unit>` outside 7E0–7E7, the
-standard OBD-II identifiers asked of a unit no regulation binds to them. Both are refused on a
-moving car and never run through the dash board; `anomaly::Monitor` watches the unit and ends the
-run the moment it changes under the reads.
+source `setup` reads declares. Three sweeps are left, each of one unit at a time: `units --identify
+<unit>`, a unit's identification block (`F100`–`F1FF`); `sensors --unit <unit>` outside 7E0–7E7, the
+standard OBD-II identifiers asked of a unit no regulation binds to them; and `adaptations`, a unit's
+adaptation identifiers — exactly those an ODIS project's `ReadDataByIdentCalibData` service
+(`adaptation_channel`) or, in a run of VCDS, its `RA.rod` lists for its variant, never the two mixed, read with
+`0x22`; `--all` is a run of single-unit reads, each guarded on its own. All are refused on a moving
+car and never run through the dash board; `anomaly::Monitor` watches the unit and ends the run the
+moment it changes under the reads.
 
 **The CLI is split by what a command needs.** The top level is for commands that need
 a car in front of you, plus `setup`, which a new owner runs first. The workshop is under

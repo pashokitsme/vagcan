@@ -452,7 +452,130 @@ impl Extracted {
 		}
 		out
 	}
+
+	/// The one source a run of this project reads, by kind: an ODIS project when it has one,
+	/// otherwise a VCDS installation; `None` with neither. ODIS and VCDS are independent
+	/// sources and a run never mixes them (CLAUDE.md). The default only: `[source] use` and
+	/// `--source`, which pick the other, are not built yet.
+	pub fn run_source(&self) -> Option<&'static str> {
+		let kinds: Vec<String> = vag_data_db::sources_of(&self.cache)
+			.unwrap_or_default()
+			.into_iter()
+			.map(|(kind, _)| kind)
+			.collect();
+		[vag_data_db::ODIS, vag_data_db::VCDS]
+			.into_iter()
+			.find(|kind| kinds.iter().any(|k| k == kind))
+	}
+
+	/// The adaptation channels this project knows for a unit, given what it said (`F19E`,
+	/// `F1A2`, passed through as the car answered them), in DID order — the whole list a
+	/// read of the unit's adaptations asks for.
+	///
+	/// From [`Self::run_source`] alone: an ODIS project's `ReadDataByIdentCalibData` rows, or
+	/// a VCDS installation's `RA.rod [ADP]` rows, never one filling a gap in the other. The
+	/// variants are picked as [`Self::for_unit`] picks them (for VCDS, the stem this car's own
+	/// lookup stored, [`Self::for_car`]). Each row is named through its text id
+	/// ([`Self::name_of`]) where that has wording.
+	///
+	/// **Never a family's union** ([`Unsettled`]): where `F1A2` was not answered, or the best
+	/// variant there is only shares the unit's family, the rows of every such variant would
+	/// be a list no one unit holds — seventeen variants' worth on a body control unit. A
+	/// sweep is bounded to the identifiers its variant describes, so that unit is refused.
+	pub fn adaptations(&self, odx_name: Option<&str>, version: Option<&str>) -> Result<Vec<crate::adaptation::Adaptation>, Unsettled> {
+		use crate::adaptation::Adaptation;
+		if self.cache.as_os_str().is_empty() {
+			return Ok(Vec::new());
+		}
+		// One source's rows, every best-ranked variant's, the alphabetically first variant
+		// winning a field two of them describe — as `described_from` does.
+		let gather = |rows: Vec<Adaptation>, out: &mut Vec<Adaptation>| {
+			for row in rows {
+				if !out.iter().any(|held| held.same_field(&row)) {
+					out.push(row);
+				}
+			}
+		};
+		let mut out = Vec::new();
+		match self.run_source() {
+			Some(vag_data_db::ODIS) => {
+				let variants = vag_data_db::adaptation_variants(&self.cache).unwrap_or_default();
+				for variant in self.settled_variants(vag_data_db::ODIS, &variants, odx_name, version)? {
+					let rows = vag_data_db::odis_adaptations_of(&self.cache, variant).unwrap_or_default();
+					gather(rows.iter().map(|r| Adaptation::from_odis(r, variant)).collect(), &mut out);
+				}
+			}
+			Some(vag_data_db::VCDS) => {
+				let variants = vag_data_db::registry_variants(&self.cache, ADAPTATION_SECTION).unwrap_or_default();
+				for variant in self.settled_variants(vag_data_db::VCDS, &variants, odx_name, version)? {
+					let rows = vag_data_db::registry_entries(&self.cache, variant, ADAPTATION_SECTION).unwrap_or_default();
+					gather(rows.iter().filter_map(|r| Adaptation::from_vcds(r, variant)).collect(), &mut out);
+				}
+			}
+			_ => {}
+		}
+		out.sort_by_key(|a| (a.did, a.bit_offset));
+		for row in &mut out {
+			if let Some(name) = self.name_of(row.text_id.as_deref()) {
+				row.name = name.to_string();
+			}
+		}
+		Ok(out)
+	}
+
+	/// [`Self::variants_of`], refused where they would not be one variant's: `F1A2` not
+	/// answered, or no variant better than [`OdxMatch::Family`]. A VCDS stem the car's own
+	/// lookup stored is its variant, whatever the rank. No variant at all is not refused:
+	/// nothing describes the unit.
+	fn settled_variants<'a>(
+		&self,
+		kind: &str,
+		names: &'a [String],
+		odx_name: Option<&str>,
+		version: Option<&str>,
+	) -> Result<Vec<&'a String>, Unsettled> {
+		let picked = self.variants_of(kind, names, odx_name, version);
+		let answered = version.map(trimmed).filter(|v| !v.is_empty());
+		let stem = kind == vag_data_db::VCDS && odx_name.is_some_and(|odx| self.car_stems.contains_key(&(trimmed(odx), trimmed(version.unwrap_or("")))));
+		if picked.is_empty() || (stem && answered.is_some()) {
+			return Ok(picked);
+		}
+		let family = odx_name
+			.and_then(|odx| {
+				picked
+					.first()
+					.and_then(|name| odx_match(name, odx, version.unwrap_or(""), &self.car_projects))
+			})
+			.is_none_or(|rank| rank == OdxMatch::Family);
+		match answered {
+			Some(_) if !family => Ok(picked),
+			_ => Err(Unsettled {
+				version: answered,
+				candidates: picked.len(),
+			}),
+		}
+	}
+
+	/// The ODIS sources of this project whose adaptation channels were never read — read
+	/// before they were kept, which `vagcan setup` must read again to have them. A source
+	/// whose read found none is not among them.
+	pub fn odis_unread_adaptations(&self) -> Vec<String> {
+		vag_data_db::odis_sources_without_adaptations(&self.cache).unwrap_or_default()
+	}
 }
+
+/// Why a unit's adaptations are not read: its variant is not settled, so the identifiers
+/// would be the union of a family's ([`Extracted::adaptations`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unsettled {
+	/// `F1A2` as the unit answered it, trimmed; `None` when it did not answer one.
+	pub version: Option<String>,
+	/// How many variants of its family the rows would have come from.
+	pub candidates: usize,
+}
+
+/// The registry section VCDS keeps a unit's adaptation channels in (`RA.rod [ADP]`).
+const ADAPTATION_SECTION: &str = vag_data_labels::registries::Section::Adaptation.tag();
 
 /// An identifier as the car answered it, without the NULs and spaces it pads with — the key
 /// [`Extracted::for_car`]'s stems are held by, whichever padding the log and the caller carry.
@@ -660,6 +783,134 @@ mod tests {
 			scaling: Scaling::Linear(LinearScale { factor: 1.0, offset: 0.0 }),
 			text_id: None,
 		}
+	}
+
+	/// An invented `RA.rod` row: one byte at `byte` of `did`, a linear ×1.
+	fn adaptation_row(did: u32, byte: u32, name: &str) -> vag_data_labels::registries::Described {
+		use vag_data_labels::registries::{Described, Entry, Value};
+		Described {
+			section: "ADP",
+			entry: Entry {
+				row: 1,
+				key: 930_001,
+				identifier: Some(did),
+				ordinal: None,
+				lead: None,
+				case: None,
+				value: Value {
+					kind: Some(0),
+					big_endian: true,
+					bit_offset: Some(byte * 8),
+					bit_length: Some(8),
+					scale: Some((1.0, 0.0)),
+					..Default::default()
+				},
+				raw: String::new(),
+			},
+			name: Some(name.into()),
+			text_id: None,
+			unit: None,
+			levels: Vec::new(),
+		}
+	}
+
+	/// Synthetic rows: ODIS describes 0x0600's first byte, VCDS that byte, its second, and
+	/// 0x0500.
+	fn put_odis_adaptations(cache: &std::path::Path) {
+		vag_data_db::put_all_adaptations(cache, "/nowhere/SK37X", [("EV_Brake1_036", &[reading(0x0600, "odis", 0, 8, true)][..])]).unwrap();
+	}
+
+	fn put_vcds_adaptations(cache: &std::path::Path) {
+		vag_data_db::record_language(cache, vag_data_db::VCDS, "/nowhere/vcds-en", "eng").unwrap();
+		let vcds = [
+			adaptation_row(0x0600, 0, "vcds first"),
+			adaptation_row(0x0600, 1, "vcds second"),
+			adaptation_row(0x0500, 0, "vcds other"),
+		];
+		vag_data_db::put_all_vcds_registry_rows(cache, "/nowhere/vcds-en", [("EV_Brake1", &vcds[..])]).unwrap();
+	}
+
+	/// A unit's adaptations as `(did, bit, name, source)`.
+	fn adaptations_of(x: &Extracted) -> Vec<(u16, u32, String, &'static str)> {
+		x.adaptations(Some("EV_Brake1"), Some("036010"))
+			.expect("settled")
+			.into_iter()
+			.map(|a| (a.did, a.bit_offset, a.name, a.source))
+			.collect()
+	}
+
+	#[test]
+	fn a_units_adaptations_come_from_an_odis_project_alone() {
+		let here = tempfile::tempdir().unwrap();
+		let cache = here.path().join("cache.sqlite");
+		put_odis_adaptations(&cache);
+		let x = Extracted::synthetic(cache, BTreeMap::new());
+		assert_eq!(x.run_source(), Some(vag_data_db::ODIS));
+		assert_eq!(adaptations_of(&x), [(0x0600, 0, "odis".to_string(), vag_data_db::ODIS)]);
+		// A unit of another family gets none of them.
+		assert_eq!(x.adaptations(Some("EV_Gateway"), Some("001")), Ok(Vec::new()));
+		assert!(x.odis_unread_adaptations().is_empty(), "read");
+		assert_eq!(Extracted::none().adaptations(Some("EV_Brake1"), None), Ok(Vec::new()));
+	}
+
+	/// A unit whose variant is not settled is refused, never handed the union of its
+	/// family's rows: `F1A2` not answered, or only family-ranked variants for it.
+	#[test]
+	fn a_unit_whose_variant_is_not_settled_gets_no_union_of_its_family() {
+		let here = tempfile::tempdir().unwrap();
+		let cache = here.path().join("cache.sqlite");
+		let one = [reading(0x0600, "odis", 0, 8, true)];
+		let other = [reading(0x0700, "odis", 0, 8, true)];
+		vag_data_db::put_all_adaptations(&cache, "/nowhere/SK37X", [("EV_Brake1_037", &one[..]), ("EV_Brake1_038", &other[..])]).unwrap();
+		let x = Extracted::synthetic(cache, BTreeMap::new());
+		// 036 is neither: two variants of the family, and no reason to pick one.
+		assert_eq!(
+			x.adaptations(Some("EV_Brake1"), Some("036010")),
+			Err(Unsettled {
+				version: Some("036010".into()),
+				candidates: 2
+			})
+		);
+		assert_eq!(
+			x.adaptations(Some("EV_Brake1"), None),
+			Err(Unsettled {
+				version: None,
+				candidates: 2
+			})
+		);
+		// 037 is one variant: its rows alone.
+		let rows = x.adaptations(Some("EV_Brake1"), Some("037010")).expect("settled");
+		assert_eq!(rows.iter().map(|a| a.did).collect::<Vec<_>>(), [0x0600]);
+	}
+
+	#[test]
+	fn a_units_adaptations_come_from_a_vcds_installation_alone() {
+		let here = tempfile::tempdir().unwrap();
+		let cache = here.path().join("cache.sqlite");
+		put_vcds_adaptations(&cache);
+		let x = Extracted::synthetic(cache, BTreeMap::new());
+		assert_eq!(x.run_source(), Some(vag_data_db::VCDS));
+		assert_eq!(
+			adaptations_of(&x),
+			[
+				(0x0500, 0, "vcds other".to_string(), vag_data_db::VCDS),
+				(0x0600, 0, "vcds first".to_string(), vag_data_db::VCDS),
+				(0x0600, 8, "vcds second".to_string(), vag_data_db::VCDS),
+			]
+		);
+	}
+
+	/// With both installed a run reads one source, ODIS by default, and nothing of VCDS's
+	/// fills a field ODIS does not describe (CLAUDE.md, "ODIS and VCDS are independent").
+	#[test]
+	fn with_both_a_units_adaptations_are_one_source_s_never_mixed() {
+		let here = tempfile::tempdir().unwrap();
+		let cache = here.path().join("cache.sqlite");
+		put_odis_adaptations(&cache);
+		put_vcds_adaptations(&cache);
+		let x = Extracted::synthetic(cache, BTreeMap::new());
+		assert_eq!(x.run_source(), Some(vag_data_db::ODIS));
+		assert_eq!(adaptations_of(&x), [(0x0600, 0, "odis".to_string(), vag_data_db::ODIS)]);
 	}
 
 	#[test]

@@ -904,6 +904,7 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 	type Walked = (
 		Result<Vec<vag_data_labels::odis::Fault>, vag_data_labels::odis::Error>,
 		Result<Vec<vag_data_labels::odis::Reading>, vag_data_labels::odis::Error>,
+		Result<Vec<vag_data_labels::odis::Reading>, vag_data_labels::odis::Error>,
 	);
 	let walked: Vec<Walked> = {
 		use rayon::prelude::*;
@@ -916,9 +917,11 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 				.map(|variant| {
 					let faults = odis.faults(variant);
 					let readings = odis.readings(variant);
+					// The adaptation read: the same chain from the other `0x22` service.
+					let adaptations = odis.adaptations(variant);
 					let finished = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
 					reporter.set(&format!("{finished} of {} — {}", variants.len(), variant.name));
-					(faults, readings)
+					(faults, readings, adaptations)
 				})
 				.collect()
 		})
@@ -928,7 +931,17 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 	let (mut chain_skipped, mut fault_skipped) = (Skipped::default(), Skipped::default());
 	let mut channel_rows: Vec<(&str, &[vag_data_labels::odis::Reading])> = Vec::new();
 	let mut fault_rows: Vec<(&str, &[vag_data_labels::odis::Fault])> = Vec::new();
-	for (variant, (faults, readings)) in variants.iter().zip(&walked) {
+	let (mut adaptation_rows, mut with_adaptations, mut adaptation_skipped): (Vec<(&str, &[vag_data_labels::odis::Reading])>, usize, Skipped) =
+		(Vec::new(), 0, Skipped::default());
+	for (variant, (faults, readings, adaptations)) in variants.iter().zip(&walked) {
+		match adaptations {
+			Err(e) => adaptation_skipped.count(e),
+			Ok(rows) if rows.is_empty() => {}
+			Ok(rows) => {
+				adaptation_rows.push((variant.name.as_str(), rows.as_slice()));
+				with_adaptations += 1;
+			}
+		}
 		match faults {
 			Ok(faults) if !faults.is_empty() => {
 				fault_rows.push((variant.name.as_str(), faults.as_slice()));
@@ -967,6 +980,24 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 		vag_data_db::put_all_readings(&project.cache(), &source, channel_rows)
 	})
 	.map_err(|e| anyhow::anyhow!("writing the channels to {}: {e}", project.cache().display()))?;
+	let adaptations_started = std::time::Instant::now();
+	let adapted = timed("odis adaptations (sqlite)", || {
+		vag_data_db::put_all_adaptations(&project.cache(), &source, adaptation_rows)
+	})
+	.map_err(|e| anyhow::anyhow!("writing the adaptation channels to {}: {e}", project.cache().display()))?;
+	let mut adaptation_step = Step::new(
+		vag_data_db::ODIS,
+		"adaptations",
+		State::Wrote,
+		format!(
+			"{adapted} {}, {with_adaptations} {}{}",
+			plural(adapted, "channel"),
+			plural(with_adaptations, "variant"),
+			adaptation_skipped.note()
+		),
+	)
+	.at(project.cache());
+	adaptation_step.took = Some(adaptations_started.elapsed());
 	let mut units = Step::new(
 		vag_data_db::ODIS,
 		"channels",
@@ -982,7 +1013,12 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 	.at(project.cache());
 	// The walk reads both halves at once; it is the channels' time, and the faults'
 	// is their own write.
-	units.took = Some(started.elapsed().saturating_sub(faults_took));
+	units.took = Some(
+		started
+			.elapsed()
+			.saturating_sub(faults_took)
+			.saturating_sub(adaptation_step.took.unwrap_or_default()),
+	);
 	let mut faults = Step::new(
 		vag_data_db::ODIS,
 		"faults",
@@ -1015,7 +1051,7 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 			detail: Some(format!("{} variants, {} pools", variants.len(), odis.pools().len())),
 		},
 	)?;
-	Ok(vec![units, faults, names])
+	Ok(vec![units, adaptation_step, faults, names])
 }
 
 /// Fold an ODIS project's pooled names into `names-odis.json`.

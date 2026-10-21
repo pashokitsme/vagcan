@@ -96,6 +96,24 @@ fn home(at: &Path) {
 	.unwrap();
 	vag_data_db::put_faults(&cache, source, "EV_SimBrake_001", &[fault(0x047120, "Made-up valve B: open circuit")]).unwrap();
 	vag_data_db::record_language(&cache, vag_data_db::ODIS, source, "eng").unwrap();
+	// Adaptation channels of the engine's and the gearbox's variants. The brake unit names no
+	// ODX file, so nothing describes its adaptations; 0612 is described and not on the car.
+	vag_data_db::put_all_adaptations(
+		&cache,
+		source,
+		[
+			(
+				"EV_SimEngine_001",
+				&[
+					reading(0x0610, "Sim_idle_speed_offset", "rpm", 8, 10.0, 0.0),
+					reading(0x0611, "Sim_service_interval", "km", 16, 100.0, 0.0),
+					reading(0x0612, "Sim_not_on_the_car", "s", 8, 1.0, 0.0),
+				][..],
+			),
+			("EV_SimGear_001", &[reading(0x0620, "Sim_clutch_adaptation", "%", 8, 0.5, 0.0)][..]),
+		],
+	)
+	.unwrap();
 	// The demo car's dash: one value on one page, the engine's coolant temperature.
 	let dash = at.join("dash").join("SIMVIN00000000001");
 	std::fs::create_dir_all(&dash).unwrap();

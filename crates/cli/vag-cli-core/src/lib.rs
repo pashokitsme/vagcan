@@ -23,6 +23,7 @@
 //! cross the crate boundary. `diag` re-exports it, so `crate::missing::…` there
 //! still resolves.
 
+pub mod adaptation;
 pub mod analyse;
 pub mod bus;
 pub mod config;

@@ -8,8 +8,8 @@
 //!
 //! So the session change is not part of an ordinary read any more. It is
 //! opt-in, and even then it is refused while the car is moving. So is a sweep
-//! (`units --identify <unit>`, `sensors --unit <unit>` off 7E0–7E7): reading is not
-//! harmless to a diagnostic server asked what it may never have handled. The check
+//! (`units --identify <unit>`, `sensors --unit <unit>` off 7E0–7E7, `adaptations`):
+//! reading is not harmless to a diagnostic server asked what it may never have handled. The check
 //! here says only whether the car stands; each caller says what it refuses.
 
 use anyhow::Result;

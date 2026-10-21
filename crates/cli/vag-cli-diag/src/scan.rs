@@ -19,10 +19,11 @@
 //! And the sweep carries [`Guard`]: the moment a unit that had been answering
 //! stops, or goes back on an identifier it already answered, the run ends. See
 //! [`crate::anomaly`]. The guard's witness — a known-good identifier re-read
-//! every so many requests — is a path with no caller today: both run with
-//! `witness: None`, since nothing is established as known-good before an
-//! identification block is read, and the standard list is shorter than the
-//! witness's cadence.
+//! every so many requests — is `vagcan adaptations`' ([`crate::adaptations`]): it
+//! identifies the unit first, so its part number is known-good before the reads.
+//! `units --identify <unit>` and `sensors` run with `witness: None`, since nothing is
+//! established as known-good before an identification block is read, and the
+//! standard list is shorter than the witness's cadence.
 //!
 //! Read-only by construction: the only service issued is `0x22`, which the UDS
 //! client's allowlist already restricts us to.
@@ -96,6 +97,12 @@ pub struct Guard<'a> {
 }
 
 impl Guard<'_> {
+	/// Re-read the witness once more, after the last identifier: a unit that went back on
+	/// its answer at the very end is seen too. `true` means the unit changed.
+	pub async fn confirm<T: AsyncIsoTpTransport>(&mut self, uds: &mut AsyncUdsClient<T>) -> bool {
+		self.check(uds).await
+	}
+
 	/// Re-read the witness. `true` means the run ends here.
 	///
 	/// Errors are not swallowed: a witness that times out is exactly the event

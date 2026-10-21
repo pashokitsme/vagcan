@@ -17,6 +17,7 @@
 // `crate::missing::…` reads the same here as it always did.
 pub use vag_cli_core::{analyse, config, datadir, device, extracted, glossary, missing, plan, progress, project, registry, ui, units, vcdslog};
 
+pub mod adaptations;
 pub mod anomaly;
 pub mod car;
 pub mod dash;
