@@ -1265,6 +1265,12 @@ impl<'a> Store<'a> {
 				continue;
 			};
 			let Some(bits) = coded.bits else { continue };
+			// A scaling turns an integer into a number and nothing else: a string, a float or
+			// a byte field read through it prints its bytes as an integer nobody wrote. Such a
+			// channel has no honest reading here, so it is not one (`DataType::is_integer`).
+			if !coded.base.is_integer() {
+				continue;
+			}
 			let Ok(scaling) = compu.scaling() else { continue };
 			let unit = match dop.unit.clone() {
 				Some(target) => match self.object(layer, home, &target) {
