@@ -152,7 +152,7 @@ file wins where two say the same.
 
 ```
 vagcan dev sim --from ~/.vagcan/cars/<VIN>/units.json > car.toml
-vagcan dev sim --from drive.csv --vin <VIN> >> …
+vagcan dev sim --from drive.csv --vin <VIN> > drive.toml
 vagcan dev sim --from units.json --from capture.jsonl > car.toml
 ```
 

@@ -244,11 +244,8 @@ impl Bus {
 				self.ends[at].rx = None;
 				self.protocol(at, "the rest of a request never came; dropped".into());
 			}
-			loop {
-				match self.step(at, now) {
-					Some(frame) => out.push(frame),
-					None => break,
-				}
+			while let Some(frame) = self.step(at, now) {
+				out.push(frame);
 			}
 		}
 	}
@@ -265,7 +262,11 @@ impl Bus {
 			}
 			let (_, pdu) = end.outbox.pop_front()?;
 			let unit = end.request;
-			self.events.push(Event::Answer { unit, id: response, pdu: pdu.clone() });
+			self.events.push(Event::Answer {
+				unit,
+				id: response,
+				pdu: pdu.clone(),
+			});
 			if pdu.len() <= 7 {
 				let mut data = vec![pdu.len() as u8];
 				data.extend_from_slice(&pdu);
@@ -463,7 +464,13 @@ mod tests {
 		let mut bus = bus(&format!("[bus]\nblock_size = 1\nst_min = 2\npadding = 0xAA\n{ENGINE}"));
 		// 22, F40D six times, F190: fifteen bytes, a first frame and two consecutive frames.
 		let fc = exchange(&mut bus, ms(0), &[(0x7E0, &[0x10, 0x0F, 0x22, 0xF4, 0x0D, 0xF4, 0x0D, 0xF4])]);
-		assert_eq!(fc, vec![Frame { id: 0x7E8, data: [0x30, 0x01, 0x02, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA] }]);
+		assert_eq!(
+			fc,
+			vec![Frame {
+				id: 0x7E8,
+				data: [0x30, 0x01, 0x02, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA]
+			}]
+		);
 		let fc = exchange(&mut bus, ms(1), &[(0x7E0, &[0x21, 0x0D, 0xF4, 0x0D, 0xF4, 0x0D, 0xF4, 0x0D])]);
 		assert_eq!(fc.len(), 1, "another flow control after a block of one");
 		let answer = exchange(&mut bus, ms(2), &[(0x7E0, &[0x22, 0xF1, 0x90, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA])]);

@@ -19,6 +19,7 @@ check: ignition on · OBD-II pin 6 CAN-H, pin 14 CAN-L, pin 5 GND · adapter ter
 $ vagcan dev sim /dev/null
 ? failed
 Error: /dev/null is a device, not a profile: `dev sim` opens no port, it makes its own pseudo-terminal
-Fix: vagcan dev sim <profile.toml>   (docs/virtual-car.md)
+
+help: vagcan dev sim <profile.toml>   (docs/virtual-car.md)
 
 ```

@@ -57,11 +57,7 @@ pub async fn serve(profile_path: &str, slcan: bool) -> Result<()> {
 	status(
 		0,
 		"Serving",
-		&format!(
-			"{} on {port} ({}), until Ctrl-C",
-			file_name(profile_path),
-			count(units, "unit")
-		),
+		&format!("{} on {port} ({}), until Ctrl-C", file_name(profile_path), count(units, "unit")),
 	);
 	status(0, "Use", &format!("{DEVICE_ENV}={port} vagcan info, or vagcan info --device {port}"));
 	status(1, "Note", "`vagcan devices` does not list it: it lists USB devices");
@@ -211,11 +207,7 @@ pub fn profile_from(files: &[String], vin: Option<&str>, catalogs: impl Fn() -> 
 		.resolve()
 		.map_err(|e| anyhow::anyhow!("the profile these files make does not run: {e}"))?;
 	let units = profile.units.len();
-	status(
-		0,
-		"Finished",
-		&format!("profile of {}", count(units, "unit")),
-	);
+	status(0, "Finished", &format!("profile of {}", count(units, "unit")));
 	Ok(profile.to_toml())
 }
 
@@ -262,6 +254,9 @@ fn identities(units: &[crate::plan::UnitIdentity]) -> Profile {
 	profile
 }
 
+/// One identifier's answers over a recording: milliseconds from its start, and the bytes.
+type Series = Vec<(u64, Vec<u8>)>;
+
 /// A recording's columns as identifiers that read what was recorded, when it was.
 fn recording(path: &str, csv: &str, vin: &str, catalogs: &str) -> Result<Profile> {
 	let recording = replay::Recording::parse(csv).map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
@@ -280,7 +275,7 @@ fn recording(path: &str, csv: &str, vin: &str, catalogs: &str) -> Result<Profile
 	// Per identifier, the answer at each sample: every field's column laid over the last
 	// answer, as the replay rebuilds it.
 	let start = recording.samples.first().map_or(0.0, |(t, _)| *t);
-	let mut answers: BTreeMap<(u16, u16), Vec<(u64, Vec<u8>)>> = BTreeMap::new();
+	let mut answers: BTreeMap<(u16, u16), Series> = BTreeMap::new();
 	let mut held: BTreeMap<(u16, u16), Vec<u8>> = BTreeMap::new();
 	for (t, cells) in &recording.samples {
 		let at_ms = ((t - start).max(0.0) * 1000.0).round() as u64;

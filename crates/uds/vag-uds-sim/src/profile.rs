@@ -103,7 +103,8 @@ pub struct Profile {
 }
 
 /// How the sim's ISO-TP side frames what it sends.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Every field defaults to zero: padding `00`, all frames in one block, no gap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct BusSettings {
 	/// The byte a frame shorter than eight is padded with.
@@ -113,16 +114,6 @@ pub struct BusSettings {
 	pub block_size: u8,
 	/// The separation time (ISO 15765-2 STmin byte) the sim's flow control asks for.
 	pub st_min: u8,
-}
-
-impl Default for BusSettings {
-	fn default() -> Self {
-		BusSettings {
-			padding: 0x00,
-			block_size: 0,
-			st_min: 0,
-		}
-	}
 }
 
 impl BusSettings {
