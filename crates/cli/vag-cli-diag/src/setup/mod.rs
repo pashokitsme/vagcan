@@ -86,7 +86,7 @@ use crate::render::plural;
 // by `faults` of the pool too. Same names, so every use below reads as it did.
 pub(crate) use crate::registry::CODES_FILES;
 use crate::registry::{ODX_DIR, TEXT_TABLES, build_of, codes_language, text_page};
-use vag_cli_core::style::SEP;
+use vag_cli_core::marks::SEP;
 
 /// Label files-wide `.rod` files whose keys every car needs.
 ///
@@ -2247,7 +2247,7 @@ mod tests {
 		)
 		.await
 		.unwrap_err();
-		let text = err.to_string();
+		let text = vag_cli_core::report::render(&err, 0, vag_cli_core::report::Colour::Never);
 		assert!(text.contains(crate::missing::VCDS_DOWNLOAD), "{text}");
 		assert!(text.contains("Labels/"), "{text}");
 		// And the other way in, since it is the whole point of the argument

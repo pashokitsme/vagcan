@@ -10,7 +10,8 @@
 
 use std::path::Path;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
+use vag_cli_core::report::Advice as _;
 
 use crate::project::Project;
 use crate::ui::menu::Asker;
@@ -57,9 +58,8 @@ fn drop_with(io: &mut impl Asker, project: &Project, selector: &str, yes: bool, 
 	io.say(&describe(source, &held))?;
 	if !yes {
 		if !can_ask {
-			bail!(
-				"no terminal to confirm on: nothing dropped. To drop without asking:\n  vagcan setup --drop {} --yes",
-				source.id
+			return Err(
+				anyhow!("no terminal to confirm on: nothing dropped").help(format!("to drop without asking: `vagcan setup --drop {} --yes`", source.id)),
 			);
 		}
 		let typed = io.line(&format!("Drop source {} and its {} rows? [y/N]", source.id, held.total()), "")?;
@@ -84,14 +84,15 @@ fn select<'a>(sources: &'a [vag_data_db::Source], selector: &str) -> Result<&'a 
 	if let Ok(id) = wanted.parse::<i64>() {
 		return match sources.iter().find(|s| s.id == id) {
 			Some(source) => Ok(source),
-			None => bail!("no source {id} in this project. Its sources:\n{}", candidates(sources.iter())),
+			None => Err(anyhow!("no source {id} in this project").note(format!("its sources:\n{}", candidates(sources.iter())))),
 		};
 	}
 	let kind = wanted.to_ascii_lowercase();
 	if kind != vag_data_db::VCDS && kind != vag_data_db::ODIS {
-		bail!(
-			"{selector:?} is not a source: give `odis`, `vcds` or an id. Its sources:\n{}",
-			candidates(sources.iter())
+		return Err(
+			anyhow!("{selector:?} is not a source")
+				.note(format!("its sources:\n{}", candidates(sources.iter())))
+				.help("give `odis`, `vcds` or an id from `vagcan setup --list`"),
 		);
 	}
 	// A stale row is not a source of its kind ([`crate::project::has_source`]): it is
@@ -99,11 +100,11 @@ fn select<'a>(sources: &'a [vag_data_db::Source], selector: &str) -> Result<&'a 
 	let of_kind: Vec<&vag_data_db::Source> = sources.iter().filter(|s| s.kind == kind && !s.is_stale()).collect();
 	match of_kind.as_slice() {
 		[one] => Ok(one),
-		[] => bail!("no {kind} source in this project. Its sources:\n{}", candidates(sources.iter())),
-		_ => bail!(
-			"{} {kind} sources: say which by id.\n{}",
-			of_kind.len(),
-			candidates(of_kind.iter().copied())
+		[] => Err(anyhow!("no {kind} source in this project").note(format!("its sources:\n{}", candidates(sources.iter())))),
+		_ => Err(
+			anyhow!("{} {kind} sources in this project", of_kind.len())
+				.note(format!("they are:\n{}", candidates(of_kind.iter().copied())))
+				.help("say which by id: `vagcan setup --drop <id>`"),
 		),
 	}
 }
@@ -311,7 +312,7 @@ mod tests {
 	fn a_kind_two_sources_share_is_refused_with_both_listed() {
 		let mut sources = reference();
 		sources[0].dir = "/Users/x/vcds-ru/Labels".into();
-		let why = select(&sources, "vcds").unwrap_err().to_string();
+		let why = vag_cli_core::report::render(&select(&sources, "vcds").unwrap_err(), 0, vag_cli_core::report::Colour::Never);
 		assert!(why.contains("2 vcds sources") && why.contains("by id"), "{why}");
 		assert!(
 			why.contains("/Users/x/vcds-ru/Labels") && why.contains("/Users/x/vcds-en/Labels"),
@@ -335,12 +336,14 @@ mod tests {
 	fn an_id_or_kind_that_is_not_there_is_refused_with_what_is() {
 		let sources = reference();
 		for (selector, said) in [("9", "no source 9"), ("labels", "not a source"), ("", "not a source")] {
-			let why = select(&sources, selector).unwrap_err().to_string();
+			let why = vag_cli_core::report::render(&select(&sources, selector).unwrap_err(), 0, vag_cli_core::report::Colour::Never);
 			assert!(why.contains(said), "{selector:?}: {why}");
 			assert!(why.contains("SK37X"), "{selector:?}: the sources are listed: {why}");
 		}
 		let only_vcds = [source(3, "vcds", "/Users/x/vcds-en/Labels")];
-		assert!(select(&only_vcds, "odis").unwrap_err().to_string().contains("no odis source"));
+		assert!(
+			vag_cli_core::report::render(&select(&only_vcds, "odis").unwrap_err(), 0, vag_cli_core::report::Colour::Never).contains("no odis source")
+		);
 	}
 
 	#[test]
@@ -459,7 +462,11 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let project = project_with_both(here.path());
 		let mut io = Scripted::new(vec![]);
-		let why = drop_with(&mut io, &project, "vcds", false, false).unwrap_err().to_string();
+		let why = vag_cli_core::report::render(
+			&drop_with(&mut io, &project, "vcds", false, false).unwrap_err(),
+			0,
+			vag_cli_core::report::Colour::Never,
+		);
 		assert!(why.contains("--yes") && why.contains("nothing dropped"), "{why}");
 		assert_eq!(crate::project::sources(&project).unwrap().len(), 2);
 

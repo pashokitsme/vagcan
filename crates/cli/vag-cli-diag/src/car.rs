@@ -14,7 +14,8 @@ use vag_uds_client::address::UnitAddress;
 use vag_uds_client::{AsyncUdsClient, UdsReadExt};
 
 use crate::{anomaly, labels, plan, progress, project, props, render, safety, scan};
-use vag_cli_core::style::facts;
+use vag_cli_core::marks::facts;
+use vag_cli_core::report::Advice as _;
 
 /// Parse how the user named a control unit — `01`, `17`, or a request id like
 /// `70E`. Which id block it lives on, and therefore which response rule
@@ -111,12 +112,17 @@ pub async fn sensors<L: UnitLink>(open: impl AsyncFnOnce(Reach) -> Result<L>, un
 	if !established {
 		backend = match safety::require_stationary(backend).await {
 			Ok(backend) => backend,
-			Err((_, why)) => anyhow::bail!(
-				"{why}.\n\
-                 Read it parked: {} standard identifiers asked of a unit outside the emissions block \
-                 (7E0–7E7) are a sweep, and a sweep can stop a unit doing its job while the car moves.",
-				PIDS.len()
-			),
+			Err((_, why)) => {
+				return Err(
+					anyhow::anyhow!("{why}")
+						.note(format!(
+							"{} standard identifiers asked of a unit outside the emissions block (7E0–7E7) are a sweep, \
+						 and a sweep can stop a unit doing its job while the car moves",
+							PIDS.len()
+						))
+						.help("park the car and run it again"),
+				);
+			}
 		};
 	}
 	let mut uds = address_unit(backend, unit);
@@ -458,11 +464,14 @@ pub async fn identification<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, 
 	if !while_driving {
 		backend = match safety::require_stationary(backend).await {
 			Ok(backend) => backend,
-			Err((_, why)) => anyhow::bail!(
-				"{why}.\n\
-                 Read it parked: 256 reads of one unit can stop it doing its job while the car moves \
-                 (--while-driving lifts this)."
-			),
+			Err((_, why)) => {
+				return Err(
+					anyhow::anyhow!("{why}")
+						.note("256 reads of one unit can stop it doing its job while the car moves")
+						.help("park the car and run it again")
+						.help("`--while-driving` lifts this"),
+				);
+			}
 		};
 	}
 	let mut uds = address_unit(backend, unit);

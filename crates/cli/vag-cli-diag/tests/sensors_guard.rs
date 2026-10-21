@@ -181,9 +181,9 @@ fn speed_read() -> (u16, Vec<u8>) {
 async fn off_the_emissions_block_it_is_refused_on_a_moving_car() {
 	let car = Car::at(30);
 	let (result, reaches) = sensors(&car, "713").await;
-	let refused = format!("{:#}", result.expect_err("refused at 30 km/h"));
-	assert!(refused.contains("moving at 30 km/h"), "{refused}");
-	assert!(refused.contains("Read it parked"), "{refused}");
+	let refused = vag_cli_core::report::render(&result.expect_err("refused at 30 km/h"), 0, vag_cli_core::report::Colour::Never);
+	assert!(refused.starts_with("error: the car is moving at 30 km/h\n"), "{refused}");
+	assert!(refused.contains("help: park the car"), "{refused}");
 	assert!(!refused.contains("session"), "sensors changes no session: {refused}");
 	assert_eq!(reaches, [Reach::CableOnly]);
 	assert_eq!(car.asked(), [speed_read()], "the speed and nothing else: the unit is never asked");

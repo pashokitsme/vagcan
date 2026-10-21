@@ -92,7 +92,7 @@ pub fn format_pdu(ts_us: u64, pdu: &SnifferPdu) -> String {
 		body = format!(
 			"{} {}",
 			crate::render::hex_spaced(&pdu.data[..SHOWN_BYTES]),
-			vag_cli_core::style::ELLIPSIS
+			vag_cli_core::marks::ELLIPSIS
 		);
 	}
 	row(
@@ -428,7 +428,7 @@ fn summary(s: &Summary<'_>) -> (String, Vec<(u8, String)>) {
 		Drops::None => "drops none".to_string(),
 		Drops::Dropped(bits) => format!("drops 0x{bits:02X}"),
 	});
-	out.push_str(&parts.join(vag_cli_core::style::SEP));
+	out.push_str(&parts.join(vag_cli_core::marks::SEP));
 	out.push('\n');
 
 	let mut said = Vec::new();

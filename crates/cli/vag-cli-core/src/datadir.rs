@@ -97,11 +97,14 @@ pub const CAR_FILE: &str = "car.json";
 pub fn vagcan_dir() -> anyhow::Result<PathBuf> {
 	if let Some(root) = std::env::var_os(ROOT_ENV).filter(|root| !root.is_empty()) {
 		let root = PathBuf::from(root);
-		anyhow::ensure!(
-			root.is_absolute(),
-			"{ROOT_ENV}={} is not an absolute path — it would mean another directory from every folder",
-			root.display()
-		);
+		if !root.is_absolute() {
+			use crate::report::Advice as _;
+			return Err(
+				anyhow::anyhow!("{ROOT_ENV}={} is not an absolute path", root.display())
+					.note("a relative one would mean another directory from every folder")
+					.help(format!("set {ROOT_ENV} to an absolute path, or unset it")),
+			);
+		}
 		return Ok(root);
 	}
 	default_root()
@@ -402,9 +405,10 @@ fn car_folder(vin: &str) -> anyhow::Result<String> {
 /// Unused in another crate's test build, whose default is [`test_root`].
 #[cfg_attr(all(feature = "test-root", not(test)), allow(dead_code))]
 fn vagcan_dir_in(home: Option<PathBuf>) -> anyhow::Result<PathBuf> {
-	let home = home
-		.filter(|p| p.is_absolute())
-		.ok_or_else(|| anyhow::anyhow!("no home directory to write to — set HOME, or pass an explicit path"))?;
+	let home = home.filter(|p| p.is_absolute()).ok_or_else(|| {
+		use crate::report::Advice as _;
+		anyhow::anyhow!("no home directory to write to").help("set HOME, or pass an explicit path")
+	})?;
 	Ok(home.join(".vagcan"))
 }
 
@@ -627,7 +631,7 @@ mod tests {
 
 	#[test]
 	fn with_nowhere_to_write_the_error_says_what_to_set() {
-		let err = vagcan_dir_in(None).unwrap_err().to_string();
+		let err = crate::report::render(&vagcan_dir_in(None).unwrap_err(), 0, crate::report::Colour::Never);
 		assert!(err.contains("HOME"), "{err}");
 	}
 

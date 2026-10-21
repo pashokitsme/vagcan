@@ -171,7 +171,7 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 	assert_eq!(
 		miss[0].stderr,
 		format!(
-			"no EV_NOTHING.rod under {}\nFix: pass the VCDS install root, the directory that holds UDS_EV/\n",
+			"no EV_NOTHING.rod under {}\n  (pass the VCDS install root, the directory that holds UDS_EV/)\n",
 			vcds_dir.display()
 		)
 	);

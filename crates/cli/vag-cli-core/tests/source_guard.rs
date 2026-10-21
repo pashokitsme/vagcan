@@ -62,17 +62,17 @@ fn code_lines(skip: &[&str]) -> Vec<(String, usize, String)> {
 	lines
 }
 
-/// `·` and `•` come from `vag_cli_core::style`, never a literal (owner, 2026-10-21).
+/// `·` and `•` come from `vag_cli_core::marks`, never a literal (owner, 2026-10-21).
 #[test]
 fn no_literal_glyphs() {
-	let found: Vec<String> = code_lines(&["vag-cli-core/src/style.rs"])
+	let found: Vec<String> = code_lines(&["vag-cli-core/src/marks.rs"])
 		.into_iter()
 		.filter(|(_, _, line)| line.contains('·') || line.contains('•'))
 		.map(|(file, n, line)| format!("{file}:{n}: {}", line.trim()))
 		.collect();
 	assert!(
 		found.is_empty(),
-		"a literal separator: use `vag_cli_core::style::SEP` / `facts` / `DOT`\n{}",
+		"a literal separator: use `vag_cli_core::marks::SEP` / `facts` / `DOT`\n{}",
 		found.join("\n")
 	);
 }

@@ -30,6 +30,7 @@ pub mod rod;
 pub mod tttext;
 
 use std::path::PathBuf;
+use vag_cli_core::report::Advice as _;
 
 use anyhow::Result;
 use clap::Subcommand;
@@ -304,7 +305,7 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 			// off the car and only then discovering that the label directory
 			// does not exist costs the port for nothing.
 			if !std::path::Path::new(&dir).is_dir() {
-				anyhow::bail!("{dir:?} is not a directory — point it at the VCDS install root");
+				return Err(anyhow::anyhow!("{dir:?} is not a directory").help("point it at the VCDS install root"));
 			}
 			let iv_cache = datadir::or_default(iv_cache.as_deref(), || Ok(crate::project::current()?.rod_keys()))?;
 			let device = device.requested().map(str::to_owned);
@@ -412,7 +413,11 @@ fn stats(db_path: &std::path::Path, named: bool) -> Result<()> {
 		if named {
 			anyhow::bail!("no label cache at {}", db_path.display());
 		}
-		anyhow::bail!(crate::missing::NoLabelData::new("There is no label cache to count.").looked_for(db_path));
+		return Err(
+			crate::missing::NoLabelData::new("there is no label cache to count")
+				.looked_for(db_path)
+				.into_error(),
+		);
 	}
 	let counts = vag_data_db::row_counts(db_path)?;
 	// The other registries' rows, by the section a unit selects them with.

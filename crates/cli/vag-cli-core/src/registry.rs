@@ -310,7 +310,7 @@ impl Log {
 		};
 		serde_json::from_str(&text).map(Some).with_context(|| {
 			format!(
-				"{} is not a registry log this tool wrote — move it aside, and setup writes a fresh one",
+				"{} is not a registry log this tool wrote: move it aside, and setup writes a fresh one",
 				path.display()
 			)
 		})

@@ -76,7 +76,7 @@ impl Property {
 		format!(
 			"{} {} ({} bytes)",
 			crate::render::hex_spaced(&self.data[..12]),
-			vag_cli_core::style::ELLIPSIS,
+			vag_cli_core::marks::ELLIPSIS,
 			self.data.len()
 		)
 	}

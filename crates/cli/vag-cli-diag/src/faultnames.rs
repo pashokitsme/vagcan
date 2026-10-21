@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use vag_cli_core::report::Advice as _;
 use vag_data_labels::CodesDb;
 use vag_data_labels::codes::sae_code;
 use vag_data_labels::dtc::{self, DtcRegistry, UnitCatalogue, UnitLookup};
@@ -121,30 +122,24 @@ impl Namer {
 		// nobody has run `vagcan setup` on this machine, and the reader needs
 		// that named rather than a decode failure they cannot act on.
 		if !iv_cache.is_file() {
-			anyhow::bail!(crate::missing::no_label_data("The .rod section keys", "naming faults", iv_cache));
+			return Err(crate::missing::no_label_data("the .rod section keys", "naming faults", iv_cache).into_error());
 		}
 		let cache = IvCache::load(iv_cache);
-		let (_, registry) = dtc::load_registry(root, &cache).with_context(|| {
-			format!(
-				"no readable fault registry under {}\n\n\
-                 The chain needs UDS_EV/{} and the key for its [DTC] section. \
-                 The key lives in {} — if the file is there and the key is not, \
-                 recover it with:\n    \
-                 vagcan dev vcds rod --cache {} <path to {}>",
-				root.display(),
+		let (_, registry) = dtc::load_registry(root, &cache)
+			.with_context(|| format!("no readable fault registry under {}", root.display()))
+			.note(format!(
+				"it needs UDS_EV/{} and the key for its [DTC] section, kept in {}",
 				dtc::REGISTRY_FILE,
+				iv_cache.display()
+			))
+			.help(format!(
+				"if the file is there and the key is not: `vagcan dev vcds rod --cache {} <path to {}>`",
 				iv_cache.display(),
-				iv_cache.display(),
-				dtc::REGISTRY_FILE,
-			)
-		})?;
-		let codes_path = find_codes(root).with_context(|| {
-			format!(
-				"none of {:?} under {} — the fault text ships in the VCDS install root, beside Labels/",
-				crate::setup::CODES_FILES,
-				root.display()
-			)
-		})?;
+				dtc::REGISTRY_FILE
+			))?;
+		let codes_path = find_codes(root)
+			.with_context(|| format!("none of {:?} under {}", crate::setup::CODES_FILES, root.display()))
+			.note("the fault text ships in the VCDS install root, beside Labels/")?;
 		let codes = CodesDb::parse(&std::fs::read(&codes_path).with_context(|| format!("reading {}", codes_path.display()))?);
 		// With the cached keys only, as every file here: the search is `setup`'s.
 		let what = "units VCDS reads through another unit's file show codes only";

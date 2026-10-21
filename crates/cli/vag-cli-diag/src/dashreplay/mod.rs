@@ -20,7 +20,7 @@ use std::io::{IsTerminal, Write};
 use std::path::Path;
 use vag_cli_core::verbosity;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 
 use crate::watch::replay::Recording;
 use engine::{Refusal, Replay};
@@ -69,16 +69,15 @@ fn replay(
 			verbosity::say(verbosity::NOTES, line);
 		}
 		let channels = plan.channels.len();
-		let mut message = format!(
-			"none of the plan's {channels} {} is in {log} — nothing to replay\n",
+		use vag_cli_core::report::Advice as _;
+		let mut err = anyhow!(
+			"none of the plan's {channels} {} is in {log}: nothing to replay",
 			crate::render::plural(channels, "channel")
 		);
-		for row in &rows {
-			message.push_str(row);
-			message.push('\n');
+		if !rows.is_empty() {
+			err = err.note(rows.join("\n"));
 		}
-		message.push_str(&columns::fix(&gaps, plan));
-		bail!(message);
+		return Err(err.help(columns::fix(&gaps, plan)));
 	}
 	notes.extend(rows);
 
@@ -376,14 +375,18 @@ mod tests {
 		let refuse = |level| {
 			let capture = Capture::start(level);
 			let error = replay("drive.csv", &other, &plan, &offered, &[], None).unwrap_err();
-			(error.to_string(), capture.finish())
+			(
+				vag_cli_core::report::render(&error, 0, vag_cli_core::report::Colour::Never),
+				capture.finish(),
+			)
 		};
 		let (error, quiet) = refuse(0);
 		assert_eq!(
 			error,
-			"none of the plan's 1 channel is in drive.csv — nothing to replay\n\
-			 missing  A (01:1001)\n\
-			 Fix: `vagcan watch --did \"01:1001\" --out FILE`"
+			"error: none of the plan's 1 channel is in drive.csv: nothing to replay\n\
+			 \n\
+			 note: missing  A (01:1001)\n\
+			 help: record them: `vagcan watch --did \"01:1001\" --out FILE`\n"
 		);
 		assert_eq!((quiet.stdout.as_str(), quiet.stderr.as_str()), ("", ""));
 		let (_, verbose) = refuse(1);

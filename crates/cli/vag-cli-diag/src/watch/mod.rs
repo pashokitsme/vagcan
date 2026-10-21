@@ -43,7 +43,8 @@ use vag_cli_core::bus::{Bus, Class, Subscription, Unit};
 use crate::plan::Channel;
 use crate::ui::chart;
 use crate::ui::term;
-use vag_cli_core::style::{SEP, facts};
+use vag_cli_core::marks::{SEP, facts};
+use vag_cli_core::report::Advice as _;
 
 /// How many lines the chart draws, however many are marked for it.
 ///
@@ -1837,10 +1838,8 @@ fn replay_identities(vin: Option<&str>) -> Result<Vec<crate::plan::UnitIdentity>
 	if let Some(vin) = vin {
 		let record = crate::datadir::units_record(vin)?;
 		return crate::units::read_record(&record)?.ok_or_else(|| {
-			anyhow::anyhow!(
-				"no record of {vin}'s control units at {} — connect to the car once with `vagcan units --identify` or `vagcan watch`",
-				record.display()
-			)
+			anyhow::anyhow!("no record of {vin}'s control units at {}", record.display())
+				.help("connect to the car once with `vagcan units --identify` or `vagcan watch`")
 		});
 	}
 	let cars = match crate::units::recorded_cars() {
@@ -1911,11 +1910,13 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, vin: Option<&st
 	// A state column from before 2026-09-26 holds the whole answer as bare hex.
 	replay::settle_formats(&recording, &mut resolved, &channels);
 	if resolved.is_empty() {
-		anyhow::bail!(
-			"none of the {} columns in {recording_path} matched a channel this build knows. \n\
-             A recording is matched by measurement name or identifier; check that the \n\
-             catalogs in {catalogs} are the ones it was recorded with.",
-			recording.columns.len()
+		return Err(
+			anyhow::anyhow!(
+				"none of the {} columns in {recording_path} matched a channel this build knows",
+				recording.columns.len()
+			)
+			.note("a recording is matched by measurement name or identifier")
+			.help(format!("check that the catalogs in {catalogs} are the ones it was recorded with")),
 		);
 	}
 	// Start with the channels that actually moved. A column that read the same

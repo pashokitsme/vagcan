@@ -60,11 +60,14 @@ fn view_refuses_another_schema_in_two_lines_with_the_reason_at_v() {
 	std::fs::write(&input, r#"{"schema": 7, "runs": []}"#).unwrap();
 	let path = input.to_string_lossy().to_string();
 
-	let (errors, runs) = at_each_level(|| vag_cli_measure::write_view(&path).expect_err("schema 7 is refused").to_string());
+	let (errors, runs) = at_each_level(|| {
+		let refused = vag_cli_measure::write_view(&path).expect_err("schema 7 is refused");
+		vag_cli_core::report::render(&refused, 0, vag_cli_core::report::Colour::Never)
+	});
 	assert_split("measure view, another schema", &runs);
 	assert_eq!(
 		errors[0],
-		format!("{path} is schema 7 and this build reads schema 1\nopen it with a build that reads schema 7")
+		format!("error: {path} is schema 7, and this build reads schema 1\n\nhelp: open it with a build that reads schema 7\n")
 	);
 	assert_eq!(runs[0], Captured::default(), "the error is the caller's to print");
 	assert!(runs[1].stderr.contains("cannot be regenerated"), "{}", runs[1].stderr);

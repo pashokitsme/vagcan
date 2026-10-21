@@ -168,7 +168,7 @@ fn cut(text: &str, width: usize) -> String {
 		return text.to_string();
 	}
 	let mut cut: String = text.chars().take(width - 1).collect();
-	cut.push(crate::style::ELLIPSIS);
+	cut.push(crate::marks::ELLIPSIS);
 	cut
 }
 

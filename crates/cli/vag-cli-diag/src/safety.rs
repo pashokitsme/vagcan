@@ -48,7 +48,7 @@ impl std::fmt::Display for NotStationary {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			NotStationary::Moving(kmh) => write!(f, "the car is moving at {kmh} km/h"),
-			NotStationary::Unknown => f.write_str("cannot tell whether the car is moving — the engine did not report road speed"),
+			NotStationary::Unknown => f.write_str("cannot tell whether the car is moving: the engine did not report road speed"),
 		}
 	}
 }
@@ -137,7 +137,7 @@ mod tests {
 		assert_eq!(NotStationary::Moving(30).to_string(), "the car is moving at 30 km/h");
 		assert_eq!(
 			NotStationary::Unknown.to_string(),
-			"cannot tell whether the car is moving — the engine did not report road speed"
+			"cannot tell whether the car is moving: the engine did not report road speed"
 		);
 		for why in [NotStationary::Moving(30), NotStationary::Unknown] {
 			assert!(!why.to_string().contains("session"), "{why}");

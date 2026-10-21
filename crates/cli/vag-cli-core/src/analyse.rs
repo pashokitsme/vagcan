@@ -652,7 +652,7 @@ fn render(logged: &[crate::vcdslog::LoggedMeasurement], fits: &[Fitted], rejecte
 	out.push('\n');
 	let outranked = rejected.iter().filter(|r| matches!(r, Rejected::Outranked { .. })).count();
 	let proven = logged.iter().filter(|m| fits.iter().any(|f| f.ide == m.ide)).count();
-	out.push_str(&crate::style::facts([
+	out.push_str(&crate::marks::facts([
 		format!("{proven} of {} {} proven", logged.len(), plural(logged.len(), "measurement")),
 		match outranked {
 			0 => String::new(),

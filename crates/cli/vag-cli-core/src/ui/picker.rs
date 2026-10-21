@@ -778,7 +778,7 @@ fn screen(level: &Level<'_>, choices: &[Choice], at: usize, height: u16, width: 
 	}
 	if truncated {
 		lines.push(clip(
-			&format!("  {} {}-{} of {}", crate::style::ELLIPSIS, start + 1, start + count, choices.len()),
+			&format!("  {} {}-{} of {}", crate::marks::ELLIPSIS, start + 1, start + count, choices.len()),
 			width,
 		));
 	}
@@ -819,7 +819,7 @@ fn clip(line: &str, width: usize) -> String {
 		true => line
 			.chars()
 			.take(width.saturating_sub(1))
-			.chain([crate::style::ELLIPSIS])
+			.chain([crate::marks::ELLIPSIS])
 			.collect::<String>(),
 		false => line.to_string(),
 	}

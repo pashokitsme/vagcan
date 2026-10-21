@@ -47,7 +47,7 @@ use crate::messages::{self, ChannelFound, MissingChannel};
 use crate::plan::{self, UnitIdentity};
 use crate::power::{self, Inertias, KMH_PER_MS};
 use crate::types::Seconds;
-use vag_cli_core::style::SEP;
+use vag_cli_core::marks::SEP;
 
 /// The speed a coastdown starts from by default, in km/h.
 ///
@@ -211,11 +211,12 @@ pub fn prompt_line(prompt: &str, default: Option<&str>) -> String {
 /// Why the interview will not start, if it will not: a person at the keyboard (stdin a
 /// terminal) and the questions going somewhere else (stderr not one). Answers piped in on
 /// stdin are a script, and a script is asked whatever stderr is.
-pub fn interview_refusal(stdin_is_terminal: bool, stderr_is_terminal: bool) -> Option<&'static str> {
-	(stdin_is_terminal && !stderr_is_terminal).then_some(
-		"`measure setup` asks its questions on stderr, and stderr is not the terminal\n\
-		 Fix: run it without redirecting stderr (`2>`), or pipe the answers in on stdin",
-	)
+pub fn interview_refusal(stdin_is_terminal: bool, stderr_is_terminal: bool) -> Option<anyhow::Error> {
+	use vag_cli_core::report::Advice as _;
+	(stdin_is_terminal && !stderr_is_terminal).then(|| {
+		anyhow::anyhow!("`measure setup` asks its questions on stderr, and stderr is not the terminal")
+			.help("run it without redirecting stderr (`2>`), or pipe the answers in on stdin")
+	})
 }
 
 /// The interview as a person has it: the questions and everything said on stderr, the
@@ -251,7 +252,7 @@ impl<R: std::io::BufRead> Interview for Console<R> {
 		// script that was piped in and ran out must not be taken for agreement
 		// with every remaining default.
 		if self.input.read_line(&mut line)? == 0 {
-			bail!("stdin ended in the middle of the questions — nothing further was written");
+			bail!("stdin ended in the middle of the questions: nothing further was written");
 		}
 		let answer = line.trim();
 		Ok(match (answer.is_empty(), default) {
@@ -840,7 +841,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 		std::io::IsTerminal::is_terminal(&std::io::stdin()),
 		std::io::IsTerminal::is_terminal(&std::io::stderr()),
 	) {
-		bail!("{why}");
+		return Err(why);
 	}
 	let today = today();
 	let store = vag_data_labels::catalog::CatalogStore::open(opts.catalogs);
@@ -1620,10 +1621,11 @@ mod tests {
 		// `measure setup 2>log`: the questions went into the log while the terminal
 		// waited (review of PR #38). A script on stdin keeps working.
 		let refused = interview_refusal(true, false).expect("a person, stderr in a file");
-		assert!(refused.lines().nth(1).is_some_and(|l| l.starts_with("Fix: ")), "{refused}");
-		assert_eq!(interview_refusal(true, true), None, "a person at a terminal");
-		assert_eq!(interview_refusal(false, false), None, "a script, stderr in a file");
-		assert_eq!(interview_refusal(false, true), None, "a script on stdin");
+		let refused = vag_cli_core::report::render(&refused, 0, vag_cli_core::report::Colour::Never);
+		assert!(refused.lines().nth(2).is_some_and(|l| l.starts_with("help: ")), "{refused}");
+		assert!(interview_refusal(true, true).is_none(), "a person at a terminal");
+		assert!(interview_refusal(false, false).is_none(), "a script, stderr in a file");
+		assert!(interview_refusal(false, true).is_none(), "a script on stdin");
 	}
 
 	/// A unique-per-test temp dir, cleaned up on drop — the shape the rest of

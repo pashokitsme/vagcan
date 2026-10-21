@@ -71,7 +71,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 use crate::ui::menu::{Asker, Item};
 use vag_cli_core::project::allowed;
@@ -570,7 +570,7 @@ fn given_path(given: &str) -> Result<Source> {
 	let dir = expand(given);
 	match identify(&dir) {
 		Some(look) => Ok(look.source(dir)),
-		None => bail!(unrecognised(&dir)),
+		None => Err(unrecognised(&dir)),
 	}
 }
 
@@ -768,22 +768,43 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// Names both shapes, because nothing was picked and so nothing says which one
 /// they were after — and names where a VCDS installation comes from, because
 /// "you have neither" is the likeliest reason to be here at all.
-fn unrecognised(dir: &Path) -> String {
+fn unrecognised(dir: &Path) -> anyhow::Error {
+	use vag_cli_core::report::Advice as _;
 	let shown = dir.display();
-	let head = match (dir.exists(), dir.is_dir()) {
-		(false, _) => nothing_at(dir),
-		(true, false) => format!("{shown} is not a directory — it is a file. If that is an archive, unpack it and point at the folder it unpacks to."),
-		(true, true) => format!("{shown} is neither an ODIS project nor a VCDS installation."),
+	let (head, first) = match (dir.exists(), dir.is_dir()) {
+		(false, _) => (
+			format!("{shown} is not a directory: there is nothing at that path"),
+			misspelt(dir).map(|meant| format!("did you mean {}?", meant.display())),
+		),
+		(true, false) => (
+			format!("{shown} is not a directory: it is a file"),
+			Some("if that is an archive, unpack it and point at the folder it unpacks to".to_string()),
+		),
+		(true, true) => (format!("{shown} is neither an ODIS project nor a VCDS installation"), None),
 	};
+	let mut err = anyhow::anyhow!("{head}");
+	let near = hint(dir, None);
+	if !near.is_empty() {
+		err = err.note(clause(&near.split_whitespace().collect::<Vec<_>>().join(" ")));
+	}
 	// The ODIS shape first, the order the menu offers them in.
-	format!(
-		"{head}{}\n    {}\n    {}\n\
-         With no path, `vagcan setup` asks which, and offers to download an installation; Ross-Tech's own: {}",
-		hint(dir, None),
-		Look::Odis.expected(),
-		Look::Vcds.expected(),
-		crate::missing::VCDS_DOWNLOAD
-	)
+	err = err.note(clause(Look::Odis.expected())).note(clause(Look::Vcds.expected()));
+	if let Some(first) = first {
+		err = err.help(first);
+	}
+	err
+		.help("with no path, `vagcan setup` asks which, and offers to download an installation")
+		.help(format!("Ross-Tech's own installation: {}", crate::missing::VCDS_DOWNLOAD))
+}
+
+/// A sentence written for a prompt, as a `note:` line: lower case first, no full stop.
+fn clause(sentence: &str) -> String {
+	let trimmed = sentence.trim().trim_end_matches('.');
+	let mut chars = trimmed.chars();
+	match chars.next() {
+		Some(first) => first.to_lowercase().chain(chars).collect(),
+		None => String::new(),
+	}
 }
 
 /// A path as a person hands one over.
@@ -1523,7 +1544,9 @@ mod tests {
 	#[test]
 	fn a_given_path_that_is_neither_names_both_shapes_and_where_vcds_comes_from() {
 		let mut io = Scripted::new(vec![]);
-		let why = choose(&mut io, &mut no_dialog(), Some("/definitely/not/here")).unwrap_err().to_string();
+		let why = choose(&mut io, &mut no_dialog(), Some("/definitely/not/here")).unwrap_err();
+		let why = vag_cli_core::report::render(&why, 0, vag_cli_core::report::Colour::Never);
+		assert!(why.starts_with("error: /definitely/not/here is not a directory"), "{why}");
 		assert!(why.contains("is not a directory"), "{why}");
 		assert!(why.contains("Labels/"), "{why}");
 		assert!(why.contains("AStringData.data.gz"), "the other kind is named too: {why}");
@@ -1539,10 +1562,9 @@ mod tests {
 		let typed = here.path().join("Dowloads").join("SK37X");
 		assert_eq!(misspelt(&typed), Some(meant.clone()));
 		let mut io = Scripted::new(vec![]);
-		let why = choose(&mut io, &mut no_dialog(), Some(&typed.display().to_string()))
-			.unwrap_err()
-			.to_string();
-		assert!(why.contains(&format!("Did you mean {}?", meant.display())), "{why}");
+		let why = choose(&mut io, &mut no_dialog(), Some(&typed.display().to_string())).unwrap_err();
+		let why = vag_cli_core::report::render(&why, 0, vag_cli_core::report::Colour::Never);
+		assert!(why.contains(&format!("help: did you mean {}?", meant.display())), "{why}");
 	}
 
 	#[test]
@@ -1572,9 +1594,8 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
 		let mut io = Scripted::new(vec![]);
-		let why = choose(&mut io, &mut no_dialog(), Some(&here.path().display().to_string()))
-			.unwrap_err()
-			.to_string();
+		let why = choose(&mut io, &mut no_dialog(), Some(&here.path().display().to_string())).unwrap_err();
+		let why = vag_cli_core::report::render(&why, 0, vag_cli_core::report::Colour::Never);
 		assert!(why.contains(&project.display().to_string()), "{why}");
 	}
 

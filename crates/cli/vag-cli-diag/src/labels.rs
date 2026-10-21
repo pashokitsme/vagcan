@@ -23,7 +23,7 @@ use vag_cli_core::verbosity::{self, NOTES, WIRE};
 use vag_data_labels::{LabelDb, Measurement, load_label_files};
 
 use crate::render::plural;
-use vag_cli_core::style::{SEP, facts};
+use vag_cli_core::marks::{SEP, facts};
 
 // The label directory locator is `core`'s now: the registry read keys its rows
 // by it, and that read runs from `watch` and `measure` as well as from `setup`.
@@ -83,10 +83,13 @@ fn cache_is_current(cache: &Path, dir: &Path) -> bool {
 /// [`load_cached`], which is what a directory somebody *named* goes through.
 pub fn load_project(project: &crate::project::Project) -> anyhow::Result<LabelDb> {
 	let cache = project.cache();
-	anyhow::ensure!(
-		cache.is_file(),
-		crate::missing::NoLabelData::new(format!("The project `{}` has no label cache.", project.id)).looked_for(&cache)
-	);
+	if !cache.is_file() {
+		return Err(
+			crate::missing::NoLabelData::new(format!("the project `{}` has no label cache", project.id))
+				.looked_for(&cache)
+				.into_error(),
+		);
+	}
 	vag_data_db::load_db(&cache).map_err(|e| anyhow::anyhow!("reading {}: {e}", cache.display()))
 }
 
@@ -462,7 +465,7 @@ fn no_rod(dir: &Path, odx_name: &str) -> Vec<String> {
 	if is_uds_ev(dir) || holds_uds_ev {
 		return vec![missing];
 	}
-	vec![missing, "Fix: pass the VCDS install root, the directory that holds UDS_EV/".to_string()]
+	vec![missing, "  (pass the VCDS install root, the directory that holds UDS_EV/)".to_string()]
 }
 
 /// Resolve the label file a control unit names for itself.
@@ -729,7 +732,7 @@ mod tests {
 		};
 		assert!(!has_project_labels(&project));
 		let why = match load_project(&project) {
-			Err(e) => e.to_string(),
+			Err(e) => vag_cli_core::report::render(&e, 0, vag_cli_core::report::Colour::Never),
 			Ok(_) => panic!("a project with no cache loaded one"),
 		};
 		assert!(why.contains("vagcan setup"), "{why}");
@@ -806,7 +809,7 @@ mod tests {
 			no_rod(&root.join("Labels"), "EV_X"),
 			vec![
 				miss(&root.join("Labels")),
-				"Fix: pass the VCDS install root, the directory that holds UDS_EV/".to_string()
+				"  (pass the VCDS install root, the directory that holds UDS_EV/)".to_string()
 			]
 		);
 	}

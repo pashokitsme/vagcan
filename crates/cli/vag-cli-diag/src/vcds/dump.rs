@@ -98,7 +98,7 @@ fn render_summary(s: &Stats) -> String {
 	out.push_str(&records.render(width));
 	out.push('\n');
 	let parsed = s.lbl_files + s.clb_files;
-	out.push_str(&vag_cli_core::style::facts([
+	out.push_str(&vag_cli_core::marks::facts([
 		format!("{parsed} {} parsed", plural(parsed, "label file")),
 		match s.read_errors {
 			0 => String::new(),

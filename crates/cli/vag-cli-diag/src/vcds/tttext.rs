@@ -65,7 +65,7 @@ pub fn read_file(path: &Path, page: CodePage) -> Result<Table> {
 /// What a reading holds, in one line.
 pub fn summary(table: &Table) -> String {
 	let with_ids = table.texts.iter().filter(|t| t.tail.as_ref().and_then(Tail::odx_id).is_some()).count();
-	vag_cli_core::style::facts([
+	vag_cli_core::marks::facts([
 		format!("{} {}", table.texts.len(), plural(table.texts.len(), "record")),
 		format!("{with_ids} with an IDE or MAS id"),
 		match table.malformed.len() {

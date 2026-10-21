@@ -244,7 +244,7 @@ fn clip(line: &str, width: usize) -> String {
 		true => line
 			.chars()
 			.take(width.saturating_sub(1))
-			.chain([crate::style::ELLIPSIS])
+			.chain([crate::marks::ELLIPSIS])
 			.collect::<String>(),
 		false => line.to_string(),
 	}

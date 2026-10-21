@@ -112,6 +112,7 @@
 //! derived from VW's data and describe one owner's car. Both name the plan by its id
 //! ([`plan_id`]): `plan.rs` as `PLAN_ID`, `plan.json` as `id`.
 
+use crate::report::Advice as _;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -141,8 +142,8 @@ pub const FIND_IDS: &str = "find your car's ids with `vagcan watch`: press `,` a
 
 /// The smallest `dash.toml` that builds: one value on one page. `<VIN>` is the car's.
 ///
-/// One text for three readers: README's "Building the dash" shows it (a test holds the README
-/// to it), `dev dash build --help` prints it, and a build with no file answers with it.
+/// One text for two readers: README's "Building the dash" shows it (a test holds the README
+/// to it), and `dev dash build --help` prints it, which a build with no file points at.
 pub const SMALLEST_INPUT: &str = "vin = \"<VIN>\"
 
 [[channel]]
@@ -156,22 +157,24 @@ cells = [\"01:IDE00025\"]
 /// The reference for every key of `dash.toml`, as a path in the repository.
 pub const REFERENCE_DOC: &str = "docs/dash/dash-toml.md";
 
-/// What a build with no `dash.toml` says: where to write one, the smallest one, and where every
-/// key is described.
-pub fn no_input(vin: &str, path: &Path) -> String {
-	format!(
-		"no dash.toml for {vin} yet. Write {}; the smallest one, one value on one page:\n\n{}\nEvery key: {REFERENCE_DOC} in the vagcan repository. To {FIND_IDS}.",
-		path.display(),
-		SMALLEST_INPUT.replace("<VIN>", vin)
-	)
+/// What a build with no `dash.toml` says: where it looked, and how to make one — the page
+/// editor, the smallest file in `--help`, every key in the reference, the ids in `watch`.
+pub fn no_input(vin: &str, path: &Path) -> anyhow::Error {
+	anyhow::anyhow!("no dash.toml for {vin} yet")
+		.note(format!("a build reads {}", path.display()))
+		.help(format!("lay out its pages with `vagcan dev dash edit {vin}`, then write them there"))
+		.help(format!(
+			"the smallest one is in `vagcan dev dash build --help`; every key is in {REFERENCE_DOC} in the vagcan repository"
+		))
+		.help(FIND_IDS)
 }
 
 /// What a build whose input is not at `path` says, without an errno (UX review, 2026-10-19).
 /// A path the build was `given` (`--input`) is a mistyped path, not a car with no file yet: it
 /// gets no starter.
-fn missing_input(vin: &str, path: &Path, given: bool) -> String {
+fn missing_input(vin: &str, path: &Path, given: bool) -> anyhow::Error {
 	if given {
-		format!("no file at {}", path.display())
+		anyhow::anyhow!("no file at {}", path.display())
 	} else {
 		no_input(vin, path)
 	}
@@ -180,11 +183,9 @@ fn missing_input(vin: &str, path: &Path, given: bool) -> String {
 /// What a build for a car with no record of its units says: the commands that write it, in one
 /// line. `units --identify` with no unit named, not `--identify <unit>`: that one is a sweep of
 /// one unit, and the record of every unit is what the build needs.
-pub fn no_record(vin: &str, record: &Path) -> String {
-	format!(
-		"no record of {vin}'s control units — connect to the car and run `vagcan units --identify` or `vagcan watch` once; either writes {}",
-		record.display()
-	)
+pub fn no_record(vin: &str, record: &Path) -> anyhow::Error {
+	anyhow::anyhow!("no record of {vin}'s control units at {}", record.display())
+		.help("connect to the car and run `vagcan units --identify` or `vagcan watch` once; either writes it")
 }
 
 /// Whether the board, which holds this number as an `f32`, holds it at all: finite here, and
@@ -3483,7 +3484,7 @@ pub fn read_inputs(vin: &str, input: Option<&Path>) -> anyhow::Result<Inputs> {
 	let input_path = input.map(Path::to_path_buf).unwrap_or_else(|| dir.join("dash.toml"));
 	let text = match std::fs::read_to_string(&input_path) {
 		Ok(text) => text,
-		Err(e) if e.kind() == std::io::ErrorKind::NotFound => anyhow::bail!(missing_input(vin, &input_path, input.is_some())),
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(missing_input(vin, &input_path, input.is_some())),
 		Err(e) => return Err(e).with_context(|| format!("reading the build input {}", input_path.display())),
 	};
 	let parsed = parse_input(&text)?;
@@ -3491,7 +3492,7 @@ pub fn read_inputs(vin: &str, input: Option<&Path>) -> anyhow::Result<Inputs> {
 		anyhow::bail!("{} is for VIN {} but the build asked for {vin}", input_path.display(), parsed.vin);
 	}
 	let record = crate::datadir::units_record(vin)?;
-	let units = crate::units::read_record(&record)?.ok_or_else(|| anyhow::anyhow!("{}", no_record(vin, &record)))?;
+	let units = crate::units::read_record(&record)?.ok_or_else(|| no_record(vin, &record))?;
 	Ok(Inputs {
 		vin: vin.to_string(),
 		parsed,
@@ -4728,11 +4729,16 @@ mod tests {
 		let given = format!("{:#}", read_inputs("TESTVIN0000000001", Some(&path)).unwrap_err());
 		assert_eq!(given, format!("no file at {}", path.display()));
 		// The car's own dash.toml is not there yet: what to write.
-		let why = missing_input("TESTVIN0000000001", &path, false);
-		assert!(why.starts_with("no dash.toml for TESTVIN0000000001 yet. Write "), "{why}");
+		let why = crate::report::render(&missing_input("TESTVIN0000000001", &path, false), 0, crate::report::Colour::Never);
+		assert!(why.starts_with("error: no dash.toml for TESTVIN0000000001 yet\n\n"), "{why}");
 		assert!(why.contains(&path.display().to_string()), "where: {why}");
-		assert!(why.contains(&SMALLEST_INPUT.replace("<VIN>", "TESTVIN0000000001")), "what: {why}");
+		assert!(
+			why.contains("help: lay out its pages with `vagcan dev dash edit TESTVIN0000000001`"),
+			"what: {why}"
+		);
 		assert!(why.contains(REFERENCE_DOC), "{why}");
+		// No example file inside an error: the smallest one is `--help`'s.
+		assert!(!why.contains("[[channel]]"), "{why}");
 		assert!(!why.contains("os error") && !why.contains("No such file"), "no errno: {why}");
 	}
 
@@ -4783,11 +4789,12 @@ mod tests {
 
 	#[test]
 	fn the_record_refusal_names_the_commands_that_write_it_in_one_line() {
-		let said = no_record("TESTVIN0000000001", Path::new("/home/x/.vagcan/cars/TESTVIN0000000001/units.json"));
-		assert!(said.starts_with("no record of TESTVIN0000000001's control units — "), "{said}");
-		assert!(said.contains("`vagcan units --identify`") && said.contains("`vagcan watch`"), "{said}");
-		assert!(said.ends_with("units.json"), "{said}");
-		assert!(!said.contains('\n'), "one line: {said}");
+		let err = no_record("TESTVIN0000000001", Path::new("/home/x/.vagcan/cars/TESTVIN0000000001/units.json"));
+		assert!(err.to_string().ends_with("units.json"), "{err}");
+		let said = crate::report::render(&err, 0, crate::report::Colour::Never);
+		assert!(said.starts_with("error: no record of TESTVIN0000000001's control units at "), "{said}");
+		let help = said.lines().find(|l| l.starts_with("help: ")).expect("a help line");
+		assert!(help.contains("`vagcan units --identify`") && help.contains("`vagcan watch`"), "{said}");
 	}
 
 	#[test]

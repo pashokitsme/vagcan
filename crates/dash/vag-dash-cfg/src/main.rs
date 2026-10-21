@@ -142,7 +142,7 @@ impl DashState {
 			println!(
 				"│ brightness  {b:>3}  [{}{}]",
 				"█".repeat(filled),
-				vag_cli_core::style::DOT.to_string().repeat(20 - filled)
+				vag_cli_core::marks::DOT.to_string().repeat(20 - filled)
 			);
 		}
 		println!("│ storage     {}", self.storage());

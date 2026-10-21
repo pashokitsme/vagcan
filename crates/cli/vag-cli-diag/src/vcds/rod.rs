@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::render::plural;
-use vag_cli_core::style::SEP;
+use vag_cli_core::marks::SEP;
 use vag_cli_core::table::{self, Table};
 use vag_cli_core::verbosity::{self, NOTES, WIRE};
 use vag_data_labels::rod::{IvCache, RodSection, RodStatus, Search, decode_rod_with};

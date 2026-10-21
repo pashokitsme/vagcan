@@ -146,23 +146,30 @@ mod tests {
 
 	/// An error out of one of the six sites, built the way they build it.
 	fn shortage() -> anyhow::Error {
-		anyhow::Error::from(NoLabelData::new("No project has been set up yet.").looked_in(std::path::Path::new("/x/data")))
+		NoLabelData::new("no project has been set up")
+			.looked_in(std::path::Path::new("/x/data"))
+			.into_error()
 	}
 
 	#[test]
 	fn the_shortage_survives_being_bailed_as_an_error() {
-		// The whole mechanism in one assertion: the sites report this by
-		// `bail!`-ing the type, and the dispatcher recognises it by downcasting
-		// to the type. A site that rendered it to a string would still print
-		// the same paragraph and would silently never be offered a fix, which
-		// is the failure worth a test of its own.
+		// The whole mechanism in one assertion: the sites report this as
+		// `NoLabelData::into_error`, and the dispatcher recognises it by finding
+		// the type under its hints. A site that rendered it to a string would
+		// still print the same lines and would silently never be offered a fix,
+		// which is the failure worth a test of its own.
 		fn like_a_site() -> Result<()> {
-			anyhow::bail!(NoLabelData::new("The project `SK37X` has no label cache.").looked_for(std::path::Path::new("/x/c.sqlite")))
+			Err(
+				NoLabelData::new("the project `SK37X` has no label cache")
+					.looked_for(std::path::Path::new("/x/c.sqlite"))
+					.into_error(),
+			)
 		}
 		let err = like_a_site().unwrap_err();
-		assert!(err.downcast_ref::<NoLabelData>().is_some(), "{err}");
+		assert!(vag_cli_core::report::find::<NoLabelData>(&err).is_some(), "{err}");
 		// And it still prints, with the fix in it — whatever its wording.
-		assert!(err.to_string().contains("vagcan setup"), "{err}");
+		let shown = vag_cli_core::report::render(&err, 0, vag_cli_core::report::Colour::Never);
+		assert!(shown.contains("help: run `vagcan setup"), "{shown}");
 	}
 
 	#[test]

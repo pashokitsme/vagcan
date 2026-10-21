@@ -69,12 +69,15 @@ pub fn run(needle: &str, limit: usize, files: &[NamesFile]) -> Result<()> {
 	// expected, and saying which command makes them is the whole job here.
 	let present: Vec<&NamesFile> = files.iter().filter(|f| f.path.is_file()).collect();
 	if present.is_empty() {
-		let headline = "The measurement names are not on this machine, and `vagcan dev vcds names` needs them.";
+		let headline = "the measurement names are not on this machine, and `vagcan dev vcds names` needs them";
 		let missing = crate::missing::NoLabelData::new(headline);
-		anyhow::bail!(match files {
-			[one] => missing.looked_for(&one.path),
-			_ => missing.looked_in(files.first().and_then(|f| f.path.parent()).unwrap_or(std::path::Path::new("."))),
-		});
+		return Err(
+			match files {
+				[one] => missing.looked_for(&one.path),
+				_ => missing.looked_in(files.first().and_then(|f| f.path.parent()).unwrap_or(std::path::Path::new("."))),
+			}
+			.into_error(),
+		);
 	}
 	for file in files.iter().filter(|f| !f.path.is_file()) {
 		vag_cli_core::note!("not there: {}", file.path.display());
@@ -127,7 +130,7 @@ fn render(hits: &[(&str, &str, &str)], total: usize, limit: usize, tagged: bool)
 		out.push_str(&table.render(table::terminal_width()));
 		out.push('\n');
 	}
-	out.push_str(&vag_cli_core::style::facts([
+	out.push_str(&vag_cli_core::marks::facts([
 		format!("{} of {total} {} match", hits.len(), plural(total, "name")),
 		match hits.len() > shown {
 			true => format!("first {shown} shown (--limit)"),
@@ -180,7 +183,7 @@ mod tests {
 			source: "VCDS",
 			path: "/definitely/not/here/names.json".into(),
 		}];
-		let err = run("boost", 40, &one).unwrap_err().to_string();
+		let err = vag_cli_core::report::render(&run("boost", 40, &one).unwrap_err(), 0, vag_cli_core::report::Colour::Never);
 		assert!(err.contains("vagcan setup"), "{err}");
 		assert!(err.contains("/definitely/not/here/names.json"), "{err}");
 	}

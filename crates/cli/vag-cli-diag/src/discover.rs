@@ -232,7 +232,7 @@ pub fn transition_overlap(a: &Column, b: &Column, window: f64) -> f64 {
 }
 
 use crate::render::plural;
-use vag_cli_core::style::SEP;
+use vag_cli_core::marks::SEP;
 use vag_cli_core::table::{Table, terminal_width};
 
 /// How many of a stepped column's values the table shows before `…`.
@@ -262,7 +262,7 @@ pub fn render(columns: &[Column]) -> String {
 			};
 			let shown: Vec<String> = c.values.iter().take(SHOWN_VALUES).cloned().collect();
 			let more = if c.values.len() > shown.len() {
-				format!(" {}", vag_cli_core::style::ELLIPSIS)
+				format!(" {}", vag_cli_core::marks::ELLIPSIS)
 			} else {
 				String::new()
 			};

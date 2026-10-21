@@ -56,7 +56,8 @@ pub mod view;
 
 use channels::Resolved;
 use types::{Seconds, Track};
-use vag_cli_core::style::{SEP, facts};
+use vag_cli_core::marks::{SEP, facts};
+use vag_cli_core::report::Advice as _;
 use vag_cli_core::ui::{chart, term};
 
 /// The session file's format. Checked before anything else is read.
@@ -953,7 +954,10 @@ pub fn write_view(path: &str) -> Result<std::path::PathBuf> {
 				NOTES,
 				"a session cannot be regenerated, so one in another schema is left alone rather than half-read",
 			);
-			anyhow::bail!("{path} is schema {other} and this build reads schema {SCHEMA}\nopen it with a build that reads schema {other}")
+			return Err(
+				anyhow::anyhow!("{path} is schema {other}, and this build reads schema {SCHEMA}")
+					.help(format!("open it with a build that reads schema {other}")),
+			);
 		}
 		None => anyhow::bail!("{path} carries no `schema` field: not a session this tool wrote"),
 	}
@@ -2269,7 +2273,7 @@ fn mark_rows(wanted: &[(u32, u32)], closed: &BTreeMap<(u32, u32), Seconds>) -> V
 fn setup_adapter(before: &device::DeviceArg, after: &device::DeviceArg) -> anyhow::Result<Option<String>> {
 	match (before.requested(), after.requested()) {
 		(Some(before), Some(after)) if before != after => {
-			anyhow::bail!("the adapter is named twice, `{before}` before `setup` and `{after}` after it — name it once")
+			Err(anyhow::anyhow!("the adapter is named twice, `{before}` before `setup` and `{after}` after it").help("name it once"))
 		}
 		(before, after) => Ok(after.or(before).map(str::to_owned)),
 	}
@@ -2280,7 +2284,7 @@ fn setup_adapter(before: &device::DeviceArg, after: &device::DeviceArg) -> anyho
 fn setup_rows<'a>(before: Option<&'a str>, after: Option<&'a str>) -> anyhow::Result<Option<&'a str>> {
 	match (before, after) {
 		(Some(before), Some(after)) if before != after => {
-			anyhow::bail!("the rows' directory is named twice, `{before}` before `setup` and `{after}` after it — name it once")
+			Err(anyhow::anyhow!("the rows' directory is named twice, `{before}` before `setup` and `{after}` after it").help("name it once"))
 		}
 		(before, after) => Ok(after.or(before)),
 	}

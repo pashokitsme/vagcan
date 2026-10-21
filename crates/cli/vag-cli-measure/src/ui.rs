@@ -35,7 +35,7 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use super::messages;
 use super::session::{self, ARMING_HOLD_S};
 use super::types::Seconds;
-use vag_cli_core::style::SEP;
+use vag_cli_core::marks::SEP;
 use vag_cli_core::ui::bars;
 use vag_cli_core::ui::chart::{Origin, Series};
 
@@ -192,7 +192,7 @@ impl MarkRow {
 		match (self.seconds, self.from_launch) {
 			(Some(seconds), true) => format!("≈{seconds:.2} s"),
 			(Some(seconds), false) => format!("{seconds:.2} s"),
-			(None, _) => vag_cli_core::style::DOT.to_string(),
+			(None, _) => vag_cli_core::marks::DOT.to_string(),
 		}
 	}
 }

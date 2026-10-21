@@ -17,7 +17,7 @@ use crossterm::terminal::{self, Clear, ClearType};
 use super::engine::Replay;
 use super::glass::{Canvas, braille, half_blocks};
 use crate::ui::term;
-use vag_cli_core::style::SEP;
+use vag_cli_core::marks::SEP;
 use vag_dash_core::panel::{HEIGHT, WIDTH};
 
 /// What the panel leaves behind: the events of the log — the lines under the panel after

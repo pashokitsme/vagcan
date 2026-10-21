@@ -1657,14 +1657,14 @@ mod tests {
 
 	#[test]
 	fn setup_help_says_what_lands_where_and_what_to_keep() {
-		// Said here since the shortage message is one line of what to type
-		// (`vag_cli_core::missing::FIX`), which points at this help.
+		// Said here since the shortage message is what to type
+		// (`vag_cli_core::missing::HELP`), which points at this help.
 		let help = help_of(&["setup"], true);
 		assert!(help.contains("~/.vagcan/data/<id>/"), "{help}");
 		assert!(help.contains("keep it in place"), "a VCDS installation is read again later:\n{help}");
 		assert!(help.contains("ODIS project can be deleted"), "{help}");
 		assert!(help.contains(vag_cli_core::missing::VCDS_DOWNLOAD), "{help}");
-		assert!(vag_cli_core::missing::FIX.contains("vagcan setup --help"));
+		assert!(vag_cli_core::missing::HELP.iter().any(|h| h.contains("vagcan setup --help")));
 	}
 
 	#[test]

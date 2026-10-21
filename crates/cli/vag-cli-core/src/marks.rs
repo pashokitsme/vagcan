@@ -3,8 +3,8 @@
 //!
 //! A CLI crate writes none of these as a literal: it names the constant, so a line in `faults`
 //! and a line in `setup` cannot drift to two separators. `no_literal_glyphs`
-//! (`vag-cli-core/tests/source_guard.rs`) holds the line for `·` and `•`. The board draws its own glyphs; the
-//! firmware and the render crates are not covered.
+//! (`vag-cli-core/tests/source_guard.rs`) holds the line for `·` and `•`. The board draws its own
+//! glyphs; the firmware and the render crates are not covered.
 
 /// Between facts on one line: `2 stored · 1 failing now · 15 units read`.
 ///
@@ -17,11 +17,15 @@ pub const SEP: &str = " · ";
 /// not read yet (`measure`'s live table).
 pub const DOT: char = '·';
 
-/// A step or a check that succeeded. No command prints one yet; one that does takes this.
+/// The first column of a row that succeeded, in a list where a row can fail (CLAUDE.md,
+/// "Command output"). No command prints one yet; one that does takes this.
 pub const OK: &str = "✓";
 
-/// A step or a check that failed. No command prints one yet; one that does takes this.
+/// The first column of a row that failed; before a fault code failing now (`faults`).
 pub const FAIL: &str = "✗";
+
+/// Before a fault code stored and not failing now (`faults`).
+pub const STORED: &str = "·";
 
 /// Where text was cut to fit: `table`'s cells, the menu's and the picker's lines, a PDU's bytes
 /// in `dev sniff` and in a property dump, a column's values in `dev recording discover`.
@@ -30,7 +34,7 @@ pub const ELLIPSIS: char = '…';
 /// `parts` as one line of facts, [`SEP`] between them, an empty part left out.
 ///
 /// ```
-/// use vag_cli_core::style::facts;
+/// use vag_cli_core::marks::facts;
 /// assert_eq!(facts(["2 stored", "", "15 units read"]), "2 stored · 15 units read");
 /// ```
 pub fn facts<S: AsRef<str>>(parts: impl IntoIterator<Item = S>) -> String {
