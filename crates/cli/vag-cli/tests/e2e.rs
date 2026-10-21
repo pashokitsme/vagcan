@@ -169,6 +169,29 @@ fn home(at: &Path) {
 		.unwrap();
 }
 
+/// The car whose home holds two sources, one with a path too long for 80 columns beside its
+/// row: `setup --list` puts each path under its row and keeps every row.
+const TWO_SOURCES: &str = "two-sources";
+
+/// A `~/.vagcan` with the VCDS store and one ODIS project, each source recorded and nothing
+/// more, both read at a fixed time. Made-up paths.
+fn two_sources_home(at: &Path) {
+	let store = at.join("vcds");
+	let project = at.join("data").join(PROJECT);
+	for (dir, kind, source) in [
+		(&store, vag_data_db::VCDS, "/nowhere/a-long-way-down/to-a-vcds-installation/Labels"),
+		(&project, vag_data_db::ODIS, "/nowhere/SIM00-odis"),
+	] {
+		std::fs::create_dir_all(dir).unwrap();
+		let cache = dir.join("cache.sqlite");
+		vag_data_db::record_language(&cache, kind, source, "eng").unwrap();
+		rusqlite::Connection::open(&cache)
+			.unwrap()
+			.execute("UPDATE source SET parsed_at = '2026-10-21T00:00:00.000Z'", [])
+			.unwrap();
+	}
+}
+
 /// The car whose home holds a VCDS install alone, no ODIS project: each source is tested on
 /// its own (CLAUDE.md, "ODIS and VCDS are independent sources").
 const VCDS_ONLY: &str = "vcds-only";
@@ -297,6 +320,8 @@ fn e2e() {
 	home(template.path());
 	let vcds_template = tempfile::tempdir().unwrap();
 	vcds_home(vcds_template.path());
+	let two_template = tempfile::tempdir().unwrap();
+	two_sources_home(two_template.path());
 	let root = cases_root();
 	let mut cars: Vec<PathBuf> = std::fs::read_dir(&root)
 		.unwrap()
@@ -309,9 +334,10 @@ fn e2e() {
 	let mut failed = Vec::new();
 	for car in &cars {
 		for case in case_files(car) {
-			let home = match car.file_name().is_some_and(|n| n == VCDS_ONLY) {
-				true => vcds_template.path(),
-				false => template.path(),
+			let home = match car.file_name().and_then(|n| n.to_str()) {
+				Some(VCDS_ONLY) => vcds_template.path(),
+				Some(TWO_SOURCES) => two_template.path(),
+				_ => template.path(),
 			};
 			let ran = std::panic::catch_unwind(|| run_case(&bin, &car.join("car.toml"), home, &case));
 			if ran.is_err() {

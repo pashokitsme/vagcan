@@ -50,11 +50,13 @@ struct Said {
 	/// Which unit's line is next, and of how many.
 	at: usize,
 	of: usize,
+	/// At `-vv`, what the unit's list was looked up by, said under its `read [n/N]` line.
+	looked_up: Option<String>,
 }
 
 impl Progress for Said {
 	fn waiting(&mut self, what: &str) {
-		vag_cli_core::wire!("{what}");
+		vag_cli_core::wire!("    {what}");
 		// Cleared before the next one draws, or two lines spin at once.
 		self.spinner = None;
 		self.spinner = Some(Spinner::new(what));
@@ -64,6 +66,12 @@ impl Progress for Said {
 		(self.at, self.of) = (at, of);
 	}
 
+	fn looked_up(&mut self, _odx: &str, version: &str, project: Option<&str>, _outcome: &str) {
+		// The name and the outcome are the `read [n/N]` line's; only what it lacks is kept.
+		let by = [format!("F1A2 {version}"), project.map(|p| format!("car project {p}")).unwrap_or_default()];
+		self.looked_up = Some(vag_cli_core::marks::facts(by));
+	}
+
 	fn reporter(&self) -> Option<crate::progress::Reporter> {
 		self.spinner.as_ref().map(Spinner::reporter)
 	}
@@ -71,6 +79,9 @@ impl Progress for Said {
 	fn done(&mut self, line: &str) {
 		self.spinner = None;
 		vag_cli_core::verbosity::say(vag_cli_core::verbosity::NOTES, &format!("    read [{}/{}] {line}", self.at + 1, self.of));
+		if let Some(by) = self.looked_up.take() {
+			vag_cli_core::verbosity::say(vag_cli_core::verbosity::WIRE, &format!("      looked up by {by}"));
+		}
 	}
 }
 
@@ -106,7 +117,12 @@ pub(super) async fn registry_channels(root: &Path, stores: &crate::project::Stor
 	);
 	let (root, stores, units) = (root.to_path_buf(), stores.clone(), units.clone());
 	let outcome = tokio::task::spawn_blocking(move || {
-		let mut said = Said { spinner: None, at: 0, of: 0 };
+		let mut said = Said {
+			spinner: None,
+			at: 0,
+			of: 0,
+			looked_up: None,
+		};
 		crate::registry::read(&root, &stores, &units, &mut said)
 	})
 	.await

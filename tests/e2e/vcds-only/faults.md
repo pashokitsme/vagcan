@@ -32,7 +32,7 @@ note: adapter from VAGCAN_DEVICE=[PORT]
 names    none — `vagcan setup` names the codes
 codes below are shown as numbers: no fault-name labels on this machine
 note: looked in [HOME]/rod
-help: run `vagcan setup <ODIS project folder | VCDS installation>` (offline)
+help: run `vagcan setup <ODIS project or VCDS installation>` (offline)
 help: with no path, `vagcan setup` asks which and can fetch VCDS; see `vagcan setup --help`
 a stored code is a record that something happened once — not a diagnosis, and not necessarily a fault now; `failing` is failing now
 713  1 code listed, 1 confirmed

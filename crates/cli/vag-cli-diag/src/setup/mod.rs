@@ -1591,6 +1591,8 @@ fn rod_keys(pool: &Path, project: &crate::project::Project) -> Result<Step> {
 			.because(format!("none of {SHARED_ROD_FILES:?} is in {}", pool.display())),
 		);
 	}
+	// What the keys file held before: the same after is a step with nothing to do.
+	let before = std::fs::read(&cache).ok();
 	let mut shut = Vec::new();
 	for file in &present {
 		for section in crate::vcds::rod::open(
@@ -1621,7 +1623,9 @@ fn rod_keys(pool: &Path, project: &crate::project::Project) -> Result<Step> {
 		(0, true) => "no .rod keys: every section opens by its file name".to_string(),
 		(n, _) => format!("{n} .rod {}", plural(n, "key")),
 	};
+	let unchanged = before.is_some() && before == std::fs::read(&cache).ok();
 	Ok(match shut.is_empty() {
+		true if unchanged && keys > 0 => Step::new(vag_data_db::VCDS, "keys", State::Current, format!("{detail}, all up to date")).at(cache),
 		true => Step::new(vag_data_db::VCDS, "keys", State::Wrote, detail).at(cache),
 		false => Step::new(
 			vag_data_db::VCDS,
@@ -1791,9 +1795,12 @@ fn step_lines(step: &Step) -> Vec<Line> {
 			lines.push(Line::at(vag_cli_core::verbosity::NOTES, format!("{DETAIL}{}", line.trim_start())));
 		}
 	}
-	// What was said while it ran, under it, with `~` for the home directory.
+	// What was said while it ran, under it, with `~` for the home directory. A line said
+	// further in than a detail keeps the difference: it belongs to the line above it.
 	for (level, text) in &step.details {
-		lines.push(Line::at(*level, format!("{DETAIL}{}", tilde_in(text.trim_start()))));
+		let said = text.trim_start();
+		let deeper = (text.len() - said.len()).saturating_sub(DETAIL.len());
+		lines.push(Line::at(*level, format!("{DETAIL}{}{}", " ".repeat(deeper), tilde_in(said))));
 	}
 	lines
 }

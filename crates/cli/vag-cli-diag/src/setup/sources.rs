@@ -37,8 +37,11 @@ pub fn list() -> Result<()> {
 	for id in crate::project::list()? {
 		stores.push(Project { dir: projects.join(&id), id });
 	}
+	// Nothing set up is a listing of nothing, as an empty store is: not an error.
 	if stores.is_empty() {
-		return Err(anyhow!("nothing is set up on this machine").help("run `vagcan setup <ODIS project or VCDS installation>`"));
+		vag_cli_core::out!("{}", render(&[]).0);
+		vag_cli_core::say!("help: run `vagcan setup {}` to read one", crate::missing::SOURCE_PLACEHOLDER);
+		return Ok(());
 	}
 	let mut listed: Vec<Listed> = Vec::new();
 	let mut said = Vec::new();
@@ -81,9 +84,14 @@ fn migrations(store: &Project) -> Vec<String> {
 	entries
 		.iter()
 		.map(|entry| {
-			let mut parts = vec![format!("migrated {}", entry["at"].as_str().unwrap_or("?"))];
+			// The day, as the listing's READ column shows one.
+			let mut parts = vec![format!("migrated {}", day(entry["at"].as_str()))];
 			if entry["moved"].is_object() {
-				parts.push(format!("moved from {}", path(&entry["moved"]["from"])));
+				parts.push(format!(
+					"moved the VCDS installation {} from {}",
+					path(&entry["moved"]["installation"]),
+					path(&entry["moved"]["from"])
+				));
 			}
 			for replaced in entry["replaced"].as_array().into_iter().flatten() {
 				parts.push(format!("replaced {}", path(&replaced["installation"])));
@@ -299,7 +307,27 @@ fn render(listed: &[Listed]) -> (String, Vec<(String, Option<String>)>) {
 	head.push('\n');
 	head.push_str(lines.next().unwrap_or_default());
 	head.push('\n');
-	(head, lines.map(str::to_string).zip(details.into_iter().map(Some)).collect())
+	(head, rows_of(lines, details))
+}
+
+/// The table's lines after the header, one entry per source with its `-v` details. A row
+/// is one line, or two when its path goes under it: every row starts with its `✓`/`✗`, and
+/// a line that starts with a space is the row above's path — so a wrapped path never shifts
+/// a later row onto another's details, or out of the listing.
+fn rows_of<'a>(lines: impl Iterator<Item = &'a str>, details: Vec<String>) -> Vec<(String, Option<String>)> {
+	let mut rows: Vec<String> = Vec::new();
+	for line in lines {
+		match rows.last_mut() {
+			Some(row) if line.starts_with(' ') => {
+				row.push('\n');
+				row.push_str(line);
+			}
+			_ => rows.push(line.to_string()),
+		}
+	}
+	debug_assert_eq!(rows.len(), details.len(), "one rendered row per source");
+	let mut details = details.into_iter();
+	rows.into_iter().map(|row| (row, details.next())).collect()
 }
 
 /// What `-v` says under one row: where it is kept, what the source calls its version, why
@@ -553,6 +581,29 @@ mod tests {
 		let notes = notes(&project, &sources, &vag_data_db::Rows::default());
 		assert_eq!(notes.len(), 1, "{notes:?}");
 		assert!(notes[0].contains("help: run `vagcan setup --drop p1`"), "{notes:?}");
+	}
+
+	#[test]
+	fn a_path_under_its_row_keeps_every_row_with_its_own_details() {
+		// At 80 columns a long path goes on a line of its own under its row: two lines per
+		// row, which paired line by line with the details dropped the second row (UX review
+		// of PR #50).
+		let mut table = vag_cli_core::table::Table::new(&["", "ID", "KIND", "PROJECT", "LANG", "READ", "CHANNELS", "PATH"]).no_cut();
+		let long = "/nowhere/a-long-way-down/to-a-vcds-installation/Labels";
+		table.row(["✓", "v1", "vcds", "-", "eng", "2026-10-21", "0", long].map(String::from).to_vec());
+		table.row(
+			["✓", "p2", "odis", "SIM00", "eng", "2026-10-21", "2", "/nowhere/SIM00-odis"]
+				.map(String::from)
+				.to_vec(),
+		);
+		let rendered = table.render(Some(80));
+		assert_eq!(rendered.lines().count(), 4, "one path under its row: {rendered}");
+		let rows = rows_of(rendered.lines().skip(1), vec!["store v1".into(), "project p2".into()]);
+		assert_eq!(rows.len(), 2, "{rows:?}");
+		assert!(rows[0].0.starts_with("✓  v1") && rows[0].0.ends_with(long), "{rows:?}");
+		assert_eq!(rows[0].1.as_deref(), Some("store v1"));
+		assert!(rows[1].0.starts_with("✓  p2") && rows[1].0.ends_with("/nowhere/SIM00-odis"), "{rows:?}");
+		assert_eq!(rows[1].1.as_deref(), Some("project p2"));
 	}
 
 	/// A project with an ODIS project and a VCDS installation in its cache, and the files

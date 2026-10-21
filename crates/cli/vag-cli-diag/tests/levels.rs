@@ -517,10 +517,12 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 		all[0].stdout
 	);
 	assert!(
-		all[0]
-			.stdout
-			.contains("\n             record 01  06 03 02 10 01 E2 40 00 00 69 F6 00 03 70 0F A0 7B 00\n"),
-		"--details is data, under its code: {}",
+		all[0].stdout.contains(
+			"\n             Sim supply voltage  12.3 V\n\
+				 \x20            record 01           06 03 02 10 01 E2 40 00 00 69 F6 00 03 70 0F A0\n\
+				 \x20                                7B 00\n"
+		),
+		"--details is data, under its code, in the freeze frame's key column: {}",
 		all[0].stdout
 	);
 

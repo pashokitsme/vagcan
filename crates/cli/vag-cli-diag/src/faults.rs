@@ -616,11 +616,14 @@ fn code_lines(row: &Row, width: usize) -> Vec<String> {
 	}];
 	lines.extend(wrapped.map(|line| format!("{indent}{line}")));
 	lines.push(format!("{indent}{}", facts(row)));
-	// The freeze frame under the facts, in its one rendering.
-	lines.extend(crate::freezeframe::render(&row.freeze, &indent, Some(width)).lines().map(str::to_string));
-	for (record, bytes) in &row.records {
-		lines.push(format!("{indent}record {record:02X}  {}", crate::render::hex_spaced(bytes)));
-	}
+	// The freeze frame under the facts, in its one rendering; `--details`' records after it,
+	// in the same key column.
+	let mut block = row.freeze.clone();
+	block.extend(row.records.iter().map(|(record, bytes)| crate::freezeframe::Line {
+		key: format!("record {record:02X}"),
+		value: crate::render::hex_spaced(bytes),
+	}));
+	lines.extend(crate::freezeframe::render(&block, &indent, Some(width)).lines().map(str::to_string));
 	lines
 }
 
@@ -1529,7 +1532,7 @@ mod tests {
 		};
 		assert!(render_units(&[detailed], Some(80)).ends_with("             stored\n             record 02  01 AB\n"));
 		// The freeze frame (#47) goes under the code's facts, in `freezeframe::render`'s
-		// column, and before `--details`' records.
+		// column, and `--details`' records after it in the same column.
 		let line = |key: &str, value: &str| crate::freezeframe::Line {
 			key: key.into(),
 			value: value.into(),
@@ -1545,7 +1548,7 @@ mod tests {
 				"             stored\n\
 				 \x20            priority      6\n\
 				 \x20            Engine speed  1000 /min\n\
-				 \x20            record 70  0F A0\n"
+				 \x20            record 70     0F A0\n"
 			),
 			"{listing}"
 		);

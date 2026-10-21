@@ -451,6 +451,14 @@ pub trait Progress {
 	fn unit(&mut self, at: usize, of: usize, name: &str) {
 		let _ = (at, of, name);
 	}
+	/// At `-vv`, the identity a unit's list was looked up by and what the lookup came to,
+	/// said before its [`Progress::done`]. By default one wire line of its own.
+	fn looked_up(&mut self, odx: &str, version: &str, project: Option<&str>, outcome: &str) {
+		crate::wire!(
+			"vcds registry: {odx} {version}{}: {outcome}",
+			project.map(|p| format!(" ({p})")).unwrap_or_default()
+		);
+	}
 	/// A handle the units' lookups, running side by side, can count through on
 	/// the line the last [`Progress::waiting`] drew. `None` draws no count.
 	fn reporter(&self) -> Option<crate::progress::Reporter> {
@@ -827,11 +835,7 @@ pub fn read(root: &Path, stores: &crate::project::Stores, units: &BTreeSet<(Stri
 		let (odx, version) = (*odx, *version);
 		// The list is found already; this numbers the unit's line.
 		progress.unit(at, lookups.len(), odx);
-		crate::wire!(
-			"vcds registry: {odx} {version}{}: {}",
-			car.as_deref().map(|p| format!(" ({p})")).unwrap_or_default(),
-			outcome(&found)
-		);
+		progress.looked_up(odx, version, car.as_deref(), outcome(&found));
 		log.units.push(Tried {
 			odx_name: odx.clone(),
 			odx_version: version.clone(),

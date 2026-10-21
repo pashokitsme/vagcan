@@ -145,12 +145,15 @@ impl std::fmt::Display for NoLabelData {
 	}
 }
 
+/// What `setup` is given, as every hint that names it writes it — `faults`' and `setup`'s.
+pub const SOURCE_PLACEHOLDER: &str = "<ODIS project or VCDS installation>";
+
 /// What to type when the label data is not here: the `help:` lines of every
 /// [`NoLabelData`]. One copy, and the only copy — a second one anywhere is the bug
 /// this type exists to have already fixed. What `setup` does and what to keep
 /// afterwards is `vagcan setup --help`'s.
 pub const HELP: [&str; 2] = [
-	"run `vagcan setup <ODIS project folder | VCDS installation>` (offline)",
+	"run `vagcan setup <ODIS project or VCDS installation>` (offline)",
 	"with no path, `vagcan setup` asks which and can fetch VCDS; see `vagcan setup --help`",
 ];
 
@@ -283,7 +286,7 @@ mod tests {
 				HELP[0], HELP[1]
 			)
 		);
-		assert!(m.contains("vagcan setup <ODIS project folder | VCDS installation>"), "{m}");
+		assert!(m.contains("vagcan setup <ODIS project or VCDS installation>"), "{m}");
 		assert!(m.contains("can fetch VCDS"), "no VCDS install is a case, not an oversight:\n{m}");
 		// The one thing it must never do is send a reader down the other path.
 		assert!(!m.contains("calibrate"), "a label shortage is not fixed by driving:\n{m}");
@@ -323,7 +326,7 @@ mod tests {
 			crate::report::Colour::Never,
 		);
 		let catalog = no_catalog("This car", Path::new("/d"));
-		assert!(label.contains("vagcan setup <ODIS project folder"));
+		assert!(label.contains("vagcan setup <ODIS project or VCDS"));
 		assert!(!label.contains(scalings_path()), "{label}");
 		assert!(!label.contains("calibrate"), "{label}");
 		assert!(catalog.contains(scalings_path()), "{catalog}");
@@ -340,7 +343,7 @@ mod tests {
 		// Where setup puts it, and what to keep afterwards, is `setup --help`'s now
 		// (`vag-cli`'s `setup_help_says_what_lands_where_and_what_to_keep`).
 		let m = no_fault_labels(Path::new("/home/x/.vagcan/rod"));
-		assert!(m.contains("vagcan setup <ODIS project folder | VCDS installation>"), "{m}");
+		assert!(m.contains("vagcan setup <ODIS project or VCDS installation>"), "{m}");
 		assert!(m.contains("/home/x/.vagcan/rod"), "the reader must see where it looked:\n{m}");
 		// The one thing it must never do is send a reader driving.
 		assert!(!m.contains("calibrate"), "a missing name is not fixed by a drive:\n{m}");
@@ -418,7 +421,7 @@ mod tests {
 		// the tool is heading for — then a VCDS installation, which it can fetch.
 		// Each with the argument spelled as what to type, since a bare
 		// `vagcan setup` under "point it at an ODIS project" was no instruction.
-		let odis = first.find("ODIS project folder").expect(&first);
+		let odis = first.find("ODIS project").expect(&first);
 		let vcds = first.find("VCDS installation").expect(&first);
 		assert!(odis < vcds, "ODIS comes first:\n{first}");
 		assert!(first.contains("can fetch VCDS"), "{first}");
