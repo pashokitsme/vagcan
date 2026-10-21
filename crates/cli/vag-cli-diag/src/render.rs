@@ -4,44 +4,76 @@
 //! Each renderer returns the data (stdout) apart from its notes (stderr, at a level):
 //! [`vag_cli_core::verbosity`] has the split.
 
-use vag_cli_core::marks::SEP;
-use vag_cli_core::table::{Table, pairs};
+use vag_cli_core::marks::{SEP, facts};
+use vag_cli_core::table::{Table, section};
 use vag_data_labels::obd::Unconverted;
 use vag_uds_client::{EcuIdentity, Reading};
 
-/// Placeholder for an identification field the ECU did not return.
-const MISSING: &str = "—";
+/// One unit of the `vagcan info` card: which section it is, how it is addressed, and what
+/// it answered.
+pub struct InfoUnit<'a> {
+	/// The section's title: `ENGINE`, `GEARBOX`.
+	pub title: &'a str,
+	/// Its short number, `01`.
+	pub label: String,
+	/// Its request id, `7E0`.
+	pub request: u16,
+	pub identity: &'a EcuIdentity,
+	/// The ODX file it names for itself (F19E).
+	pub odx: Option<String>,
+}
 
-/// One identification field, taken out of what a unit answered.
-type Pick = fn(&EcuIdentity) -> Option<String>;
-
-/// The `vagcan info` report: the VIN, then one column each for the engine (01) and the
-/// gearbox (02), a row per identification field.
+/// The `vagcan info` card, `gh pr view`'s shape: the car on the first line, a meta line of
+/// facts, then a section per unit with what it said indented under it. A unit that answered
+/// nothing says so in its section.
 ///
 /// ```text
-/// vin  XW8AD4NE9JH008917
+/// XW8AD4NE9JH008917 · SK37
+/// 15 control units · read 2026-10-21 14:02
 ///
-///            engine 01     gearbox 02
-/// part       8V0906264H    0CW300041G
+/// ENGINE  01 · 7E0
+///   1.8l R4 TFSI
+///   part 8V0906264H · software 0008 · EV_ECM18TFS0208V0906264H
 /// ```
-pub fn render_info(vin: Option<&str>, engine: &EcuIdentity, gearbox: &EcuIdentity) -> String {
-	let mut out = pairs(&[("vin", vin.unwrap_or(MISSING).to_string())]);
+pub fn render_info(vin: Option<&str>, project: Option<&str>, meta: &str, units: &[InfoUnit<'_>]) -> String {
+	let mut out = facts([vin.unwrap_or("VIN not read"), project.unwrap_or_default()]);
 	out.push('\n');
-	let mut table = Table::new(&["", "engine 01", "gearbox 02"]);
-	let field = |id: &EcuIdentity, pick: fn(&EcuIdentity) -> Option<String>| pick(id).unwrap_or_else(|| MISSING.to_string());
-	let rows: [(&str, Pick); 6] = [
-		("part", |id| id.part_number.clone()),
-		("hardware", |id| id.hw_number.clone()),
-		("software", |id| id.sw_version.clone()),
-		("component", |id| id.component.clone()),
-		("serial", |id| id.serial.clone()),
-		("coding", |id| id.coding.as_deref().map(hex_spaced)),
-	];
-	for (name, pick) in rows {
-		table.row(vec![name.to_string(), field(engine, pick), field(gearbox, pick)]);
+	if !meta.is_empty() {
+		out.push_str(meta);
+		out.push('\n');
 	}
-	out.push_str(&table.render(None));
+	for unit in units {
+		out.push('\n');
+		let title = format!("{}  {}", unit.title, facts([unit.label.clone(), format!("{:03X}", unit.request)]));
+		out.push_str(&section(&title, info_lines(unit)));
+	}
 	out
+}
+
+/// What one unit said, as the lines of its section: its own name, then its numbers on one
+/// line, then its serial and coding on another; `no answer` when it said nothing.
+fn info_lines(unit: &InfoUnit<'_>) -> Vec<String> {
+	let id = unit.identity;
+	if id.is_empty() && unit.odx.is_none() {
+		return vec!["no answer".to_string()];
+	}
+	let tagged = |tag: &str, value: &Option<String>| value.as_ref().map(|v| format!("{tag} {v}")).unwrap_or_default();
+	let mut lines = Vec::new();
+	if let Some(component) = &id.component {
+		lines.push(component.clone());
+	}
+	lines.push(facts([
+		tagged("part", &id.part_number),
+		tagged("hardware", &id.hw_number),
+		tagged("software", &id.sw_version),
+		unit.odx.clone().unwrap_or_default(),
+	]));
+	lines.push(facts([
+		tagged("serial", &id.serial),
+		tagged("coding", &id.coding.as_deref().map(hex_spaced)),
+	]));
+	lines.retain(|line| !line.is_empty());
+	lines
 }
 
 /// What is said when a control unit answers nothing at all, on stderr: what failed and
@@ -73,6 +105,36 @@ pub fn nothing_answered() -> Vec<(u8, String)> {
 pub fn say_nothing_answered() {
 	for (level, line) in nothing_answered() {
 		vag_cli_core::verbosity::say(level, &line);
+	}
+}
+
+/// What is said, on stderr, when a unit answered every identifier asked of it with a
+/// refusal: it is on the bus and talking, so nothing about the wiring is in question — it
+/// serves none of them.
+pub fn refused_all(unit_label: &str, asked: usize, what: &str) -> Vec<(u8, String)> {
+	vec![
+		(0, format!("unit {unit_label} refused all {asked} {what}")),
+		(
+			1,
+			"it answered each one with a negative response: the unit is there, and serves none of them".to_string(),
+		),
+	]
+}
+
+/// What is said, on stderr, when a unit gave nothing back to the first requests of a read
+/// and the rest were not asked ([`crate::anomaly::Monitor::absent`]).
+pub fn absent(unit_label: &str, silences: usize) -> Vec<(u8, String)> {
+	vec![
+		(0, format!("unit {unit_label} does not answer")),
+		(0, "  (use \"vagcan units --identify\" to see which units answer)".to_string()),
+		(1, format!("its first {silences} requests went unanswered, so the rest were not asked")),
+	]
+}
+
+/// Lines with their levels, said.
+pub fn say_all(lines: &[(u8, String)]) {
+	for (level, line) in lines {
+		vag_cli_core::verbosity::say(*level, line);
 	}
 }
 
@@ -127,14 +189,15 @@ pub enum SensorLine {
 
 /// The whole `vagcan sensors` report: the data, and the notes for `-v`.
 ///
-/// One table, converted rows first: `did`, `value` (the physical unit in it: `40.00 °C` —
-/// `unit` is the control unit everywhere in this tool), `name`. An identifier whose
-/// bytes the tool refuses to interpret is a row too, its bytes and `raw` as the value and
-/// the reason in short where the name would be — the J1979 name would assert the
-/// very thing in doubt. A summary line closes it. Why such rows are not converted, in
-/// words, is a note.
-pub fn render_sensors(unit_label: &str, lines: &[SensorLine]) -> (String, Vec<String>) {
-	let mut table = Table::new(&["did", "value", "name"]).right(1);
+/// A list, `gh pr list`'s shape: a summary line — how many of the `asked` parameters the
+/// unit answered, how many of those were converted — then one table, converted rows first:
+/// `DID`, `VALUE` (the physical unit in it: `40.00 °C` — `unit` is the control unit
+/// everywhere in this tool), `NAME`. An identifier whose bytes the tool refuses to interpret
+/// is a row too, its bytes and `raw` as the value and the reason in short where the name
+/// would be — the J1979 name would assert the very thing in doubt. Why such rows are not
+/// converted, in words, is a note.
+pub fn render_sensors(unit_label: &str, asked: usize, lines: &[SensorLine]) -> (String, Vec<String>) {
+	let mut table = Table::new(&["DID", "VALUE", "NAME"]).right(1);
 	// Every unit padded to the widest, `raw` included, so the numbers right-align on their
 	// last digit whatever unit follows them: `40.00 °C  ` over `1000.00 /min`.
 	let unit_width = lines
@@ -187,9 +250,11 @@ pub fn render_sensors(unit_label: &str, lines: &[SensorLine]) -> (String, Vec<St
 	}) {
 		notes.push("a row answered at another width than SAE J1979 defines is not that parameter — bytes only".to_string());
 	}
-	let mut out = table.render(vag_cli_core::table::terminal_width());
-	out.push_str(&format!("\n{converted} of {} converted{SEP}unit {unit_label}\n", lines.len()));
-	(out, notes)
+	let summary = format!(
+		"{} of {asked} standard parameters answered by unit {unit_label}{SEP}{converted} converted",
+		lines.len()
+	);
+	(vag_cli_core::table::list(&summary, &table, vag_cli_core::table::terminal_width()), notes)
 }
 
 #[cfg(test)]
@@ -218,28 +283,69 @@ mod tests {
 			serial: Some("CU501702277773".to_string()),
 			..identity("0CW300041G")
 		};
-		let text = render_info(Some("XW8AD4NE9JH008917"), &engine, &gearbox);
+		let units = [
+			InfoUnit {
+				title: "ENGINE",
+				label: "01".into(),
+				request: 0x7E0,
+				identity: &engine,
+				odx: Some("EV_ECM18TFS0208V0906264H".into()),
+			},
+			InfoUnit {
+				title: "GEARBOX",
+				label: "02".into(),
+				request: 0x7E1,
+				identity: &gearbox,
+				odx: None,
+			},
+		];
+		let text = render_info(
+			Some("XW8AD4NE9JH008917"),
+			Some("SK37"),
+			"15 control units · read 2026-10-21 14:02",
+			&units,
+		);
 		assert_eq!(
 			text,
-			"vin  XW8AD4NE9JH008917\n\
+			"XW8AD4NE9JH008917 · SK37\n\
+			 15 control units · read 2026-10-21 14:02\n\
 			 \n\
-			 \x20          engine 01     gearbox 02\n\
-			 part       8V0906264H    0CW300041G\n\
-			 hardware   06K907425B    06K907425B\n\
-			 software   0005          0005\n\
-			 component  1.8l R4 TFSI  GSG DQ200G2_M\n\
-			 serial     —             CU501702277773\n\
-			 coding     0C 25         0C 25\n"
+			 ENGINE  01 · 7E0\n\
+			 \x20 1.8l R4 TFSI\n\
+			 \x20 part 8V0906264H · hardware 06K907425B · software 0005 · EV_ECM18TFS0208V0906264H\n\
+			 \x20 coding 0C 25\n\
+			 \n\
+			 GEARBOX  02 · 7E1\n\
+			 \x20 GSG DQ200G2_M\n\
+			 \x20 part 0CW300041G · hardware 06K907425B · software 0005\n\
+			 \x20 serial CU501702277773 · coding 0C 25\n"
 		);
 	}
 
 	#[test]
-	fn a_missing_field_reads_as_absent_not_as_empty() {
-		let mut engine = identity("8V0906264H");
-		engine.serial = None;
-		let text = render_info(None, &engine, &engine);
-		assert!(text.starts_with("vin  —\n"), "{text}");
-		assert!(text.contains("serial     —"), "an absent field is marked, not blank: {text}");
+	fn a_unit_that_answered_nothing_says_so_in_its_section() {
+		let engine = identity("8V0906264H");
+		let none = EcuIdentity::default();
+		let units = [
+			InfoUnit {
+				title: "ENGINE",
+				label: "01".into(),
+				request: 0x7E0,
+				identity: &engine,
+				odx: None,
+			},
+			InfoUnit {
+				title: "GEARBOX",
+				label: "02".into(),
+				request: 0x7E1,
+				identity: &none,
+				odx: None,
+			},
+		];
+		let text = render_info(None, None, "read 2026-10-21 14:02", &units);
+		assert!(text.starts_with("VIN not read\nread 2026-10-21 14:02\n\n"), "{text}");
+		assert!(text.ends_with("GEARBOX  02 · 7E1\n  no answer\n"), "{text}");
+		assert!(!text.contains('—'), "no column of dashes: {text}");
 	}
 
 	fn reading(name: &str, unit: &str, value: Option<f64>) -> Reading {
@@ -297,14 +403,14 @@ mod tests {
 				why: Unconverted::NotAnEmissionsUnit,
 			},
 		];
-		let (text, notes) = render_sensors("746", &lines);
+		let (text, notes) = render_sensors("746", 32, &lines);
 		assert_eq!(
 			text,
-			"did    value  name\n\
-			 F405  57 raw  not J1979: unit outside 7E0–7E7\n\
-			 F40C  00 raw  not J1979: unit outside 7E0–7E7\n\
+			"2 of 32 standard parameters answered by unit 746 · 0 converted\n\
 			 \n\
-			 0 of 2 converted · unit 746\n"
+			 DID    VALUE  NAME\n\
+			 F405  57 raw  not J1979: unit outside 7E0–7E7\n\
+			 F40C  00 raw  not J1979: unit outside 7E0–7E7\n"
 		);
 		// The reason in words is a note, not a line of the data.
 		assert!(notes.iter().any(|n| n.contains("ISO 15765-4")), "{notes:?}");
@@ -330,14 +436,14 @@ mod tests {
 				why: Unconverted::WrongWidth { expected: 1, got: 2 },
 			},
 		];
-		let (text, notes) = render_sensors("02", &lines);
+		let (text, notes) = render_sensors("02", 32, &lines);
 		assert_eq!(
 			text,
-			"did       value  name\n\
-			 F405  89.00 °C   Coolant temperature\n\
-			 F40D  9C 02 raw  not J1979: 2 bytes, standard 1\n\
+			"2 of 32 standard parameters answered by unit 02 · 1 converted\n\
 			 \n\
-			 1 of 2 converted · unit 02\n"
+			 DID       VALUE  NAME\n\
+			 F405  89.00 °C   Coolant temperature\n\
+			 F40D  9C 02 raw  not J1979: 2 bytes, standard 1\n"
 		);
 		assert_eq!(notes.len(), 1, "{notes:?}");
 		// The first byte read as km/h would be 156. Never printed.

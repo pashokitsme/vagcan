@@ -620,47 +620,53 @@ pub fn probed(mut found: Vec<AdapterInfo>, mut probe: impl FnMut(&str) -> BoardA
 	found
 }
 
-/// The device list, as `vagcan devices` prints it on stdout: one row per serial device,
-/// recognised CAN adapters first. `adapter` is whether a car command can use it.
+/// The device list, as `vagcan devices` prints it on stdout: `gh pr list`'s shape, a count,
+/// then one row per serial device, recognised CAN adapters first, each marked `✓` when a car
+/// command can use it and `✗` when it cannot.
 ///
 /// Serial devices only: `devices` never scans Bluetooth ([`list_notes`] says how to).
 pub fn render_list(found: &[AdapterInfo]) -> String {
-	if found.is_empty() {
-		return "no serial devices
-"
-		.to_string();
-	}
-	let mut table = crate::table::Table::new(&["path", "adapter", "device"]);
+	let adapters = found.iter().filter(|a| a.known).count();
+	let summary = crate::marks::facts([
+		format!("{} serial {}", found.len(), crate::table::plural(found.len(), "device")),
+		match found.is_empty() {
+			true => String::new(),
+			false => format!("{adapters} CAN {}", crate::table::plural(adapters, "adapter")),
+		},
+	]);
+	let mut table = crate::table::Table::new(&["", "PATH", "DEVICE"]);
 	for a in found {
 		table.row(vec![
+			if a.known { crate::marks::OK } else { crate::marks::FAIL }.to_string(),
 			a.path.clone(),
-			if a.known { "yes" } else { "no" }.to_string(),
 			a.description.clone(),
 		]);
 	}
-	table.render(crate::table::terminal_width())
+	crate::table::list(&summary, &table, crate::table::terminal_width())
 }
 
 /// What `devices` says on stderr beside the list: at level 0 only what to do when there is
 /// nothing to list, the rest at `-v`.
 pub fn list_notes(found: &[AdapterInfo]) -> Vec<(u8, String)> {
+	// Hints in git's shape, each in parentheses under the listing it belongs to.
+	let hint = |text: &str| format!("  ({text})");
 	let mut notes = Vec::new();
 	if found.is_empty() {
 		notes.push((
 			0,
-			"an adapter that is plugged in but not listed: unplug and replug it (USB can enumerate it with no serial node)".to_string(),
+			hint("plugged in but not listed? unplug it and plug it back in: USB can enumerate it with no serial node"),
 		));
 	} else {
-		notes.push((1, "--device <path> picks one; with one adapter it is used without it".to_string()));
+		notes.push((1, hint("use \"--device <path>\" to pick one; with one adapter it is used without it")));
 		if found.iter().any(|a| a.board) {
 			notes.push((
 				1,
-				"dash board on its dash image: read through it, its panel keeps running; --slcan makes it a plain adapter".to_string(),
+				hint("a dash board on its dash image is read through, its panel running; \"--slcan\" makes it a plain adapter"),
 			));
 		}
 	}
 	// With nothing on USB the way over Bluetooth is the next thing to try, said at once.
-	notes.push((if found.is_empty() { 0 } else { 1 }, BLE_COMMAND_HINT.to_string()));
+	notes.push((if found.is_empty() { 0 } else { 1 }, hint(BLE_COMMAND_HINT)));
 	notes
 }
 
@@ -940,7 +946,7 @@ mod tests {
 		let through = render_list(&probed(vec![board()], answering(dash())));
 		assert_eq!(
 			through,
-			format!("path                  adapter  device\n{BOARD}  yes      dash board 0.1.0\n"),
+			format!("1 serial device · 1 CAN adapter\n\n   PATH                  DEVICE\n✓  {BOARD}  dash board 0.1.0\n"),
 			"{through}"
 		);
 		let named = BoardAnswer::Dash {
@@ -948,13 +954,13 @@ mod tests {
 			plan: Some(0x7fa5_728f_35ff_8bcd),
 		};
 		let named = render_list(&probed(vec![board()], answering(named)));
-		assert!(named.contains("yes      dash board 0.1.0  plan 7fa5728f35ff8bcd\n"), "{named}");
+		assert!(named.contains("  dash board 0.1.0  plan 7fa5728f35ff8bcd\n"), "{named}");
 
 		let slcan = render_list(&probed(vec![board()], answering(BoardAnswer::Slcan)));
-		assert!(slcan.contains(&format!("{BOARD}  yes      dash board, slcan image")), "{slcan}");
+		assert!(slcan.contains(&format!("✓  {BOARD}  dash board, slcan image")), "{slcan}");
 
 		let silent = render_list(&probed(vec![board()], answering(BoardAnswer::Silent)));
-		assert!(silent.contains(&format!("{BOARD}  no       dash board, no answer")), "{silent}");
+		assert!(silent.contains(&format!("✗  {BOARD}  dash board, no answer")), "{silent}");
 		assert!(silent.contains("reflash"), "{silent}");
 	}
 
@@ -985,9 +991,11 @@ mod tests {
 		];
 		assert_eq!(
 			render_list(&found),
-			"path               adapter  device\n\
-			 /dev/cu.usbmodem1  yes      CANable 2.0 (slcan)\n\
-			 /dev/cu.usbserial  no       USB 0403:6001\n"
+			"2 serial devices · 1 CAN adapter\n\
+			 \n\
+			 \x20  PATH               DEVICE\n\
+			 ✓  /dev/cu.usbmodem1  CANable 2.0 (slcan)\n\
+			 ✗  /dev/cu.usbserial  USB 0403:6001\n"
 		);
 		// How to pass one is a note, not a line of the list.
 		let notes = list_notes(&found);
@@ -999,9 +1007,9 @@ mod tests {
 	fn an_empty_listing_explains_the_enumeration_trap() {
 		// The failure that actually happened on the car: the adapter present on
 		// USB, no serial node, every open failing with "No such file".
-		assert_eq!(render_list(&[]), "no serial devices\n");
+		assert_eq!(render_list(&[]), "0 serial devices\n");
 		let notes = list_notes(&[]);
-		assert!(notes.iter().any(|(level, n)| *level == 0 && n.contains("unplug and replug")), "{notes:?}");
+		assert!(notes.iter().any(|(level, n)| *level == 0 && n.contains("plug it back in")), "{notes:?}");
 	}
 
 	// --- the board over BLE ---
@@ -1215,7 +1223,7 @@ mod tests {
 			assert!(!render_list(&found).contains("Bluetooth"));
 			let notes = list_notes(&found);
 			assert!(
-				notes.contains(&(if found.is_empty() { 0 } else { 1 }, BLE_COMMAND_HINT.to_string())),
+				notes.contains(&(if found.is_empty() { 0 } else { 1 }, format!("  ({BLE_COMMAND_HINT})"))),
 				"{notes:?}"
 			);
 		}

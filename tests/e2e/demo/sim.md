@@ -64,7 +64,7 @@ status = 9
 $ vagcan units --identify
 ? success
 ...
-5 asked · 4 answered · 2 on the gateway's list
+✓  02    7E1  SIM300000B  SIM GEARBOX
 
 $ vagcan dev sim --from recording.csv --vin SIMVIN00000000001
 ? success

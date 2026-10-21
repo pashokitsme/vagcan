@@ -108,7 +108,7 @@ fn replay(
 	let mut said: Vec<(u8, String)> = vec![(
 		verbosity::NOTES,
 		format!(
-			"recording  {log}: {} {}, {:.2}–{:.2} s; plan {:016x}, {read} of its {} {} in it",
+			"read {log}: {} {}, {:.2}–{:.2} s; plan {:016x}, {read} of its {} {} in it",
 			recording.samples.len(),
 			crate::render::plural(recording.samples.len(), "row"),
 			seconds(start),
@@ -361,7 +361,7 @@ mod tests {
 		);
 		assert!(
 			runs[1].stderr.starts_with(&format!(
-				"recording  drive.csv: 4 rows, 0.00–3.00 s; plan {:016x}, 1 of its 1 channel in it\n",
+				"read drive.csv: 4 rows, 0.00–3.00 s; plan {:016x}, 1 of its 1 channel in it\n",
 				vag_cli_core::dash::plan_id(&plan)
 			)),
 			"{}",

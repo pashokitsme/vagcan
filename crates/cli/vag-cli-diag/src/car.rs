@@ -33,6 +33,16 @@ pub fn unit_number(number: Option<u8>) -> String {
 	number.map(|n| format!("{n:02X}")).unwrap_or_else(|| "--".to_string())
 }
 
+/// A unit as a line about it names it: its short number and the request id it was asked
+/// on — `09 (70E)` — or the id alone when it has no short number.
+fn both_names(unit: UnitAddress) -> String {
+	let request = format!("{:03X}", unit.request);
+	match unit.label() {
+		label if label == request => request,
+		label => format!("{label} ({request})"),
+	}
+}
+
 /// Address one control unit over UDS.
 fn address_unit<L: UnitLink>(link: L, unit: UnitAddress) -> AsyncUdsClient<L::Channel> {
 	AsyncUdsClient::new(link.to_unit(
@@ -41,28 +51,78 @@ fn address_unit<L: UnitLink>(link: L, unit: UnitAddress) -> AsyncUdsClient<L::Ch
 	))
 }
 
+/// The ODX file a unit names for itself (F19E), trimmed of VW's padding; `None` when it
+/// does not answer.
+async fn read_odx<T: vag_uds_transport::AsyncIsoTpTransport>(uds: &mut AsyncUdsClient<T>) -> Option<String> {
+	const ODX_FILE_NAME: u16 = 0xF19E;
+	let data = uds.read_data_by_identifier(ODX_FILE_NAME).await.ok()?;
+	let name = String::from_utf8_lossy(&data).trim_end_matches(['\0', ' ']).to_string();
+	(!name.is_empty()).then_some(name)
+}
+
 /// Identify the car (see the `Info` subcommand docs): the VIN, and the engine's and the
-/// gearbox's identification.
+/// gearbox's identification, as a card (CLAUDE.md, "Command output").
 pub async fn info<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>) -> Result<()> {
-	// One link, two control units: read the engine, then release the link and
-	// address the gearbox rather than re-opening it.
+	use vag_cli_core::units as walk;
+
+	// One link: the gateway's list for the count of units, then the engine and the
+	// gearbox, each addressed in turn on the link the one before released.
+	let mut spinner = progress::Line::new();
+	let (backend, listed) = walk::installed(open().await?, &mut spinner).await;
+	spinner.finish();
+
 	let engine_unit = vag_uds_client::address::parse("01").expect("01 is a unit number");
-	let mut engine_uds = address_unit(open().await?, engine_unit);
+	let mut engine_uds = address_unit(backend, engine_unit);
 	let engine = engine_uds.read_identity().await;
+	let engine_odx = read_odx(&mut engine_uds).await;
 
 	let gearbox_unit = vag_uds_client::address::parse("02").expect("02 is a unit number");
 	let mut gearbox_uds = address_unit(L::release(engine_uds.into_transport()), gearbox_unit);
 	let gearbox = gearbox_uds.read_identity().await;
+	let gearbox_odx = read_odx(&mut gearbox_uds).await;
 
-	if engine.is_empty() && gearbox.is_empty() {
+	if engine.is_empty() && gearbox.is_empty() && listed.is_err() {
 		render::say_nothing_answered();
 		return Ok(());
 	}
-	out!("{}", render::render_info(engine.vin.as_deref(), &engine, &gearbox));
-	note!(
-		"next: {}",
-		facts(["`vagcan units` (the other units)", "`faults`", "`sensors`", "`watch`"])
-	);
+	// The units the gateway lists, and the powertrain, which it never does: it lives on the
+	// other id block.
+	let count = match &listed {
+		Ok(ids) => {
+			let mut all = ids.clone();
+			for (unit, said) in [(engine_unit, &engine), (gearbox_unit, &gearbox)] {
+				if !said.is_empty() && !all.contains(&unit.request) {
+					all.push(unit.request);
+				}
+			}
+			format!("{} control {}", all.len(), render::plural(all.len(), "unit"))
+		}
+		Err(e) => {
+			note!("the gateway gave no list of control units: {e}");
+			String::new()
+		}
+	};
+	let project = vag_cli_core::project::selected().ok().flatten().map(|p| p.id);
+	let meta = facts([count, format!("read {}", chrono::Local::now().format("%Y-%m-%d %H:%M"))]);
+	let units = [
+		render::InfoUnit {
+			title: "ENGINE",
+			label: engine_unit.label(),
+			request: engine_unit.request,
+			identity: &engine,
+			odx: engine_odx,
+		},
+		render::InfoUnit {
+			title: "GEARBOX",
+			label: gearbox_unit.label(),
+			request: gearbox_unit.request,
+			identity: &gearbox,
+			odx: gearbox_odx,
+		},
+	];
+	let vin = engine.vin.as_deref().or(gearbox.vin.as_deref());
+	out!("{}", render::render_info(vin, project.as_deref(), &meta, &units));
+	note!("  (use \"vagcan units\" for the other units, \"vagcan faults\" for their fault codes)");
 	Ok(())
 }
 
@@ -177,15 +237,21 @@ pub async fn sensors<L: UnitLink>(open: impl AsyncFnOnce(Reach) -> Result<L>, un
 	}
 
 	if lines.is_empty() {
-		render::say_nothing_answered();
+		// It answered, every time, with a no: the wiring is not in question.
+		if stats.refused > 0 {
+			render::say_all(&render::refused_all(&both_names(unit), PIDS.len(), "standard parameters"));
+		} else if monitor.absent() {
+			render::say_all(&render::absent(&both_names(unit), monitor.silences()));
+		} else {
+			render::say_nothing_answered();
+		}
 		return Ok(());
 	}
-	let (data, notes) = render::render_sensors(&unit.label(), &lines);
+	let (data, notes) = render::render_sensors(&unit.label(), PIDS.len(), &lines);
 	out!("{data}");
 	note!(
-		"{} standard parameters asked, {} not answered or refused",
-		PIDS.len(),
-		stats.refused + stats.failed
+		"{}",
+		facts([format!("{} refused", stats.refused), format!("{} not answered", stats.failed)])
 	);
 	for line in notes {
 		note!("{line}");
@@ -231,19 +297,23 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 				// each number *is*. Which id answers it is learned below, from the
 				// car.
 				labels::install_unit_numbers(&db);
-				say!("names    {} label files", project.id);
+				note!("unit names from the label files of {}", project.id);
 				Some(db)
 			}
 			Err(e) if identify => return Err(e),
 			// The plain listing only borrows names from them, and a list of ids is
 			// still the answer without.
 			Err(e) => {
-				say!("names    none — the label files of {} would not open: {e:#}", project.id);
+				say!(
+					"warning: the units are not named: the label files of {} would not open: {e:#}",
+					project.id
+				);
 				None
 			}
 		},
 		None => {
-			say!("names    none — `vagcan setup` names the units");
+			say!("note: the units are not named: no label data on this machine");
+			say!("  (use \"vagcan setup\" to read it)");
 			None
 		}
 	};
@@ -266,6 +336,7 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 	if !identify {
 		if ids.is_empty() {
 			say!("the gateway listed no control units");
+			say!("  (use \"vagcan units --identify\" to ask the gateway and the powertrain themselves)");
 			return Ok(());
 		}
 		// Names from this machine only — nothing more is asked of the car. A record
@@ -286,7 +357,7 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 		);
 		// The record is the one source here that may not be this car's: say whose it is.
 		if let Some(car) = record {
-			note!("names    and what {}'s units said to `vagcan units --identify`", car.vin);
+			note!("part numbers and names from what {}'s units said to `vagcan units --identify`", car.vin);
 		}
 		return Ok(());
 	}
@@ -316,24 +387,27 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 	// An empty list is not a stop either: the gateway and the powertrain are
 	// asked, recorded and printed, as `watch` does in the same state.
 	match (&unlisted, ids.is_empty()) {
-		(Some(cause), _) => say!("the gateway gave no list of control units ({cause}): only the gateway and the powertrain were asked"),
-		(None, true) => say!("the gateway listed no control units: only the gateway and the powertrain were asked"),
+		(Some(cause), _) => say!("warning: the gateway gave no list of control units ({cause}): only the gateway and the powertrain were asked"),
+		(None, true) => say!("warning: the gateway listed no control units: only the gateway and the powertrain were asked"),
 		(None, false) => {}
 	}
-	let mut table = vag_cli_core::table::Table::new(&["unit", "id", "part", "component", "name"]);
+	let mut table = vag_cli_core::table::Table::new(&["", "UNIT", "ID", "PART", "COMPONENT", "NAME"]);
 	let mut answered = 0usize;
 	let mut resolved = 0usize;
+	let mut rows = 0usize;
 	for id in &asked {
 		let id = *id;
 		if UnitAddress::from_request(id).is_none() {
-			note!("{id:03X}  skipped: no diagnostic address (700-795 or 7E0-7E7)");
+			note!("skipped {id:03X}: no diagnostic address (700-795 or 7E0-7E7)");
 			continue;
 		}
+		rows += 1;
 		let unit = found.iter().find(|u| u.request == id);
 		let part = unit.and_then(|u| u.part_number.clone()).unwrap_or_default();
 		let component = unit.and_then(|u| u.component.clone()).unwrap_or_default();
 		if part.is_empty() && component.is_empty() {
 			table.row(vec![
+				vag_cli_core::marks::FAIL.to_string(),
 				unit_number(vag_uds_client::address::short_number(id)),
 				format!("{id:03X}"),
 				String::new(),
@@ -364,11 +438,12 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 			})
 			.unwrap_or_default();
 		if !part.is_empty() && name.is_empty() && label_files.is_some() {
-			note!("{id:03X}  {part}: not in the label files");
+			note!("{id:03X} {part}: not in the label files");
 		}
 		// The number in force — the label files' and the car's, then the
 		// built-in fallback's — or nothing when nothing has paired one with it.
 		table.row(vec![
+			vag_cli_core::marks::OK.to_string(),
 			unit_number(vag_uds_client::address::short_number(id)),
 			format!("{id:03X}"),
 			part,
@@ -376,22 +451,23 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 			name,
 		]);
 	}
-	out!("{}", table.render(vag_cli_core::table::terminal_width()));
-	out!(
-		"\n{}\n",
-		facts([
-			format!("{} asked", asked.len()),
-			format!("{answered} answered"),
-			format!("{} on the gateway's list", ids.len()),
-			match &label_files_dir {
-				Some(_) => format!("{resolved} named"),
-				None => String::new(),
-			},
-		])
-	);
-	if let Some(vin) = &vin {
-		note!("vin    {vin}");
-	}
+	let summary = facts([
+		format!(
+			"{rows} control {} {}",
+			render::plural(rows, "unit"),
+			match &vin {
+				Some(vin) => format!("on {vin}"),
+				None => "asked".to_string(),
+			}
+		),
+		format!("{answered} answered"),
+		format!("{} on the gateway's list", ids.len()),
+		match &label_files_dir {
+			Some(_) => format!("{resolved} named"),
+			None => String::new(),
+		},
+	]);
+	out!("{}", vag_cli_core::table::list(&summary, &table, vag_cli_core::table::terminal_width()));
 	Ok(())
 }
 
@@ -411,8 +487,8 @@ pub fn record_of_these<'a>(listed: &[u16], cars: &'a [vag_cli_core::units::Recor
 	}
 }
 
-/// The plain `units` listing: a table of each request id, the short number it goes by, the
-/// part number recorded for it and a name, and a count.
+/// The plain `units` listing, `gh pr list`'s shape: a count, then a table of each request
+/// id, the short number it goes by, the part number recorded for it and a name.
 ///
 /// The name is, in order: what the label files call the part number the unit reported (with
 /// the number they give it), what they call its short number, and what the unit called itself
@@ -425,7 +501,7 @@ pub fn render_listing(
 	by_number: impl Fn(u8) -> Option<String>,
 	short: impl Fn(u16) -> Option<u8>,
 ) -> String {
-	let mut table = vag_cli_core::table::Table::new(&["unit", "id", "part", "name"]);
+	let mut table = vag_cli_core::table::Table::new(&["UNIT", "ID", "PART", "NAME"]);
 	for &id in ids {
 		let said = record.and_then(|units| units.iter().find(|u| u.request == id));
 		let part = said.and_then(|u| u.part_number.clone());
@@ -442,9 +518,8 @@ pub fn render_listing(
 			name.unwrap_or_default(),
 		]);
 	}
-	let mut out = table.render(vag_cli_core::table::terminal_width());
-	out.push_str(&format!("\n{} {}\n", ids.len(), render::plural(ids.len(), "unit")));
-	out
+	let summary = format!("{} control {} on the gateway's list", ids.len(), render::plural(ids.len(), "unit"));
+	vag_cli_core::table::list(&summary, &table, vag_cli_core::table::terminal_width())
 }
 
 /// Read one unit's whole identification block (`vagcan units --identify <unit>`).
@@ -487,7 +562,7 @@ pub async fn identification<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, 
 		monitor: &mut monitor,
 	};
 	note!("reading {} of unit {}", props::IDENT_RANGE, unit.label());
-	scan::scan_dids(&mut uds, &ranges, std::time::Duration::from_millis(2), 400, &mut guard, |hit| {
+	let stats = scan::scan_dids(&mut uds, &ranges, std::time::Duration::from_millis(2), 400, &mut guard, |hit| {
 		found.push(props::Property {
 			did: hit.did,
 			data: hit.data.clone(),
@@ -502,7 +577,17 @@ pub async fn identification<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, 
 	}
 
 	if found.is_empty() {
-		render::say_nothing_answered();
+		if monitor.absent() {
+			render::say_all(&render::absent(&both_names(unit), monitor.silences()));
+		} else if stats.refused > 0 {
+			render::say_all(&render::refused_all(
+				&unit.label(),
+				stats.asked,
+				"identifiers of its identification block",
+			));
+		} else {
+			render::say_nothing_answered();
+		}
 		return Ok(());
 	}
 
@@ -516,11 +601,13 @@ pub async fn identification<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, 
 			continue;
 		};
 		if let Some(items) = vag_data_labels::obd::decode_info_text(&data) {
-			info.push((did, format!("OBD-II 09: {name}"), items.join(", ")));
+			info.push((did, name.to_string(), items.join(", ")));
 		}
 	}
-	out!("{}", props::render(&unit.label(), &found, &info));
-	note!("{} identifiers answered of {}", found.len(), props::IDENT_RANGE);
+	out!(
+		"{}",
+		props::render(&unit, &found, &info, stats.asked, vag_cli_core::table::terminal_width())
+	);
 	Ok(())
 }
 
@@ -547,26 +634,26 @@ mod tests {
 		let listing = render_listing(&[0x7E0, 0x713, 0x70A], Some(&record), by_part, by_number, short);
 		assert_eq!(
 			listing,
-			"unit  id   part    name\n\
+			"3 control units on the gateway's list\n\
+			 \n\
+			 UNIT  ID   PART    NAME\n\
 			 01    7E0  PART-E  Engine by number\n\
 			 03    713  PART-B  Brakes by part\n\
-			 --    70A\n\
-			 \n\
-			 3 units\n"
+			 --    70A\n"
 		);
 		// No label files: what the units called themselves.
 		let listing = render_listing(&[0x7E0, 0x713], Some(&record), |_| None, |_| None, short);
 		assert_eq!(
 			listing,
-			"unit  id   part    name\n\
-			 01    7E0  PART-E  ENGINE SELF\n\
-			 --    713  PART-B  BRAKES SELF\n\
+			"2 control units on the gateway's list\n\
 			 \n\
-			 2 units\n"
+			 UNIT  ID   PART    NAME\n\
+			 01    7E0  PART-E  ENGINE SELF\n\
+			 --    713  PART-B  BRAKES SELF\n"
 		);
 		// Nothing on this machine: the ids, as before.
-		let listing = render_listing(&[0x7E0, 0x713], None, |_| None, |_| None, |_| None);
-		assert_eq!(listing, "unit  id   part  name\n--    7E0\n--    713\n\n2 units\n");
+		let listing = render_listing(&[0x7E0], None, |_| None, |_| None, |_| None);
+		assert_eq!(listing, "1 control unit on the gateway's list\n\nUNIT  ID   PART  NAME\n--    7E0\n");
 	}
 
 	#[test]

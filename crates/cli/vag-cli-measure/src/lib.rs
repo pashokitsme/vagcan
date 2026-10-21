@@ -3816,21 +3816,34 @@ mod tests {
 			notes,
 			"car file  none: the car gave no VIN to look one up by; no power without one, vagcan measure setup measures the car\n\
              mode      times, speeds and telemetry; --full adds power\n\
-             role                unit  part      did   name                        from\n\
-             speed               7E1   GBX00002  F40D  Vehicle speed               drive-proven row\n\
-             gear                7E1   GBX00002  3816  Selected gear               drive-proven row\n\
-             pedal               7E1   GBX00002  3804  Accelerator pedal position  drive-proven row\n\
-             selector            7E1   GBX00002  3809  Selector lever              drive-proven row\n\
-             input shaft speed   7E1   GBX00002  380A  Input shaft speed           drive-proven row\n\
-             output shaft speed  7E1   GBX00002  380B  Output shaft speed          drive-proven row\n\
-             cross-check speed   714   CLU00003  22D2  Road speed                  drive-proven row\n\
-             cross-check speed   7E0   ENG00001  F40D  Vehicle speed               SAE J1979 PID 0D\n\
-             engine speed        7E0   ENG00001  8302  Engine speed                drive-proven row\n\
-             boost actual        7E0   ENG00001  8234  Boost pressure, actual      drive-proven row\n\
-             boost specified     7E0   ENG00001  8233  Boost pressure, specified   drive-proven row\n\
-             air mass            7E0   ENG00001  F410  Mass air flow               SAE J1979 PID 10\n\
-             barometer           —     —         —     —                           read only under --full\n\
-             ambient             —     —         —     —                           read only under --full\n"
+             speed               7E1:F40D  Vehicle speed\n\
+             \x20                   GBX00002 · drive-proven row\n\
+             gear                7E1:3816  Selected gear\n\
+             \x20                   GBX00002 · drive-proven row\n\
+             pedal               7E1:3804  Accelerator pedal position\n\
+             \x20                   GBX00002 · drive-proven row\n\
+             selector            7E1:3809  Selector lever\n\
+             \x20                   GBX00002 · drive-proven row\n\
+             input shaft speed   7E1:380A  Input shaft speed\n\
+             \x20                   GBX00002 · drive-proven row\n\
+             output shaft speed  7E1:380B  Output shaft speed\n\
+             \x20                   GBX00002 · drive-proven row\n\
+             cross-check speed   714:22D2  Road speed\n\
+             \x20                   CLU00003 · drive-proven row\n\
+             cross-check speed   7E0:F40D  Vehicle speed\n\
+             \x20                   ENG00001 · SAE J1979 PID 0D\n\
+             engine speed        7E0:8302  Engine speed\n\
+             \x20                   ENG00001 · drive-proven row\n\
+             boost actual        7E0:8234  Boost pressure, actual\n\
+             \x20                   ENG00001 · drive-proven row\n\
+             boost specified     7E0:8233  Boost pressure, specified\n\
+             \x20                   ENG00001 · drive-proven row\n\
+             air mass            7E0:F410  Mass air flow\n\
+             \x20                   ENG00001 · SAE J1979 PID 10\n\
+             barometer           not read\n\
+             \x20                   read only under --full\n\
+             ambient             not read\n\
+             \x20                   read only under --full\n"
 		);
 		vag_cli_core::verbosity::assert_split("measure start-up", &at_each_level(&[], &prepared.said));
 	}
@@ -3864,7 +3877,7 @@ mod tests {
 			every_run,
 			[
 				"the car file is for XW8AD4NE9JH000123 and this car is XW8AD4NE9JH008917\n\
-                 run vagcan measure setup for this car, or pass --car with its own file",
+                 run `vagcan measure setup` for this car, or pass `--car` with its own file",
 				"12 channels on 3 control units · timing from 7E1:F40D · car file none",
 			]
 		);
@@ -3882,7 +3895,7 @@ mod tests {
 		assert_eq!(
 			vag_cli_core::report::render(&refused, 0, vag_cli_core::report::Colour::Never),
 			"error: no speed, engine speed, gear, pedal channel in this car's catalogs\n\n\
-			 help: vagcan setup <ODIS project | VCDS installation> brings the channels; -v lists what was looked for\n"
+			 help: run `vagcan setup <ODIS project or VCDS installation>` to bring the channels; `-v` lists what was looked for\n"
 		);
 	}
 

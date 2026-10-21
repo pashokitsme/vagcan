@@ -454,10 +454,7 @@ pub trait Progress {
 	/// At `-vv`, the identity a unit's list was looked up by and what the lookup came to,
 	/// said before its [`Progress::done`]. By default one wire line of its own.
 	fn looked_up(&mut self, odx: &str, version: &str, project: Option<&str>, outcome: &str) {
-		crate::wire!(
-			"vcds registry: {odx} {version}{}: {outcome}",
-			project.map(|p| format!(" ({p})")).unwrap_or_default()
-		);
+		crate::wire!("  {odx} {version}{}: {outcome}", project.map(|p| format!(" ({p})")).unwrap_or_default());
 	}
 	/// A handle the units' lookups, running side by side, can count through on
 	/// the line the last [`Progress::waiting`] drew. `None` draws no count.
@@ -642,7 +639,7 @@ fn forget_log(project: &Project) {
 	match std::fs::remove_file(project.registry_log()) {
 		Ok(()) => {}
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-		Err(e) => crate::say!("{} not removed: {e}", project.registry_log().display()),
+		Err(e) => crate::say!("warning: {} not removed: {e}", crate::datadir::tilde(&project.registry_log())),
 	}
 }
 
@@ -1472,7 +1469,7 @@ fn gap_of(outcome: &str) -> Option<String> {
 /// one line.
 pub fn ensure(identities: &[UnitIdentity]) {
 	if let Err(e) = try_ensure(identities) {
-		crate::say!("the channels of this car's units were not read from the VCDS installation: {e:#}");
+		crate::say!("warning: the channels of this car's units were not read from the VCDS installation: {e:#}");
 	}
 }
 
@@ -1482,7 +1479,7 @@ pub fn ensure(identities: &[UnitIdentity]) {
 /// and the `select!` that acts on it.
 pub async fn ensure_async(identities: Vec<UnitIdentity>) {
 	if let Err(e) = tokio::task::spawn_blocking(move || ensure(&identities)).await {
-		crate::say!("the channels of this car's units were not read from the VCDS installation: {e}");
+		crate::say!("warning: the channels of this car's units were not read from the VCDS installation: {e}");
 	}
 }
 
@@ -1523,7 +1520,7 @@ fn try_ensure(identities: &[UnitIdentity]) -> Result<()> {
 		true => crate::say!("{}", announce_again(units.len())),
 		false => crate::say!("{}", announce(units.len(), wanted.len())),
 	}
-	crate::note!("vcds registry: {}", root.display());
+	crate::note!("  from {}", crate::datadir::tilde(&root));
 	let mut progress = Quietly {
 		spinner: None,
 		said: Vec::new(),
@@ -1533,19 +1530,19 @@ fn try_ensure(identities: &[UnitIdentity]) -> Result<()> {
 	drop(progress);
 	match outcome {
 		Read::Done(summary) => {
-			crate::note!("vcds registry: {}", summary.detail());
+			crate::note!("  {}", summary.detail());
 			// What the read could not do, beyond what the unit lines said already:
 			// a table that did not open, a list that lost its first row, keys not
 			// saved.
 			for note in summary.notes.iter().filter(|note| !said.contains(note)) {
-				crate::note!("vcds registry: {note}");
+				crate::note!("  {note}");
 			}
 		}
 		// What failed, at every level: the channels the line above promised are not coming.
 		Read::NoRegistry { why, removed } => {
-			crate::say!("the VCDS registry did not open: {why}");
+			crate::say!("warning: the VCDS registry did not open: {why}");
 			if !removed.is_empty() {
-				crate::note!("vcds registry: {}", removed.trim());
+				crate::note!("  {}", removed.trim());
 			}
 		}
 	}
@@ -1557,7 +1554,7 @@ fn try_ensure(identities: &[UnitIdentity]) -> Result<()> {
 /// and new, and what the wait can cost.
 fn announce(units: usize, wanted: usize) -> String {
 	format!(
-		"reading the VCDS registry: {units} unit{} ({wanted} of this car new), the first time only",
+		"note: reading the VCDS registry: {units} unit{} ({wanted} of this car new), the first time only",
 		plural(units)
 	)
 }
@@ -1565,7 +1562,7 @@ fn announce(units: usize, wanted: usize) -> String {
 /// The line for a read made again because an older version of this tool made the last one.
 fn announce_again(units: usize) -> String {
 	format!(
-		"reading the VCDS registry again: {units} unit{}, once, since this version finds their files differently",
+		"note: reading the VCDS registry again: {units} unit{}, once, since this version finds their files differently",
 		plural(units)
 	)
 }
@@ -1573,12 +1570,15 @@ fn announce_again(units: usize) -> String {
 /// The line for units of this car whose channels cannot be read: how many, and why
 /// — with what to type, where there is something to type.
 fn unreadable(n: usize, why: &str) -> String {
-	format!("{} {} no channels yet: {why}", units_of_this_car(n), if n == 1 { "has" } else { "have" })
+	format!(
+		"note: {} {} no channels yet: {why}",
+		units_of_this_car(n),
+		if n == 1 { "has" } else { "have" }
+	)
 }
 
 /// Why a record of another car that does not read stops the read, at `-v`.
-const WHY_EVERY_CAR: &str =
-	"vcds registry: a read replaces every car's VCDS channels at once, and one made without that car's units would drop its rows";
+const WHY_EVERY_CAR: &str = "  a read replaces every car's VCDS channels at once, and one made without that car's units would drop its rows";
 
 /// [`ensure`]'s progress: a spinner while a table opens or a list is found, and
 /// at `-v` a line per unit as each is done — the same cause and remedy `setup`
@@ -1592,7 +1592,7 @@ struct Quietly {
 
 impl Progress for Quietly {
 	fn waiting(&mut self, what: &str) {
-		crate::wire!("vcds registry: {what}");
+		crate::wire!("  {what}");
 		match &mut self.spinner {
 			Some(spinner) => spinner.update(&format!("reading the VCDS registry — {what}")),
 			None => self.spinner = Some(crate::progress::Spinner::new(format!("reading the VCDS registry — {what}"))),
@@ -1602,7 +1602,7 @@ impl Progress for Quietly {
 	fn done(&mut self, line: &str) {
 		// Cleared before the line is written, or the line lands on the spinner's.
 		self.spinner = None;
-		crate::note!("vcds registry: {line}");
+		crate::note!("  {line}");
 		self.said.push(line.to_string());
 	}
 }

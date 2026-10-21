@@ -190,31 +190,35 @@ impl Set {
 		self.leading_unit.iter().chain(self.background.iter())
 	}
 
-	/// Where every channel came from and why a role is not read, as a table: what a
-	/// run and `setup` say at `-v`. `part` is the part number a unit reported.
+	/// Where every channel came from and why a role is not read, as grouped records: what a
+	/// run and `setup` say at `-v`. A heading line per role — the role, its unit and
+	/// identifier, its name — and under it the part number the unit reported and where the
+	/// row came from; a role not read says why under it. `part` is the part number a unit
+	/// reported.
 	pub fn provenance(&self, part: impl Fn(u16) -> Option<String>) -> String {
-		let mut table = vag_cli_core::table::Table::new(&["role", "unit", "part", "did", "name", "from"]);
+		use vag_cli_core::marks::facts;
+		let width = self
+			.all()
+			.map(|c| c.key.len())
+			.chain(self.absent.iter().map(|a| a.key.len()))
+			.max()
+			.unwrap_or(0);
+		let pad = " ".repeat(width + 2);
+		let mut out = String::new();
 		for channel in self.all() {
-			table.row(vec![
-				channel.key.to_string(),
-				format!("{:03X}", channel.request),
-				part(channel.request).unwrap_or_else(|| "—".to_string()),
-				format!("{:04X}", channel.did),
-				channel.def.name.to_string(),
-				channel.origin.to_string(),
-			]);
+			out.push_str(&format!(
+				"{:<width$}  {:03X}:{:04X}  {}\n{pad}{}\n",
+				channel.key,
+				channel.request,
+				channel.did,
+				channel.def.name,
+				facts([part(channel.request).unwrap_or_default(), channel.origin.to_string()])
+			));
 		}
 		for absent in &self.absent {
-			table.row(vec![
-				absent.key.to_string(),
-				"—".into(),
-				"—".into(),
-				"—".into(),
-				"—".into(),
-				absent.why.clone(),
-			]);
+			out.push_str(&format!("{:<width$}  not read\n{pad}{}\n", absent.key, absent.why));
 		}
-		table.render(None)
+		out
 	}
 }
 

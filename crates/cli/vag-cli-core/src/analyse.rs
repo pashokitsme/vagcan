@@ -586,80 +586,74 @@ fn report(series: &[RawSeries], logged: &[crate::vcdslog::LoggedMeasurement], of
 	fits
 }
 
-/// The table `analyse` prints: one row per logged measurement — its fit, or why there
-/// is none — and one per fit that cleared the bar and was outranked; the summary line.
+/// What `analyse` prints: grouped records, rustc's shape — the summary line, then one
+/// record per logged measurement: a heading of its mark (`✓` proven, `✗` not), its text id,
+/// its physical unit and the range it was logged over, and under it the fit, or why there
+/// is none, and each fit that cleared the bar and was outranked.
 fn render(logged: &[crate::vcdslog::LoggedMeasurement], fits: &[Fitted], rejected: &[Rejected], limits: Thresholds) -> String {
-	use crate::table::{self, Table};
+	use crate::marks::{FAIL, OK, facts};
 
-	// `phys`, the physical unit: across the tool `unit` is a control unit.
-	let mut table = Table::new(&["ide", "phys", "range", "did", "form", "factor", "offset", "r2", "points", "verdict"])
-		.right(5)
-		.right(6)
-		.right(7)
-		.right(8);
+	let outranked = rejected.iter().filter(|r| matches!(r, Rejected::Outranked { .. })).count();
+	let proven = logged.iter().filter(|m| fits.iter().any(|f| f.ide == m.ide)).count();
+	let mut out = facts([
+		format!("{proven} of {} {} proven", logged.len(), plural(logged.len(), "measurement")),
+		match outranked {
+			0 => String::new(),
+			n => format!("{n} outranked"),
+		},
+	]);
+	out.push('\n');
 	for m in logged {
 		let (lo, hi) = m
 			.samples
 			.iter()
 			.map(|(_, v)| *v)
 			.fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
-		let range = format!("{lo:.2}..{hi:.2}");
-		let lead = |cells: &[String]| -> Vec<String> {
-			let mut row = vec![m.ide.clone(), m.unit.clone(), range.clone()];
-			row.extend_from_slice(cells);
-			row
-		};
-		match fits.iter().find(|f| f.ide == m.ide) {
-			Some(f) => table.row(lead(&[
+		let fit = fits.iter().find(|f| f.ide == m.ide);
+		// `m.unit` is the physical unit: across the tool `unit` is a control unit.
+		let heading = [
+			if fit.is_some() { OK } else { FAIL }.to_string(),
+			m.ide.clone(),
+			m.unit.clone(),
+			format!("{lo:.2}..{hi:.2}"),
+		]
+		.into_iter()
+		.filter(|s| !s.is_empty())
+		.collect::<Vec<_>>()
+		.join("  ");
+		out.push('\n');
+		out.push_str(&heading);
+		out.push('\n');
+		let detail = match fit {
+			Some(f) => facts([
 				format!("{:03X}/{:04X}", f.ecu, f.did),
 				format!("{:?}", f.form),
-				format!("{:.6}", f.scale.factor),
-				format!("{:+.4}", f.scale.offset),
-				format!("{:.5}", f.r2),
-				f.points.to_string(),
-				"proven".to_string(),
-			])),
+				format!("factor {:.6}", f.scale.factor),
+				format!("offset {:+.4}", f.scale.offset),
+				format!("r2 {:.5}", f.r2),
+				format!("{} {}", f.points, plural(f.points, "point")),
+			]),
 			None => {
 				let (r2, points, verdict) = why_unproven(m, rejected, limits);
-				table.row(lead(&[
-					String::new(),
-					String::new(),
-					String::new(),
-					String::new(),
-					r2.map(|r| format!("{r:.3}")).unwrap_or_default(),
-					points.map(|p| p.to_string()).unwrap_or_default(),
+				facts([
 					verdict,
-				]));
+					r2.map(|r| format!("best r2 {r:.3}")).unwrap_or_default(),
+					points.map(|p| format!("{p} {}", plural(p, "point"))).unwrap_or_default(),
+				])
 			}
-		}
+		};
+		out.push_str(&format!("   {detail}\n"));
 		for r in rejected {
 			if let Rejected::Outranked { ecu, did, ide, r2 } = r
 				&& *ide == m.ide
 			{
-				table.row(lead(&[
-					format!("{ecu:03X}/{did:04X}"),
-					String::new(),
-					String::new(),
-					String::new(),
-					format!("{r2:.5}"),
-					String::new(),
-					"outranked".to_string(),
-				]));
+				out.push_str(&format!(
+					"   {}\n",
+					facts(["outranked".to_string(), format!("{ecu:03X}/{did:04X}"), format!("r2 {r2:.5}")])
+				));
 			}
 		}
 	}
-	let mut out = table.render(table::terminal_width());
-	out.push('\n');
-	let outranked = rejected.iter().filter(|r| matches!(r, Rejected::Outranked { .. })).count();
-	let proven = logged.iter().filter(|m| fits.iter().any(|f| f.ide == m.ide)).count();
-	out.push_str(&crate::marks::facts([
-		format!("{proven} of {} {} proven", logged.len(), plural(logged.len(), "measurement")),
-		match outranked {
-			0 => String::new(),
-			n => format!("{n} outranked"),
-		},
-	]));
-	out.push('\n');
 	out
 }
 
@@ -1024,12 +1018,16 @@ mod tests {
 		let (fits, rejected) = fit_all(&series, &logged, 0.0, limits);
 		assert_eq!(
 			render(&logged, &fits, &rejected, limits),
-			"ide       phys  range            did       form     factor   offset       r2  points  verdict\n\
-			 IDE00405  /min  800.00..1190.00  7E8/F40C  U16Be  0.250000  +0.0000  1.00000      40  proven\n\
-			 IDE00025  °C    70.00..74.00                                                       5  too few overlapping samples (< 20)\n\
-			 IDE00155  °     0.00..0.00                                                            never moved\n\
+			"1 of 3 measurements proven\n\
 			 \n\
-			 1 of 3 measurements proven\n"
+			 ✓  IDE00405  /min  800.00..1190.00\n\
+			 \x20  7E8/F40C · U16Be · factor 0.250000 · offset +0.0000 · r2 1.00000 · 40 points\n\
+			 \n\
+			 ✗  IDE00025  °C  70.00..74.00\n\
+			 \x20  too few overlapping samples (< 20) · 5 points\n\
+			 \n\
+			 ✗  IDE00155  °  0.00..0.00\n\
+			 \x20  never moved\n"
 		);
 	}
 }

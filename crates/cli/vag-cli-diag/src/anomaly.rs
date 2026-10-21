@@ -163,6 +163,8 @@ pub struct Monitor {
 	answered: BTreeSet<u16>,
 	/// Unanswered requests since the last thing the unit said.
 	silences: usize,
+	/// Whether the unit has said anything at all this run — data or a refusal.
+	heard: bool,
 	/// The first change seen, if any. Kept so the sweep can return normally and
 	/// the caller can ask afterwards what ended it.
 	halted: Option<Anomaly>,
@@ -174,6 +176,7 @@ impl Monitor {
 			request,
 			answered: BTreeSet::new(),
 			silences: 0,
+			heard: false,
 			halted: None,
 		}
 	}
@@ -196,6 +199,7 @@ impl Monitor {
 	/// silences this clears.
 	pub fn heard(&mut self) {
 		self.silences = 0;
+		self.heard = true;
 	}
 
 	/// Whether this unit has said anything at all yet.
@@ -204,6 +208,23 @@ impl Monitor {
 	/// end a run.
 	pub fn spoke(&self) -> bool {
 		!self.answered.is_empty()
+	}
+
+	/// Whether the unit has given nothing back — no data, no refusal — to the first
+	/// [`QUIET_RUN`] requests of this run: an address with nothing on it.
+	///
+	/// Not an [`Anomaly`]: nothing changed, the unit was never there to change. But nothing
+	/// is to be learned by asking it the rest either, and every request it ignores costs a
+	/// whole timeout — `sensors --unit` on a silent unit waited out all of its parameters,
+	/// over two minutes, because [`Monitor::saw`] rightly ignores a unit that never spoke.
+	/// A sweep stops asking when this turns true ([`crate::scan::scan_dids`]).
+	pub fn absent(&self) -> bool {
+		!self.heard && self.answered.is_empty() && self.silences >= QUIET_RUN
+	}
+
+	/// How many requests in a row have gone unanswered.
+	pub fn silences(&self) -> usize {
+		self.silences
 	}
 
 	/// Feed one outcome. `Some` means the run ends here.
@@ -219,9 +240,11 @@ impl Monitor {
 			Answer::Answered => {
 				self.answered.insert(did);
 				self.silences = 0;
+				self.heard = true;
 			}
 			Answer::Refused => {
 				self.silences = 0;
+				self.heard = true;
 				if self.answered.contains(&did) {
 					self.halted = Some(Anomaly {
 						request: self.request,
@@ -289,6 +312,30 @@ impl Monitor {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_unit_silent_from_the_first_request_is_absent_after_a_quiet_run_and_never_halted() {
+		let mut m = Monitor::new(0x70E);
+		for did in 0..QUIET_RUN as u16 - 1 {
+			assert!(m.saw(did, Answer::Silent).is_none());
+			assert!(!m.absent(), "one lost frame is not an empty address");
+		}
+		assert!(m.saw(0x00FF, Answer::Silent).is_none(), "an absent unit is not an anomaly");
+		assert!(m.absent());
+		// A refusal is an answer: a unit that refuses, then goes quiet, is not absent.
+		let mut m = Monitor::new(0x7E1);
+		m.saw(0x0001, Answer::Refused);
+		for did in 2..10 {
+			m.saw(did, Answer::Silent);
+		}
+		assert!(!m.absent());
+		// Nor is one the link withheld requests from.
+		let mut m = Monitor::new(0x713);
+		for did in 0..10 {
+			m.saw(did, Answer::Withheld);
+		}
+		assert!(!m.absent());
+	}
 
 	#[test]
 	fn a_unit_that_goes_quiet_mid_sweep_ends_the_run() {

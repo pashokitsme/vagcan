@@ -276,26 +276,39 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	let open = || async { Ok(car()) };
 
 	let info = levels!("info", car::info(open).await);
+	// A card: the car, then the count and when it was read — the minute varies — then a
+	// section per unit.
+	let (head, rest) = info[0].stdout.split_once("\n").unwrap();
+	assert_eq!(head, VIN);
+	let (meta, rest) = rest.split_once("\n").unwrap();
+	assert!(meta.starts_with("4 control units · read 20"), "{meta}");
 	assert_eq!(
-		info[0].stdout,
-		format!(
-			"vin  {VIN}\n\
-			 \n\
-			 \x20          engine 01    gearbox 02\n\
-			 part       PART-ENGINE  PART-GEAR\n\
-			 hardware   —            —\n\
-			 software   0001         0001\n\
-			 component  ENGINE SELF  GEAR SELF\n\
-			 serial     —            —\n\
-			 coding     01 02        —\n"
-		)
+		rest,
+		"\n\
+		 ENGINE  01 · 7E0\n\
+		 \x20 ENGINE SELF\n\
+		 \x20 part PART-ENGINE · software 0001 · EV_TestEngine\n\
+		 \x20 coding 01 02\n\
+		 \n\
+		 GEARBOX  02 · 7E1\n\
+		 \x20 GEAR SELF\n\
+		 \x20 part PART-GEAR · software 0001\n"
 	);
 	assert!(info[0].stderr.is_empty(), "{:?}", info[0].stderr);
 
 	// Through the bus, as every car command runs: -vv is the wire, and only -vv.
 	let on_bus = || async { Ok(vag_cli_core::bus::Bus::start(car(), vag_cli_core::bus::Budget::default())) };
 	let wire = levels!("info through the bus", car::info(on_bus).await);
-	assert_eq!(wire[0].stdout, info[0].stdout, "the same data through the bus");
+	// Every line but the meta line, whose minute may have turned between the two runs.
+	let timeless = |text: &str| {
+		text
+			.lines()
+			.enumerate()
+			.filter(|(at, _)| *at != 1)
+			.map(|(_, l)| l.to_string())
+			.collect::<Vec<_>>()
+	};
+	assert_eq!(timeless(&wire[0].stdout), timeless(&info[0].stdout), "the same data through the bus");
 	assert!(!wire[1].stderr.contains("→"), "{:?}", wire[1].stderr);
 	assert!(wire[2].stderr.contains("→  7E0  22 F1 90\n"), "the request: {:?}", wire[2].stderr);
 	assert!(
@@ -308,21 +321,26 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	assert!(wire[2].stderr.contains("←  7E8  7F 22 31"), "a refusal: {:?}", wire[2].stderr);
 
 	let units = levels!("units", car::units(open, false).await);
-	assert_eq!(units[0].stdout, "unit  id   part  name\n09    70E\n--    713\n\n2 units\n");
+	assert_eq!(
+		units[0].stdout,
+		"2 control units on the gateway's list\n\nUNIT  ID   PART  NAME\n09    70E\n--    713\n"
+	);
 
 	// `--identify` records the units under this HOME, so the plain listing after it has
 	// their part numbers.
 	let identify = levels!("units --identify", car::units(open, true).await);
 	assert_eq!(
 		identify[0].stdout,
-		"unit  id   part          component     name\n\
-		 09    70E                              (no answer)\n\
-		 --    710  PART-GATEWAY  GATEWAY SELF\n\
-		 --    713  PART-ESC      ESC SELF\n\
-		 01    7E0  PART-ENGINE   ENGINE SELF\n\
-		 02    7E1  PART-GEAR     GEAR SELF\n\
-		 \n\
-		 5 asked · 4 answered · 2 on the gateway's list\n"
+		format!(
+			"5 control units on {VIN} · 4 answered · 2 on the gateway's list\n\
+			 \n\
+			 \x20  UNIT  ID   PART          COMPONENT     NAME\n\
+			 ✗  09    70E                              (no answer)\n\
+			 ✓  --    710  PART-GATEWAY  GATEWAY SELF\n\
+			 ✓  --    713  PART-ESC      ESC SELF\n\
+			 ✓  01    7E0  PART-ENGINE   ENGINE SELF\n\
+			 ✓  02    7E1  PART-GEAR     GEAR SELF\n"
+		)
 	);
 	assert!(
 		home
@@ -336,10 +354,14 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	// The record does not cover 70E, which never answered, so it is not taken for this
 	// car's: the listing is what it was.
 	let units = levels!("units after --identify", car::units(open, false).await);
-	assert_eq!(units[0].stdout, "unit  id   part  name\n09    70E\n--    713\n\n2 units\n");
+	assert_eq!(
+		units[0].stdout,
+		"2 control units on the gateway's list\n\nUNIT  ID   PART  NAME\n09    70E\n--    713\n"
+	);
 
 	let block = levels!("units --identify 01", car::identification(open, "01", false).await);
-	assert!(block[0].stdout.starts_with("unit  01\n\ndid   name"), "{}", block[0].stdout);
+	assert!(block[0].stdout.starts_with("unit 01 · 7E0 · ENGINE SELF\n"), "{}", block[0].stdout);
+	assert!(block[0].stdout.contains("\n\nIDENTIFICATION\n"), "{}", block[0].stdout);
 	assert!(block[0].stdout.contains("F187  VW spare part number"), "{}", block[0].stdout);
 
 	// `sensors` names the link it needs; the scripted car is every link.
@@ -347,12 +369,12 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	let sensors = levels!("sensors", car::sensors(open_on, "01").await);
 	assert_eq!(
 		sensors[0].stdout,
-		"did          value  name\n\
+		"3 of 32 standard parameters answered by unit 01 · 3 converted\n\
+		 \n\
+		 DID          VALUE  NAME\n\
 		 F405    40.00 °C    Coolant temperature\n\
 		 F40C  1000.00 /min  Engine speed\n\
-		 F40D     0.00 km/h  Vehicle speed\n\
-		 \n\
-		 3 of 3 converted · unit 01\n"
+		 F40D     0.00 km/h  Vehicle speed\n"
 	);
 	let gearbox = levels!("sensors --unit 02", car::sensors(open_on, "02").await);
 	assert!(
@@ -552,7 +574,7 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 		Ok(())
 	});
 	assert!(
-		devices[0].stdout == "path               adapter  device\n/dev/cu.usbmodem1  yes      CANable 2.0 (slcan)\n",
+		devices[0].stdout == "1 serial device · 1 CAN adapter\n\n   PATH               DEVICE\n✓  /dev/cu.usbmodem1  CANable 2.0 (slcan)\n",
 		"{}",
 		devices[0].stdout
 	);

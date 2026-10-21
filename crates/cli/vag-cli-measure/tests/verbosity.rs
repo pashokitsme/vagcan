@@ -136,14 +136,15 @@ fn a_fit_that_holds_is_the_car_file_on_stdout_and_how_it_was_judged_at_v() {
 	assert_eq!(
 		runs[0].stdout,
 		format!(
-			"car file     {}\n\
-			 mass         1475 kg      you, 2026-10-20\n\
-			 tyre         205/55R16    you, 2026-10-20\n\
-			 CdA          0.63 m²      measured on this car, 2 passes\n\
-			 Crr          0.0114       measured on this car\n\
-			 ρ at fit     1.200 kg/m³  measured\n\
-			 mass at fit  1475 kg\n",
-			path.display()
+			"car file {}\n\
+			 fitted at 1.200 kg/m³ measured · 1475 kg\n\
+			 \n\
+			 FIGURES\n\
+			 \x20 mass  1475 kg      you, 2026-10-20\n\
+			 \x20 tyre  205/55R16    you, 2026-10-20\n\
+			 \x20 CdA   0.63 m²      measured on this car, 2 passes\n\
+			 \x20 Crr   0.0114       measured on this car\n",
+			vag_cli_core::datadir::tilde(&path)
 		)
 	);
 	assert_eq!(runs[0].stderr, "power is available now: vagcan measure --full\n");
@@ -162,15 +163,16 @@ fn a_fit_that_does_not_hold_writes_nothing_and_says_why_in_two_lines() {
 	assert_split("measure setup, a rejected fit", &runs);
 	assert_eq!(
 		runs[0].stdout,
-		"pass 1         CdA 0.63 m²  Crr 0.0010\n\
-		 pass 2         CdA 0.63 m²  Crr 0.0800\n\
-		 implied slope  -4.0 %\n\
-		 implied wind   0.0 m/s\n"
+		"2 passes disagree · implied slope -4.0 % · implied wind 0.0 m/s\n\
+		 \n\
+		 PASSES\n\
+		 \x20 1  CdA 0.63 m² · Crr 0.0010\n\
+		 \x20 2  CdA 0.63 m² · Crr 0.0800\n"
 	);
 	assert_eq!(
 		runs[0].stderr,
 		"no road load written: the two passes disagree by 98 % on Crr (limit 95 %)\n\
-         re-run vagcan measure setup on a flatter stretch or a calmer day; it asks only for the passes\n"
+         re-run `vagcan measure setup` on a flatter stretch or a calmer day; it asks only for the passes\n"
 	);
 	assert!(runs[1].stderr.contains("a flatter stretch"), "{}", runs[1].stderr);
 	assert!(!path.exists(), "a car file was written for a fit that did not hold");

@@ -171,7 +171,7 @@ fn discover(log: &str, text: &str, pairs: bool) -> Result<()> {
 	let mut said = vec![(
 		NOTES,
 		format!(
-			"recording  {log}: {rows} {}, {} {}",
+			"read {log}: {rows} {}, {} {}",
 			crate::render::plural(rows, "row"),
 			columns.len(),
 			crate::render::plural(columns.len(), "column")
@@ -230,20 +230,20 @@ mod tests {
 		let runs = [run(0), run(1), run(2)];
 		assert_eq!(
 			runs[0].stdout,
-			"column  values  changes  reads  seen\n\
+			"3 columns · 2 candidates · 0 continuous · 1 never moved\n\
+			 \n\
+			 COLUMN  VALUES  CHANGES  READS  SEEN\n\
 			 A            2        2      3  0 1\n\
 			 B            2        2      3  0 1\n\
 			 \n\
-			 3 columns · 2 candidates · 0 continuous · 1 never moved\n\
+			 1 pair changed together\n\
 			 \n\
-			 first  second  coincide\n\
-			 A      B           100%\n\
-			 \n\
-			 1 pair changed together\n"
+			 FIRST  SECOND  COINCIDE\n\
+			 A      B           100%\n"
 		);
 		assert_eq!(runs[0].stderr, "", "nothing but data by default");
 		assert!(
-			runs[1].stderr.starts_with("recording  drive.csv: 3 rows, 3 columns\ncandidate: "),
+			runs[1].stderr.starts_with("read drive.csv: 3 rows, 3 columns\ncandidate: "),
 			"{}",
 			runs[1].stderr
 		);

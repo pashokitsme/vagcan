@@ -364,10 +364,14 @@ impl OdisFaults {
 			// ODIS source written, since rows come back in source order.
 			let shown = first_odis.map(|(_, dir, language)| {
 				let language = language.as_deref().map(crate::config::short_language);
-				format!("{dir} ({})", language.as_deref().unwrap_or("no language declared"))
+				format!(
+					"{} ({})",
+					vag_cli_core::datadir::tilde(std::path::Path::new(dir)),
+					language.as_deref().unwrap_or("no language declared")
+				)
 			});
 			return Some(format!(
-				"config.toml sets [faults] language = {:?}, which no source here has (available: {available}) — showing {}.",
+				"note: `[faults] language = {:?}` in config.toml is in no source here (available: {available}); showing {}",
 				crate::config::short_language(setting),
 				shown.as_deref().unwrap_or("the first source")
 			));
@@ -385,15 +389,21 @@ impl OdisFaults {
 					.sources
 					.iter()
 					.find(|(k, _, l)| k == vag_data_db::ODIS && l.as_deref() == Some(preferred))?;
-				(preferred, format!("the ODIS project {dir}"))
+				(
+					preferred,
+					format!("the ODIS project {}", vag_cli_core::datadir::tilde(std::path::Path::new(dir))),
+				)
 			}
 			None => {
 				let (_, dir, language) = first_odis?;
-				(language.as_deref()?, format!("the ODIS project {dir}"))
+				(
+					language.as_deref()?,
+					format!("the ODIS project {}", vag_cli_core::datadir::tilde(std::path::Path::new(dir))),
+				)
 			}
 		};
 		Some(format!(
-			"Fault text in {} from {from} (available: {available}). Set [faults] language in config.toml to change it.",
+			"note: fault text in {} from {from} (available: {available}); `[faults] language` in config.toml picks another",
 			crate::config::short_language(language)
 		))
 	}
@@ -409,8 +419,8 @@ impl OdisFaults {
 			.rev()
 			.find(|(kind, _, l)| kind == vag_data_db::VCDS && l.is_some() && *l == build.language);
 		Some(match row {
-			Some((_, dir, _)) => format!("the VCDS installation {}", installation_of(dir).display()),
-			None => format!("the VCDS files in {}", build.pool.display()),
+			Some((_, dir, _)) => format!("the VCDS installation {}", vag_cli_core::datadir::tilde(installation_of(dir))),
+			None => format!("the VCDS files in {}", vag_cli_core::datadir::tilde(&build.pool)),
 		})
 	}
 
@@ -693,7 +703,7 @@ mod tests {
 		assert!(!unset.prefers_vcds());
 		let note = unset.choice_note().expect("two languages and no setting is a choice worth saying");
 		assert_eq!(note.lines().count(), 1, "{note}");
-		assert!(note.starts_with("Fault text in en from the ODIS project /en"), "{note}");
+		assert!(note.starts_with("note: fault text in en from the ODIS project /en"), "{note}");
 		assert!(note.contains("available: de, en"), "{note}");
 		assert!(note.contains("[faults] language"), "{note}");
 	}
@@ -728,7 +738,7 @@ mod tests {
 		assert_eq!(r.preferred(), None);
 		assert!(!r.prefers_vcds());
 		let note = r.choice_note().unwrap();
-		assert!(note.starts_with("Fault text in de from the ODIS project /x/SK37X"), "{note}");
+		assert!(note.starts_with("note: fault text in de from the ODIS project /x/SK37X"), "{note}");
 		assert!(note.contains("available: de, ru"), "{note}");
 	}
 
@@ -750,8 +760,8 @@ mod tests {
 		let note = r.choice_note().unwrap();
 		assert_eq!(
 			note,
-			"Fault text in en from the VCDS installation /repo/vendor/vcds-en (available: de, en). \
-			 Set [faults] language in config.toml to change it."
+			"note: fault text in en from the VCDS installation /repo/vendor/vcds-en (available: de, en); \
+			 `[faults] language` in config.toml picks another"
 		);
 		// The project's own German, set by hand, puts the project first again.
 		let mut german = resolver(Some("de"), &sources);
@@ -790,7 +800,7 @@ mod tests {
 		assert_eq!(r.preferred(), None, "no English to be had: the project's own");
 		assert!(!r.prefers_vcds());
 		let note = r.choice_note().unwrap();
-		assert!(note.starts_with("Fault text in de from the ODIS project /x/SK37X"), "{note}");
+		assert!(note.starts_with("note: fault text in de from the ODIS project /x/SK37X"), "{note}");
 		assert!(note.contains("(available: de, ru)"), "English is not available: {note}");
 
 		let mut english = resolver(Some("en"), &sources);
@@ -812,7 +822,7 @@ mod tests {
 			back
 				.choice_note()
 				.unwrap()
-				.starts_with("Fault text in en from the VCDS installation /v/vcds-en "),
+				.starts_with("note: fault text in en from the VCDS installation /v/vcds-en "),
 			"{:?}",
 			back.choice_note()
 		);
@@ -845,8 +855,8 @@ mod tests {
 		assert!(r.prefers_vcds());
 		assert_eq!(
 			r.choice_note().unwrap(),
-			"Fault text in en from the VCDS files in /home/.vagcan/rod (available: de, en). \
-			 Set [faults] language in config.toml to change it.",
+			"note: fault text in en from the VCDS files in /home/.vagcan/rod (available: de, en); \
+			 `[faults] language` in config.toml picks another",
 			"no row names the installation, so the pool is named"
 		);
 		let mut french = resolver(Some("fr"), &sources);

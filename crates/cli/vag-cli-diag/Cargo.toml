@@ -21,6 +21,8 @@ vag-data-db = { path = "../../data/vag-data-db" }
 # `net`: `dev dash edit`'s page server, on 127.0.0.1.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "sync", "time", "net"] }
 anyhow = "1"
+# `info`'s card: when the car was read, to the minute, in local time.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # The ODIS parse fans out one variant per task over rayon's pool.
 rayon = { workspace = true }
 serde_json.workspace = true

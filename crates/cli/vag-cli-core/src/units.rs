@@ -80,8 +80,8 @@ pub fn record(vin: &str, identities: &[UnitIdentity]) -> anyhow::Result<PathBuf>
 /// one: a read-only home directory must not take `watch` off the car.
 pub fn record_quietly(vin: &str, identities: &[UnitIdentity]) {
 	match record(vin, identities) {
-		Ok(path) => crate::note!("units  recorded in {}", path.display()),
-		Err(e) => crate::say!("the car's control units were not recorded: {e:#}"),
+		Ok(path) => crate::note!("recorded the units in {}", crate::datadir::tilde(&path)),
+		Err(e) => crate::say!("warning: the car's control units were not recorded: {e:#}"),
 	}
 }
 
@@ -100,7 +100,7 @@ pub fn record_for(vin: Option<&str>, identities: &[UnitIdentity]) {
 /// told to connect to the car once would otherwise wait for a file that never
 /// comes.
 pub const NOT_RECORDED_WITHOUT_A_VIN: &str =
-	"units not recorded: the engine gave no VIN to file them under (`vagcan dev dash build` needs the record)";
+	"note: the units are not recorded: the engine gave no VIN to file them under (`vagcan dev dash build` needs the record)";
 
 /// The units recorded for one car, or `None` when no command has recorded it.
 ///

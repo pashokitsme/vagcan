@@ -250,17 +250,17 @@ fn child(scenario: &str) {
 			assert_eq!(runs[0].stdout, "", "a note of the read is never data");
 			assert_eq!(
 				runs[0].stderr,
-				"reading the VCDS registry: 2 units (1 of this car new), the first time only\n\
-				 the VCDS registry did not open: there is no RM.rod in this installation\n"
+				"note: reading the VCDS registry: 2 units (1 of this car new), the first time only\n\
+				 warning: the VCDS registry did not open: there is no RM.rod in this installation\n"
 			);
 			assert!(
 				runs[1]
 					.stderr
-					.contains(&format!("vcds registry: {}\n", root.canonicalize().unwrap().display())),
+					.contains(&format!("  from {}\n", vag_cli_core::datadir::tilde(&root.canonicalize().unwrap()))),
 				"{}",
 				runs[1].stderr
 			);
-			assert!(runs[2].stderr.contains("vcds registry: opening RM.rod\n"), "{}", runs[2].stderr);
+			assert!(runs[2].stderr.contains("  opening RM.rod\n"), "{}", runs[2].stderr);
 		}
 		other => panic!("no scenario {other:?}"),
 	}

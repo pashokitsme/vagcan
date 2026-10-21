@@ -14,8 +14,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::render::plural;
-use vag_cli_core::marks::SEP;
-use vag_cli_core::table::{self, Table};
+use vag_cli_core::marks::facts;
 use vag_cli_core::verbosity::{self, NOTES, WIRE};
 use vag_data_labels::rod::{IvCache, RodSection, RodStatus, Search, decode_rod_with};
 
@@ -150,12 +149,20 @@ fn key_of(before: &IvCache, after: &IvCache, file: &str, tag: &str) -> Key {
 	}
 }
 
-/// What [`run`] prints on stdout: the file and its cache, a table of sections, the
-/// summary line.
+/// What [`run`] prints on stdout: grouped records, rustc's shape — the file and a summary
+/// line of facts, then each section as a heading line of its state, size and key, with the
+/// start of its text indented under it.
 fn render(path: &str, cache: &Path, sections: &[RodSection], keys: &[Key]) -> String {
-	let mut out = table::pairs(&[("file", path.to_string()), ("cache", cache.display().to_string())]);
-	out.push('\n');
-	let mut rows = Table::new(&SECTION_COLUMNS.iter().copied().chain(["key", "preview"]).collect::<Vec<_>>()).right(2);
+	let open = sections.iter().filter(|s| s.text.is_some()).count();
+	let recovered = keys.iter().filter(|k| matches!(k, Key::Recovered(_))).count();
+	let mut out = format!(
+		"{path}\n{}\n",
+		facts([
+			format!("{open} of {} {} open", sections.len(), plural(sections.len(), "section")),
+			format!("{recovered} {} recovered", plural(recovered, "key")),
+			format!("keys in {}", vag_cli_core::datadir::tilde(cache)),
+		])
+	);
 	for (s, key) in sections.iter().zip(keys) {
 		let preview: String = s
 			.text
@@ -167,22 +174,19 @@ fn render(path: &str, cache: &Path, sections: &[RodSection], keys: &[Key]) -> St
 			.collect();
 		let key = match key {
 			Key::None => String::new(),
-			Key::Cached(k) => verbosity::hex(k),
-			Key::Recovered(k) => format!("{} new", verbosity::hex(k)),
+			Key::Cached(k) => format!("key {}", verbosity::hex(k)),
+			Key::Recovered(k) => format!("key {}, recovered", verbosity::hex(k)),
 		};
-		let bytes = s.text.as_ref().map_or(0, |t| t.len());
-		rows.row(vec![s.tag.clone(), state(s).to_string(), bytes.to_string(), key, preview]);
+		let bytes = match &s.text {
+			Some(text) => format!("{} {}", text.len(), plural(text.len(), "byte")),
+			None => String::new(),
+		};
+		out.push('\n');
+		out.push_str(&format!("{}  {}\n", s.tag, facts([state(s).to_string(), bytes, key])));
+		if !preview.trim().is_empty() {
+			out.push_str(&format!("  {preview}\n"));
+		}
 	}
-	out.push_str(&rows.render(table::terminal_width()));
-	out.push('\n');
-	let open = sections.iter().filter(|s| s.text.is_some()).count();
-	let recovered = keys.iter().filter(|k| matches!(k, Key::Recovered(_))).count();
-	out.push_str(&format!(
-		"{open}/{} {} open{SEP}{recovered} {} recovered\n",
-		sections.len(),
-		plural(sections.len(), "section"),
-		plural(recovered, "key")
-	));
 	out
 }
 
@@ -282,19 +286,21 @@ mod tests {
 		let text = render("X.rod", Path::new("/k/rod-keys.json"), &sections, &keys);
 		assert_eq!(
 			text,
-			"file   X.rod\n\
-			 cache  /k/rod-keys.json\n\
+			"X.rod\n\
+			 2 of 4 sections open · 1 key recovered · keys in /k/rod-keys.json\n\
 			 \n\
-			 section  state   bytes  key                 preview\n\
-			 CMP      open        6                      9377.4\n\
-			 TXT      open       10  18 BE F0 88 21 new  000003,abc\n\
-			 INC      sealed      0\n\
-			 MWB      sealed      0\n\
+			 CMP  open · 6 bytes\n\
+			 \x20 9377.4\n\
 			 \n\
-			 2/4 sections open · 1 key recovered\n"
+			 TXT  open · 10 bytes · key 18 BE F0 88 21, recovered\n\
+			 \x20 000003,abc\n\
+			 \n\
+			 INC  sealed\n\
+			 \n\
+			 MWB  sealed\n"
 		);
 		let one = render("X.rod", Path::new("/k"), &sections[..1], &[Key::None]);
-		assert!(one.ends_with("\n\n1/1 section open · 0 keys recovered\n"), "{one}");
+		assert!(one.starts_with("X.rod\n1 of 1 section open · 0 keys recovered · keys in /k\n"), "{one}");
 	}
 
 	/// The cipher is a note: `tea`/`zlib` for an open section, `no key`/`no crib` for a

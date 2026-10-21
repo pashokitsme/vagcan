@@ -23,7 +23,7 @@ use vag_cli_core::verbosity::{self, NOTES, WIRE};
 use vag_data_labels::{LabelDb, Measurement, load_label_files};
 
 use crate::render::plural;
-use vag_cli_core::marks::{SEP, facts};
+use vag_cli_core::marks::facts;
 
 // The label directory locator is `core`'s now: the registry read keys its rows
 // by it, and that read runs from `watch` and `measure` as well as from `setup`.
@@ -262,7 +262,7 @@ pub fn labels_cmd(dir: &str, part: Option<&str>, block: Option<u16>, field: Opti
 	// the command line it is six lines of noise before the answer.
 	if part.is_none() && block.is_none() {
 		let inventory = inventory(Path::new(dir))?;
-		vag_cli_core::out!("{}", render_summary(&inventory));
+		vag_cli_core::out!("{}", render_summary(Path::new(dir), &inventory));
 		match &inventory.label_dir {
 			Some(labels) => vag_cli_core::note!(
 				".lbl/.clb counted and parsed in {}, the directory `dump` reads and the label cache is built from; .clb decrypted (TEA-CBC)",
@@ -356,16 +356,11 @@ fn walk(dir: &Path, found: &mut Inventory) {
 	}
 }
 
-/// The file counts (`.lbl` / `.clb` / `.rod`) and one summary line.
-fn render_summary(found: &Inventory) -> String {
-	let mut table = Table::new(&["what", "count"]).right(1);
-	for (kind, n) in [(".lbl", found.lbl), (".clb", found.clb), (".rod", found.rod)] {
-		table.row(vec![kind.to_string(), n.to_string()]);
-	}
-	let mut out = table.render(table::terminal_width());
-	out.push('\n');
+/// The inventory as a card, `gh pr view`'s shape: the directory, a meta line of totals,
+/// then the file counts (`.lbl` / `.clb` / `.rod`).
+fn render_summary(dir: &Path, found: &Inventory) -> String {
 	let total = found.lbl + found.clb + found.rod;
-	let summary = facts([
+	let meta = facts([
 		format!("{total} {}", plural(total, "file")),
 		format!("{} {} parsed", found.parsed, plural(found.parsed, "label file")),
 		match found.read_errors {
@@ -373,78 +368,85 @@ fn render_summary(found: &Inventory) -> String {
 			n => format!("{n} unreadable"),
 		},
 	]);
-	out.push_str(&summary);
-	out.push('\n');
-	out
+	let rows: Vec<(&str, String)> = [(".lbl", found.lbl), (".clb", found.clb), (".rod", found.rod)]
+		.into_iter()
+		.map(|(kind, n)| (kind, n.to_string()))
+		.collect();
+	format!(
+		"{}\n{meta}\n\n{}",
+		vag_cli_core::datadir::tilde(dir),
+		table::section("FILES", table::counts(&rows))
+	)
 }
 
-/// `--part <PART_NO>`: the part, the file it resolves to and the unit it is, then that
-/// file's measurements.
+/// `--part <PART_NO>`: a card — the part and the file it resolves to, the unit it is and how
+/// many measurements on the meta line, then the measurements.
 fn render_part_lookup(db: &LabelDb, part_no: &str) -> String {
 	let Some(file) = db.resolve(part_no) else {
-		return table::pairs(&[("part", part_no.to_string()), ("file", "none".to_string())]);
+		return format!("{}\n", facts([part_no, "no label file"]));
 	};
-	let mut rows = vec![("part", part_no.to_string()), ("file", file.source.clone())];
+	let ms = db.measurements(part_no);
+	let mut out = format!("{}\n", facts([format!("part {part_no}"), file.source.clone()]));
 	// Which unit this part number *is*, in the label files' own numbering — the
 	// answer `vagcan units --identify` needs to name a unit `44` rather than `712`.
-	if let Some(unit) = db.unit_for_part(part_no) {
-		rows.push(("unit", format!("{:02X}  {}", unit.address, unit.name)));
-	}
-	let mut out = table::pairs(&rows);
+	let unit = db
+		.unit_for_part(part_no)
+		.map(|unit| format!("unit {:02X} {}", unit.address, unit.name))
+		.unwrap_or_default();
+	out.push_str(&facts([unit, format!("{} {}", ms.len(), plural(ms.len(), "measurement"))]));
 	out.push('\n');
-	let ms = db.measurements(part_no);
 	if !ms.is_empty() {
-		let mut table = measurement_table(&[]);
-		for m in &ms {
-			table.row(measurement_cells(&[], m));
-		}
-		out.push_str(&table.render(table::terminal_width()));
 		out.push('\n');
+		out.push_str(&table::section("MEASUREMENTS", measurement_lines(&ms, 2)));
 	}
-	out.push_str(&format!("{} {}\n", ms.len(), plural(ms.len(), "measurement")));
 	out
 }
 
-/// `--block <N> [--field <F>]`: every file defining that block, and a summary line.
+/// `--block <N> [--field <F>]`: grouped records — the count, then each file defining that
+/// block as a heading with its definitions indented under it.
 fn render_block_lookup(db: &LabelDb, block: u16, field: Option<u8>) -> String {
 	let scope = match field {
 		Some(f) => format!("block {block} field {f}"),
 		None => format!("block {block}"),
 	};
 	let hits = db.measurements_by_block(block, field);
-	let mut out = String::new();
-	if !hits.is_empty() {
-		let mut table = measurement_table(&["file"]);
-		for (source, m) in &hits {
-			table.row(measurement_cells(&[source], m));
-		}
-		out.push_str(&table.render(table::terminal_width()));
+	let mut out = format!("{} {} of {scope}\n", hits.len(), plural(hits.len(), "definition"));
+	let mut at = 0;
+	while at < hits.len() {
+		let source = hits[at].0;
+		let group: Vec<&Measurement> = hits[at..].iter().take_while(|(s, _)| *s == source).map(|(_, m)| *m).collect();
+		at += group.len();
 		out.push('\n');
+		out.push_str(&table::section(source, measurement_lines(&group, 2)));
 	}
-	out.push_str(&format!("{} {}{SEP}{scope}\n", hits.len(), plural(hits.len(), "definition")));
 	out
 }
 
-/// The measurement columns, after `leading`: block and field right-aligned, then the name,
-/// then `phys`, the physical unit, last.
+/// Each measurement as one line, `block.field  name · phys`, a name too long for the line
+/// wrapped under itself and never cut. `indent`: what the lines will be indented by.
 ///
-/// `phys`, not `unit`: across the tool `unit` is a control unit. Last, because the last
-/// column is the one cut to the terminal's width, and a label file's unit field can be a
-/// sentence (53 characters in one) — before the name, it cut every name to seven.
-fn measurement_table(leading: &[&str]) -> Table {
-	let headers: Vec<&str> = leading.iter().copied().chain(["block", "field", "name", "phys"]).collect();
-	Table::new(&headers).right(leading.len()).right(leading.len() + 1)
-}
-
-fn measurement_cells(leading: &[&str], m: &Measurement) -> Vec<String> {
-	let mut cells: Vec<String> = leading.iter().map(|s| s.to_string()).collect();
-	cells.extend([
-		m.block.to_string(),
-		m.field.to_string(),
-		m.name.clone(),
-		m.unit.clone().unwrap_or_default(),
-	]);
-	cells
+/// `phys`, the physical unit, after the name: a label file's unit field can be a sentence
+/// (53 characters in one), and it wraps with the name rather than squeezing it.
+fn measurement_lines(ms: &[&Measurement], indent: usize) -> Vec<String> {
+	let width = table::terminal_width().unwrap_or(table::WIDTH);
+	let codes: Vec<String> = ms.iter().map(|m| format!("{}.{}", m.block, m.field)).collect();
+	let code_width = codes.iter().map(|c| c.chars().count()).max().unwrap_or(0);
+	let room = width.saturating_sub(indent + code_width + 2).max(20);
+	let pad = " ".repeat(code_width + 2);
+	ms.iter()
+		.zip(&codes)
+		.map(|(m, code)| {
+			let text = facts([m.name.clone(), m.unit.clone().unwrap_or_default()]);
+			let mut pieces = table::wrap(&text, room).into_iter();
+			let mut line = format!("{code:<code_width$}  {}", pieces.next().unwrap_or_default());
+			for more in pieces {
+				line.push('\n');
+				line.push_str(&pad);
+				line.push_str(&more);
+			}
+			line.trim_end().to_string()
+		})
+		.collect()
 }
 
 /// What `labels --odx` says when no `.rod` answers the name.
@@ -498,15 +500,12 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Resu
 				hits = files;
 			}
 			Redirected::Nothing { source } => {
-				vag_cli_core::out!(
-					"{}",
-					table::pairs(&[("odx", odx_name.to_string()), ("file", "EMPTY (VCDS ReDir)".to_string())])
-				);
+				vag_cli_core::outln!("{}", facts([odx_name, "EMPTY (VCDS ReDir)"]));
 				vag_cli_core::say!("{source} → EMPTY (VCDS ReDir): VCDS has no data for this unit");
 				return Ok(());
 			}
 			Redirected::No { variants } => {
-				vag_cli_core::out!("{}", table::pairs(&[("odx", odx_name.to_string()), ("file", "none".to_string())]));
+				vag_cli_core::outln!("{}", facts([odx_name, "no .rod file"]));
 				for line in no_rod(root, odx_name) {
 					vag_cli_core::say!("{line}");
 				}
@@ -522,7 +521,8 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Resu
 			}
 		}
 	}
-	let headers: Vec<&str> = ["file"].into_iter().chain(SECTION_COLUMNS).collect();
+	let headers: Vec<String> = ["file"].into_iter().chain(SECTION_COLUMNS).map(str::to_uppercase).collect();
+	let headers: Vec<&str> = headers.iter().map(String::as_str).collect();
 	let mut table = Table::new(&headers).right(3);
 	let (mut open, mut total) = (0usize, 0usize);
 	let mut sealed_files = Vec::new();
@@ -571,19 +571,16 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Resu
 			table.row(vec![name.to_string(), section.tag.clone(), state(section).to_string(), size.to_string()]);
 		}
 	}
-	vag_cli_core::out!("{}", table.render(table::terminal_width()));
-	vag_cli_core::outln!();
-	vag_cli_core::outln!(
-		"{open}/{total} {} open{SEP}{} {}",
-		plural(total, "section"),
-		hits.len(),
-		plural(hits.len(), "file")
-	);
+	let summary = facts([
+		format!("{open} of {total} {} open", plural(total, "section")),
+		format!("{} {}", hits.len(), plural(hits.len(), "file")),
+	]);
+	vag_cli_core::out!("{}", table::list(&summary, &table, table::terminal_width()));
 	for path in sealed_files {
 		vag_cli_core::say!(
-			"to open its sealed sections: vagcan dev vcds rod --cache {} {}",
-			cache_path.display(),
-			path.display()
+			"  (use \"vagcan dev vcds rod --cache {} {}\" to open its sealed sections)",
+			vag_cli_core::datadir::tilde(cache_path),
+			vag_cli_core::datadir::tilde(&path)
 		);
 	}
 	Ok(())
@@ -743,20 +740,21 @@ mod tests {
 			..Inventory::default()
 		};
 		assert_eq!(
-			render_summary(&found),
-			"what  count\n\
-			 .lbl   1181\n\
-			 .clb   1854\n\
-			 .rod  16578\n\
+			render_summary(Path::new("/v"), &found),
+			"/v\n\
+			 19613 files · 3035 label files parsed\n\
 			 \n\
-			 19613 files · 3035 label files parsed\n"
+			 FILES\n\
+			 \x20 .lbl   1181\n\
+			 \x20 .clb   1854\n\
+			 \x20 .rod  16578\n"
 		);
 		let broken = Inventory {
 			lbl: 1,
 			read_errors: 2,
 			..Inventory::default()
 		};
-		assert!(render_summary(&broken).ends_with("\n\n1 file · 0 label files parsed · 2 unreadable\n"));
+		assert!(render_summary(Path::new("/v"), &broken).starts_with("/v\n1 file · 0 label files parsed · 2 unreadable\n"));
 	}
 
 	/// A VCDS install keeps one `.clb` in `UDS_EV/`, beside the `.rod` files. The cache
@@ -815,35 +813,34 @@ mod tests {
 		let db = LabelDb::new(vec![file]);
 		assert_eq!(
 			render_part_lookup(&db, "022-906-032-C"),
-			"part  022-906-032-C\n\
-			 file  022-906-032-C.LBL\n\
+			"part 022-906-032-C · 022-906-032-C.LBL\n\
+			 1 measurement\n\
 			 \n\
-			 block  field  name          phys\n\
-			 \x20   1      1  Engine Speed  RPM\n\
-			 \n\
-			 1 measurement\n"
+			 MEASUREMENTS\n\
+			 \x20 1.1  Engine Speed · RPM\n"
 		);
 	}
 
 	#[test]
 	fn part_lookup_reports_miss() {
 		let db = LabelDb::new(vec![parse_label("X.LBL", b"001,1,Irrelevant,,")]);
-		assert_eq!(render_part_lookup(&db, "999-999-999-Z"), "part  999-999-999-Z\nfile  none\n");
+		assert_eq!(render_part_lookup(&db, "999-999-999-Z"), "999-999-999-Z · no label file\n");
 	}
 
-	/// The physical unit is last: a long one is what the terminal cuts, not every name.
+	/// Names are free text: a long physical unit wraps under its name, never cut, and every
+	/// line fits 80 columns.
 	#[test]
-	fn a_long_physical_unit_does_not_squeeze_the_names() {
-		let long = "Range: 0...255 = see the workshop manual for the meaning of each";
+	fn a_long_physical_unit_wraps_and_is_never_cut() {
+		let long = "Range: 0...255 = see the workshop manual for the meaning of each bit of the status byte";
 		let db = LabelDb::new(vec![parse_label(
 			"AAA.LBL",
 			format!("002,1,Engine Speed,,Range: 0...6500 RPM\n002,2,Status bits,,{long}").as_bytes(),
 		)]);
 		let text = render_block_lookup(&db, 2, None);
-		let header = text.lines().next().unwrap();
-		assert_eq!(header, "file     block  field  name          phys");
-		assert!(text.contains("AAA.LBL      2      1  Engine Speed  RPM\n"), "{text}");
-		assert!(text.contains("Status bits"), "{text}");
+		assert!(text.contains("\n  2.1  Engine Speed · RPM\n"), "{text}");
+		assert!(text.contains("  2.2  Status bits · "), "{text}");
+		assert!(text.lines().all(|l| l.chars().count() <= 80), "{text}");
+		assert!(text.contains("\n       the status byte\n"), "the rest wraps under the name: {text}");
 	}
 
 	#[test]
@@ -855,18 +852,20 @@ mod tests {
 		let all = render_block_lookup(&db, 2, None);
 		assert_eq!(
 			all,
-			"file     block  field  name           phys\n\
-			 AAA.LBL      2      1  Engine Speed   RPM\n\
-			 BBB.LBL      2      1  Vehicle Speed  km/h\n\
-			 BBB.LBL      2      2  Coolant\n\
+			"3 definitions of block 2\n\
 			 \n\
-			 3 definitions · block 2\n"
+			 AAA.LBL\n\
+			 \x20 2.1  Engine Speed · RPM\n\
+			 \n\
+			 BBB.LBL\n\
+			 \x20 2.1  Vehicle Speed · km/h\n\
+			 \x20 2.2  Coolant\n"
 		);
 
 		let f1 = render_block_lookup(&db, 2, Some(1));
-		assert!(f1.ends_with("2 definitions · block 2 field 1\n"), "{f1}");
+		assert!(f1.starts_with("2 definitions of block 2 field 1\n"), "{f1}");
 		assert!(!f1.contains("Coolant"));
 
-		assert_eq!(render_block_lookup(&db, 42, None), "0 definitions · block 42\n");
+		assert_eq!(render_block_lookup(&db, 42, None), "0 definitions of block 42\n");
 	}
 }

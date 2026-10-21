@@ -1,0 +1,4 @@
+t_s,Coolant temperature,Engine speed
+0.000,40,1000
+0.500,41,1000
+1.000,41,1200

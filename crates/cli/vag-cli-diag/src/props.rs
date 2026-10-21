@@ -82,19 +82,43 @@ impl Property {
 	}
 }
 
-/// The properties of one unit as a table: `did`, `name`, `value`, under a `unit` line.
+/// The properties of one unit as a card, `gh pr view`'s shape: the unit on the first line,
+/// how much of the block answered on the meta line, then a section each for the named
+/// identifiers, the unnamed ones and the OBD-II mode-09 answers.
+///
+/// ```text
+/// unit 01 · 7E0 · 1.8l R4 TFSI
+/// 9 of 256 identifiers of F100-F1FF answered
+///
+/// IDENTIFICATION
+///   F187  VW spare part number  8V0906264H
+/// ```
 ///
 /// Named identifiers come first in the documented order so the interesting facts are at
 /// the top; the rest follow as read, with no name — still worth showing because that is
 /// where the undocumented content lives. `extra` rows (the OBD-II mode-09 answers) close
-/// it, named by the caller.
-pub fn render(unit_label: &str, props: &[Property], extra: &[(u16, String, String)]) -> String {
-	let mut out = vag_cli_core::table::pairs(&[("unit", unit_label.to_string())]);
+/// it, named by the caller. `asked`: how many identifiers of the block were asked; `width`:
+/// the terminal's, a value too long for it wrapping under itself ([`vag_cli_core::table::WIDTH`]
+/// when it is not known).
+pub fn render(
+	unit: &vag_uds_client::address::UnitAddress,
+	props: &[Property],
+	extra: &[(u16, String, String)],
+	asked: usize,
+	width: Option<usize>,
+) -> String {
+	use vag_cli_core::marks::facts;
+	let width = width.unwrap_or(vag_cli_core::table::WIDTH);
+	let label = unit.label();
+	let request = format!("{:03X}", unit.request);
+	let component = props.iter().find(|p| p.did == 0xF197).and_then(Property::text);
+	let mut out = facts([
+		format!("unit {label}"),
+		if request == label { String::new() } else { request },
+		component.unwrap_or_default(),
+	]);
 	out.push('\n');
-	if props.is_empty() && extra.is_empty() {
-		out.push_str("no identifiers answered\n");
-		return out;
-	}
+	out.push_str(&format!("{} of {asked} identifiers of {IDENT_RANGE} answered\n", props.len()));
 	let mut named = Vec::new();
 	let mut rest = Vec::new();
 	for p in props {
@@ -105,22 +129,58 @@ pub fn render(unit_label: &str, props: &[Property], extra: &[(u16, String, Strin
 	}
 	named.sort_by_key(|(name, _)| KNOWN.iter().position(|(_, n)| n == name).unwrap_or(usize::MAX));
 
-	let mut table = vag_cli_core::table::Table::new(&["did", "name", "value"]);
-	for (name, p) in named {
-		table.row(vec![format!("{:04X}", p.did), name.to_string(), p.text().unwrap_or_else(|| p.hex())]);
+	let named: Vec<(u16, String, String)> = named
+		.into_iter()
+		.map(|(name, p)| (p.did, name.to_string(), p.text().unwrap_or_else(|| p.hex())))
+		.collect();
+	let rest: Vec<(u16, String, String)> = rest
+		.into_iter()
+		.map(|p| {
+			let value = match p.text() {
+				Some(t) => format!("{}  \"{t}\"", p.hex_short()),
+				None => p.hex_short(),
+			};
+			(p.did, String::new(), value)
+		})
+		.collect();
+	for (title, rows) in [("IDENTIFICATION", &named[..]), ("UNNAMED", &rest[..]), ("OBD-II MODE 09", extra)] {
+		if rows.is_empty() {
+			continue;
+		}
+		out.push('\n');
+		out.push_str(&vag_cli_core::table::section(title, section_lines(rows, width)));
 	}
-	for p in rest {
-		let value = match p.text() {
-			Some(t) => format!("{}  \"{t}\"", p.hex_short()),
-			None => p.hex_short(),
-		};
-		table.row(vec![format!("{:04X}", p.did), String::new(), value]);
-	}
-	for (did, name, value) in extra {
-		table.row(vec![format!("{did:04X}"), name.clone(), value.clone()]);
-	}
-	out.push_str(&table.render(vag_cli_core::table::terminal_width()));
 	out
+}
+
+/// One section's rows as lines, `DID  name  value`: the names padded to the section's
+/// widest, a value too long for `width` wrapped under itself.
+fn section_lines(rows: &[(u16, String, String)], width: usize) -> Vec<String> {
+	let name_width = rows.iter().map(|(_, name, _)| name.chars().count()).max().unwrap_or(0);
+	let lead = |did: u16, name: &str| match name_width {
+		0 => format!("{did:04X}"),
+		w => format!("{did:04X}  {name:<w$}"),
+	};
+	// Two for the section's indent, two before the value.
+	let at = 2 + 4 + if name_width == 0 { 0 } else { 2 + name_width } + 2;
+	let room = width.saturating_sub(at).max(20);
+	rows
+		.iter()
+		.map(|(did, name, value)| {
+			let pieces = match value.chars().count() <= room {
+				true => vec![value.clone()],
+				false => vag_cli_core::table::wrap(value, room),
+			};
+			let pad = " ".repeat(at - 2);
+			let mut line = format!("{}  {}", lead(*did, name), pieces.first().map(String::as_str).unwrap_or_default());
+			for more in pieces.iter().skip(1) {
+				line.push('\n');
+				line.push_str(&pad);
+				line.push_str(more);
+			}
+			line
+		})
+		.collect()
 }
 
 #[cfg(test)]
@@ -163,40 +223,57 @@ mod tests {
 
 	#[test]
 	fn the_report_names_what_is_documented_and_shows_the_rest_raw() {
+		let engine = vag_uds_client::address::UnitAddress::from_request(0x7E0).unwrap();
 		let text = render(
-			"01",
+			&engine,
 			&[
 				prop(0xF1AB, b"0023007600"),
 				prop(0xF190, b"XW8AD4NE9JH008917"),
+				prop(0xF197, b"1.8l R4 TFSI "),
 				prop(0xF19E, b"EV_ECM18TFS0208V0906264H\0"),
 			],
-			&[(0xF802, "OBD-II 09: VIN".to_string(), "XW8AD4NE9JH008917".to_string())],
+			&[(0xF802, "VIN".to_string(), "XW8AD4NE9JH008917".to_string())],
+			256,
+			None,
 		);
-		// Named rows carry the name; the label file is the join key to the .rod label
-		// files, so it must be legible. Unknown identifiers are shown with no name, after
-		// the named ones; the mode-09 rows close the table.
+		// The unit, then the count; named rows carry the name — the label file is the join
+		// key to the .rod label files, so it must be legible — unknown identifiers follow in
+		// a section of their own, and the mode-09 answers close the card.
+		let (head, body) = text.split_once('\n').unwrap();
+		assert!(head.starts_with("unit ") && head.ends_with(" · 1.8l R4 TFSI"), "{head}");
 		assert_eq!(
-			text,
-			"unit  01\n\
+			body,
+			"4 of 256 identifiers of F100-F1FF answered\n\
 			 \n\
-			 did   name            value\n\
-			 F190  VIN             XW8AD4NE9JH008917\n\
-			 F19E  ODX label file  EV_ECM18TFS0208V0906264H\n\
-			 F1AB                  30 30 32 33 30 30 37 36 30 30  \"0023007600\"\n\
-			 F802  OBD-II 09: VIN  XW8AD4NE9JH008917\n"
+			 IDENTIFICATION\n\
+			 \x20 F190  VIN                        XW8AD4NE9JH008917\n\
+			 \x20 F197  System name / engine type  1.8l R4 TFSI\n\
+			 \x20 F19E  ODX label file             EV_ECM18TFS0208V0906264H\n\
+			 \n\
+			 UNNAMED\n\
+			 \x20 F1AB  30 30 32 33 30 30 37 36 30 30  \"0023007600\"\n\
+			 \n\
+			 OBD-II MODE 09\n\
+			 \x20 F802  VIN  XW8AD4NE9JH008917\n"
 		);
+	}
+
+	#[test]
+	fn a_value_too_long_for_the_line_wraps_under_itself() {
+		let unit = vag_uds_client::address::UnitAddress::from_request(0x7E0).unwrap();
+		let ids = "AAAAAAAAAAAAAAAA, BBBBBBBBBBBBBBBB, CCCCCCCCCCCCCCCC, DDDDDDDDDDDDDDDD";
+		let text = render(&unit, &[], &[(0xF804, "Calibration ID".to_string(), ids.to_string())], 256, Some(60));
+		assert!(text.lines().all(|l| l.chars().count() <= 60), "{text}");
+		assert!(text.contains("  F804  Calibration ID  AAAAAAAAAAAAAAAA, BBBBBBBBBBBBBBBB,\n"), "{text}");
+		assert!(text.contains("\n                        CCCCCCCCCCCCCCCC,"), "{text}");
 	}
 
 	#[test]
 	fn named_rows_follow_the_documented_order_not_the_read_order() {
-		let text = render("01", &[prop(0xF19E, b"EV_ECM1\0"), prop(0xF187, b"8V0906264H ")], &[]);
+		let unit = vag_uds_client::address::UnitAddress::from_request(0x7E0).unwrap();
+		let text = render(&unit, &[prop(0xF19E, b"EV_ECM1\0"), prop(0xF187, b"8V0906264H ")], &[], 256, None);
 		let part = text.find("VW spare part number").unwrap();
 		let odx = text.find("ODX label file").unwrap();
 		assert!(part < odx, "part number is listed before the ODX name: {text}");
-	}
-
-	#[test]
-	fn an_ecu_that_answers_nothing_says_so() {
-		assert_eq!(render("02", &[], &[]), "unit  02\n\nno identifiers answered\n");
 	}
 }

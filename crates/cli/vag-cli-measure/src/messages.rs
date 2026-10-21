@@ -66,21 +66,27 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> M
 	let names: Vec<&str> = missing.iter().map(|m| m.key).collect();
 	let error = format!(
 		"no {} channel in this car's catalogs\n\
-         vagcan setup <ODIS project | VCDS installation> brings the channels; -v lists what was looked for",
+         run `vagcan setup <ODIS project or VCDS installation>` to bring the channels; `-v` lists what was looked for",
 		names.join(", ")
 	);
 	let mut detail = String::new();
 	if !found.is_empty() {
-		let mut table = Table::new(&["unit", "part", "role", "found"]);
+		// `gh pr list`'s shape, a row that can fail marked first.
+		let mut table = Table::new(&["", "UNIT", "PART", "ROLE"]);
 		for f in found {
 			table.row(vec![
+				if f.ok { vag_cli_core::marks::OK } else { vag_cli_core::marks::FAIL }.to_string(),
 				f.unit.clone(),
 				f.part_number.clone(),
 				f.key.to_string(),
-				if f.ok { "yes" } else { "no" }.to_string(),
 			]);
 		}
-		detail.push_str(&table.render(None));
+		let hits = found.iter().filter(|f| f.ok).count();
+		detail.push_str(&vag_cli_core::table::list(
+			&format!("{hits} of {} channels looked for found", found.len()),
+			&table,
+			None,
+		));
 	}
 	// The ids and the words, because they are the half of this the reader can
 	// act on from their desk: what a row of their own label files has to carry
@@ -124,7 +130,7 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> M
 pub fn full_without_car_file(known: &[(&str, String)], missing: &[&str]) -> Message {
 	let error = format!(
 		"--full needs this car measured: {} missing\n\
-         park and run: vagcan measure setup (it asks only for what is missing)",
+         park and run `vagcan measure setup`: it asks only for what is missing",
 		missing.join(", ")
 	);
 	let rows: Vec<(&str, String)> = known
@@ -204,20 +210,24 @@ pub fn fit_rejected(
 	implied_grade_percent: f64,
 	implied_wind_ms: f64,
 ) -> FitRejected {
-	let keys: Vec<String> = (1..=passes.len()).map(|i| format!("pass {i}")).collect();
-	let mut rows: Vec<(&str, String)> = keys
+	// A card, `gh pr view`'s shape: what the two imply on the first line, then each pass.
+	use vag_cli_core::marks::facts;
+	let head = facts([
+		format!("{} passes disagree", passes.len()),
+		format!("implied slope {implied_grade_percent:.1} %"),
+		format!("implied wind {implied_wind_ms:.1} m/s"),
+	]);
+	let lines: Vec<String> = passes
 		.iter()
-		.zip(passes)
-		.map(|(key, (cda, crr))| (key.as_str(), format!("CdA {cda:.2} m²  Crr {crr:.4}")))
+		.enumerate()
+		.map(|(at, (cda, crr))| format!("{}  {}", at + 1, facts([format!("CdA {cda:.2} m²"), format!("Crr {crr:.4}")])))
 		.collect();
-	rows.push(("implied slope", format!("{implied_grade_percent:.1} %")));
-	rows.push(("implied wind", format!("{implied_wind_ms:.1} m/s")));
 	FitRejected {
-		data: pairs(&rows),
+		data: format!("{head}\n\n{}", vag_cli_core::table::section("PASSES", lines)),
 		refusal: Message {
 			text: format!(
 				"no road load written: the two passes disagree by {crr_disagreement_percent:.0} % on Crr (limit {limit_percent:.0} %)\n\
-                 re-run vagcan measure setup on a flatter stretch or a calmer day; it asks only for the passes"
+                 re-run `vagcan measure setup` on a flatter stretch or a calmer day; it asks only for the passes"
 			),
 			detail: "both passes fit their own data well, so something differed between the two directions: \
                      a slope of about 1 % would do it, and so would that much wind\n\
@@ -266,7 +276,7 @@ pub fn car_silent(saved_runs: usize) -> String {
 pub fn wrong_car(file_vin: &str, car_vin: &str) -> String {
 	format!(
 		"the car file is for {file_vin} and this car is {car_vin}\n\
-         run vagcan measure setup for this car, or pass --car with its own file"
+         run `vagcan measure setup` for this car, or pass `--car` with its own file"
 	)
 }
 
@@ -301,7 +311,7 @@ pub fn saved(path: &str, runs: usize) -> String {
 pub fn no_car_file(vin: &str) -> String {
 	format!(
 		"no car file for {vin} — default mode: times, speeds and telemetry,\n\
-         no power. Park, then run: vagcan measure setup"
+         no power. Park, then run `vagcan measure setup`"
 	)
 }
 
@@ -392,10 +402,11 @@ mod tests {
 		let rejected = fit_rejected(11.0, 5.0, &[(0.61, 0.0109), (0.68, 0.0121)], 0.9, 4.1);
 		assert_eq!(
 			rejected.data,
-			"pass 1         CdA 0.61 m²  Crr 0.0109\n\
-             pass 2         CdA 0.68 m²  Crr 0.0121\n\
-             implied slope  0.9 %\n\
-             implied wind   4.1 m/s\n"
+			"2 passes disagree · implied slope 0.9 % · implied wind 4.1 m/s\n\
+			 \n\
+			 PASSES\n\
+			 \x20 1  CdA 0.61 m² · Crr 0.0109\n\
+			 \x20 2  CdA 0.68 m² · Crr 0.0121\n"
 		);
 		assert!(
 			rejected
@@ -455,7 +466,7 @@ mod tests {
 		assert_eq!(
 			refusal.text,
 			"no speed channel in this car's catalogs\n\
-             vagcan setup <ODIS project | VCDS installation> brings the channels; -v lists what was looked for"
+             run `vagcan setup <ODIS project or VCDS installation>` to bring the channels; `-v` lists what was looked for"
 		);
 		assert!(refusal.detail.contains("0CW300041G"), "{}", refusal.detail);
 	}
@@ -518,7 +529,7 @@ mod tests {
 		assert_eq!(
 			refusal.text,
 			"--full needs this car measured: CdA, Crr missing\n\
-             park and run: vagcan measure setup (it asks only for what is missing)"
+             park and run `vagcan measure setup`: it asks only for what is missing"
 		);
 		assert!(refusal.detail.starts_with("mass      1475 kg\nCdA, Crr  missing\n"), "{}", refusal.detail);
 		assert!(refusal.detail.contains("only the power column is absent"), "{}", refusal.detail);
