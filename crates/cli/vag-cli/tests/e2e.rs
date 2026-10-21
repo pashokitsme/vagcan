@@ -173,23 +173,154 @@ fn home(at: &Path) {
 /// row: `setup --list` puts each path under its row and keeps every row.
 const TWO_SOURCES: &str = "two-sources";
 
-/// A `~/.vagcan` with the VCDS store and one ODIS project, each source recorded and nothing
-/// more, both read at a fixed time. Made-up paths.
+/// A `~/.vagcan` with the VCDS store and one ODIS project, both read at a fixed time, each
+/// describing the engine its own way — one source per run, so a case shows which one a run
+/// read (CLAUDE.md, "ODIS and VCDS are independent sources"). Made-up paths, names and rows:
+///
+/// - the ODIS project: `0x1001` as `Odis_oil_temperature` (×1 −40), the engine's fault
+///   `000129` with its text, and the engine's record 70 as `Odis Engine Speed`;
+/// - the VCDS store: `0x1001` as `Vcds oil temperature` (×0.5 −20), `0x1003` that ODIS does
+///   not describe, the engine's record 70 as `Vcds engine speed`, and a registry log saying
+///   the car's units were read — no fault text (no `.rod` pool);
+/// - the car's dash, `dash.toml`, reading `01:1001` and `01:1003`.
 fn two_sources_home(at: &Path) {
+	use vag_data_labels::catalog::Scaling;
+	use vag_data_labels::measure::LinearScale;
+	use vag_data_labels::odis::{EnvironmentField, EnvironmentRecord, Fault, Reading};
 	let store = at.join("vcds");
 	let project = at.join("data").join(PROJECT);
-	for (dir, kind, source) in [
-		(&store, vag_data_db::VCDS, "/nowhere/a-long-way-down/to-a-vcds-installation/Labels"),
-		(&project, vag_data_db::ODIS, "/nowhere/SIM00-odis"),
-	] {
+	let vcds = "/nowhere/a-long-way-down/to-a-vcds-installation/Labels";
+	let odis = "/nowhere/SIM00-odis";
+	for (dir, kind, source) in [(&store, vag_data_db::VCDS, vcds), (&project, vag_data_db::ODIS, odis)] {
 		std::fs::create_dir_all(dir).unwrap();
-		let cache = dir.join("cache.sqlite");
-		vag_data_db::record_language(&cache, kind, source, "eng").unwrap();
-		rusqlite::Connection::open(&cache)
+		vag_data_db::record_language(&dir.join("cache.sqlite"), kind, source, "eng").unwrap();
+	}
+	let reading = |did: u16, name: &str, factor: f64, offset: f64| Reading {
+		did,
+		name: name.to_string(),
+		unit: Some("°C".to_string()),
+		bit_offset: 0,
+		bit_length: 8,
+		signed: false,
+		big_endian: true,
+		scaling: Scaling::Linear(LinearScale { factor, offset }),
+		text_id: None,
+	};
+	let odis_cache = project.join("cache.sqlite");
+	vag_data_db::put_readings(
+		&odis_cache,
+		odis,
+		"EV_SimEngine_001",
+		&[reading(0x1001, "Odis_oil_temperature", 1.0, -40.0)],
+	)
+	.unwrap();
+	let fault = Fault {
+		dop: "DTCDOP_SIM".into(),
+		code: 0x000129,
+		display_code: Some("P000129".into()),
+		text: Some("Made-up sensor A: signal too high".into()),
+		text_id: None,
+		short_name: None,
+		level: 2,
+		temporary: false,
+	};
+	vag_data_db::put_faults(&odis_cache, odis, "EV_SimEngine_001", &[fault]).unwrap();
+	let field = |name: &str, bit: u32, bits: u32, factor: f64, unit: Option<&str>| EnvironmentField {
+		name: Some(name.to_string()),
+		text_id: None,
+		unit: unit.map(str::to_string),
+		bit_offset: Some(bit),
+		bit_length: Some(bits),
+		signed: false,
+		big_endian: true,
+		scaling: Some(Scaling::Linear(LinearScale { factor, offset: 0.0 })),
+		constant: false,
+	};
+	let record = |number: i32, length: u32, fields: Vec<EnvironmentField>| EnvironmentRecord {
+		range: Some((number, number)),
+		name: None,
+		length: Some(length),
+		fields,
+	};
+	let records = [
+		record(1, 2, vec![field("Sim priority", 0, 8, 1.0, None), field("Sim count", 8, 8, 1.0, None)]),
+		record(
+			2,
+			10,
+			vec![field("Sim aging", 0, 8, 1.0, None), field("Sim mileage", 8, 24, 1.0, Some("km"))],
+		),
+		record(0x70, 4, vec![field("Odis Engine Speed", 0, 16, 0.25, Some("1/min"))]),
+	];
+	vag_data_db::put_all_odis_freeze_frames(&odis_cache, odis, [("EV_SimEngine_001", &records[..])]).unwrap();
+
+	let vcds_cache = store.join("cache.sqlite");
+	vag_data_db::put_all_vcds_readings(
+		&vcds_cache,
+		vcds,
+		[(
+			"EV_SimEngine",
+			&[
+				reading(0x1001, "Vcds oil temperature", 0.5, -20.0),
+				reading(0x1003, "Vcds intake temperature", 1.0, -40.0),
+			][..],
+		)],
+	)
+	.unwrap();
+	let row = |bit: u32, bits: u32, kind: u8, scale: Option<(f64, f64)>, unit: Option<&str>, name: &str| {
+		use vag_data_labels::registries::{Described, Entry, Value};
+		Described {
+			section: vag_data_db::FREEZE_FRAME_SECTION,
+			entry: Entry {
+				row: 1,
+				key: 0x70,
+				identifier: None,
+				ordinal: None,
+				lead: Some(104),
+				case: None,
+				value: Value {
+					kind: Some(kind),
+					big_endian: true,
+					bit_offset: Some(bit),
+					bit_length: Some(bits),
+					scale,
+					..Default::default()
+				},
+				raw: String::new(),
+			},
+			name: Some(name.to_string()),
+			text_id: None,
+			unit: unit.map(str::to_string),
+			levels: Vec::new(),
+		}
+	};
+	let rows = [
+		row(0, 16, 0, Some((0.25, 0.0)), Some("/min"), "Vcds engine speed"),
+		row(16, 8, 0, Some((0.1, 0.0)), Some("V"), "Vcds supply voltage"),
+		row(24, 8, 11, None, None, "Reserved"),
+	];
+	vag_data_db::put_all_vcds_registry_rows(&vcds_cache, vcds, [("EV_SimEngine", &rows[..])]).unwrap();
+	// The car's units were read from the installation: a VCDS run has nothing left to read.
+	std::fs::write(
+		store.join("registry.json"),
+		r#"{"installation": "/nowhere/a-long-way-down/to-a-vcds-installation", "read_version": 3, "units": [
+			{"odx_name": "EV_SimEngine", "odx_version": "001001", "outcome": "read", "stem": "EV_SimEngine"},
+			{"odx_name": "EV_SimBrake", "odx_version": "001001", "outcome": "no file or redirect"}]}"#,
+	)
+	.unwrap();
+	for dir in [&store, &project] {
+		rusqlite::Connection::open(dir.join("cache.sqlite"))
 			.unwrap()
 			.execute("UPDATE source SET parsed_at = '2026-10-21T00:00:00.000Z'", [])
 			.unwrap();
 	}
+	let dash = at.join("dash").join("SIMVIN00000000002");
+	std::fs::create_dir_all(&dash).unwrap();
+	std::fs::write(
+		dash.join("dash.toml"),
+		"vin = \"SIMVIN00000000002\"\n\n[[channel]]\nref = \"01:1001\"\n\n[[channel]]\nref = \"01:1003\"\n\n\
+		 [[page]]\nkind = \"values\"\ncells = [\"01:1001\", \"01:1003\"]\n",
+	)
+	.unwrap();
 }
 
 /// The car whose home holds a VCDS install alone, no ODIS project: each source is tested on

@@ -49,45 +49,9 @@ const TEXT_TABLE: u8 = 3;
 /// of the reference car's units, and absent from VCDS's own printout of the same records.
 const RESERVED: u8 = 11;
 
-/// Which description a layout is read from: one, and only one, per layout.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Source {
-	/// An ODIS project's extended-data multiplexers.
-	Odis,
-	/// A VCDS install's `RF.rod`.
-	Vcds,
-}
-
-impl Source {
-	/// The cache's word for this kind of source.
-	pub fn kind(self) -> &'static str {
-		match self {
-			Source::Odis => vag_data_db::ODIS,
-			Source::Vcds => vag_data_db::VCDS,
-		}
-	}
-
-	/// The possessive a line names a variant's rows with: `ODIS's EV_SimEngine_001`,
-	/// `VCDS's EV_SimEngine_001` — "described by ODIS's …", "(VCDS's … is another variant)".
-	pub fn name(self) -> &'static str {
-		match self {
-			Source::Odis => "ODIS's",
-			Source::Vcds => "VCDS's",
-		}
-	}
-}
-
-impl Source {
-	/// The source a cache kind names (`vag_data_db::ODIS`, `VCDS`), `None` for any other —
-	/// how [`crate::extracted::Extracted::run_source`]'s answer becomes one of these.
-	pub fn of_kind(kind: &str) -> Option<Source> {
-		match kind {
-			vag_data_db::ODIS => Some(Source::Odis),
-			vag_data_db::VCDS => Some(Source::Vcds),
-			_ => None,
-		}
-	}
-}
+/// Which description a layout is read from: one, and only one, per layout — the run's one
+/// source: an ODIS project's extended-data multiplexers, or a VCDS install's `RF.rod`.
+pub use vag_cli_core::source::Source;
 
 /// One unit's extended-data records, as one source describes them.
 #[derive(Debug, Clone)]

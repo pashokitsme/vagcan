@@ -96,6 +96,15 @@ struct Cli {
 	#[arg(long, global = true, value_name = "ID", display_order = 900)]
 	project: Option<String>,
 
+	/// Which source to name things from: `odis` or `vcds`.
+	///
+	/// One source per run, never mixed: channels, scalings, fault text, freeze frames and
+	/// adaptations all come from it, and what it does not describe shows raw or as a number.
+	/// Without the flag: `VAGCAN_SOURCE`, then `[source] use` in `~/.vagcan/config.toml`, then
+	/// the ODIS project when there is one, else the VCDS installation.
+	#[arg(long, global = true, value_name = "SOURCE", value_enum, display_order = 902)]
+	source: Option<vag_cli_core::source::Source>,
+
 	/// Use the dash board's USB cable as a plain slcan adapter.
 	///
 	/// Without it, a dash board on its `dash` image is read through: the board runs the
@@ -117,6 +126,8 @@ struct Cli {
 }
 
 /// The commands each global flag means something on, by their path under `vagcan`.
+///
+/// `--source` is read where a command names things from label data.
 ///
 /// `--project` is read where a command consults the project's data; `--slcan` where a
 /// command opens an adapter. Everywhere else the flag is still accepted — `vagcan --slcan
@@ -142,6 +153,24 @@ const GLOBALS_APPLY: &[(&str, &[&str])] = &[
 			"dev vcds names",
 			"dev vcds stats",
 			"dev vcds tttext",
+		],
+	),
+	(
+		"source",
+		&[
+			"info",
+			"units",
+			"adaptations",
+			"faults",
+			"sensors",
+			"watch",
+			"measure",
+			"measure setup",
+			"dev glossary",
+			"dev sim",
+			"dev recording dash",
+			"dev dash build",
+			"dev dash edit",
 		],
 	),
 	(
@@ -668,6 +697,9 @@ async fn run() -> Result<ExitCode> {
 	if let Some(id) = &cli.project {
 		project::select(id);
 	}
+	if let Some(source) = cli.source {
+		vag_cli_core::source::select(source);
+	}
 	// A setting that cannot be honoured is said once, at the top, rather than
 	// applied silently: names would then arrive in the vendor's wording and
 	// nothing on screen would connect that to the line somebody wrote.
@@ -735,9 +767,37 @@ async fn dispatch_or_offer(command: Command, slcan: bool) -> Result<ExitCode> {
 	Ok(ExitCode::SUCCESS)
 }
 
+/// Whether a command names things from label data — the commands `--source` is shown on
+/// ([`GLOBALS_APPLY`]), and the ones a source asked for and not set up is refused on.
+fn names_label_data(command: &Command) -> bool {
+	match command {
+		Command::Info { .. }
+		| Command::Units { .. }
+		| Command::Adaptations { .. }
+		| Command::Faults { .. }
+		| Command::Sensors { .. }
+		| Command::Watch { .. }
+		| Command::Measure(_) => true,
+		Command::Dev { tool } => matches!(
+			tool,
+			Dev::Glossary
+				| Dev::Sim { .. }
+				| Dev::Dash { .. }
+				| Dev::Recording {
+					tool: recording::Tool::Dash { .. }
+				}
+		),
+		_ => false,
+	}
+}
+
 /// The command surface: one arm per command, each handing off to the crate that
 /// does the work. `slcan` is the global `--slcan`, for every command that picks a device.
 async fn dispatch(command: Command, slcan: bool) -> Result<()> {
+	// A source asked for and not set up is refused before the command opens anything.
+	if names_label_data(&command) {
+		vag_cli_core::source::check()?;
+	}
 	match command {
 		// Awaited on this very thread, never spawned: the folder panel it may
 		// open needs the main thread (see `setup::run`).

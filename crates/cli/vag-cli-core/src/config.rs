@@ -42,9 +42,15 @@
 //! # Show each channel's own key at the end of its row.
 //! show_key = false
 //!
-//! # Which language `faults` shows fault text in: `en`, `de`, `ru`, … (or the
-//! # three-letter code a source declares, `eng`, `deu`, `rus`). Unset, English
-//! # wherever a source has it, else the ODIS project's own.
+//! # Which source a run reads: "odis" or "vcds" — one per run, never mixed. Unset, the
+//! # ODIS project when there is one, else the VCDS installation. `--source` and
+//! # VAGCAN_SOURCE override it.
+//! [source]
+//! use = "vcds"
+//!
+//! # Which language `faults` shows fault text in, among the run's source's own: `en`,
+//! # `de`, `ru`, … (or the three-letter code a source declares, `eng`, `deu`, `rus`).
+//! # Unset, English wherever the source has it, else its own.
 //! [faults]
 //! language = "de"
 //!
@@ -60,12 +66,13 @@
 //! **Two language keys, on purpose.** `language` is the glossary's column and a
 //! closed set ([`Language`]): a value nobody wrote a column for is a setting
 //! that cannot be honoured. `[faults] language` is different in kind — it
-//! names which *source* to read fault text from, and a source declares its own
+//! names which of the run's source's texts to show (an ODIS project may hold several sources,
+//! one per language; a VCDS installation has one), and a source declares its own
 //! language as an ISO 639-2 code (`deu`, `eng`, `rus`). The setting takes that
 //! code or its ISO 639-1 short form (`de`, `en`, `ru`), mapped by
 //! [`language_code`]. Widening [`Language`] to carry those would make the
 //! glossary accept a column that does not exist; a second key keeps each
-//! honest. Unset, `faults` shows English wherever a source has it.
+//! honest. Unset, `faults` shows English wherever the run's source has it.
 //!
 //! **The document is kept as a `toml::Table`, not deserialized into a struct.**
 //! A struct would silently drop anything this version does not know about — a
@@ -137,9 +144,15 @@ const FRESH: &str = "\
 # can be found in names.csv.\n\
 # show_key = false\n\
 \n\
-# Which language `faults` shows fault text in when the sources set up declare\n\
-# several: \"en\", \"de\", \"ru\", ... Unset, English wherever a source has it,\n\
-# else the ODIS project's own.\n\
+# Which source a run reads: \"odis\" or \"vcds\" -- one per run, never mixed.\n\
+# Unset, the ODIS project when there is one, else the VCDS installation.\n\
+# `--source` and VAGCAN_SOURCE override it.\n\
+# [source]\n\
+# use = \"vcds\"\n\
+\n\
+# Which language `faults` shows fault text in when the run's source declares\n\
+# several: \"en\", \"de\", \"ru\", ... Unset, English wherever the source has it,\n\
+# else its own.\n\
 # [faults]\n\
 # language = \"de\"\n\
 \n\
@@ -233,7 +246,16 @@ pub fn language_complaint(document: &Document) -> Option<String> {
 	}
 }
 
-/// Which source's fault text `faults` prefers — `[faults] language`, as the
+/// Which source a run reads, as `[source] use` spells it, if the file says — checked by
+/// [`crate::source::asked`], which refuses a value that names no source.
+pub fn source(document: &Document) -> Option<String> {
+	let value = document.get("source")?.get("use")?;
+	// Not a string — `use = true` — is given back as written, so it is refused as naming no
+	// source rather than read as unset.
+	Some(value.as_str().map_or_else(|| value.to_string().trim().to_string(), str::to_string))
+}
+
+/// Which language among the run's source's fault texts `faults` prefers — `[faults] language`, as the
 /// ISO 639-2 code a source declares ([`language_code`]: `en` and `eng` are both
 /// `eng`). `None` when unset, which is the ordinary state.
 ///

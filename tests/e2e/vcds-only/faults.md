@@ -8,8 +8,8 @@ says why.
 $ vagcan faults
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
-note: the codes are not named: no label data on this machine
-  (use "vagcan setup" to read it)
+note: the codes are not named: the VCDS installation has no fault text
+  (use "vagcan setup <VCDS installation>" to read one)
 2 stored codes on 2 of 4 units · 1 failing now
 
 7E0  SIM ENGINE  SIM906000A
@@ -30,12 +30,11 @@ note: the codes are not named: no label data on this machine
 $ vagcan -v faults --unit 713
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
-note: the codes are not named: no label data on this machine
-  (use "vagcan setup" to read it)
-codes below are shown as numbers: no fault-name labels on this machine
+note: the codes are not named: the VCDS installation has no fault text
+  (use "vagcan setup <VCDS installation>" to read one)
+codes below are shown as numbers: the VCDS installation has no fault text
 note: looked in [HOME]/rod
-help: run `vagcan setup <ODIS project or VCDS installation>` (offline)
-help: with no path, `vagcan setup` asks which and can fetch VCDS; see `vagcan setup --help`
+help: read one: `vagcan setup <VCDS installation>`
 a stored code is a record that something happened once — not a diagnosis, and not necessarily a fault now; `failing` is failing now
 713  1 code listed, 1 confirmed
 713  047120 (291104)  confirmed · 123392 km, 1×, 2 s ago, 64 km ago

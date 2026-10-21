@@ -168,3 +168,90 @@ fn no_literal_glyphs() {
 		found.join("\n")
 	);
 }
+
+/// One source per run (CLAUDE.md, "ODIS and VCDS are independent sources"): a reader of
+/// label data is handed the run's one store, `vag_cli_core::source::Run`, never both. So
+/// outside the code that owns the stores — `project.rs`, `source.rs`, `extracted.rs` — and
+/// `setup`, which reads a named source into its store, nothing picks a cache by kind out of
+/// `Stores` (`cache_of`), or opens a source other than the run's (`open_from`). Either
+/// would let a command read the other source beside its own.
+#[test]
+fn no_reader_picks_a_store_past_the_runs_one_source() {
+	let owners = [
+		"vag-cli-core/src/project.rs",
+		"vag-cli-core/src/source.rs",
+		"vag-cli-core/src/extracted.rs",
+	];
+	let found: Vec<String> = code_lines(&owners)
+		.into_iter()
+		.filter(|(file, _, _)| !file.contains("vag-cli-diag/src/setup/"))
+		.filter(|(_, _, line)| ["cache_of(", "open_from(", ".caches()"].iter().any(|p| code_part(line).contains(p)))
+		.map(|(file, n, line)| format!("{file}:{n}: {}", line.trim()))
+		.collect();
+	assert!(
+		found.is_empty(),
+		"a reader reaching a store past the run's one source: take a `vag_cli_core::source::Run` \
+		 (`source::run`) or `extracted::open`\n{}",
+		found.join("\n")
+	);
+}
+
+/// The ways to reach one store directly, past the run's [`Run`]: the VCDS store, the ODIS
+/// project, and the VCDS store's files.
+///
+/// [`Run`]: vag_cli_core::source::Run
+const DIRECT: [&str; 6] = [
+	"project::vcds()",
+	"project::vcds_at(",
+	"project::current()",
+	"stores.vcds.cache()",
+	".vcds.names()",
+	"stores_or_vcds()",
+];
+
+/// Who may reach a store directly, and which: the code that owns the stores, `setup` (it reads
+/// a named source into its store), the VCDS-only readers — the registry read, the fault-text
+/// chain, the label files, `dev vcds` — and the ODIS-only one, which opens the project and
+/// nothing else. Each is allowed the calls of its own source, no more.
+const ALLOWED: &[(&str, &[&str])] = &[
+	("vag-cli-core/src/project.rs", &DIRECT),
+	("vag-cli-core/src/source.rs", &DIRECT),
+	// The channels' reader holds one `Run`; it resolves the stores to pick one, and reaches
+	// the VCDS store's log for a VCDS run's car join.
+	("vag-cli-core/src/extracted.rs", &["stores_or_vcds()", "project::vcds_at("]),
+	(
+		"vag-cli-core/src/registry.rs",
+		&["project::vcds()", "stores_or_vcds()", "stores.vcds.cache()"],
+	),
+	("vag-cli-diag/src/faultnames.rs", &["project::vcds()"]),
+	("vag-cli-diag/src/labels.rs", &["project::vcds()"]),
+	("vag-cli-diag/src/car.rs", &["project::vcds()"]),
+	("vag-cli-diag/src/odisfaults.rs", &["project::current()"]),
+	// `bare vagcan` lists what is on the machine, and counts through a `Run`.
+	("vag-cli/src/overview.rs", &["project::vcds()", "project::current()", "project::vcds_at("]),
+];
+
+/// One source per run, the direct ways in: a reader outside [`ALLOWED`] that opens the VCDS
+/// store, the ODIS project or the store's files by itself, rather than through the run's
+/// `Run`, could read the other source beside its own — VCDS's languages in the ODIS fault
+/// namers, `names.json` on an ODIS run. `setup/` and `vcds/` (`dev vcds`, VCDS's own files)
+/// read one named source and are left out.
+#[test]
+fn no_reader_opens_a_store_by_itself() {
+	let found: Vec<String> = code_lines(&[])
+		.into_iter()
+		.filter(|(file, _, _)| !file.contains("vag-cli-diag/src/setup/") && !file.contains("vag-cli-diag/src/vcds/"))
+		.filter_map(|(file, n, line)| {
+			let code = code_part(&line);
+			let allowed: &[&str] = ALLOWED.iter().find(|(f, _)| file.ends_with(f)).map_or(&[], |(_, calls)| calls);
+			let hit = DIRECT.iter().find(|call| code.contains(*call) && !allowed.contains(call))?;
+			Some(format!("{file}:{n}: `{hit}` — {}", line.trim()))
+		})
+		.collect();
+	assert!(
+		found.is_empty(),
+		"a reader opening a store by itself: take the run's `vag_cli_core::source::Run` \
+		 (`source::run`, `extracted::open`), or add it to ALLOWED with the source it reads\n{}",
+		found.join("\n")
+	);
+}

@@ -152,7 +152,8 @@ fn read_csv(text: &str) -> Vec<Vec<String>> {
 	rows
 }
 
-/// Write or refresh `~/.vagcan/names.csv` from what this project knows.
+/// Write or refresh `~/.vagcan/names.csv` from what this run's one source knows
+/// ([`crate::source::run`]): the ids its channels carry, and their wording in it alone.
 ///
 /// **Never destructive.** Every translation in a column this build reads (`en`,
 /// `ru`) is kept; text ids the project's channels carry and the file does not
@@ -169,11 +170,12 @@ fn read_csv(text: &str) -> Vec<Vec<String>> {
 /// header names as languages — and it is there because translating a list of
 /// bare ids is not something anybody can do.
 pub fn seed(stores: &crate::project::Stores) -> anyhow::Result<Seeded> {
-	seed_into(stores, path()?)
+	seed_into(crate::source::run(stores)?.as_ref(), path()?)
 }
 
-/// [`seed`], into a file named by the caller — a test's, never the owner's.
-fn seed_into(stores: &crate::project::Stores, path: PathBuf) -> anyhow::Result<Seeded> {
+/// [`seed`] from one run's source (`None`: no source, and only the file's own rows), into a
+/// file named by the caller — a test's, never the owner's.
+pub(crate) fn seed_into(run: Option<&crate::source::Run>, path: PathBuf) -> anyhow::Result<Seeded> {
 	// A file that is there and does not read is somebody's work in a form this
 	// cannot parse — saved as Windows-1251, say. Treating it as empty would
 	// write the project's ids over every translation in it.
@@ -213,23 +215,23 @@ fn seed_into(stores: &crate::project::Stores, path: PathBuf) -> anyhow::Result<S
 	}
 	let translated = rows.len();
 
-	// Every text id a channel of this project carries, whether or not it is
-	// written yet.
-	// The project's first, so where both carry an id the ODIS wording is today's.
-	for cache in stores.caches() {
-		for (id, name) in vag_data_db::text_ids(&cache).unwrap_or_default() {
+	// Every text id a channel of the run's one source carries, whether or not it is
+	// written yet, and that source's own wording for it — never the other source's.
+	if let Some(run) = run {
+		for (id, name) in vag_data_db::text_ids_of(&run.cache(), run.source.kind()).unwrap_or_default() {
 			rows.entry(id.clone()).or_default();
 			current.entry(id).or_insert(name);
 		}
 	}
-	// VCDS's wording, for rows that are here already — never a row of its own.
+	// On a VCDS run, the text table's wording, for rows that are here already — never a
+	// row of its own.
 	// `names.json` is keyed by the text table's six-digit record ids, and no
 	// channel carries one: a channel's text id is VW's (`IDE#####`), so a row
 	// keyed by a record id is a row nothing looks up. While a solver read a
 	// quarter of the table that cost 14,738 such rows; read exactly, it would be
 	// every record — 195,910, enum states, units and countries among them — in
 	// a file a person is meant to go through by hand.
-	let vcds = crate::extracted::open(stores).names();
+	let vcds = run.map(|run| crate::extracted::open_run(run).names()).unwrap_or_default();
 	for id in rows.keys() {
 		if let Some(name) = vcds.get(id) {
 			current.entry(id.clone()).or_insert_with(|| name.clone());
@@ -341,14 +343,11 @@ mod tests {
 		// A translated row keyed by a record id, and a blank one.
 		std::fs::write(&glossary, "text_id,en,ru,current\n000017,My flap reading,,\n000081,,,Status\n").unwrap();
 
-		let seeded = seed_into(
-			&crate::project::Stores {
-				project: None,
-				vcds: project.clone(),
-			},
-			glossary.clone(),
-		)
-		.unwrap();
+		let run = crate::source::Run {
+			source: crate::source::Source::Vcds,
+			store: project.clone(),
+		};
+		let seeded = seed_into(Some(&run), glossary.clone()).unwrap();
 		let text = std::fs::read_to_string(&glossary).unwrap();
 		assert!(text.contains("000017,My flap reading,,Invented flap position"), "{text}");
 		assert!(!text.contains("910231"), "a record id no channel carries became a row: {text}");
@@ -365,22 +364,10 @@ mod tests {
 			"text_id,en,ru,current\n0049B3C127BB448c9DD405BD4E2BEF37,Light 5,,\nIDE00594,Boost,,\nMAS00001,Gear,,\n",
 		)
 		.unwrap();
-		seed_into(&empty_project(here.path()), glossary.clone()).unwrap();
+		seed_into(None, glossary.clone()).unwrap();
 		let text = std::fs::read_to_string(&glossary).unwrap();
 		let ids: Vec<&str> = text.lines().skip(1).map(|l| l.split(',').next().unwrap()).collect();
 		assert_eq!(ids, ["IDE00594", "MAS00001", "0049B3C127BB448c9DD405BD4E2BEF37"], "{text}");
-	}
-
-	/// A project with nothing in it, for seeding a glossary that is not the owner's.
-	fn empty_project(dir: &std::path::Path) -> crate::project::Stores {
-		let project = crate::project::Project {
-			id: "TEST".to_string(),
-			dir: dir.to_path_buf(),
-		};
-		crate::project::Stores {
-			project: Some(project.clone()),
-			vcds: project,
-		}
 	}
 
 	#[test]
@@ -390,7 +377,7 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let glossary = here.path().join("names.csv");
 		std::fs::write(&glossary, text).unwrap();
-		seed_into(&empty_project(here.path()), glossary.clone()).unwrap();
+		seed_into(None, glossary.clone()).unwrap();
 		let back = std::fs::read_to_string(&glossary).unwrap();
 		assert!(back.contains("IDE00022,Boost"), "the translation was lost: {back}");
 		assert!(back.starts_with('\u{FEFF}'), "the mark Excel needs for UTF-8 was dropped");
@@ -403,18 +390,18 @@ mod tests {
 		// Windows-1251 Cyrillic: not UTF-8.
 		let cp1251 = b"text_id,en,ru\nIDE00022,Boost,\xc4\xe0\xe2\xeb\xe5\xed\xe8\xe5\n".to_vec();
 		std::fs::write(&glossary, &cp1251).unwrap();
-		assert!(seed_into(&empty_project(here.path()), glossary.clone()).is_err());
+		assert!(seed_into(None, glossary.clone()).is_err());
 		assert_eq!(std::fs::read(&glossary).unwrap(), cp1251);
 
 		let headless = b"id,en\nIDE00022,Boost\n".to_vec();
 		std::fs::write(&glossary, &headless).unwrap();
-		assert!(seed_into(&empty_project(here.path()), glossary.clone()).is_err());
+		assert!(seed_into(None, glossary.clone()).is_err());
 		assert_eq!(std::fs::read(&glossary).unwrap(), headless);
 
 		// A column this build does not write back would be dropped by the rewrite.
 		let german = b"text_id,en,de\nIDE00022,Boost,Ladedruck\n".to_vec();
 		std::fs::write(&glossary, &german).unwrap();
-		let Err(refused) = seed_into(&empty_project(here.path()), glossary.clone()) else {
+		let Err(refused) = seed_into(None, glossary.clone()) else {
 			panic!("a column it would drop was written over");
 		};
 		let refused = refused.to_string();

@@ -25,6 +25,14 @@ There is no installed binary. Everything below is `cargo run -q -p vag-cli -- <a
 from the repository root — the package is `vag-cli`, the binary it builds is `vagcan` —
 and the commands are written bare for readability.
 
+**One source per run.** With an ODIS project and a VCDS installation both set up, a run names
+everything — channels, scalings, fault text, freeze frames, adaptations — from one of them:
+the ODIS project by default, the VCDS installation with `--source vcds` (or
+`VAGCAN_SOURCE=vcds`, or `[source] use = "vcds"` in `~/.vagcan/config.toml`). Nothing of one
+fills a gap in the other: what the run's source does not describe is raw, or a bare number.
+When a reading or a fault text is missing on one source, try the other with `--source` —
+and report which source an answer came from.
+
 Every command prints its data on stdout — tables, `key  value` blocks, one summary line —
 and everything else on stderr: the `adapter` line, notes, questions, progress. So
 `vagcan faults > faults.txt` holds the data alone. Add `-v` (anywhere on the line) for
@@ -48,6 +56,7 @@ request and answer on the bus; stdout does not change with either.
 | One instantaneous sample | `vagcan watch --did "01:2029" --for 1 --hz 2` |
 | What a unit's data declares it answers | `vagcan watch` — one tab per unit |
 | Time an acceleration run | `vagcan measure` |
+| The same, from the other source | `vagcan --source vcds faults` (or `odis`) |
 | Open a saved run as a chart page | `vagcan measure view` (offline) |
 
 Naming a unit: a short number (`01` engine, `02` gearbox) or a request id (`713`,
@@ -99,7 +108,8 @@ vagcan faults --unit 01,02,713    # several
 ```
 
 **Run `vagcan setup` once, and faults come out named.** Without it a code is its bare
-number; with it each code carries its SAE code and the text VCDS or ODIS itself would print.
+number; with it each code carries its SAE code and the text the run's source itself would print
+— the ODIS project's by default, VCDS's with `--source vcds`.
 On stdout: a summary line, then a block per unit that has codes.
 
 ```
@@ -110,14 +120,13 @@ On stdout: a summary line, then a block per unit that has codes.
              failing · 254 times · 214592 km · last 2026-09-28 14:20
 
 713  ESC  5Q0614517AQ
-  · B1168F2  Steering Angle Sensor: Not Initialized (VCDS text)
+  · B1168F2  Steering Angle Sensor: Not Initialized
              stored · 3 times · 210101 km
 ```
 
-`✗` is failing now, `·` stored. `last` is the car's own clock. A mark after the text says
-when its words are not the source's settled ones: `(VCDS text)` or `(ODIS text)` borrowed
-from the other source, `(variant not settled)` — an ODIS variant the car's identifiers did
-not settle, a guess; report such a text as one. Long text wraps under itself.
+`✗` is failing now, `·` stored. `last` is the car's own clock. `(variant not settled)` after
+the text marks an ODIS variant the car's identifiers did not settle, a guess; report such a
+text as one. No text is ever borrowed from the other source. Long text wraps under itself.
 On the reference car 11 of 15 confirmed codes name with VCDS alone, 15 of 15 with ODIS.
 
 A code stays a number when the chain cannot reach it, and `vagcan -v faults` says why,
@@ -168,8 +177,8 @@ Sessions live under `~/.vagcan/cars/<VIN>/measures/`.
 `vagcan units --identify` names every unit the gateway lists, the gateway and the
 powertrain, and records what each said about itself under
 `~/.vagcan/cars/<VIN>/units.json` — the list `setup` and `dev dash build` work from
-without the car. With a VCDS installation it then reads the channels of the units it
-recorded, the first time: minutes when a key has to be searched for, and the command
+without the car. On a run that reads the VCDS installation it then reads the channels of the
+units it recorded, the first time: minutes when a key has to be searched for, and the command
 says so before it starts. What a unit answers comes from a source `setup` read: `vagcan watch`
 lists every channel the project describes for it, one tab per unit, and a unit nothing
 describes has nothing to show and is named in the summary. There is no sweep to

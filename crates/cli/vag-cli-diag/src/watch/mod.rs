@@ -2370,7 +2370,7 @@ fn coverage_report(
 		push(
 			1,
 			match project {
-				Some(id) => format!("  — {they}, but neither the project {id} nor any catalog in {catalogs}\n    describes {their} identifiers.\n"),
+				Some(source) => format!("  — {they}, but neither {source} nor any catalog in {catalogs}\n    describes {their} identifiers.\n"),
 				None => {
 					format!(
 						"  — {they}, but no catalog in {catalogs} matches {their} part numbers,\n    and no project is set up that might describe {}.\n",
@@ -2502,8 +2502,8 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 		&identities,
 		&channels,
 		catalogs,
-		extracted.project(),
-		&crate::registry::causes(&identities),
+		extracted.describe().as_deref(),
+		&crate::registry::causes(extracted.run_source(), &identities),
 	) {
 		vag_cli_core::verbosity::say(level, &line);
 	}
@@ -2874,11 +2874,11 @@ mod tests {
 			&identities,
 			&channels,
 			"/x/data/SK37X/measurements",
-			Some("SK37X"),
+			Some("the ODIS project SK37X"),
 			&causes,
 		));
 		assert!(text.contains("nothing to show for 70E\n"), "{text}");
-		assert!(text.contains("— it answers, but neither the project SK37X"), "{text}");
+		assert!(text.contains("— it answers, but neither the ODIS project SK37X"), "{text}");
 		assert!(text.contains("describes its identifiers"), "{text}");
 		assert!(text.contains("    70E EV_BCMMQB: no file of that name in this installation\n"), "{text}");
 		assert!(!text.contains("they answer"), "{text}");
@@ -2893,7 +2893,7 @@ mod tests {
 			&identities,
 			&channels,
 			"/x/data/SK37X/measurements",
-			Some("SK37X"),
+			Some("the ODIS project SK37X"),
 			&causes,
 		));
 		assert!(text.contains("nothing to show for 70E 713\n"), "{text}");
@@ -2978,7 +2978,7 @@ mod tests {
 			&identities,
 			&channels,
 			"/x/data/SK37X/measurements",
-			Some("SK37X"),
+			Some("the ODIS project SK37X"),
 			&Default::default(),
 		));
 		assert!(text.contains("has no scalings on this machine"), "{text}");

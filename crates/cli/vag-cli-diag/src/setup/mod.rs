@@ -692,15 +692,36 @@ async fn run_with(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source
 	if let Some(project) = &chosen.project {
 		crate::project::remember(&project.id)?;
 	}
-	// Asked of the stores, not of which branch just ran: a VCDS run beside a project
-	// that holds ODIS rows must not close by telling its reader there are no scalings.
-	let scalings = !crate::extracted::open(&stores).is_empty();
-	let fault_labels = fault_text_available(&crate::project::rod_pool()?, &stores)?;
+	// Each source this run read, asked of that source alone: the two are independent, and
+	// a VCDS run must not close on scalings an ODIS project beside it holds (CLAUDE.md).
+	use vag_cli_core::source::Source;
+	let pool = crate::project::rod_pool()?;
+	let ready = |source: Source| -> Result<Ready> {
+		Ok(Ready {
+			scalings: !crate::extracted::open_from(&stores, Some(source)).is_empty(),
+			fault_labels: fault_text_available(&pool, source, &stores)?,
+		})
+	};
+	let read_odis = matches!(chosen.source, source::Source::Odis { .. });
+	let read: Vec<Source> = [(read_odis, Source::Odis), (vcds_dir.is_some(), Source::Vcds)]
+		.into_iter()
+		.filter_map(|(read, source)| read.then_some(source))
+		.collect();
+	let first = ready(if read_odis { Source::Odis } else { Source::Vcds })?;
 	let closing = Closing {
-		name: chosen.project.as_ref().map_or(crate::project::VCDS_STORE, |p| p.id.as_str()),
+		name: chosen
+			.project
+			.as_ref()
+			.filter(|_| read_odis)
+			.map_or(crate::project::VCDS_STORE, |p| p.id.as_str()),
 		landing: chosen.landing,
-		scalings,
-		fault_labels,
+		scalings: first.scalings,
+		fault_labels: first.fault_labels,
+		also: match read_odis && vcds_dir.is_some() {
+			true => Some(ready(Source::Vcds)?),
+			false => None,
+		},
+		reads_instead: reads_instead(&stores, &read),
 		took: started.elapsed(),
 	};
 	said.close(&steps, &closing);
@@ -805,17 +826,18 @@ fn read_again(kind: &str, dir: &str) -> String {
 	}
 }
 
-/// Whether `vagcan faults` will be able to name a code once this run is done:
-/// VCDS's fault labels in the shared pool, or fault rows in the project's cache.
+/// Whether `vagcan faults` will be able to name a code from `source` once this run is done:
+/// VCDS's fault labels in the shared pool, or fault rows in the project's cache — the one
+/// asked, never the other standing in for it.
 ///
 /// Asked of the project this run wrote, not of `OdisFaults::open`, which
 /// resolves the *current* project (`--project`, `VAGCAN_PROJECT`, config.toml)
 /// and answered for the first car while a second one was being set up. And an
 /// error is an error: a cache this run has just written that will not answer
 /// is not "no fault text". Only a cache that is not there at all is.
-fn fault_text_available(pool: &Path, stores: &crate::project::Stores) -> Result<bool> {
-	if crate::faultnames::has_fault_labels(pool) {
-		return Ok(true);
+fn fault_text_available(pool: &Path, source: vag_cli_core::source::Source, stores: &crate::project::Stores) -> Result<bool> {
+	if source == vag_cli_core::source::Source::Vcds {
+		return Ok(crate::faultnames::has_fault_labels(pool));
 	}
 	let Some(cache) = stores.cache_of(vag_data_db::ODIS).filter(|cache| cache.is_file()) else {
 		return Ok(false);
@@ -1696,8 +1718,37 @@ struct Closing<'a> {
 	/// Whether `vagcan faults` will name a code: VCDS's fault labels, or the fault
 	/// text an ODIS project carries.
 	fault_labels: bool,
+	/// The VCDS installation read in the same run as the ODIS project, and what it holds:
+	/// a Ready line of its own, since the two are never one source.
+	also: Option<Ready>,
+	/// The source the car commands read when it is not one this run read — the default, or
+	/// `[source] use` — said so a reader is not surprised the next command reads the other.
+	reads_instead: Option<String>,
 	/// How long the run took, from the question to the close.
 	took: std::time::Duration,
+}
+
+/// What one source holds once `setup` has read it.
+#[derive(Debug, Clone, Copy)]
+struct Ready {
+	scalings: bool,
+	fault_labels: bool,
+}
+
+/// The hint when the car commands read a source this run did not read: which, and the flag
+/// that reads the one just read.
+fn reads_instead(stores: &crate::project::Stores, read: &[vag_cli_core::source::Source]) -> Option<String> {
+	let just_read = read.first()?;
+	// A setting that will refuse the next command — `[source] use = "odis"` with no ODIS
+	// project — is said here, where it can be put right, not first at the car.
+	let run = match vag_cli_core::source::run(stores) {
+		Ok(run) => run?,
+		Err(e) => return Some(format!("car commands will refuse: {e}; `{}` reads this one", just_read.flag())),
+	};
+	if read.contains(&run.source) {
+		return None;
+	}
+	Some(format!("car commands read {}; `{}` reads this one", run.describe(), just_read.flag()))
 }
 
 /// One line of what `setup` says, at `level`, indentation and all.
@@ -1816,18 +1867,34 @@ fn tilde_in(text: &str) -> String {
 /// The close: one `Ready:` line, what the run came to, and the hint under it.
 fn closing_lines(steps: &[Step], closing: &Closing<'_>) -> Vec<Line> {
 	let gaps = steps.iter().filter(|s| s.state.gap()).count();
-	let fault_text = if closing.fault_labels { "fault text" } else { "no fault text" };
-	let scalings = if closing.scalings { "scalings" } else { "no scalings" };
-	let whom = match closing.name == crate::project::VCDS_STORE {
-		true => "every car".to_string(),
-		false => closing.name.to_string(),
+	// What one source holds, for whom: `fault text and scalings for SK37X`. A second source
+	// read in the same run is a second clause of the one result line — each said of itself.
+	let holds = |ready: Ready, whom: &str| {
+		let fault_text = if ready.fault_labels { "fault text" } else { "no fault text" };
+		let scalings = if ready.scalings { "scalings" } else { "no scalings" };
+		format!("{fault_text} and {scalings} for {whom}")
 	};
 	let ready = match gaps {
 		0 => "Ready".to_string(),
 		n => format!("Ready with {n} {}", plural(n, "gap")),
 	};
-	let mut lines = vec![Line::at(0, format!("{ready}: {fault_text} and {scalings} for {whom}."))];
+	let whom = match closing.name == crate::project::VCDS_STORE {
+		true => "every car".to_string(),
+		false => closing.name.to_string(),
+	};
+	let first = Ready {
+		scalings: closing.scalings,
+		fault_labels: closing.fault_labels,
+	};
+	let result = match closing.also {
+		None => holds(first, &whom),
+		Some(also) => format!("{}; {}", holds(first, &whom), holds(also, "every car")),
+	};
+	let mut lines = vec![Line::at(0, format!("{ready}: {result}."))];
 	let hint = |level: u8, text: &str| Line::at(level, format!("{STEP}({text})"));
+	if let Some(instead) = &closing.reads_instead {
+		lines.push(hint(0, instead));
+	}
 	match closing.landing {
 		source::Landing::Replaces => lines.push(hint(0, "this installation replaces the one read before")),
 		source::Landing::Adds => lines.push(hint(0, &format!("added to the project {}", closing.name))),
@@ -1837,14 +1904,14 @@ fn closing_lines(steps: &[Step], closing: &Closing<'_>) -> Vec<Line> {
 	// them: it once announced labels copied in after an ODIS-only run that copied nothing.
 	lines.push(hint(
 		0,
-		match closing.fault_labels {
+		match closing.fault_labels || closing.also.is_some_and(|a| a.fault_labels) {
 			true => "use \"vagcan faults\" with the car connected",
 			false => "use \"vagcan faults\" with the car connected; its codes show as numbers",
 		},
 	));
 	// Said only where it is true. An ODIS project declares a scaling per variant, so "none
 	// yet" would be false there.
-	if !closing.scalings {
+	if !closing.scalings && !closing.also.is_some_and(|a| a.scalings) {
 		let pending = steps.iter().any(|s| s.state == State::Pending);
 		lines.push(hint(
 			vag_cli_core::verbosity::NOTES,
@@ -2192,6 +2259,8 @@ mod tests {
 			landing: source::Landing::New,
 			scalings,
 			fault_labels,
+			also: None,
+			reads_instead: None,
 			took: std::time::Duration::from_millis(3_140),
 		}
 	}
@@ -2809,16 +2878,16 @@ mod tests {
 		vag_data_db::put_all_faults(&project(&without).cache(), "/x/SK37X", []).unwrap();
 
 		assert!(
-			fault_text_available(&pool.0, &stores(&with)).unwrap(),
+			fault_text_available(&pool.0, vag_cli_core::source::Source::Odis, &stores(&with)).unwrap(),
 			"a project whose cache holds fault text was reported as having none"
 		);
 		assert!(
-			!fault_text_available(&pool.0, &stores(&without)).unwrap(),
+			!fault_text_available(&pool.0, vag_cli_core::source::Source::Odis, &stores(&without)).unwrap(),
 			"a project with no fault text was reported as having some"
 		);
 		// No cache at all is no fault text, not an error.
 		let empty = TempDir::new("faultline-empty");
-		assert!(!fault_text_available(&pool.0, &stores(&empty)).unwrap());
+		assert!(!fault_text_available(&pool.0, vag_cli_core::source::Source::Odis, &stores(&empty)).unwrap());
 	}
 
 	#[test]

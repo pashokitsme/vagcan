@@ -191,9 +191,11 @@ impl Project {
 	/// [`Extracted::run_source`]: vag_cli_core::extracted::Extracted::run_source
 	pub fn current() -> Result<Project> {
 		let stores = vag_cli_core::project::stores()?;
+		// A source asked for and not set up is refused here, by name.
+		vag_cli_core::source::run_source(&stores)?;
 		let extracted = vag_cli_core::extracted::open(&stores);
 		match extracted.run_source() {
-			Some(vag_data_db::ODIS) => {
+			Some(vag_cli_core::source::Source::Odis) => {
 				if let Some(source) = extracted.odis_unread_adaptations().first() {
 					return Err(
 						anyhow!("project {} describes no adaptations", stores.id())
@@ -202,8 +204,7 @@ impl Project {
 					);
 				}
 				// Read, and none found: reading it again would find none again.
-				let odis = stores.cache_of(vag_data_db::ODIS).unwrap_or_default();
-				if vag_data_db::adaptation_variants(&odis).unwrap_or_default().is_empty() {
+				if !extracted.describes_adaptations() {
 					return Err(anyhow!("this ODIS project describes no adaptations"));
 				}
 				Ok(Project { extracted })
@@ -219,7 +220,7 @@ impl Data for Project {
 		walk::record_for(vin, std::slice::from_ref(unit));
 		// VCDS's rows of a unit are read the first time it is seen; a run of ODIS has no use
 		// for them.
-		if self.extracted.run_source() == Some(vag_data_db::VCDS) {
+		if self.extracted.run_source() == Some(vag_cli_core::source::Source::Vcds) {
 			vag_cli_core::registry::ensure_async(vec![unit.clone()]).await;
 		}
 		// Opened again: the read above may have written this unit's rows.

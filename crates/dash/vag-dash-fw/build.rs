@@ -34,6 +34,10 @@ fn plan() {
 	// The project override. A different project is a different cache, and a
 	// different cache is a different plan.
 	println!("cargo:rerun-if-env-changed={}", vag_cli_core::project::PROJECT_ENV);
+	// The source override: one source per run, and a build script has no `--source`, so the
+	// environment picks it here — else `[source] use` in config.toml (one of the inputs
+	// below), else the default. A different source is a different plan.
+	println!("cargo:rerun-if-env-changed={}", vag_cli_core::source::SOURCE_ENV);
 
 	println!("cargo:rerun-if-env-changed={NO_CAR_ENV}");
 
@@ -50,8 +54,26 @@ fn plan() {
 	let written = match vag_cli_core::dash::build_for_car(&vin, None) {
 		Ok(written) => written,
 		// `{:#}` prints the whole chain — "no dash.toml for <VIN> yet. Write …",
-		// "X: unit NN has no channel with the id …" — which is what the person needs.
-		Err(e) => panic!("dash plan for VIN {vin}: {e:#}"),
+		// "X: unit NN has no channel with the id …" — which is what the person needs, and
+		// the hints after it: which source the build read, and how to build from the other.
+		Err(e) => {
+			let mut hints: Vec<String> = vag_cli_core::report::hints(&e)
+				.into_iter()
+				.map(|hint| match hint {
+					vag_cli_core::report::Hint::Note(text) => format!("note: {text}"),
+					vag_cli_core::report::Hint::Help(text) => format!("help: {text}"),
+				})
+				.collect();
+			// A help that names `--source` is `vagcan`'s; this build takes no flag, so how to
+			// give it the same choice is said beside it.
+			if hints.iter().any(|h| h.contains("--source ")) {
+				hints.push(format!(
+					"help: for this build: `{}=<odis|vcds> cargo build`, or `[source] use` in ~/.vagcan/config.toml",
+					vag_cli_core::source::SOURCE_ENV
+				));
+			}
+			panic!("dash plan for VIN {vin}: {e:#}\n{}", hints.join("\n"))
+		}
 	};
 
 	// What was resolved and how, so a builder sees a proven scaling beating a

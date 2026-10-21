@@ -23,7 +23,13 @@ The steps from a new car to a flashed board are in the README: [Building the das
 | build the firmware for that car | `VAGCAN_DASH_VIN=<VIN> cargo build --release --bin dash` in `crates/dash/vag-dash-fw` |
 | check the firmware compiles, no car | `VAGCAN_DASH_NO_CAR=1 cargo build --release --bin dash` (an empty configuration — do not flash it) |
 
-Both run the same build. `vagcan dev dash build` is for reading the result — and, with a VCDS
+Both run the same build, from one source: the ODIS project by default, the VCDS installation
+with `vagcan --source vcds dev dash build <VIN>` — and for the firmware, `VAGCAN_SOURCE=vcds`,
+or `[source] use = "vcds"` in `~/.vagcan/config.toml` for both. A channel that source does not
+describe is refused, never taken from the other; the refusal says which source the build read
+and the flag that builds from the other.
+
+`vagcan dev dash build` is for reading the result — and, when the build reads the VCDS
 installation, it is a step before the firmware build only when no command with the car has read
 the channels of the units the configuration uses yet: it reads them from the installation (offline,
 minutes the first time), which the firmware build never does. A firmware build that uses a unit
@@ -502,7 +508,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `<path> is for VIN X but the build asked for Y` | Build for X, or correct `vin`. |
 | `language "xx" is not one this build has words for` | `"en"` or `"ru"`. |
 | `no record of <VIN>'s control units — connect to the car and run …` | Connect to the car once: `vagcan units --identify` or `vagcan watch` writes it. |
-| `the channels of N control units … have not been read from the VCDS installation (…)` | Only the units the configuration uses count. Run `vagcan dev dash build <VIN>` once: it reads them from the installation, offline, then builds. If the refusal goes on to say the installation `is not on this machine any more`, or names the project's own note of it, re-run `vagcan setup <VCDS installation>` first. If `dev dash build` is what just ran, the lines above it say what stopped the read. |
+| `the channels of N control units … have not been read from the VCDS installation (…)` | Only on a build that reads the VCDS installation. Only the units the configuration uses count. Run `vagcan dev dash build <VIN>` once: it reads them from the installation, offline, then builds. If the refusal goes on to say the installation `is not on this machine any more`, or names the project's own note of it, re-run `vagcan setup <VCDS installation>` first. If `dev dash build` is what just ran, the lines above it say what stopped the read. |
 | `the channels of N control units … (…), which the plan does not use` | Not a refusal: a note among the build's lines, and the build goes on. Those units' channels are read by the next `watch`, `measure` or `units --identify` with the car, or by `vagcan dev dash build <VIN>`; when the note says the installation is gone, re-run `vagcan setup <VCDS installation>` if you want them. |
 | `no [[channel]]` / `no [[page]]` | Add one. |
 | `line N: [channel] has one pair of brackets — write [[channel]], two pairs` | Two pairs of brackets. The same for `[page]` and `[button]`. |
@@ -531,12 +537,12 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `setpoint is not a string` | Quote it. |
 | `unit XXX is not in the car's record of its units` | Connect to the car with that unit answering (`vagcan units --identify`), or fix the unit. |
 | `unit XXX: the car's record has no part number (F187) for it` | Run `vagcan units --identify` again. The board checks the unit by that number. |
-| `X: unit NN has no channel with the id … in this car's project data, and none was measured on a car` | This car's unit has no such row. Find its ids in `vagcan watch`: press `,` and set "Key at the end of each row" to shown. |
-| `X: unit NN has no channel at identifier DDDD, bit B in this car's project data, and none was measured on a car` | No row at that identifier and bit on this car's unit. Check the identifier and the `@` bit, or find the row in `vagcan watch` as above. |
+| `X: unit NN has no channel with the id … in this run's label data, and none was measured on a car` | The build's one source has no such row for this car's unit. Find its ids in `vagcan watch`: press `,` and set "Key at the end of each row" to shown. Where the `help:` line offers the other source (`--source vcds` or `odis`), the row may be that source's: build from it, and use its ids throughout. |
+| `X: unit NN has no channel at identifier DDDD, bit B in this run's label data, and none was measured on a car` | No row at that identifier and bit on this car's unit, in the build's source. Check the identifier and the `@` bit, or find the row in `vagcan watch` as above; or build from the other source as the `help:` line says. |
 | `X: "…" is the channel's name — write its id: NN:ID` (or `is the name of N channels — write the id of one`) | Write one of the listed ids instead of the name. |
 | `X: "…" is a name or a mistyped id, and dash.toml takes a channel's id` | Find the id in `vagcan watch` as above. |
 | `X: "…" is the name of a channel the board cannot show — its scaling is not linear` | The board shows numbers only. Pick a numeric row. |
-| `X: unit NN is in the car's record, but the project data has no channels for its variant` | The project describes nothing on that unit. Pick a channel of another unit. |
+| `X: unit NN is in the car's record, but this run's label data has no channels for its variant` | The build's source describes nothing on that unit. Pick a channel of another unit, or build from the other source as the `help:` line says. |
 | `X: N rows answer to it — name one by identifier and bit offset: DID@bit name, …` | Write one of the listed rows as `<unit>:<DID>@<bit>`. |
 | `X: scaling is an enumeration, not linear` (or `a single proven point with no slope`) | The board shows numbers only. Pick a numeric row. |
 | `X: its scaling is not a finite number the board's 32-bit float holds` | Pick another row. Also for a factor the board would hold as 0. |

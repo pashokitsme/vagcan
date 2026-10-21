@@ -448,7 +448,7 @@ pub fn check_text_ids(wanted: &[Wanted], known: &std::collections::BTreeSet<Stri
 			&& !known.contains(text_id)
 		{
 			return Err(format!(
-				"{row}: not a four-digit identifier like 01:202A, and no row in this machine's label data has that \
+				"{row}: not a four-digit identifier like 01:202A, and no row of this run's label data has that \
 				 text id — `watch` shows each row's in its Key column, turned on in its settings"
 			));
 		}
@@ -456,15 +456,26 @@ pub fn check_text_ids(wanted: &[Wanted], known: &std::collections::BTreeSet<Stri
 	Ok(())
 }
 
-/// Every text id the label data of this run's stores carries — the project's and the VCDS store's: none without a label
-/// cache, and `None` — nothing can be said before the car is asked — when the
-/// project cannot be resolved or its cache will not read; [`select_wanted`] then
+/// Every text id the run's one source carries ([`crate::source::run`]) — never the other
+/// source's: an id only the other one has names no row this run can read. None without a
+/// source, and `None` — nothing can be said before the car is asked — when the
+/// stores cannot be resolved or the cache will not read; [`select_wanted`] then
 /// says it once the units are known.
 fn known_text_ids() -> Option<std::collections::BTreeSet<String>> {
 	let stores = crate::project::stores().ok()?;
+	known_text_ids_in(crate::source::run(&stores).ok()?.as_ref())
+}
+
+/// [`known_text_ids`] of one run's source.
+pub(crate) fn known_text_ids_in(run: Option<&crate::source::Run>) -> Option<std::collections::BTreeSet<String>> {
 	let mut known = std::collections::BTreeSet::new();
-	for cache in stores.caches().into_iter().filter(|cache| cache.is_file()) {
-		known.extend(vag_data_db::text_ids(&cache).ok()?.into_iter().map(|(id, _)| id));
+	if let Some(run) = run.filter(|run| run.cache().is_file()) {
+		known.extend(
+			vag_data_db::text_ids_of(&run.cache(), run.source.kind())
+				.ok()?
+				.into_iter()
+				.map(|(id, _)| id),
+		);
 	}
 	Some(known)
 }

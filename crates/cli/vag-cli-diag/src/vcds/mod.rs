@@ -130,8 +130,8 @@ pub enum Tool {
 		#[arg(long, default_value_t = 40, value_name = "N")]
 		limit: usize,
 		/// Names file to search.
-		/// Default: this project's `names.json` (from a VCDS installation) and
-		/// `names-odis.json` (from an ODIS project), whichever `vagcan setup` wrote.
+		/// Default: the VCDS store's `names.json`, which `vagcan setup` wrote from the
+		/// VCDS installation. An ODIS project's names are not searched.
 		#[arg(long, value_name = "FILE")]
 		catalog: Option<String>,
 	},
@@ -339,7 +339,7 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 					source: "",
 					path: std::path::PathBuf::from(given),
 				}],
-				None => names::project_files(&crate::project::stores()?),
+				None => names::project_files(&crate::project::vcds()?),
 			};
 			names::run(&text, limit, &files)?;
 			Ok(Outcome::Done)

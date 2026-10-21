@@ -1139,7 +1139,7 @@ impl fmt::Display for Error {
 				};
 				write!(
 					f,
-					"{r}: unit {unit} has {what} in this car's project data, and none was measured on a car — {FIND_IDS}"
+					"{r}: unit {unit} has {what} in this run's label data, and none was measured on a car — {FIND_IDS}"
 				)
 			}
 			Error::NameNotId { reference, ids, not_linear } => {
@@ -1169,7 +1169,7 @@ impl fmt::Display for Error {
 				let unit = unit.split(':').next().unwrap_or_default();
 				write!(
 					f,
-					"{r}: unit {unit} is in the car's record, but the project data has no channels for its variant — pick a channel of another unit; {FIND_IDS}"
+					"{r}: unit {unit} is in the car's record, but this run's label data has no channels for its variant — pick a channel of another unit; {FIND_IDS}"
 				)
 			}
 			Error::Ambiguous(r, rows) => write!(
@@ -3538,31 +3538,42 @@ pub fn resolve(inputs: Inputs) -> anyhow::Result<Resolved> {
 		read_attempted,
 	} = inputs;
 	let stores = crate::project::stores()?;
+	// The run's one source: a source asked for and not set up is refused here, before a plan
+	// is built from nothing.
+	let run = crate::source::run(&stores)?;
 	let store = CatalogStore::open(stores.measurements_dir());
-	let extracted = crate::extracted::open(&stores).for_car(Some(vin.as_str()));
+	let extracted = match &run {
+		Some(run) => crate::extracted::open_run(run),
+		None => Extracted::none(),
+	}
+	.for_car(Some(vin.as_str()));
 	let referenced = referenced_units(&parsed);
 	let (used, unused): (Vec<UnitIdentity>, Vec<UnitIdentity>) = units.iter().cloned().partition(|u| referenced.contains(&u.request));
-	let (used_note, unused_note) = {
-		let described = crate::registry::described_by(&extracted);
-		let used = refuse_unread(&vin, read_attempted, crate::registry::unread(&stores.vcds, &used, &described)?)?;
-		(
-			used,
-			unread_note(&vin, read_attempted, crate::registry::unread(&stores.vcds, &unused, &described)?),
-		)
+	// Units whose VCDS channels a read has yet to bring: a question of a VCDS run alone. An
+	// ODIS run reads none of them, and a unit ODIS does not describe is refused by the build.
+	let (used_note, unused_note) = match run.as_ref().map(|r| r.source) {
+		Some(crate::source::Source::Vcds) => {
+			// The command that reads them, as this run would have to be typed again: with its
+			// `--source` where a bare command would read the other source.
+			let build = format!(
+				"vagcan {}dev dash build {vin}",
+				crate::source::flag_for(&stores, crate::source::Source::Vcds)
+			);
+			let used = refuse_unread(&build, read_attempted, crate::registry::unread(&stores.vcds, &used)?)?;
+			(used, unread_note(&build, read_attempted, crate::registry::unread(&stores.vcds, &unused)?))
+		}
+		_ => (None, None),
 	};
 	let language = crate::config::language(&crate::config::load());
-	let mut built = build(&parsed, &store, &extracted, &units, language)?;
+	let mut built = build(&parsed, &store, &extracted, &units, language).map_err(|e| from_one_source(e, run.as_ref(), &vin, &stores))?;
+	if let Some(run) = &run {
+		built.notes.insert(0, format!("channels from {}", run.describe()));
+	}
 	built.notes.extend(used_note);
 	built.notes.extend(unused_note);
 	let mut inputs = vec![input_path, record];
-	inputs.extend(stores.caches());
-	inputs.extend([
-		stores.measurements_dir(),
-		stores.vcds.names(),
-		stores.vcds.registry_log(),
-		crate::config::path()?,
-		crate::glossary::path()?,
-	]);
+	inputs.extend(run.iter().flat_map(crate::source::Run::files));
+	inputs.extend([stores.measurements_dir(), crate::config::path()?, crate::glossary::path()?]);
 	Ok(Resolved {
 		built,
 		dir,
@@ -3571,6 +3582,31 @@ pub fn resolve(inputs: Inputs) -> anyhow::Result<Resolved> {
 		store,
 		extracted,
 	})
+}
+
+/// A build's refusal, said with the run's one source: a channel the source does not describe
+/// is refused, never filled from the other source — and where the other one is set up, how to
+/// build from it instead.
+fn from_one_source(e: Error, run: Option<&crate::source::Run>, vin: &str, stores: &crate::project::Stores) -> anyhow::Error {
+	use crate::report::Advice as _;
+	let not_described = matches!(e, Error::Undeclared(_) | Error::NoChannels(_) | Error::NameNotId { .. });
+	let mut err = anyhow::Error::new(e);
+	let Some(run) = run.filter(|_| not_described) else {
+		return err;
+	};
+	err = err.note(format!(
+		"this build reads {} alone; the other source does not fill in for it",
+		run.describe()
+	));
+	let other = run.source.other();
+	if crate::source::held(stores).contains(&other) {
+		err = err.help(format!(
+			"build from {} instead: `vagcan {} dev dash build {vin}`",
+			other.what(),
+			other.flag()
+		));
+	}
+	err
 }
 
 /// The units a build input reads: its channels and their specified values, the stalk's
@@ -3609,12 +3645,13 @@ fn unread_subject(units: &std::collections::BTreeSet<(String, String)>) -> Strin
 }
 
 /// What reads the channels of units still unread, for the refusal and the note:
-/// `dev dash build`, unless that is the command speaking — it has just tried, and
-/// the line it printed says what stopped the read.
-fn what_reads_them(vin: &str, read_attempted: bool, said_where: &str) -> String {
+/// `dev dash build` (`build`, typed as this run would be, `--source` and all), unless that is
+/// the command speaking — it has just tried, and the line it printed says what stopped the
+/// read.
+fn what_reads_them(build: &str, read_attempted: bool, said_where: &str) -> String {
 	match read_attempted {
 		true => format!("{said_where} what stopped the read"),
-		false => format!("`vagcan dev dash build {vin}` reads them once, offline, or a command with the car does"),
+		false => format!("`{build}` reads them once, offline, or a command with the car does"),
 	}
 }
 
@@ -3631,27 +3668,31 @@ const ABOVE_THE_NOTE: &str = "the first lines of this output say";
 /// in the cache, and the plan is built from them — the firmware's build script, too, after
 /// a [`crate::registry::READ_VERSION`] bump. The note that comes back says so; a command
 /// with the car reads them again once.
-fn refuse_unread(vin: &str, read_attempted: bool, unread: crate::registry::Unread) -> anyhow::Result<Option<String>> {
+fn refuse_unread(build: &str, read_attempted: bool, unread: crate::registry::Unread) -> anyhow::Result<Option<String>> {
 	use crate::registry::Unread;
 	match unread {
 		Unread::Nothing => Ok(None),
-		Unread::Outdated { units, .. } => Ok(Some(outdated_note(vin, &units))),
-		Unread::Readable { units, .. } => anyhow::bail!("{} — {}", unread_subject(&units), what_reads_them(vin, read_attempted, ABOVE_THE_REFUSAL)),
+		Unread::Outdated { units, .. } => Ok(Some(outdated_note(build, &units))),
+		Unread::Readable { units, .. } => anyhow::bail!(
+			"{} — {}",
+			unread_subject(&units),
+			what_reads_them(build, read_attempted, ABOVE_THE_REFUSAL)
+		),
 		Unread::Unreadable { units, why } => anyhow::bail!("{}, and {why}", unread_subject(&units)),
 	}
 }
 
 /// The note behind [`resolve`] for the units the plan does not use: their channels are
 /// not read yet, and why — the build goes ahead without them, and says so once.
-fn unread_note(vin: &str, read_attempted: bool, unread: crate::registry::Unread) -> Option<String> {
+fn unread_note(build: &str, read_attempted: bool, unread: crate::registry::Unread) -> Option<String> {
 	use crate::registry::Unread;
 	match unread {
 		Unread::Nothing => None,
-		Unread::Outdated { units, .. } => Some(outdated_note(vin, &units)),
+		Unread::Outdated { units, .. } => Some(outdated_note(build, &units)),
 		Unread::Readable { units, .. } => Some(format!(
 			"{}, which the plan does not use; {}",
 			unread_subject(&units),
-			what_reads_them(vin, read_attempted, ABOVE_THE_NOTE)
+			what_reads_them(build, read_attempted, ABOVE_THE_NOTE)
 		)),
 		Unread::Unreadable { units, why } => Some(format!("{}, which the plan does not use, and {why}", unread_subject(&units))),
 	}
@@ -3659,10 +3700,10 @@ fn unread_note(vin: &str, read_attempted: bool, unread: crate::registry::Unread)
 
 /// What a build says of units an older version of this tool read: built from the rows the
 /// cache holds, and what reads them again.
-fn outdated_note(vin: &str, units: &std::collections::BTreeSet<(String, String)>) -> String {
+fn outdated_note(build: &str, units: &std::collections::BTreeSet<(String, String)>) -> String {
 	format!(
 		"{} {} read by an older version of this tool: built from the channels the cache holds; \
-		 `vagcan dev dash build {vin}`, or a command with the car, reads {} again once",
+		 `{build}`, or a command with the car, reads {} again once",
 		units.len(),
 		if units.len() == 1 { "control unit was" } else { "control units were" },
 		if units.len() == 1 { "it" } else { "them" }
@@ -3715,12 +3756,21 @@ mod tests {
 
 	/// **Every byte synthetic.** A cache in a temp directory, a variant name
 	/// nobody's car reports, and no read of `~/.vagcan` anywhere.
+	/// A run over invented rows: an ODIS project's with no `names`, a VCDS installation's
+	/// with them — `names.json` is the VCDS text table's, and only a VCDS run reads it.
 	fn extracted_with(dir: &Path, variants: &[(&str, Vec<Reading>)], names: &[(&str, &str)]) -> Extracted {
 		let cache = dir.join("cache.sqlite");
-		for (name, readings) in variants {
-			vag_data_db::put_readings(&cache, "/nowhere/TEST", name, readings).expect("the fixture writes");
+		if names.is_empty() {
+			for (name, readings) in variants {
+				vag_data_db::put_readings(&cache, "/nowhere/TEST", name, readings).expect("the fixture writes");
+			}
+			return Extracted::synthetic_from(crate::source::Source::Odis, cache, BTreeMap::new());
 		}
-		Extracted::synthetic(cache, names.iter().map(|(id, text)| (id.to_string(), text.to_string())).collect())
+		vag_data_db::record_language(&cache, vag_data_db::VCDS, "/nowhere/vcds", "eng").unwrap();
+		let rows: Vec<(&str, &[Reading])> = variants.iter().map(|(name, r)| (*name, &r[..])).collect();
+		vag_data_db::put_all_vcds_readings(&cache, "/nowhere/vcds", rows).expect("the fixture writes");
+		let names = names.iter().map(|(id, text)| (id.to_string(), text.to_string())).collect();
+		Extracted::synthetic_from(crate::source::Source::Vcds, cache, names)
 	}
 
 	#[allow(clippy::too_many_arguments)]
@@ -3767,6 +3817,52 @@ mod tests {
 		parse_input(&text).expect("the fixture parses")
 	}
 
+	/// A channel the run's one source does not describe is refused, naming it, with the
+	/// source the build read and — where the other source is set up — how to build from it.
+	/// Never filled from the other source.
+	#[test]
+	fn a_channel_the_runs_source_lacks_is_refused_with_the_switch_to_the_other() {
+		let here = tempfile::tempdir().unwrap();
+		let project = crate::project::Project {
+			id: "SK37X".into(),
+			dir: here.path().join("SK37X"),
+		};
+		let vcds = crate::project::vcds_at(&here.path().join("vcds"));
+		for dir in [&project.dir, &vcds.dir] {
+			std::fs::create_dir_all(dir).unwrap();
+		}
+		vag_data_db::record_language(&project.cache(), vag_data_db::ODIS, "/nowhere/SK37X", "deu").unwrap();
+		let odis_only = crate::project::Stores {
+			project: Some(project.clone()),
+			vcds: vcds.clone(),
+		};
+		let run = crate::source::Run::of(&odis_only, crate::source::Source::Odis).unwrap();
+		let refusal = |stores: &crate::project::Stores| {
+			let e = from_one_source(Error::Undeclared(Reference::parse("01:IDE09999").unwrap()), Some(&run), "VIN", stores);
+			(e.to_string(), crate::report::hints(&e))
+		};
+		let (said, hints) = refusal(&odis_only);
+		assert!(said.starts_with("01:IDE09999: unit 01 has no channel with the id IDE09999"), "{said}");
+		assert_eq!(
+			hints,
+			[crate::report::Hint::Note(
+				"this build reads the ODIS project SK37X alone; the other source does not fill in for it".into()
+			)],
+			"no VCDS installation: nothing to switch to"
+		);
+		vag_data_db::record_language(&vcds.cache(), vag_data_db::VCDS, "/nowhere/vcds/Labels", "eng").unwrap();
+		let (_, hints) = refusal(&odis_only);
+		assert_eq!(
+			hints.last(),
+			Some(&crate::report::Hint::Help(
+				"build from a VCDS installation instead: `vagcan --source vcds dev dash build VIN`".into()
+			))
+		);
+		// A refusal about the input itself is not the source's: no note, no switch.
+		let e = from_one_source(Error::Duplicate(Reference::parse("01:IDE09999").unwrap()), Some(&run), "VIN", &odis_only);
+		assert!(crate::report::hints(&e).is_empty());
+	}
+
 	#[test]
 	fn the_units_a_plan_reads_are_its_channels_setpoints_stalk_and_stopwatch_and_nothing_else() {
 		// Found in review (2026-09-28): the unread-channels refusal checked every
@@ -3811,13 +3907,15 @@ mod tests {
 		// The plan's units are refused; the rest are a note, with the cause.
 		use crate::registry::Unread;
 		let units = |names: &[&str]| names.iter().map(|n| (n.to_string(), "001".to_string())).collect();
-		assert_eq!(refuse_unread("VIN", false, Unread::Nothing).unwrap(), None);
-		assert_eq!(unread_note("VIN", false, Unread::Nothing), None);
+		assert_eq!(refuse_unread("vagcan dev dash build VIN", false, Unread::Nothing).unwrap(), None);
+		assert_eq!(unread_note("vagcan dev dash build VIN", false, Unread::Nothing), None);
 		let readable = Unread::Readable {
 			units: units(&["EV_Sixteenth"]),
 			root: PathBuf::from("/vcds"),
 		};
-		let refusal = refuse_unread("VIN", false, readable.clone()).unwrap_err().to_string();
+		let refusal = refuse_unread("vagcan dev dash build VIN", false, readable.clone())
+			.unwrap_err()
+			.to_string();
 		assert!(
 			refusal.starts_with("the channels of 1 control unit of this car have not been read"),
 			"{refusal}"
@@ -3826,16 +3924,18 @@ mod tests {
 			refusal.contains("(EV_Sixteenth)") && refusal.contains("`vagcan dev dash build VIN`"),
 			"{refusal}"
 		);
-		let note = unread_note("VIN", false, readable.clone()).unwrap();
+		let note = unread_note("vagcan dev dash build VIN", false, readable.clone()).unwrap();
 		assert!(note.contains("(EV_Sixteenth), which the plan does not use"), "{note}");
 		assert!(note.contains("`vagcan dev dash build VIN`"), "{note}");
 		// `dev dash build` itself has just tried to read them: it is not told to
 		// run itself (found in review, 2026-09-28).
-		let refusal = refuse_unread("VIN", true, readable.clone()).unwrap_err().to_string();
+		let refusal = refuse_unread("vagcan dev dash build VIN", true, readable.clone())
+			.unwrap_err()
+			.to_string();
 		assert!(refusal.ends_with("the lines above say what stopped the read"), "{refusal}");
 		assert!(!refusal.contains("dev dash build"), "{refusal}");
 		// The note comes after the plan's lines, so it points at the top of the output.
-		let note = unread_note("VIN", true, readable).unwrap();
+		let note = unread_note("vagcan dev dash build VIN", true, readable).unwrap();
 		assert!(
 			note.ends_with("which the plan does not use; the first lines of this output say what stopped the read"),
 			"{note}"
@@ -3847,20 +3947,22 @@ mod tests {
 			units: units(&["EV_Gatew", "EV_Brake"]),
 			root: PathBuf::from("/vcds"),
 		};
-		let note = refuse_unread("VIN", false, outdated.clone()).unwrap().expect("a note");
+		let note = refuse_unread("vagcan dev dash build VIN", false, outdated.clone())
+			.unwrap()
+			.expect("a note");
 		assert!(note.starts_with("2 control units were read by an older version of this tool"), "{note}");
 		assert!(note.contains("built from the channels the cache holds"), "{note}");
-		assert_eq!(unread_note("VIN", false, outdated), Some(note));
+		assert_eq!(unread_note("vagcan dev dash build VIN", false, outdated), Some(note));
 		let gone = Unread::Unreadable {
 			units: units(&["EV_A", "EV_B"]),
 			why: "the VCDS installation to read from is not on this machine any more".into(),
 		};
-		let refusal = refuse_unread("VIN", false, gone.clone()).unwrap_err().to_string();
+		let refusal = refuse_unread("vagcan dev dash build VIN", false, gone.clone()).unwrap_err().to_string();
 		assert!(
 			refusal.contains("2 control units") && refusal.contains("not on this machine any more"),
 			"{refusal}"
 		);
-		let note = unread_note("VIN", true, gone).unwrap();
+		let note = unread_note("vagcan dev dash build VIN", true, gone).unwrap();
 		assert!(
 			note.contains("(EV_A, EV_B), which the plan does not use, and the VCDS installation"),
 			"{note}"
@@ -4620,7 +4722,7 @@ mod tests {
 		assert_eq!(at, Error::Undeclared(Reference::parse("01:1234@8").unwrap()));
 		assert!(
 			at.to_string()
-				.starts_with("01:1234@8: unit 01 has no channel at identifier 1234, bit 8 in this car's project data"),
+				.starts_with("01:1234@8: unit 01 has no channel at identifier 1234, bit 8 in this run's label data"),
 			"{at}"
 		);
 
@@ -4655,7 +4757,7 @@ mod tests {
 		assert!(
 			empty
 				.to_string()
-				.contains("unit 02 is in the car's record, but the project data has no channels for its variant"),
+				.contains("unit 02 is in the car's record, but this run's label data has no channels for its variant"),
 			"{empty}"
 		);
 
