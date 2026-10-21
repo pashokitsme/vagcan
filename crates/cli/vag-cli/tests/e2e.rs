@@ -129,6 +129,55 @@ fn home(at: &Path) {
 		.unwrap();
 }
 
+/// The car whose home holds a VCDS install alone, no ODIS project: each source is tested on
+/// its own (CLAUDE.md, "ODIS and VCDS are independent sources").
+const VCDS_ONLY: &str = "vcds-only";
+
+/// A `~/.vagcan` whose made-up project was set up from a VCDS install alone: the engine's
+/// freeze-frame layout, as `setup` stores `RF.rod`'s rows, and nothing of ODIS.
+fn vcds_home(at: &Path) {
+	let project = at.join("data").join(PROJECT);
+	std::fs::create_dir_all(&project).unwrap();
+	std::fs::write(at.join("config.toml"), format!("project = \"{PROJECT}\"\n")).unwrap();
+	let cache = project.join("cache.sqlite");
+	// Record 0x70, four bytes — an engine speed, a voltage, a reserved byte. Made up.
+	let vcds = "/nowhere/sim-vcds/Labels";
+	vag_data_db::record_language(&cache, vag_data_db::VCDS, vcds, "eng").unwrap();
+	let row = |bit: u32, bits: u32, kind: u8, scale: Option<(f64, f64)>, unit: Option<&str>, name: &str| {
+		use vag_data_labels::registries::{Described, Entry, Value};
+		Described {
+			section: vag_data_db::FREEZE_FRAME_SECTION,
+			entry: Entry {
+				row: 1,
+				key: 0x70,
+				identifier: None,
+				ordinal: None,
+				lead: Some(104),
+				case: None,
+				value: Value {
+					kind: Some(kind),
+					big_endian: true,
+					bit_offset: Some(bit),
+					bit_length: Some(bits),
+					scale,
+					..Default::default()
+				},
+				raw: String::new(),
+			},
+			name: Some(name.to_string()),
+			text_id: None,
+			unit: unit.map(str::to_string),
+			levels: Vec::new(),
+		}
+	};
+	let rows = [
+		row(0, 16, 0, Some((0.25, 0.0)), Some("/min"), "Sim engine speed"),
+		row(16, 8, 0, Some((0.1, 0.0)), Some("V"), "Sim supply voltage"),
+		row(24, 8, 11, None, None, "Reserved"),
+	];
+	vag_data_db::put_all_vcds_registry_rows(&cache, vcds, [("EV_SimEngine_001", &rows[..])]).unwrap();
+}
+
 /// Copy the directory `from` to `to`, recursively.
 fn copy(from: &Path, to: &Path) {
 	std::fs::create_dir_all(to).unwrap();
@@ -206,6 +255,8 @@ fn e2e() {
 	let bin = binary();
 	let template = tempfile::tempdir().unwrap();
 	home(template.path());
+	let vcds_template = tempfile::tempdir().unwrap();
+	vcds_home(vcds_template.path());
 	let root = cases_root();
 	let mut cars: Vec<PathBuf> = std::fs::read_dir(&root)
 		.unwrap()
@@ -218,7 +269,11 @@ fn e2e() {
 	let mut failed = Vec::new();
 	for car in &cars {
 		for case in case_files(car) {
-			let ran = std::panic::catch_unwind(|| run_case(&bin, &car.join("car.toml"), template.path(), &case));
+			let home = match car.file_name().is_some_and(|n| n == VCDS_ONLY) {
+				true => vcds_template.path(),
+				false => template.path(),
+			};
+			let ran = std::panic::catch_unwind(|| run_case(&bin, &car.join("car.toml"), home, &case));
 			if ran.is_err() {
 				failed.push(case.strip_prefix(&root).unwrap_or(&case).display().to_string());
 			}

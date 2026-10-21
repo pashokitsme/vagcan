@@ -25,6 +25,7 @@ pub mod dashreplay;
 pub mod discover;
 pub mod faultnames;
 pub mod faults;
+pub mod freezeframe;
 pub mod labels;
 pub mod names;
 pub mod odisfaults;

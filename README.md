@@ -22,7 +22,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 | `vagcan info` | VIN, and the engine's and gearbox's part numbers and software versions |
 | `vagcan units` | The car's control units, named from your label files and earlier `--identify` runs. `--identify` makes each one name itself |
 | `vagcan adaptations <unit>` | One unit's adaptation channels and their current values, read only. No unit: pick one. `--all`: every unit that has them. Refused on a moving car; needs a cable adapter |
-| `vagcan faults` | Stored fault codes with VW's own text, in English where a source has it. `[faults] language = "de"` (or `en`, `ru`, …) in the config picks another |
+| `vagcan faults` | Stored fault codes with VW's own text, in English where a source has it. `[faults] language = "de"` (or `en`, `ru`, …) in the config picks another. Under each code, its freeze frame: priority, aging counter and the unit's own conditions (engine speed, voltage, temperatures, …) from a VCDS install; bytes nothing describes are shown raw |
 | `vagcan sensors` | Standard OBD-II readings. `--unit <unit>` outside 7E0–7E7: parked car and a cable adapter only |
 | `vagcan watch` | Live values from several units at once, with a chart of up to 6 channels. States show by name. `--out` records to CSV |
 | `vagcan measure` | Acceleration run timing from the car's own speed signal. `measure view` opens a saved run as a chart |
@@ -109,6 +109,7 @@ Updated 2026-10-21.
 - [x] `measure view` draws the speed in km/h, on old sessions too; it was 3.6 times low (2026-10-21)
 - [x] A virtual car, `dev sim`, and e2e cases of the commands against it: `just e2e` (2026-10-21)
 - [ ] Adaptation channels and their values, read only: `vagcan adaptations <unit>`, `--all` (built 2026-10-21, waiting for the car)
+- [ ] Freeze frames under each stored code in `vagcan faults` (built 2026-10-21 from VCDS's layouts, checked offline on one recorded answer; waits for the car)
 - [ ] Page the dash with buttons on its pins
 - [ ] Dash status strip: the page's title, the battery voltage, the link icons and the fault badge across the top (built 2026-10-19, waiting for the car)
 - [ ] Alarms as keys of a channel: a maximum, a minimum and an off value for each, any number of them, an explicit priority; `[[alarm]]` removed (built 2026-10-19, waiting for the car)

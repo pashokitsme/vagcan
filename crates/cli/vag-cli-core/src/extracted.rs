@@ -88,6 +88,20 @@ pub struct Extracted {
 	car_stems: BTreeMap<(String, String), String>,
 }
 
+/// What [`Extracted::freeze_frames`] found for a unit.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FreezeLayout {
+	/// The unit's own variant's rows.
+	Unit {
+		variant: String,
+		fields: Vec<vag_data_db::FreezeField>,
+	},
+	/// Rows only for a variant VCDS would not open for this car: not this unit's layout.
+	Another { variant: String },
+	/// No rows for anything of this name.
+	None,
+}
+
 /// One channel a unit offers, with everything known about how to name it.
 ///
 /// Three separate facts, and collapsing any two of them loses something a
@@ -323,6 +337,38 @@ impl Extracted {
 	/// lookup.
 	pub fn names(&self) -> BTreeMap<String, String> {
 		self.names.clone()
+	}
+
+	/// The layout of a unit's own extended-data records — its freeze frames — as a VCDS
+	/// install's rows describe it, and only VCDS's: no row of another source is read here.
+	///
+	/// The unit's variant is the stem the car's own lookup stored ([`Self::for_car`]), else
+	/// the best rank of the rule its channels use. **Only a name VCDS itself would open for
+	/// this car is the unit's** ([`OdxMatch::is_vcds_lookup`]): a `Family` or `Localised`
+	/// match is another variant's layout — `EV_BCMMQB_017`'s fields for a unit on F1A2
+	/// `015…` — and decoding the unit's bytes with it would print the wrong fields as fact,
+	/// so it comes back as [`FreezeLayout::Another`] and the bytes stay raw.
+	pub fn freeze_frames(&self, odx_name: Option<&str>, version: Option<&str>) -> FreezeLayout {
+		let Ok(names) = vag_data_db::freeze_frame_variants(&self.cache, vag_data_db::VCDS) else {
+			return FreezeLayout::None;
+		};
+		let Some(variant) = self.variants_of(vag_data_db::VCDS, &names, odx_name, version).into_iter().next().cloned() else {
+			return FreezeLayout::None;
+		};
+		let rank = odx_name.and_then(|odx| odx_match(&variant, odx, version.unwrap_or(""), &self.car_projects));
+		if !rank.is_some_and(OdxMatch::is_vcds_lookup) {
+			return FreezeLayout::Another { variant };
+		}
+		match vag_data_db::freeze_frame_fields(&self.cache, vag_data_db::VCDS, &variant) {
+			Ok(fields) if !fields.is_empty() => FreezeLayout::Unit { variant, fields },
+			_ => FreezeLayout::None,
+		}
+	}
+
+	/// Whether the cache holds VCDS freeze-frame rows for any unit at all — so whether a
+	/// unit's identity is worth reading to look its own up.
+	pub fn knows_freeze_frames(&self) -> bool {
+		vag_data_db::freeze_frame_variants(&self.cache, vag_data_db::VCDS).is_ok_and(|v| !v.is_empty())
 	}
 
 	/// Whether this project knows any channels at all.
