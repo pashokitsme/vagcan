@@ -811,11 +811,12 @@ pub async fn run<L: UnitLink>(
 	if !supported {
 		match namers.is_empty() {
 			true => {
-				say!("names    none — `vagcan setup` names the codes");
+				say!("note: the codes are not named: no label data on this machine");
+				say!("  (use \"vagcan setup\" to read it)");
 				note!("{}", crate::missing::no_fault_labels(namers.vcds_root()));
 			}
 			false => {
-				say!("names    {}", namers.summary());
+				say!("note: code names from {}", namers.summary());
 				for line in namers.describe() {
 					note!("{line}");
 				}

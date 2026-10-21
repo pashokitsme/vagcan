@@ -130,10 +130,10 @@ pub async fn run(tool: Tool) -> Result<()> {
 			// come before the read below, which can take minutes, not after it
 			// (found in review, 2026-09-28).
 			let mut inputs = dash::read_inputs(&vin, input.as_deref())?;
-			note!("input   {}", inputs.input_path.display());
+			note!("read {}", vag_cli_core::datadir::tilde(&inputs.input_path));
 			note!(
-				"record  {}, {} {}",
-				inputs.record.display(),
+				"read {}: {} {}",
+				vag_cli_core::datadir::tilde(&inputs.record),
 				inputs.units.len(),
 				crate::render::plural(inputs.units.len(), "unit")
 			);
@@ -158,9 +158,11 @@ pub async fn run(tool: Tool) -> Result<()> {
 /// channel resolved, the lines on alarms and inputs, and a table of each page's bus share.
 pub fn report(written: &dash::Written) {
 	let built = &written.built;
-	let plan = &built.plan;
 	if vag_cli_core::verbosity::at(vag_cli_core::verbosity::NOTES) {
-		let mut channels = Table::new(&dash::ChannelRow::HEADERS).right(4).right(5).right(6);
+		let caps = |headers: &[&str]| headers.iter().map(|h| h.to_uppercase()).collect::<Vec<_>>();
+		let channel_headers = caps(&dash::ChannelRow::HEADERS);
+		let channel_headers: Vec<&str> = channel_headers.iter().map(String::as_str).collect();
+		let mut channels = Table::new(&channel_headers).right(4).right(5).right(6);
 		for row in &built.channels {
 			channels.row(row.cells());
 		}
@@ -170,7 +172,9 @@ pub fn report(written: &dash::Written) {
 		for line in built.prose() {
 			note!("{line}");
 		}
-		let mut bus = Table::new(&dash::BusRow::HEADERS).right(1);
+		let bus_headers = caps(&dash::BusRow::HEADERS);
+		let bus_headers: Vec<&str> = bus_headers.iter().map(String::as_str).collect();
+		let mut bus = Table::new(&bus_headers).right(1);
 		for row in &built.bus {
 			bus.row(row.cells());
 		}
@@ -178,24 +182,41 @@ pub fn report(written: &dash::Written) {
 			note!("{}", bus.render(None).trim_end());
 		}
 	}
-	let count = |n: usize, what: &str| format!("{n} {}", crate::render::plural(n, what));
-	let mut block = vec![
-		("vin", plan.vin.clone()),
-		// What a board flashed with it names in `vagcan devices` and `dashcfg`.
-		("plan", format!("{:016x}", dash::plan_id(plan))),
-		("pages", plan.pages.len().to_string()),
-		("channels", format!("{} on {}", plan.channels.len(), count(plan.units.len(), "unit"))),
-		("alarms", plan.alarms.len().to_string()),
-	];
-	if !built.over_budget.is_empty() {
-		block.push(("over budget", dash::over_budget_text(&built.over_budget)));
-	}
-	block.push(("plan.json", written.json.display().to_string()));
-	block.push(("plan.rs", written.rust.display().to_string()));
-	outln!("{}", vag_cli_core::table::pairs(&block).trim_end());
+	outln!("{}", card(written).trim_end());
 	for line in &built.advice {
 		say!("{line}");
 	}
+}
+
+/// The plan as a card, `gh pr view`'s shape: the plan and its car on the first line — the
+/// id is what a board flashed with it names in `vagcan devices` and `dashcfg` — what it
+/// holds on the meta line, then the pages the bus comes out short on, and the files written.
+fn card(written: &dash::Written) -> String {
+	use vag_cli_core::marks::facts;
+	let plan = &written.built.plan;
+	let count = |n: usize, what: &str| format!("{n} {}", crate::render::plural(n, what));
+	let mut out = format!(
+		"{}\n{}\n",
+		facts([format!("plan {:016x}", dash::plan_id(plan)), plan.vin.clone()]),
+		facts([
+			count(plan.pages.len(), "page"),
+			format!("{} on {}", count(plan.channels.len(), "channel"), count(plan.units.len(), "unit")),
+			count(plan.alarms.len(), "alarm"),
+		])
+	);
+	if !written.built.over_budget.is_empty() {
+		out.push('\n');
+		out.push_str(&vag_cli_core::table::section(
+			"OVER BUDGET",
+			[dash::over_budget_text(&written.built.over_budget)],
+		));
+	}
+	out.push('\n');
+	out.push_str(&vag_cli_core::table::section(
+		"WRITTEN",
+		[&written.json, &written.rust].map(|path| vag_cli_core::datadir::tilde(path)),
+	));
+	out
 }
 
 #[cfg(test)]
@@ -273,14 +294,15 @@ mod tests {
 		assert_eq!(
 			runs[0].stdout,
 			format!(
-				"vin          TESTVIN0000000001\n\
-				 plan         {:016x}\n\
-				 pages        0\n\
-				 channels     0 on 0 units\n\
-				 alarms       0\n\
-				 over budget  page 1, 3, stopwatch\n\
-				 plan.json    /cars/X/plan.json\n\
-				 plan.rs      /cars/X/plan.rs\n",
+				"plan {:016x} · TESTVIN0000000001\n\
+				 0 pages · 0 channels on 0 units · 0 alarms\n\
+				 \n\
+				 OVER BUDGET\n\
+				 \x20 page 1, 3, stopwatch\n\
+				 \n\
+				 WRITTEN\n\
+				 \x20 /cars/X/plan.json\n\
+				 \x20 /cars/X/plan.rs\n",
 				dash::plan_id(&written.built.plan)
 			)
 		);
@@ -290,11 +312,11 @@ mod tests {
 		);
 		assert_eq!(
 			runs[1].stderr,
-			"label  channel      did@bit/width  type  scale  offset  hz  source\n\
+			"LABEL  CHANNEL      DID@BIT/WIDTH  TYPE  SCALE  OFFSET  HZ  SOURCE\n\
 			 BOOST  01:IDE00191  202A@0/16      u BE  0.001       0   2  measured IDE00191\n\
 			 \n\
 			 bus: an estimate at 34 ms an exchange\n\
-			 page        load  short-of\n\
+			 PAGE        LOAD  SHORT-OF\n\
 			 1 \"MAIN\"  ~120 %  01:IDE00191 BOOST 1.5/s of 2\n\
 			 stalk: there is no [stopwatch] — a press of measure only silences an alarm\n",
 			"the advice once, not again in the log; no row of a table again as a line"
@@ -306,7 +328,7 @@ mod tests {
 		calm.built.over_budget.clear();
 		let capture = Capture::start(0);
 		report(&calm);
-		assert!(!capture.finish().stdout.contains("over budget"));
+		assert!(!capture.finish().stdout.contains("OVER BUDGET"));
 	}
 
 	#[test]

@@ -370,13 +370,13 @@ fn opening(active: bool, out: Option<&str>, diag_only: bool) -> Vec<(u8, String)
 		true => "normal mode (--active): the adapter acknowledges every frame, so it is on the bus, not only listening",
 		false => "listen-only: the adapter acknowledges nothing and sends nothing",
 	};
-	let mut said = vec![(NOTES, format!("listening  500 kbit/s, {mode}"))];
+	let mut said = vec![(NOTES, format!("listening at 500 kbit/s, {mode}"))];
 	if let Some(path) = out {
 		let which = if diag_only { "diagnostic frame" } else { "frame" };
-		said.push((NOTES, format!("capture    {path}: every {which}, as JSON lines")));
+		said.push((NOTES, format!("writing every {which} to {path}, as JSON lines")));
 	}
 	let rest = if diag_only { "dropped" } else { "counted, not shown" };
-	said.push((NOTES, format!("shown      diagnostic messages, reassembled; other ids are {rest}")));
+	said.push((NOTES, format!("showing diagnostic messages, reassembled; other ids are {rest}")));
 	said.push((0, "type a note + Enter to mark the capture; Ctrl-C stops".to_string()));
 	said
 }
@@ -397,18 +397,13 @@ struct Summary<'a> {
 fn summary(s: &Summary<'_>) -> (String, Vec<(u8, String)>) {
 	use vag_cli_core::verbosity::NOTES;
 	let stats = s.stats;
-	let mut out = String::new();
-	if !s.per_id.is_empty() {
-		let mut table = vag_cli_core::table::Table::new(&["id", "frames", "per s"]).right(0).right(1).right(2);
-		for (id, count) in s.per_id {
-			let rate = match s.seconds > 0.0 {
-				true => format!("{:.1}", *count as f64 / s.seconds),
-				false => "-".to_string(),
-			};
-			table.row(vec![id_text(*id), count.to_string(), rate]);
-		}
-		out.push_str(&table.render(None));
-		out.push('\n');
+	let mut table = vag_cli_core::table::Table::new(&["ID", "FRAMES", "PER S"]).right(0).right(1).right(2);
+	for (id, count) in s.per_id {
+		let rate = match s.seconds > 0.0 {
+			true => format!("{:.1}", *count as f64 / s.seconds),
+			false => "-".to_string(),
+		};
+		table.row(vec![id_text(*id), count.to_string(), rate]);
 	}
 	let mut parts = vec![
 		format!("{:.1} s", s.seconds),
@@ -428,8 +423,8 @@ fn summary(s: &Summary<'_>) -> (String, Vec<(u8, String)>) {
 		Drops::None => "drops none".to_string(),
 		Drops::Dropped(bits) => format!("drops 0x{bits:02X}"),
 	});
-	out.push_str(&parts.join(vag_cli_core::marks::SEP));
-	out.push('\n');
+	// `gh pr list`'s shape: the summary line, then the ids kept.
+	let out = vag_cli_core::table::list(&parts.join(vag_cli_core::marks::SEP), &table, None);
 
 	let mut said = Vec::new();
 	match s.dropped {
@@ -439,9 +434,10 @@ fn summary(s: &Summary<'_>) -> (String, Vec<(u8, String)>) {
 	if stats.frames_seen == 0 {
 		// On this platform the diagnostic line is nearly silent when nothing queries it, so
 		// silence alone is not proof of a fault — but it is what to check first.
+		said.push((0, "warning: no traffic on the bus".to_string()));
 		said.push((
 			0,
-			"no traffic: check the ignition, OBD-II pin 6 → CAN-H and pin 14 → CAN-L, and the termination jumper OFF".to_string(),
+			"  (check the ignition, OBD-II pin 6 → CAN-H and pin 14 → CAN-L, and the termination jumper OFF)".to_string(),
 		));
 	} else if stats.pdus == 0 {
 		// The usual case, and it looks like a failure until someone says it is not: this port
@@ -963,11 +959,11 @@ mod tests {
 		let (data, said) = summary_of(1500, 4, &[(0x7E8, 500), (0x0FD, 1000)], Drops::Unknown, Some("drive.log"));
 		assert_eq!(
 			data,
-			" id  frames  per s\n\
-			 0FD    1000  100.0\n\
-			 7E8     500   50.0\n\
+			"10.0 s · 1500 frames · 1500 written to drive.log · 4 messages · 0 incomplete · 1 marker · drops unknown\n\
 			 \n\
-			 10.0 s · 1500 frames · 1500 written to drive.log · 4 messages · 0 incomplete · 1 marker · drops unknown\n"
+			 \x20ID  FRAMES  PER S\n\
+			 0FD    1000  100.0\n\
+			 7E8     500   50.0\n"
 		);
 		// That the adapter cannot say whether it dropped any is a caveat: `-v`.
 		assert_eq!(said, [(1, Drops::Unknown.describe())]);
@@ -984,9 +980,7 @@ mod tests {
 		let (data, said) = summary_of(0, 0, &[], Drops::None, None);
 		assert_eq!(data, "10.0 s · 0 frames · 0 messages · 0 incomplete · 1 marker · drops none\n");
 		assert!(
-			said
-				.iter()
-				.any(|(level, line)| *level == 0 && line.starts_with("no traffic: check the ignition")),
+			said.iter().any(|(level, line)| *level == 0 && line.starts_with("  (check the ignition")),
 			"{said:?}"
 		);
 	}
@@ -999,9 +993,9 @@ mod tests {
 		assert_eq!(
 			at(1),
 			[
-				"listening  500 kbit/s, listen-only: the adapter acknowledges nothing and sends nothing",
-				"capture    drive.log: every diagnostic frame, as JSON lines",
-				"shown      diagnostic messages, reassembled; other ids are dropped",
+				"listening at 500 kbit/s, listen-only: the adapter acknowledges nothing and sends nothing",
+				"writing every diagnostic frame to drive.log, as JSON lines",
+				"showing diagnostic messages, reassembled; other ids are dropped",
 			]
 		);
 		assert!(opening(true, None, false)[0].1.contains("normal mode (--active)"));

@@ -205,6 +205,53 @@ fn columns_override(value: Option<&str>) -> Option<usize> {
 	value?.trim().parse::<usize>().ok().filter(|n| *n > 0)
 }
 
+/// The width a listing wraps its free text to when the terminal's is not known (CLAUDE.md,
+/// "Command output": readable at 80 columns).
+pub const WIDTH: usize = 80;
+
+/// A list as `gh pr list` prints it: the one-line summary, a blank line, then the table —
+/// its headers in capitals, which the caller gives. An empty table is the summary alone.
+pub fn list(summary: &str, table: &Table, width: Option<usize>) -> String {
+	let mut out = format!("{summary}\n");
+	if !table.is_empty() {
+		out.push('\n');
+		out.push_str(&table.render(width));
+	}
+	out
+}
+
+/// One titled section of a card, as `gh pr view` prints one: the title on a line of its own,
+/// then each line indented two columns. A line of several lines is indented throughout.
+pub fn section<S: AsRef<str>>(title: &str, lines: impl IntoIterator<Item = S>) -> String {
+	let mut out = format!("{title}\n");
+	for line in lines {
+		out.push_str(&indent(line.as_ref(), 2));
+	}
+	out
+}
+
+/// Named counts as the lines of a card's section: each name padded to the widest, each
+/// count right-aligned to the widest — `measurement  101889`.
+pub fn counts<S: AsRef<str>>(rows: &[(S, String)]) -> Vec<String> {
+	let names = rows.iter().map(|(name, _)| chars(name.as_ref())).max().unwrap_or(0);
+	let values = rows.iter().map(|(_, n)| chars(n)).max().unwrap_or(0);
+	rows.iter().map(|(name, n)| format!("{:<names$}  {n:>values$}", name.as_ref())).collect()
+}
+
+/// `text` with every non-blank line indented `by` columns and ending in a newline.
+pub fn indent(text: &str, by: usize) -> String {
+	let pad = " ".repeat(by);
+	let mut out = String::new();
+	for line in text.lines() {
+		if !line.is_empty() {
+			out.push_str(&pad);
+			out.push_str(line);
+		}
+		out.push('\n');
+	}
+	out
+}
+
 /// A `key  value` block: the keys padded to one width, in the order given. A value of
 /// several lines continues under the first, aligned.
 pub fn pairs(rows: &[(&str, String)]) -> String {
@@ -297,6 +344,27 @@ mod tests {
 		let mut table = Table::new(&["id", "name"]);
 		table.row(vec!["70C".into()]);
 		assert_eq!(table.render(None), "id   name\n70C\n");
+	}
+
+	#[test]
+	fn a_list_is_its_summary_a_blank_line_and_the_table() {
+		let mut table = Table::new(&["UNIT", "ID"]);
+		table.row(vec!["01".into(), "7E0".into()]);
+		assert_eq!(list("1 control unit", &table, None), "1 control unit\n\nUNIT  ID\n01    7E0\n");
+		assert_eq!(list("0 control units", &Table::new(&["UNIT"]), None), "0 control units\n");
+	}
+
+	#[test]
+	fn a_section_is_its_title_and_its_lines_indented() {
+		assert_eq!(
+			section("ENGINE  01", ["SIM ENGINE", "part A\nsecond"]),
+			"ENGINE  01\n  SIM ENGINE\n  part A\n  second\n"
+		);
+		assert_eq!(indent("a\n\nb", 4), "    a\n\n    b\n");
+		assert_eq!(
+			counts(&[("label_file", "1".to_string()), ("measurement", "101889".to_string())]),
+			["label_file        1", "measurement  101889"]
+		);
 	}
 
 	#[test]

@@ -160,7 +160,9 @@ async fn read_one<T: AsyncIsoTpTransport, F: FnMut(&DidHit) -> std::io::Result<(
 /// every `keepalive_every` identifiers to hold the session open through the
 /// long stretches of refusals; pass `0` to disable it.
 ///
-/// **Returns early when `guard` fires**, with the statistics gathered so far.
+/// **Returns early when `guard` fires**, with the statistics gathered so far — and when the
+/// unit has answered none of the first [`anomaly::QUIET_RUN`] requests at all
+/// ([`anomaly::Monitor::absent`]), which is not a halt: the caller tells the two apart.
 /// The caller must ask [`anomaly::Monitor::halted`] afterwards rather than
 /// treating the return as success: a sweep that stopped because a control unit
 /// changed under it has not finished, it has been stopped.
@@ -186,6 +188,10 @@ where
 				return Ok(stats);
 			}
 			if read_one(uds, did, &mut stats, guard, &mut on_hit).await? {
+				return Ok(stats);
+			}
+			// Nothing at that address: the rest would each wait out a timeout to learn the same.
+			if guard.monitor.absent() {
 				return Ok(stats);
 			}
 			if !delay.is_zero() {
@@ -320,6 +326,23 @@ mod tests {
 		assert_eq!(stats.asked, 3);
 		assert_eq!(stats.hits, 2);
 		assert!(uds.into_transport().is_exhausted(), "the scripted exchange ran exactly");
+	}
+
+	#[tokio::test]
+	async fn a_unit_that_never_answers_is_asked_a_quiet_run_and_no_more() {
+		// `sensors --unit 70E` on a unit that never answers: every one of the 32 parameters
+		// waited out its timeout. The mock panics if a fourth is asked.
+		let script = vec![(req(0xF400), silence()), (req(0xF401), silence()), (req(0xF402), silence())];
+		let mut uds = AsyncUdsClient::new(MockAsyncTransport::new(script));
+		let mut monitor = anomaly::Monitor::new(0x70E);
+		let stats = scan_dids(&mut uds, &[0xF400..=0xF41F], Duration::ZERO, 0, &mut unwatched(&mut monitor), |_| Ok(()))
+			.await
+			.unwrap();
+		assert_eq!(stats.asked, anomaly::QUIET_RUN);
+		assert_eq!(stats.failed, anomaly::QUIET_RUN);
+		assert!(monitor.absent());
+		assert!(monitor.halted().is_none(), "an empty address is not a unit that changed");
+		assert!(uds.into_transport().is_exhausted());
 	}
 
 	#[tokio::test]

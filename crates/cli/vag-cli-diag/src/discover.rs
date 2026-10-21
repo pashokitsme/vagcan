@@ -249,44 +249,40 @@ fn candidates(columns: &[Column]) -> Vec<&Column> {
 	candidates
 }
 
-/// The classification as data: a table of the candidates — when there are any — and one
-/// summary line, `45 columns · 14 candidates · 21 continuous · 10 never moved`.
+/// The classification as data, `gh pr list`'s shape: one summary line,
+/// `45 columns · 14 candidates · 21 continuous · 10 never moved`, then a table of the
+/// candidates when there are any.
 pub fn render(columns: &[Column]) -> String {
 	let candidates = candidates(columns);
-	let mut out = String::new();
-	if !candidates.is_empty() {
-		let mut table = Table::new(&["column", "values", "changes", "reads", "seen"]).right(1).right(2).right(3);
-		for c in &candidates {
-			let Behaviour::Stepped { levels, changes } = c.behaviour else {
-				continue;
-			};
-			let shown: Vec<String> = c.values.iter().take(SHOWN_VALUES).cloned().collect();
-			let more = if c.values.len() > shown.len() {
-				format!(" {}", vag_cli_core::marks::ELLIPSIS)
-			} else {
-				String::new()
-			};
-			table.row(vec![
-				c.name.clone(),
-				levels.to_string(),
-				changes.to_string(),
-				c.samples.to_string(),
-				format!("{}{more}", shown.join(" ")),
-			]);
-		}
-		out.push_str(&table.render(terminal_width()));
-		out.push('\n');
+	let mut table = Table::new(&["COLUMN", "VALUES", "CHANGES", "READS", "SEEN"]).right(1).right(2).right(3);
+	for c in &candidates {
+		let Behaviour::Stepped { levels, changes } = c.behaviour else {
+			continue;
+		};
+		let shown: Vec<String> = c.values.iter().take(SHOWN_VALUES).cloned().collect();
+		let more = if c.values.len() > shown.len() {
+			format!(" {}", vag_cli_core::marks::ELLIPSIS)
+		} else {
+			String::new()
+		};
+		table.row(vec![
+			c.name.clone(),
+			levels.to_string(),
+			changes.to_string(),
+			c.samples.to_string(),
+			format!("{}{more}", shown.join(" ")),
+		]);
 	}
 	let continuous = columns.iter().filter(|c| matches!(c.behaviour, Behaviour::Continuous { .. })).count();
 	let constant = columns.iter().filter(|c| c.behaviour == Behaviour::Constant).count();
-	out.push_str(&format!(
-		"{} {}{SEP}{} {}{SEP}{continuous} continuous{SEP}{constant} never moved\n",
+	let summary = format!(
+		"{} {}{SEP}{} {}{SEP}{continuous} continuous{SEP}{constant} never moved",
 		columns.len(),
 		plural(columns.len(), "column"),
 		candidates.len(),
 		plural(candidates.len(), "candidate"),
-	));
-	out
+	);
+	vag_cli_core::table::list(&summary, &table, terminal_width())
 }
 
 /// What `discover` says beside its data: at `-v` how it sorts and what an empty answer means,
@@ -326,19 +322,15 @@ pub fn untimed(csv: &str) -> usize {
 	value_columns(&names).iter().filter(|(_, time_at, _)| time_at.is_none()).count()
 }
 
-/// The pairs [`co_changing`] found, as data: a table — when there are any — and one line.
+/// The pairs [`co_changing`] found, as data, `gh pr list`'s shape: one line, then a table
+/// when there are any.
 pub fn render_pairs(pairs: &[(String, String, f64)]) -> String {
-	let mut out = String::new();
-	if !pairs.is_empty() {
-		let mut table = Table::new(&["first", "second", "coincide"]).right(2);
-		for (a, b, overlap) in pairs {
-			table.row(vec![a.clone(), b.clone(), format!("{:.0}%", overlap * 100.0)]);
-		}
-		out.push_str(&table.render(terminal_width()));
-		out.push('\n');
+	let mut table = Table::new(&["FIRST", "SECOND", "COINCIDE"]).right(2);
+	for (a, b, overlap) in pairs {
+		table.row(vec![a.clone(), b.clone(), format!("{:.0}%", overlap * 100.0)]);
 	}
-	out.push_str(&format!("{} {} changed together\n", pairs.len(), plural(pairs.len(), "pair")));
-	out
+	let summary = format!("{} {} changed together", pairs.len(), plural(pairs.len(), "pair"));
+	vag_cli_core::table::list(&summary, &table, terminal_width())
 }
 
 /// How [`co_changing`] pairs, at `-v`: `window` is its argument.
@@ -548,10 +540,10 @@ mod tests {
 		let csv = "t_s,A\n0.0,0\n1.0,1\n2.0,1\n";
 		assert_eq!(
 			render(&classify(csv).unwrap()),
-			"column  values  changes  reads  seen\n\
-			 A            2        1      3  0 1\n\
+			"1 column · 1 candidate · 0 continuous · 0 never moved\n\
 			 \n\
-			 1 column · 1 candidate · 0 continuous · 0 never moved\n"
+			 COLUMN  VALUES  CHANGES  READS  SEEN\n\
+			 A            2        1      3  0 1\n"
 		);
 	}
 
@@ -559,7 +551,7 @@ mod tests {
 	fn a_stepped_column_shows_its_first_values_and_says_there_are_more() {
 		let csv = "t_s,A\n0,1\n1,2\n2,3\n3,4\n4,5\n5,6\n6,7\n7,8\n8,9\n";
 		let text = render(&classify(csv).unwrap());
-		assert!(text.lines().nth(1).unwrap().ends_with("  1 2 3 4 5 6 7 8 …"), "{text}");
+		assert!(text.lines().nth(3).unwrap().ends_with("  1 2 3 4 5 6 7 8 …"), "{text}");
 	}
 
 	#[test]
@@ -567,10 +559,10 @@ mod tests {
 		assert_eq!(render_pairs(&[]), "0 pairs changed together\n");
 		assert_eq!(
 			render_pairs(&[("A".into(), "Gear".into(), 1.0)]),
-			"first  second  coincide\n\
-			 A      Gear        100%\n\
+			"1 pair changed together\n\
 			 \n\
-			 1 pair changed together\n"
+			 FIRST  SECOND  COINCIDE\n\
+			 A      Gear        100%\n"
 		);
 	}
 

@@ -1275,7 +1275,7 @@ mod screens {
 
 	/// What answered, at `-v`, beside a refusal of what is missing.
 	pub fn units_answered(identities: &[UnitIdentity]) -> String {
-		let mut table = vag_cli_core::table::Table::new(&["unit", "part", "component"]);
+		let mut table = vag_cli_core::table::Table::new(&["UNIT", "PART", "COMPONENT"]);
 		for unit in identities {
 			table.row(vec![
 				format!("{:03X}", unit.request),
@@ -1283,7 +1283,8 @@ mod screens {
 				unit.component.clone().unwrap_or_default(),
 			]);
 		}
-		table.render(None)
+		let n = identities.len();
+		vag_cli_core::table::list(&format!("{n} control {} answered", if n == 1 { "unit" } else { "units" }), &table, None)
 	}
 
 	/// The pre-flight check, at a standstill: one line, and where every channel came
@@ -1529,7 +1530,9 @@ mod screens {
 	/// What the car is now known to be, and what that unlocks.
 	pub fn complete(car: &CarFile, path: &Path, result: &RoadLoadResult, kept: &[KeptPass]) -> Complete {
 		let sourced = |value: String, from: String| format!("{value:<12} {from}");
-		let mut rows: Vec<(&str, String)> = vec![("car file", path.display().to_string())];
+		let mut rows: Vec<(&str, String)> = Vec::new();
+		// The fit's own conditions, without which a CdA means nothing: the card's meta line.
+		let mut meta = String::new();
 		if let Some(mass) = &car.mass {
 			rows.push((
 				"mass",
@@ -1550,11 +1553,10 @@ mod screens {
 		if let Some(fit) = &car.fit {
 			// Without these the CdA above is not a number: the fit returns
 			// ½·ρ·CdA, and it scales with the mass it was fitted at.
-			rows.push((
-				"ρ at fit",
-				sourced(format!("{:.3} kg/m³", fit.rho_at_fit), fit.rho_source.as_str().to_string()),
-			));
-			rows.push(("mass at fit", format!("{:.0} kg", fit.mass_at_fit_kg)));
+			meta = vag_cli_core::marks::facts([
+				format!("fitted at {:.3} kg/m³ {}", fit.rho_at_fit, fit.rho_source.as_str()),
+				format!("{:.0} kg", fit.mass_at_fit_kg),
+			]);
 			// How the fit was judged: each pass against its own curve, then the two
 			// against each other, whose difference is the wind and the slope.
 			for (at, pass) in kept.iter().enumerate() {
@@ -1589,8 +1591,17 @@ mod screens {
              speed carries the speedometer's optimism, then pass --speed-scale"
 				.to_string(),
 		);
+		// A card, `gh pr view`'s shape: the file, the fit's conditions, then every figure with
+		// which kind of claim it is.
+		let mut data = format!("car file {}\n", vag_cli_core::datadir::tilde(path));
+		if !meta.is_empty() {
+			data.push_str(&meta);
+			data.push('\n');
+		}
+		data.push('\n');
+		data.push_str(&vag_cli_core::table::section("FIGURES", pairs(&rows).lines()));
 		Complete {
-			data: pairs(&rows),
+			data,
 			said: Message {
 				text: "power is available now: vagcan measure --full".to_string(),
 				detail: detail.join("\n"),
@@ -2309,7 +2320,9 @@ mod tests {
 		};
 		let complete = screens::complete(&car, Path::new("/tmp/cars/x/car.json"), &result, &[]);
 		assert!(
-			complete.data.contains("ρ at fit     1.225 kg/m³  standard-atmosphere\n"),
+			complete
+				.data
+				.contains(&format!("\nfitted at 1.225 kg/m³ standard-atmosphere{}", vag_cli_core::marks::SEP)),
 			"{}",
 			complete.data
 		);
@@ -2386,13 +2399,15 @@ mod tests {
 		// conditions, without which a CdA means nothing.
 		assert_eq!(
 			complete.data,
-			"car file     /tmp/cars/x/car.json\n\
-             mass         1475 kg      you, 2026-08-03\n\
-             tyre         205/55R16    you, 2026-08-03\n\
-             CdA          0.63 m²      measured on this car, 2 passes\n\
-             Crr          0.0114       measured on this car\n\
-             ρ at fit     1.183 kg/m³  measured\n\
-             mass at fit  1385 kg\n"
+			format!(
+				"car file /tmp/cars/x/car.json\nfitted at 1.183 kg/m³ measured{}1385 kg\n",
+				vag_cli_core::marks::SEP
+			) + "\n\
+			 FIGURES\n\
+			 \x20 mass  1475 kg      you, 2026-08-03\n\
+			 \x20 tyre  205/55R16    you, 2026-08-03\n\
+			 \x20 CdA   0.63 m²      measured on this car, 2 passes\n\
+			 \x20 Crr   0.0114       measured on this car\n"
 		);
 		// What it unlocks, every time; how the fit was judged and the two things worth
 		// doing once, at -v.

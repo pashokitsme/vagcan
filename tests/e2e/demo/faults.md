@@ -10,7 +10,7 @@ says why (`vcds-only/faults.md` is the same from a VCDS install alone).
 $ vagcan faults
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
-names    ODIS SIM00-odis (eng)
+note: code names from ODIS SIM00-odis (eng)
 warning: 70E fault list not read: transport: timeout
 2 stored codes on 2 of 4 units · 1 failing now
 
@@ -32,7 +32,7 @@ warning: 70E fault list not read: transport: timeout
 $ vagcan -v faults --unit 01
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
-names    ODIS SIM00-odis (eng)
+note: code names from ODIS SIM00-odis (eng)
 2 fault texts for 2 variants from /nowhere/SIM00-odis (en)
 a stored code is a record that something happened once — not a diagnosis, and not necessarily a fault now; `failing` is failing now
 7E0  1 code listed, 1 confirmed

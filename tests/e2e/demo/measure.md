@@ -9,6 +9,6 @@ $ vagcan measure
 note: adapter from VAGCAN_DEVICE=[PORT]
 error: no gear channel in this car's catalogs
 
-help: vagcan setup <ODIS project | VCDS installation> brings the channels; -v lists what was looked for
+help: run `vagcan setup <ODIS project or VCDS installation>` to bring the channels; `-v` lists what was looked for
 
 ```

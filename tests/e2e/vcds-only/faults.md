@@ -8,7 +8,8 @@ says why.
 $ vagcan faults
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
-names    none — `vagcan setup` names the codes
+note: the codes are not named: no label data on this machine
+  (use "vagcan setup" to read it)
 2 stored codes on 2 of 4 units · 1 failing now
 
 7E0  SIM ENGINE  SIM906000A
@@ -29,7 +30,8 @@ names    none — `vagcan setup` names the codes
 $ vagcan -v faults --unit 713
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
-names    none — `vagcan setup` names the codes
+note: the codes are not named: no label data on this machine
+  (use "vagcan setup" to read it)
 codes below are shown as numbers: no fault-name labels on this machine
 note: looked in [HOME]/rod
 help: run `vagcan setup <ODIS project or VCDS installation>` (offline)

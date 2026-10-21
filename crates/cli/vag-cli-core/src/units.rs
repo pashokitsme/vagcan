@@ -80,8 +80,8 @@ pub fn record(vin: &str, identities: &[UnitIdentity]) -> anyhow::Result<PathBuf>
 /// one: a read-only home directory must not take `watch` off the car.
 pub fn record_quietly(vin: &str, identities: &[UnitIdentity]) {
 	match record(vin, identities) {
-		Ok(path) => crate::note!("units  recorded in {}", path.display()),
-		Err(e) => crate::say!("the car's control units were not recorded: {e:#}"),
+		Ok(path) => crate::note!("recorded the units in {}", crate::datadir::tilde(&path)),
+		Err(e) => crate::say!("warning: the car's control units were not recorded: {e:#}"),
 	}
 }
 
@@ -100,7 +100,7 @@ pub fn record_for(vin: Option<&str>, identities: &[UnitIdentity]) {
 /// told to connect to the car once would otherwise wait for a file that never
 /// comes.
 pub const NOT_RECORDED_WITHOUT_A_VIN: &str =
-	"units not recorded: the engine gave no VIN to file them under (`vagcan dev dash build` needs the record)";
+	"note: the units are not recorded: the engine gave no VIN to file them under (`vagcan dev dash build` needs the record)";
 
 /// The units recorded for one car, or `None` when no command has recorded it.
 ///
@@ -385,6 +385,20 @@ pub async fn read_vin<B: UnitLink>(backend: B) -> (B, Option<String>) {
 	(B::release(uds.into_transport()), vin)
 }
 
+/// How long a probe waits for a unit's answer: one short read decides whether the unit is
+/// there. A unit that is not costs this deadline once, instead of the full two-second one
+/// three times over — fifteen listed addresses at that price is what made startup take
+/// several seconds.
+pub const PROBE: Duration = Duration::from_millis(300);
+
+/// One identification text, read within [`PROBE`] and trimmed of VW's padding: what
+/// `identify_listed` asks each unit, and what `info` asks for the ODX file name.
+pub async fn probe_text<T: vag_uds_transport::AsyncIsoTpTransport>(uds: &mut AsyncUdsClient<T>, did: u16) -> Option<String> {
+	let data = uds.read_data_by_identifier_within(did, PROBE).await.ok()?;
+	let text = String::from_utf8_lossy(&data).trim_end_matches(['\0', ' ']).to_string();
+	(!text.is_empty()).then_some(text)
+}
+
 /// Identify a named list of units.
 ///
 /// The walk [`identify`] performs once it knows the list. Kept separate because
@@ -405,30 +419,21 @@ pub async fn identify_listed<B: UnitLink>(mut backend: B, requests: &[u16], prog
 			continue;
 		};
 		let mut uds = AsyncUdsClient::new(backend.to_unit(CanId::Standard(address.request), CanId::Standard(address.response)));
-		let text = |data: Option<Vec<u8>>| {
-			data
-				.map(|b| String::from_utf8_lossy(&b).trim_end_matches(['\0', ' ']).to_string())
-				.filter(|s| !s.is_empty())
-		};
-		// One short probe decides whether the unit is there. A unit that is
-		// not costs this deadline once, instead of the full two-second one
-		// three times over — fifteen listed addresses at that price is what
-		// made startup take several seconds.
-		const PROBE: Duration = Duration::from_millis(300);
-		let part = text(uds.read_data_by_identifier_within(0xF187, PROBE).await.ok());
+		// One short probe ([`PROBE`]) decides whether the unit is there.
+		let part = probe_text(&mut uds, 0xF187).await;
 		if part.is_none() && request != plan::ENGINE {
 			backend = B::release(uds.into_transport());
 			continue;
 		}
 		// Identification only — no session change and no sweep. The danger is
 		// what a sweep can provoke; this is not one.
-		let component = text(uds.read_data_by_identifier_within(0xF197, PROBE).await.ok());
-		let odx = text(uds.read_data_by_identifier_within(0xF19E, PROBE).await.ok());
+		let component = probe_text(&mut uds, 0xF197).await;
+		let odx = probe_text(&mut uds, 0xF19E).await;
 		// `F1A2` beside `F19E`: the two together pick a unit's variant, and a
 		// name without a version can only ever match a whole family. One more
 		// `0x22` read, on the allowlist, in the identification pass that is
 		// already asking this unit three questions.
-		let version = text(uds.read_data_by_identifier_within(0xF1A2, PROBE).await.ok());
+		let version = probe_text(&mut uds, 0xF1A2).await;
 		identities.push(UnitIdentity {
 			request,
 			part_number: part,

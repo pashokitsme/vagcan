@@ -14,16 +14,15 @@ $ vagcan setup --list
 $ vagcan units --identify
 ? success
 ...
-5 asked · 4 answered · 2 on the gateway's list
+✓  02    7E1  SIM300000B  SIM GEARBOX
 
 $ vagcan dev dash build SIMVIN00000000001
 ? success
-vin        SIMVIN00000000001
-plan       896cfd2bbee4a491
-pages      1
-channels   1 on 1 unit
-alarms     0
-plan.json  [HOME]/dash/SIMVIN00000000001/plan.json
-plan.rs    [HOME]/dash/SIMVIN00000000001/plan.rs
+plan 896cfd2bbee4a491 · SIMVIN00000000001
+1 page · 1 channel on 1 unit · 0 alarms
+
+WRITTEN
+  ~/.vagcan/dash/SIMVIN00000000001/plan.json
+  ~/.vagcan/dash/SIMVIN00000000001/plan.rs
 
 ```

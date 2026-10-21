@@ -36,8 +36,9 @@ use anyhow::Result;
 use clap::Subcommand;
 
 use crate::device::DeviceArg;
+use crate::render::plural;
 use crate::{analyse, datadir, labels, names};
-use vag_cli_core::table::{self, Table};
+use vag_cli_core::table;
 
 /// `labels`' `--device`: only `--from-car` opens one.
 const LABELS_DEVICE_HELP: &str = "Adapter to use with --from-car: a serial path (a USB-CAN adapter, or the dash board on its USB cable), \
@@ -423,26 +424,38 @@ fn stats(db_path: &std::path::Path, named: bool) -> Result<()> {
 	// The other registries' rows, by the section a unit selects them with.
 	let sections: Vec<(String, i64)> = vag_data_db::registry_row_counts(db_path, vag_data_db::VCDS)?
 		.into_iter()
-		.map(|(section, n)| (format!("registry_row {section}"), i64::try_from(n).unwrap_or(i64::MAX)))
+		.map(|(section, n)| (section.to_string(), i64::try_from(n).unwrap_or(i64::MAX)))
 		.collect();
-	let mut counts: Vec<(&str, i64)> = counts;
-	counts.extend(sections.iter().map(|(name, n)| (name.as_str(), *n)));
-	vag_cli_core::out!("{}", render_stats(&counts));
-	vag_cli_core::note!("label cache {}", db_path.display());
+	vag_cli_core::out!("{}", render_stats(db_path, &counts, &sections));
 	for (kind, dir) in vag_data_db::sources_of(db_path).unwrap_or_default() {
-		vag_cli_core::note!("source {kind} {dir}");
+		vag_cli_core::note!("read from the {kind} source {}", vag_cli_core::datadir::tilde(std::path::Path::new(&dir)));
 	}
 	Ok(())
 }
 
-/// `stats`' table: rows per table, in the schema's order, under `what  count` like every
-/// count table in `dev vcds`.
-fn render_stats(counts: &[(&str, i64)]) -> String {
-	let mut table = Table::new(&["what", "count"]).right(1);
-	for (name, n) in counts {
-		table.row(vec![name.to_string(), n.to_string()]);
+/// `stats`' card, `gh pr view`'s shape: the cache on the first line, how many tables and
+/// rows on the meta line, then the rows of each table in the schema's order and the rows of
+/// VCDS's other registries by section.
+fn render_stats(db_path: &std::path::Path, counts: &[(&str, i64)], sections: &[(String, i64)]) -> String {
+	let rows: i64 = counts.iter().map(|(_, n)| n).sum();
+	let mut out = format!(
+		"label cache {}\n{}\n\n",
+		vag_cli_core::datadir::tilde(db_path),
+		vag_cli_core::marks::facts([
+			format!("{} {}", counts.len(), plural(counts.len(), "table")),
+			format!("{rows} {}", plural(usize::try_from(rows).unwrap_or(usize::MAX), "row")),
+		])
+	);
+	let lines = |rows: Vec<(&str, i64)>| table::counts(&rows.into_iter().map(|(k, n)| (k, n.to_string())).collect::<Vec<_>>());
+	out.push_str(&table::section("TABLES", lines(counts.to_vec())));
+	if !sections.is_empty() {
+		out.push('\n');
+		out.push_str(&table::section(
+			"REGISTRY ROWS",
+			lines(sections.iter().map(|(s, n)| (s.as_str(), *n)).collect()),
+		));
 	}
-	table.render(table::terminal_width())
+	out
 }
 
 #[cfg(test)]
@@ -450,13 +463,22 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn stats_are_one_row_per_table() {
+	fn stats_are_a_card_of_one_line_per_table() {
 		assert_eq!(
-			render_stats(&[("label_file", 1), ("measurement", 101889)]),
-			"what          count
-label_file        1
-measurement  101889
-"
+			render_stats(
+				std::path::Path::new("/x/cache.sqlite"),
+				&[("label_file", 1), ("measurement", 101889)],
+				&[("ADP".to_string(), 7)]
+			),
+			"label cache /x/cache.sqlite\n\
+			 2 tables · 101890 rows\n\
+			 \n\
+			 TABLES\n\
+			 \x20 label_file        1\n\
+			 \x20 measurement  101889\n\
+			 \n\
+			 REGISTRY ROWS\n\
+			 \x20 ADP  7\n"
 		);
 	}
 

@@ -137,12 +137,12 @@ impl Anomaly {
 			 \n\
 			 1. Stop the car if it is moving.\n\
 			 2. Do NOT clear the faults. The freeze frame is the evidence.\n\
-			      vagcan faults --unit {unit} --details\n\
+			\x20    vagcan faults --unit {unit} --details\n\
 			 3. See whether it answers at all. This asks every unit of the car the four\n\
-			    identifiers that name it, {unit} among them — no sweep:\n\
-			      vagcan units --identify\n\
+			\x20  identifiers that name it, {unit} among them — no sweep:\n\
+			\x20    vagcan units --identify\n\
 			 4. Try an ignition cycle: off, wait, on. A unit that crashed and restarted\n\
-			    often comes back. One that does not is a different problem.\n\
+			\x20  often comes back. One that does not is a different problem.\n\
 			 5. Then stop, and take it to someone with the factory tool.\n",
 			self.request, self.did
 		)
@@ -163,6 +163,8 @@ pub struct Monitor {
 	answered: BTreeSet<u16>,
 	/// Unanswered requests since the last thing the unit said.
 	silences: usize,
+	/// Whether the unit has said anything at all this run — data or a refusal.
+	heard: bool,
 	/// The first change seen, if any. Kept so the sweep can return normally and
 	/// the caller can ask afterwards what ended it.
 	halted: Option<Anomaly>,
@@ -174,6 +176,7 @@ impl Monitor {
 			request,
 			answered: BTreeSet::new(),
 			silences: 0,
+			heard: false,
 			halted: None,
 		}
 	}
@@ -196,6 +199,7 @@ impl Monitor {
 	/// silences this clears.
 	pub fn heard(&mut self) {
 		self.silences = 0;
+		self.heard = true;
 	}
 
 	/// Whether this unit has said anything at all yet.
@@ -204,6 +208,23 @@ impl Monitor {
 	/// end a run.
 	pub fn spoke(&self) -> bool {
 		!self.answered.is_empty()
+	}
+
+	/// Whether the unit has given nothing back — no data, no refusal — to the first
+	/// [`QUIET_RUN`] requests of this run: an address with nothing on it.
+	///
+	/// Not an [`Anomaly`]: nothing changed, the unit was never there to change. But nothing
+	/// is to be learned by asking it the rest either, and every request it ignores costs a
+	/// whole timeout — `sensors --unit` on a silent unit waited out all of its parameters,
+	/// over two minutes, because [`Monitor::saw`] rightly ignores a unit that never spoke.
+	/// A sweep stops asking when this turns true ([`crate::scan::scan_dids`]).
+	pub fn absent(&self) -> bool {
+		!self.heard && self.answered.is_empty() && self.silences >= QUIET_RUN
+	}
+
+	/// How many requests in a row have gone unanswered.
+	pub fn silences(&self) -> usize {
+		self.silences
 	}
 
 	/// Feed one outcome. `Some` means the run ends here.
@@ -219,9 +240,11 @@ impl Monitor {
 			Answer::Answered => {
 				self.answered.insert(did);
 				self.silences = 0;
+				self.heard = true;
 			}
 			Answer::Refused => {
 				self.silences = 0;
+				self.heard = true;
 				if self.answered.contains(&did) {
 					self.halted = Some(Anomaly {
 						request: self.request,
@@ -234,9 +257,12 @@ impl Monitor {
 			Answer::Withheld => {}
 			Answer::Silent => {
 				self.silences += 1;
-				if !self.spoke() {
-					// Never heard from: this is an address with nothing on it,
-					// which is the ordinary result of walking a car.
+				// Never heard from — no data, no refusal: an address with nothing on it,
+				// the ordinary result of walking a car ([`Monitor::absent`]). A refusal is
+				// the unit talking: one that refused and then falls silent has gone quiet
+				// as surely as one that answered (review of #55: `units --identify 713` on
+				// a unit that refused once was still asking at 858 s).
+				if !self.heard && !self.spoke() {
 					return None;
 				}
 				if self.answered.contains(&did) {
@@ -270,7 +296,7 @@ impl Monitor {
 			return self.halted.as_ref();
 		}
 		self.silences += 1;
-		if self.spoke() && self.silences >= QUIET_RUN {
+		if (self.heard || self.spoke()) && self.silences >= QUIET_RUN {
 			self.halted = Some(Anomaly {
 				request: self.request,
 				did: first,
@@ -289,6 +315,44 @@ impl Monitor {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_silent_unit_is_absent_and_one_that_refused_then_fell_silent_has_gone_quiet() {
+		let mut m = Monitor::new(0x70E);
+		for did in 0..QUIET_RUN as u16 - 1 {
+			assert!(m.saw(did, Answer::Silent).is_none());
+			assert!(!m.absent(), "one lost frame is not an empty address");
+		}
+		assert!(m.saw(0x00FF, Answer::Silent).is_none(), "an absent unit is not an anomaly");
+		assert!(m.absent());
+		// A refusal is an answer: a unit that refuses, then goes quiet, is not absent — it
+		// went quiet, and the run ends on the QUIET_RUN-th silence (review of #55: it used to
+		// be neither, and the sweep asked on for every timeout).
+		let mut m = Monitor::new(0x7E1);
+		assert!(m.saw(0x0001, Answer::Refused).is_none());
+		for did in 2..2 + QUIET_RUN as u16 - 1 {
+			assert!(m.saw(did, Answer::Silent).is_none(), "{did:04X}: not yet a quiet run");
+		}
+		let halt = m
+			.saw(0x00FF, Answer::Silent)
+			.expect("a unit that refused and then fell silent went quiet")
+			.clone();
+		assert_eq!(halt.change, Change::WentQuiet { silences: QUIET_RUN });
+		assert!(!m.absent());
+		// The same over group requests.
+		let mut m = Monitor::new(0x7E1);
+		m.heard();
+		for at in 0..QUIET_RUN as u16 {
+			m.silent_span(0x2000 + at * 8);
+		}
+		assert!(m.halted().is_some(), "heard, then a quiet run of spans");
+		// Nor is one the link withheld requests from.
+		let mut m = Monitor::new(0x713);
+		for did in 0..10 {
+			m.saw(did, Answer::Withheld);
+		}
+		assert!(!m.absent());
+	}
 
 	#[test]
 	fn a_unit_that_goes_quiet_mid_sweep_ends_the_run() {

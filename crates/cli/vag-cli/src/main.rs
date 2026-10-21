@@ -1067,21 +1067,23 @@ fn glossary_command() -> Result<()> {
 	let project = project::stores()?;
 	let seeded = glossary::seed(&project)?;
 	let language = config::language(&config::load());
-	vag_cli_core::out!(
-		"{}",
-		vag_cli_core::table::pairs(&[
-			("file", seeded.path.display().to_string()),
-			("channels", seeded.total.to_string()),
-			("yours", seeded.translated.to_string()),
-			("blank", seeded.blank.to_string()),
-			("column", language.code().to_string()),
+	// A card, `gh pr view`'s shape: the file, then what it holds on one line of facts.
+	let plural = vag_cli_core::table::plural;
+	vag_cli_core::outln!(
+		"{}\n{}",
+		vag_cli_core::datadir::tilde(&seeded.path),
+		vag_cli_core::marks::facts([
+			format!("{} {}", seeded.total, plural(seeded.total, "channel")),
+			format!("{} yours", seeded.translated),
+			format!("{} blank", seeded.blank),
+			format!("column {}", language.code()),
 		])
 	);
 	vag_cli_core::note!(
 		"a name written in the `{}` column wins over ODIS and VCDS; `current` is today's name and is not read back; \
 		 `language` in {} picks the column",
 		language.code(),
-		config::path()?.display()
+		vag_cli_core::datadir::tilde(&config::path()?)
 	);
 	Ok(())
 }

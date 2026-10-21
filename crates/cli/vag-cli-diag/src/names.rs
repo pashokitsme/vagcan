@@ -79,7 +79,7 @@ pub fn run(needle: &str, limit: usize, files: &[NamesFile]) -> Result<()> {
 		);
 	}
 	for file in files.iter().filter(|f| !f.path.is_file()) {
-		vag_cli_core::note!("not there: {}", file.path.display());
+		vag_cli_core::note!("not there: {}", vag_cli_core::datadir::tilde(&file.path));
 	}
 	let mut catalogs = Vec::new();
 	for file in &present {
@@ -92,7 +92,7 @@ pub fn run(needle: &str, limit: usize, files: &[NamesFile]) -> Result<()> {
 	for (file, catalog) in &catalogs {
 		let found = search(catalog, needle);
 		let size = catalog.as_object().map_or(0, |m| m.len());
-		vag_cli_core::note!("searched {} ({size} {})", file.path.display(), plural(size, "name"));
+		vag_cli_core::note!("searched {} ({size} {})", vag_cli_core::datadir::tilde(&file.path), plural(size, "name"));
 		vag_cli_core::wire!("{}: {} of {size} match {needle:?}", file.path.display(), found.len());
 		hits.extend(found.into_iter().map(|(id, text)| (file.source, id, text)));
 	}
@@ -108,36 +108,30 @@ pub fn run(needle: &str, limit: usize, files: &[NamesFile]) -> Result<()> {
 	Ok(())
 }
 
-/// What `names` prints on stdout: a table of the first `limit` hits — `source` only when
-/// more than one file was searched — and the summary line.
+/// What `names` prints on stdout, `gh pr list`'s shape: the summary line, then a table of
+/// the first `limit` hits — `SOURCE` only when more than one file was searched.
 fn render(hits: &[(&str, &str, &str)], total: usize, limit: usize, tagged: bool) -> String {
 	let shown = hits.len().min(limit);
-	let mut out = String::new();
-	if shown > 0 {
-		let mut table = match tagged {
-			true => Table::new(&["source", "id", "name"]),
-			false => Table::new(&["id", "name"]),
-		};
-		for (source, id, text) in hits.iter().take(shown) {
-			let mut row = Vec::with_capacity(3);
-			if tagged {
-				row.push(source.to_string());
-			}
-			row.extend([id.to_string(), text.to_string()]);
-			table.row(row);
+	let mut table = match tagged {
+		true => Table::new(&["SOURCE", "ID", "NAME"]),
+		false => Table::new(&["ID", "NAME"]),
+	};
+	for (source, id, text) in hits.iter().take(shown) {
+		let mut row = Vec::with_capacity(3);
+		if tagged {
+			row.push(source.to_string());
 		}
-		out.push_str(&table.render(table::terminal_width()));
-		out.push('\n');
+		row.extend([id.to_string(), text.to_string()]);
+		table.row(row);
 	}
-	out.push_str(&vag_cli_core::marks::facts([
+	let summary = vag_cli_core::marks::facts([
 		format!("{} of {total} {} match", hits.len(), plural(total, "name")),
 		match hits.len() > shown {
 			true => format!("first {shown} shown (--limit)"),
 			false => String::new(),
 		},
-	]));
-	out.push('\n');
-	out
+	]);
+	table::list(&summary, &table, table::terminal_width())
 }
 
 #[cfg(test)]
@@ -223,11 +217,11 @@ mod tests {
 		];
 		assert_eq!(
 			render(&hits[..1], 3, 40, false),
-			"id      name\n000017  Synthetic manifold pressure\n\n1 of 3 names match\n"
+			"1 of 3 names match\n\nID      NAME\n000017  Synthetic manifold pressure\n"
 		);
 		assert_eq!(
 			render(&hits, 6, 1, true),
-			"source  id      name\nVCDS    000017  Synthetic manifold pressure\n\n2 of 6 names match · first 1 shown (--limit)\n"
+			"2 of 6 names match · first 1 shown (--limit)\n\nSOURCE  ID      NAME\nVCDS    000017  Synthetic manifold pressure\n"
 		);
 		assert_eq!(render(&[], 3, 40, false), "0 of 3 names match\n", "no table, no blank line");
 		assert_eq!(render(&[], 1, 40, false), "0 of 1 name match\n");

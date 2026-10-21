@@ -127,7 +127,10 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 	let inventory = levels("labels", || labels(&vcds_dir, None, None, None, &keys));
 	assert_eq!(
 		inventory[0].stdout,
-		"what  count\n.lbl      2\n.clb      0\n.rod      1\n\n3 files · 2 label files parsed\n"
+		format!(
+			"{}\n3 files · 2 label files parsed\n\nFILES\n  .lbl  2\n  .clb  0\n  .rod  1\n",
+			vcds_dir.display()
+		)
 	);
 	assert_eq!(inventory[0].stderr, "");
 	assert!(inventory[1].stderr.contains("counted and parsed in"), "{}", inventory[1].stderr);
@@ -135,19 +138,19 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 	let part = levels("labels --part --block", || labels(&vcds_dir, Some("022-906-032-C"), Some(1), None, &keys));
 	assert_eq!(
 		part[0].stdout,
-		"part  022-906-032-C\n\
-		 file  022-906-032-C.lbl\n\
-		 \n\
-		 block  field  name          phys\n\
-		 \x20   1      1  Engine Speed  RPM\n\
-		 \n\
+		"part 022-906-032-C · 022-906-032-C.lbl\n\
 		 1 measurement\n\
 		 \n\
-		 file               block  field  name           phys\n\
-		 022-906-032-C.lbl      1      1  Engine Speed   RPM\n\
-		 022-906-032-D.lbl      1      1  Vehicle Speed  km/h\n\
+		 MEASUREMENTS\n\
+		 \x20 1.1  Engine Speed · RPM\n\
 		 \n\
-		 2 definitions · block 1\n"
+		 2 definitions of block 1\n\
+		 \n\
+		 022-906-032-C.lbl\n\
+		 \x20 1.1  Engine Speed · RPM\n\
+		 \n\
+		 022-906-032-D.lbl\n\
+		 \x20 1.1  Vehicle Speed · km/h\n"
 	);
 	assert_eq!(part[0].stderr, "", "the cache built on the way is a note");
 	assert!(part[1].stderr.contains("label cache"), "{}", part[1].stderr);
@@ -162,12 +165,12 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 	let odx = levels("labels --odx", || labels(&vcds_dir, None, None, Some("EV_TEST"), &keys));
 	assert_eq!(
 		odx[0].stdout,
-		"file         section  state        bytes\nEV_TEST.rod           no sections\n\n0/0 sections open · 1 file\n"
+		"0 of 0 sections open · 1 file\n\nFILE         SECTION  STATE        BYTES\nEV_TEST.rod           no sections\n"
 	);
 	assert!(odx[1].stderr.contains("1 file named EV_TEST.rod"), "{}", odx[1].stderr);
 	// Not an install: the fix is to pass one.
 	let miss = levels("labels --odx, no such file", || labels(&vcds_dir, None, None, Some("EV_NOTHING"), &keys));
-	assert_eq!(miss[0].stdout, "odx   EV_NOTHING\nfile  none\n");
+	assert_eq!(miss[0].stdout, "EV_NOTHING · no .rod file\n");
 	assert_eq!(
 		miss[0].stderr,
 		format!(
@@ -202,7 +205,7 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 	let hits = levels("names", names("invented"));
 	assert_eq!(
 		hits[0].stdout,
-		"id      name\n000017  Invented manifold pressure\n\n2 of 3 names match · first 1 shown (--limit)\n"
+		"2 of 3 names match · first 1 shown (--limit)\n\nID      NAME\n000017  Invented manifold pressure\n"
 	);
 	assert_eq!(hits[0].stderr, "");
 	assert!(hits[1].stderr.contains("not by data identifier"), "{}", hits[1].stderr);
@@ -220,16 +223,13 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 		min_points: 20,
 	});
 	let rows: Vec<&str> = analyse[0].stdout.lines().collect();
-	assert_eq!(rows.len(), 5, "{}", analyse[0].stdout);
-	assert!(rows[0].starts_with("ide       phys  range"), "{}", rows[0]);
-	assert!(
-		rows[1].starts_with("IDE00405  /min") && rows[1].contains("7E8/F40C  U16Be  0.250000") && rows[1].ends_with("proven"),
-		"{}",
-		rows[1]
-	);
-	assert!(rows[2].starts_with("IDE00155  deg") && rows[2].ends_with("never moved"), "{}", rows[2]);
-	assert_eq!(rows[3], "", "one blank line between the table and its summary");
-	assert_eq!(rows[4], "1 of 2 measurements proven");
+	assert_eq!(rows.len(), 7, "{}", analyse[0].stdout);
+	assert_eq!(rows[0], "1 of 2 measurements proven");
+	assert_eq!(rows[1], "", "one blank line between the summary and the records");
+	assert!(rows[2].starts_with("✓  IDE00405  /min"), "{}", rows[2]);
+	assert!(rows[3].starts_with("   7E8/F40C · U16Be · factor 0.250000"), "{}", rows[3]);
+	assert!(rows[5].starts_with("✗  IDE00155  deg"), "{}", rows[5]);
+	assert_eq!(rows[6], "   never moved");
 	assert_eq!(analyse[0].stderr, format!("wrote 1 catalog row to {}\n", out.display()));
 	assert!(
 		analyse[1].stderr.contains("the log starts +0.5 s into the capture"),
@@ -245,17 +245,13 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 		cache: Some(keys.to_string_lossy().into_owned()),
 		dump: None,
 	});
-	assert!(
-		rod[0]
-			.stdout
-			.ends_with("section  state  bytes  key  preview\n\n0/0 sections open · 0 keys recovered\n"),
-		"{}",
-		rod[0].stdout
-	);
-	assert!(
-		rod[0].stdout.starts_with(&format!("file   {}", vcds_dir.join("EV_TEST.rod").display())),
-		"{}",
-		rod[0].stdout
+	assert_eq!(
+		rod[0].stdout,
+		format!(
+			"{}\n0 of 0 sections open · 0 keys recovered · keys in {}\n",
+			vcds_dir.join("EV_TEST.rod").display(),
+			keys.display()
+		)
 	);
 	assert_eq!(rod[0].stderr, "");
 	assert!(rod[1].stderr.contains("0 keys in"), "{}", rod[1].stderr);
@@ -266,9 +262,15 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 		dir: label_dir.to_string_lossy().into_owned(),
 		out: Some(json.to_string_lossy().into_owned()),
 	});
-	assert!(dump[0].stdout.starts_with("what   count\n.lbl       2\n"), "{}", dump[0].stdout);
-	assert!(dump[0].stdout.contains("\nlong_coding      0\n"), "{}", dump[0].stdout);
-	assert!(dump[0].stdout.ends_with("\n\n2 label files parsed\n"), "{}", dump[0].stdout);
+	assert!(
+		dump[0].stdout.starts_with(&format!(
+			"label files of {}\n2 label files parsed · 2 records\n\nFILES\n  .lbl   2\n",
+			label_dir.display()
+		)),
+		"{}",
+		dump[0].stdout
+	);
+	assert!(dump[0].stdout.contains("\n  long_coding  0\n"), "{}", dump[0].stdout);
 	assert_eq!(dump[0].stderr, format!("wrote 2 label files to {}\n", json.display()));
 
 	// tttext: one record that reads, one that does not.
@@ -293,12 +295,8 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 	let stats = levels("stats", || Tool::Stats { catalog: None });
 	assert_eq!(
 		stats[0].stdout,
-		"what            count\nlabel_file          2\nmeasurement         2\nredirect            0\nadaptation          0\nlong_coding         0\nregistry_row        0\nregistry_level      0\n"
+		"label cache ~/.vagcan/vcds/cache.sqlite\n7 tables · 4 rows\n\nTABLES\n  label_file      2\n  measurement     2\n  redirect        0\n  adaptation      0\n  long_coding     0\n  registry_row    0\n  registry_level  0\n"
 	);
 	assert_eq!(stats[0].stderr, "");
-	assert!(
-		stats[1].stderr.contains("label cache") && stats[1].stderr.contains("source vcds"),
-		"{}",
-		stats[1].stderr
-	);
+	assert!(stats[1].stderr.contains("read from the vcds source"), "{}", stats[1].stderr);
 }
