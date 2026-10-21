@@ -115,7 +115,9 @@ the server. Read-only bounds what can be *changed* about a car, not what can be
   flashing. The UDS allowlist is `0x22`, `0x19`, `0x10`, `0x3E` and stays that way.
 - **A sweep is a fuzz test of a diagnostic server.** It is the most invasive thing here.
   Guard anything new that resembles one the way `units --identify <unit>` is guarded: one
-  named unit; a bounded range (its identification block, `F100`–`F1FF`); refused on a moving
+  named unit, or `--all` as a sequence of single-unit runs each guarded on its own
+  (stationary check per unit, stop on the first silent unit; owner, 2026-10-21, for
+  `adaptations --all`); a bounded range (its identification block, `F100`–`F1FF`); refused on a moving
   car (`require_stationary`, with "no answer" counted as moving); stopped the moment the
   unit falls silent under the reads (`anomaly::Monitor`); never through the dash board —
   `--slcan`, or the board's `slcan` image, either of which makes the board a plain adapter,
@@ -223,7 +225,7 @@ crates/            all Rust. Three families and the product.
                        its files live, the terminal widgets. Knows no command.
     vag-cli-diag       reading a car and the files that explain it: identify,
                        faults, the guarded sweeps (`units --identify <unit>`,
-                       `sensors --unit <unit>` off 7E0–7E7),
+                       `sensors --unit <unit>` off 7E0–7E7, `adaptations`),
                        watch, setup, dash build and edit, vcds tooling
     vag-cli-measure    the acceleration stopwatch, a library: `vagcan measure`
                        is the one way in. Depends on `core` **alone** (its
@@ -231,7 +233,8 @@ crates/            all Rust. Three families and the product.
                        it), which is what makes it a crate rather than a directory.
     vag-cli            binary `vagcan` — the command surface and nothing else:
                        clap declarations and a dispatcher. Top level = needs the car:
-                       devices / info / units / faults / sensors / watch / measure —
+                       devices / info / units / adaptations / faults / sensors /
+                       watch / measure —
                        plus `setup`, the one offline command there, because it is
                        the first thing a new owner runs and what a car command short
                        of label data offers to run. The workshop is `dev …`: sniff /
