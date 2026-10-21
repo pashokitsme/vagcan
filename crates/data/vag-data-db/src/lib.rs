@@ -1801,24 +1801,29 @@ pub struct FreezeField {
 	pub levels: Vec<vag_data_labels::Level>,
 }
 
-/// The variants this cache holds VCDS freeze-frame rows for.
-pub fn freeze_frame_variants(db_path: &Path) -> Result<Vec<String>, Error> {
+/// The variants this cache holds freeze-frame rows for from one kind of source.
+pub fn freeze_frame_variants(db_path: &Path, kind: &str) -> Result<Vec<String>, Error> {
 	let conn = open_existing(db_path)?;
-	let mut stmt = conn.prepare("SELECT DISTINCT variant FROM registry_row WHERE section = ?1 ORDER BY variant")?;
-	let rows = stmt.query_map([FREEZE_FRAME_SECTION], |row| row.get::<_, String>(0))?;
+	let mut stmt = conn.prepare(
+		"SELECT DISTINCT variant FROM registry_row WHERE section = ?1 \
+           AND source_id IN (SELECT id FROM source WHERE kind = ?2) ORDER BY variant",
+	)?;
+	let rows = stmt.query_map(params![FREEZE_FRAME_SECTION, kind], |row| row.get::<_, String>(0))?;
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// One variant's freeze-frame fields, in the order its unit file lists them.
-pub fn freeze_frame_fields(db_path: &Path, variant: &str) -> Result<Vec<FreezeField>, Error> {
+/// One variant's freeze-frame fields from one kind of source, in the order its unit file
+/// lists them. One kind only: the two sources are never read into one record.
+pub fn freeze_frame_fields(db_path: &Path, kind: &str, variant: &str) -> Result<Vec<FreezeField>, Error> {
 	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare(
 		"SELECT id, key, lead, kind, signed, big_endian, bit_offset, bit_length, factor, offset, unit, name \
-         FROM registry_row WHERE variant = ?1 AND section = ?2 ORDER BY id",
+         FROM registry_row WHERE variant = ?1 AND section = ?2 \
+           AND source_id IN (SELECT id FROM source WHERE kind = ?3) ORDER BY id",
 	)?;
 	let mut levels = conn.prepare("SELECT raw, upper, meaning FROM registry_level WHERE registry_row_id = ?1 ORDER BY rowid")?;
 	let rows: Vec<(i64, FreezeField)> = stmt
-		.query_map(params![variant, FREEZE_FRAME_SECTION], |row| {
+		.query_map(params![variant, FREEZE_FRAME_SECTION, kind], |row| {
 			let factor: Option<f64> = row.get(8)?;
 			let offset: Option<f64> = row.get(9)?;
 			Ok((
@@ -3295,8 +3300,13 @@ mod tests {
 		record_language(&ws.db_path, VCDS, "/x/vcds-en", "eng").unwrap();
 		put_all_vcds_registry_rows(&ws.db_path, "/x/vcds-en", [("EV_UnitA", &[field, volts, other][..])]).unwrap();
 
-		assert_eq!(freeze_frame_variants(&ws.db_path).unwrap(), vec!["EV_UnitA".to_string()]);
-		let fields = freeze_frame_fields(&ws.db_path, "EV_UnitA").unwrap();
+		assert_eq!(freeze_frame_variants(&ws.db_path, VCDS).unwrap(), vec!["EV_UnitA".to_string()]);
+		assert!(
+			freeze_frame_variants(&ws.db_path, ODIS).unwrap().is_empty(),
+			"one kind of source at a time"
+		);
+		assert!(freeze_frame_fields(&ws.db_path, ODIS, "EV_UnitA").unwrap().is_empty());
+		let fields = freeze_frame_fields(&ws.db_path, VCDS, "EV_UnitA").unwrap();
 		assert_eq!(fields.len(), 2, "the adaptation row is not a freeze-frame field");
 		assert_eq!((fields[0].record, fields[0].lead, fields[0].kind), (112, Some(103), Some(3)));
 		assert_eq!(fields[0].levels, vec![Level::point(0, "state 0"), Level::point(1, "state 1")]);
@@ -3304,7 +3314,7 @@ mod tests {
 			(fields[1].bit_offset, fields[1].scale, fields[1].unit.as_deref()),
 			(Some(8), Some((0.1, 0.0)), Some("V"))
 		);
-		assert!(freeze_frame_fields(&ws.db_path, "EV_UnitB").unwrap().is_empty());
+		assert!(freeze_frame_fields(&ws.db_path, VCDS, "EV_UnitB").unwrap().is_empty());
 	}
 
 	#[test]

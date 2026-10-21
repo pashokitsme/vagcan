@@ -64,6 +64,11 @@ pub const STANDARD_DTC_INFORMATION: u8 = 0x01;
 /// VW's second standard extended-data record — see [`STANDARD_DTC_INFORMATION`].
 pub const STANDARD_FREEZE_FRAME: u8 = 0x02;
 
+/// VW's dynamic freeze frame: the protocol layer's case `0x71`, *Standard Freeze Frame
+/// Dynamic*, whose structure is a byte field "to end of PDU". It always runs to the end of the
+/// answer, whatever a unit's own description says of it ([`split_records`]).
+pub const DYNAMIC_FREEZE_FRAME: u8 = 0x71;
+
 /// The length VW's protocol layer gives one of its two standard records, `None` for any other.
 pub fn standard_length(record: u8) -> Option<usize> {
 	match record {
@@ -99,12 +104,17 @@ pub struct ExtendedRecord<'a> {
 /// `answer` is what [`DtcExtendedData`] holds — the first record's number, then every byte
 /// after it. `length_of` says how long a record is, `None` where that is not known: such a
 /// record takes the rest ([`Extent::ToEnd`]), since guessing where it stops would report the
-/// next record's bytes as this one's.
+/// next record's bytes as this one's. [`DYNAMIC_FREEZE_FRAME`] takes the rest before
+/// `length_of` is asked: its length is the protocol's, not a unit's.
 pub fn split_records(answer: &DtcExtendedData, length_of: impl Fn(u8) -> Option<usize>) -> Vec<ExtendedRecord<'_>> {
 	let mut out = Vec::new();
 	let (mut number, mut rest) = (answer.record, answer.data.as_slice());
 	loop {
-		match length_of(number) {
+		let length = match number {
+			DYNAMIC_FREEZE_FRAME => None,
+			_ => length_of(number),
+		};
+		match length {
 			Some(len) if len <= rest.len() => {
 				out.push(ExtendedRecord {
 					number,
@@ -133,8 +143,8 @@ pub fn split_records(answer: &DtcExtendedData, length_of: impl Fn(u8) -> Option<
 /// ([`STANDARD_DTC_INFORMATION`], [`STANDARD_FREEZE_FRAME`]).
 ///
 /// ```text
-/// 01  06 09                    record 0x01: priority, occurrences (saturates at 0xFF)
-/// 02  B8 033F1B 00 0069F9044B  record 0x02: aging counter, odometer km (u24 big-endian),
+/// 01  PP NN                    record 0x01: priority, occurrences (saturates at 0xFF)
+/// 02  AA KKKKKK TI TTTTTTTTTT  record 0x02: aging counter, odometer km (u24 big-endian),
 ///                              time indication, time stamp — see CarTime
 /// ```
 ///
@@ -271,25 +281,33 @@ pub fn seconds_between(earlier: u32, later: u32) -> Option<i64> {
 }
 
 impl FaultContext {
-	/// Read the two standard records out of a split answer.
+	/// Read the two standard records out of a split answer, checked against `now`, the unit's
+	/// own [`UnitStamp`].
 	///
-	/// Both must be there and whole — a half-read record is rejected rather than padded,
-	/// since it would produce a mileage that is simply wrong.
-	pub fn from_records(records: &[ExtendedRecord<'_>]) -> Option<FaultContext> {
+	/// Both records must be there and whole — a half-read record is rejected rather than
+	/// padded, since it would produce a mileage that is simply wrong. And the reading must
+	/// be possible: a fault is no further on than the unit's own odometer and its stamp is a
+	/// date. A unit whose record `0x02` is not the standard ten bytes in the standard order
+	/// (one rear-view camera variant of the reference project, twelve) otherwise reads
+	/// 12 059 455 km. **No stamp, no context:** without the unit's own "now" there is
+	/// nothing to check the reading against.
+	pub fn from_records(records: &[ExtendedRecord<'_>], now: Option<&UnitStamp>) -> Option<FaultContext> {
 		let whole = |n: u8| records.iter().find(|r| r.number == n && r.extent == Extent::Whole).map(|r| r.data);
 		let (info, frame) = (whole(STANDARD_DTC_INFORMATION)?, whole(STANDARD_FREEZE_FRAME)?);
-		Some(FaultContext {
+		let context = FaultContext {
 			priority: info[0],
 			occurrences: info[1],
 			aging_counter: frame[0],
 			mileage_km: u32::from_be_bytes([0, frame[1], frame[2], frame[3]]),
 			clock: u32::from_be_bytes([frame[6], frame[7], frame[8], frame[9]]),
-		})
+		};
+		let now = now?;
+		(context.mileage_km <= now.mileage_km && CarTime::parse(context.clock).is_some()).then_some(context)
 	}
 
 	/// [`Self::from_records`] over a whole answer, split by the two standard records alone.
-	pub fn parse(answer: &DtcExtendedData) -> Option<FaultContext> {
-		Self::from_records(&split_records(answer, standard_length))
+	pub fn parse(answer: &DtcExtendedData, now: Option<&UnitStamp>) -> Option<FaultContext> {
+		Self::from_records(&split_records(answer, standard_length), now)
 	}
 }
 
@@ -338,11 +356,15 @@ impl UnitStamp {
 mod tests {
 	use super::*;
 
-	/// The body control module's `19 06 000107 FF` answer after `59 06 00 01 07 <status>`,
-	/// verbatim: record `0x01`, then the bytes after it.
-	const BCM_000107: [u8; 19] = [
-		0x06, 0x09, 0x02, 0xB8, 0x03, 0x3F, 0x1B, 0x00, 0x00, 0x69, 0xF9, 0x04, 0x4B, 0x70, 0x04, 0x04, 0x0A, 0x7B, 0x91,
+	/// An answer after `59 06 <DTC> <status>`, invented in the shape a unit gives: record
+	/// `0x01` (priority 6, 9 times), record `0x02` (aging 184, 123 456 km, time indication 0,
+	/// 2025-03-14 10:20:30), then a unit's own record `0x70` of five bytes.
+	const ANSWER: [u8; 19] = [
+		0x06, 0x09, 0x02, 0xB8, 0x01, 0xE2, 0x40, 0x00, 0x00, 0x64, 0xDC, 0xA5, 0x1E, 0x70, 0x01, 0x02, 0x03, 0x04, 0x05,
 	];
+
+	/// The same unit's own stamp, two hours and 42 km later: 123 498 km, 2025-03-14 12:20:30.
+	const NOW: [u8; 10] = [0x91, 0x01, 0xE2, 0x6A, 0x00, 0x00, 0x64, 0xDC, 0xC5, 0x1E];
 
 	fn answer(data: &[u8]) -> DtcExtendedData {
 		DtcExtendedData {
@@ -351,28 +373,31 @@ mod tests {
 		}
 	}
 
+	fn now() -> UnitStamp {
+		UnitStamp::parse(&NOW).unwrap()
+	}
+
 	#[test]
 	fn a_fault_records_its_mileage_and_how_often_it_happened() {
-		let ctx = FaultContext::parse(&answer(&BCM_000107)).unwrap();
+		let ctx = FaultContext::parse(&answer(&ANSWER), Some(&now())).unwrap();
 		assert_eq!((ctx.priority, ctx.occurrences), (6, 9));
 		assert_eq!(ctx.aging_counter, 0xB8);
-		assert_eq!(ctx.mileage_km, 212_763);
-		assert_eq!(ctx.clock, 0x69F9_044B);
-		// The odometer read from the cluster at the same time was 212 805 km,
-		// so the fault is 42 km old — and no fault may be newer than the car.
-		assert!(ctx.mileage_km <= 212_805);
+		assert_eq!(ctx.mileage_km, 123_456);
+		let t = CarTime::parse(ctx.clock).unwrap();
+		assert_eq!((t.year, t.month, t.day, t.hour, t.minute, t.second), (2025, 3, 14, 10, 20, 30));
+		assert_eq!(seconds_between(ctx.clock, now().clock), Some(7_200));
+		assert_eq!(now().mileage_km - ctx.mileage_km, 42);
 	}
 
 	#[test]
 	fn the_answer_splits_into_the_two_standard_records_and_the_units_own() {
 		// What the earlier reading called a 13-byte record 0x01 is two records, and the
-		// five bytes after them are a third — the length VCDS's description of the unit
-		// gives its record (research/odis-dtc/freeze-frames.md).
-		let answer = answer(&BCM_000107);
+		// five bytes after them are a third (research/odis-dtc/freeze-frames.md).
+		let answer = answer(&ANSWER);
 		let records = split_records(&answer, standard_length);
 		let shape: Vec<(u8, usize, Extent)> = records.iter().map(|r| (r.number, r.data.len(), r.extent)).collect();
 		assert_eq!(shape, vec![(0x01, 2, Extent::Whole), (0x02, 10, Extent::Whole), (0x70, 5, Extent::ToEnd)]);
-		assert_eq!(records[2].data, &[0x04, 0x04, 0x0A, 0x7B, 0x91]);
+		assert_eq!(records[2].data, &[0x01, 0x02, 0x03, 0x04, 0x05]);
 		// Told its length, the third is whole, and nothing is left over.
 		let told = split_records(&answer, |n| standard_length(n).or((n == 0x70).then_some(5)));
 		assert_eq!(told.last().map(|r| r.extent), Some(Extent::Whole));
@@ -380,27 +405,51 @@ mod tests {
 	}
 
 	#[test]
+	fn the_dynamic_record_runs_to_the_end_whatever_a_layout_says() {
+		// 0x71 is the protocol's "to end of PDU"; a unit's description of it is not asked.
+		let mut data = ANSWER;
+		data[13] = DYNAMIC_FREEZE_FRAME;
+		let answer = answer(&data);
+		let records = split_records(&answer, |n| standard_length(n).or(Some(1)));
+		assert_eq!(records.last().map(|r| (r.number, r.data.len(), r.extent)), Some((0x71, 5, Extent::ToEnd)));
+	}
+
+	#[test]
 	fn an_occurrence_count_saturates_rather_than_wrapping() {
-		// Read off the steering assist: 0xFF, not a count of 255 exactly.
-		let mut data = BCM_000107;
+		let mut data = ANSWER;
 		data[1] = 0xFF;
-		assert_eq!(FaultContext::parse(&answer(&data)).unwrap().occurrences, 0xFF);
+		assert_eq!(FaultContext::parse(&answer(&data), Some(&now())).unwrap().occurrences, 0xFF);
 	}
 
 	#[test]
 	fn a_truncated_record_is_refused_rather_than_padded() {
 		// Padding would invent a mileage, which is the one field a reader
 		// would act on.
-		let short = answer(&BCM_000107[..12]);
+		let short = answer(&ANSWER[..12]);
 		assert_eq!(split_records(&short, standard_length)[1].extent, Extent::Short);
-		assert!(FaultContext::parse(&short).is_none());
-		assert!(FaultContext::parse(&answer(&[])).is_none());
+		assert!(FaultContext::parse(&short, Some(&now())).is_none());
+		assert!(FaultContext::parse(&answer(&[]), Some(&now())).is_none());
 		// A unit that answers record 0x02 alone has no priority to give.
 		let alone = DtcExtendedData {
 			record: STANDARD_FREEZE_FRAME,
-			data: BCM_000107[3..13].to_vec(),
+			data: ANSWER[3..13].to_vec(),
 		};
-		assert!(FaultContext::parse(&alone).is_none());
+		assert!(FaultContext::parse(&alone, Some(&now())).is_none());
+	}
+
+	#[test]
+	fn a_reading_the_units_own_stamp_cannot_support_is_refused() {
+		// Record 0x02 laid out otherwise than the standard — a reserved byte first, as one
+		// camera variant has it — reads a mileage past the unit's own odometer.
+		let mut data = ANSWER;
+		data[3..13].copy_from_slice(&[0x00, 0xB8, 0x01, 0xE2, 0x40, 0x00, 0x00, 0x64, 0xDC, 0xA5]);
+		assert!(FaultContext::parse(&answer(&data), Some(&now())).is_none(), "km past the stamp");
+		// A stamp that is not a date.
+		let mut data = ANSWER;
+		data[9..13].copy_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+		assert!(FaultContext::parse(&answer(&data), Some(&now())).is_none(), "no date");
+		// And with no stamp there is nothing to check against.
+		assert!(FaultContext::parse(&answer(&ANSWER), None).is_none());
 	}
 
 	#[test]
@@ -570,12 +619,7 @@ mod tests {
 		let stamp = UnitStamp::parse(&[0x91, 0x03, 0x3F, 0x45, 0x00, 0x00, 0x69, 0xFA, 0x00, 0x5C]).unwrap();
 		assert_eq!(stamp.mileage_km, 212_805);
 		assert_eq!(stamp.clock, 0x69FA_005C);
-
-		// And it is what turns a stamp into an age: 2026-07-28 16:17:11 to
-		// 2026-07-29 00:01:28 by the car's clock, seven and three quarter
-		// hours.
-		let ctx = FaultContext::parse(&answer(&BCM_000107)).unwrap();
-		assert_eq!(seconds_between(ctx.clock, stamp.clock), Some(27_857));
-		assert_eq!(stamp.mileage_km - ctx.mileage_km, 42);
+		// What it turns a stored fault into, an age, is
+		// `a_fault_records_its_mileage_and_how_often_it_happened`'s.
 	}
 }

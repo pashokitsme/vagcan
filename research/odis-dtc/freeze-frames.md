@@ -105,13 +105,17 @@ the cases of the same unit's ODIS multiplexer:
 
 - Same record numbers on every unit both describe; `999` sits where ODIS has its only
   unit-specific case as the default.
-- The generic row (`RF.rod` line 21,547: `203,,11,,,,,0,0,,`) is the protocol's dynamic record
-  `0x71`: a type-11 field of no length — read to the end, not as a length of 103.
+- The generic row of key 113 — one row every such unit lists, lead 203, a type-11 field with
+  no bit length and no name — is the protocol's dynamic record `0x71`: read to the end, not
+  as a length of 103. The decoder runs `0x71` to the end whatever a unit's rows say, since
+  the protocol defines it so (`vag_uds_client::dtc::DYNAMIC_FREEZE_FRAME`); the steering
+  assist's and the SMLS's own fixed-length 113 records are bytes for that.
 - Lengths: lead − 100 equals the ODIS extent on every pair with both (SMLS 112/113 = 10,
   engine 112 = 9). Over the whole of `RF.rod`, 1,028 runs of one (key, lead): lead − 100
   equals the fields' extent in 897; 47 have a field past it, 33 end short of it, 51 lead ≥ 200
-  or a record with no length. The decoder uses lead − 100 only where every field fits
-  (`freezeframe::proven_length`); otherwise the record runs to the end and is bytes.
+  or a record with no length. The decoder uses lead − 100 only where the fields end exactly
+  there and the lead is under 200 (`freezeframe::proven_length`): the 897. Every other record
+  runs to the end and is bytes.
 - A type-11 row is named `Reserved…` on every car unit and absent from VCDS's printout of the
   same records (gateway: VCDS shows "Terminal 30 power supply", "Terminal 15" of the six
   rows of record 112). Not shown.
@@ -124,8 +128,10 @@ Voltage terminal 30" against ODIS's "Engine Speed / Calculated Load Value / …"
 
 ## 4. The one raw answer
 
-`dtc.rs`'s `BCM_000107`, the body control module's `19 06 000107 FF`, split as shipped with
-the real cache's rows for `EV_BCMMQB_017` (scratch copy, `ffcheck`):
+**Reference-car evidence, kept here and nowhere in the code** (the tests use an invented
+answer of the same shape): the body control module's `19 06 000107 FF`, as an earlier
+whole-car survey recorded it, split as shipped with the real cache's rows for
+`EV_BCMMQB_017` (scratch copy, `ffcheck`):
 
 ```
 01  06 09                          priority 6, occurrences 9
@@ -141,9 +147,27 @@ order. Not field-by-field proof — no VCDS printout of *this* fault exists — 
 three records, the third exactly as long as its description, nothing left over.
 
 What stays unproven: the time indication byte (0 in the one answer); the 33 records whose
-fields end before lead − 100 (their tail bytes are not shown); every unit-specific value
+fields end before lead − 100 (not used as lengths, so such a record is bytes); every unit-specific value
 against VCDS on the same fault. The reference car's other 16 stored faults were read before
 the bytes were kept.
+
+## 4a. Checks the decoder makes (review of PR #47, 2026-10-21)
+
+- **The unit's own variant only.** The layout is the VCDS rows of the stem the car's own
+  lookup stored, else of the best-ranked name; either is used only when it is a name VCDS
+  itself opens for the car (`OdxMatch::is_vcds_lookup`), with the car's project from its
+  VIN. A `Family` or `Localised` match — 017's rows for a BCM on F1A2 `015…` — leaves the
+  unit's records as bytes, "no layout for this variant".
+- **The standard records are checked against the unit's own stamp** (`0x02BD`): mileage no
+  further than the stamp's, and a time stamp that is a date. The camera variant's 12-byte
+  record `0x02`, split as 10, reads 12 059 455 km; this check drops it. A unit that gives no
+  stamp gets no context either: nothing to check by.
+- **Misframing.** A split that ends short, or standard records that fail the check, mean the
+  layout and the answer disagree: everything after record `0x02` is bytes. The default case
+  (`999`) answers to any record number, so without this a misaligned answer read on as
+  default-case fields.
+- **One source.** The VCDS path reads VCDS rows only (`freeze_frame_fields(…, VCDS, …)`);
+  records `0x01`/`0x02` are the UDS framing's.
 
 ## 5. Why ODIS is not the shipped source for the unit's own records
 

@@ -170,8 +170,13 @@ fn car() -> Car {
 	let standard = [0x06, 0x03, 0x02, 0x10, 0x01, 0xE2, 0x40, 0x00, 0x00, 0x69, 0xF6, 0x00, 0x03];
 	// The engine's own record 0x70: 1000 /min, 12.3 V, a reserved byte — described.
 	let engine = [&standard[..], &[0x70, 0x0F, 0xA0, 0x7B, 0x00]].concat();
-	// The ESC's own record 0x71, which nothing describes.
-	let esc = [&standard[..], &[0x71, 0xAA, 0xBB]].concat();
+	// The ESC's own record 0x70: VCDS has rows only for another variant of its name.
+	let esc = [&standard[..], &[0x70, 0xAA, 0xBB]].concat();
+	// Each unit's own stamp, which the standard records are checked against: 123 456 km,
+	// the same moment.
+	let stamp = vec![0x91, 0x01, 0xE2, 0x40, 0x00, 0x00, 0x69, 0xF6, 0x00, 0x03];
+	records.insert((ENGINE, vag_uds_client::dtc::UnitStamp::DID), stamp.clone());
+	records.insert((ESC, vag_uds_client::dtc::UnitStamp::DID), stamp);
 	script.extended.insert((ENGINE, [0x00, 0x01, 0x29]), engine);
 	script.extended.insert((ESC, [0x04, 0x71, 0x20]), esc);
 	Car {
@@ -348,7 +353,9 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 		freeze_row(16, 8, 0, Some((0.1, 0.0)), "V", "Voltage"),
 		freeze_row(24, 8, 11, None, "", "Reserved"),
 	];
-	vag_data_db::put_all_vcds_registry_rows(&cache, "/x/vcds-test", [("EV_TestEngine", &rows[..])]).unwrap();
+	// The brake's rows are another variant's: a name VCDS would not open for this car.
+	let brake = [freeze_row(0, 16, 0, Some((1.0, 0.0)), "", "Pressure")];
+	vag_data_db::put_all_vcds_registry_rows(&cache, "/x/vcds-test", [("EV_TestEngine", &rows[..]), ("EV_TestBrake_XX99", &brake[..])]).unwrap();
 	let faults = levels!("faults", faults::run(open, None, false, false, false, false, None).await);
 	assert_eq!(
 		faults[0].stdout,
@@ -364,7 +371,7 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 		 713  047120\n\
 		 \x20   priority       6\n\
 		 \x20   aging counter  16\n\
-		 \x20   record 71      AA BB (not described, not decoded)\n\
+		 \x20   record 70      AA BB (no layout for this variant, not decoded)\n\
 		 \n\
 		 2 stored · 1 failing now · 4 units read\n"
 	);
@@ -373,6 +380,11 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 			.stderr
 			.contains("7E0  freeze frames described by the VCDS rows of EV_TestEngine"),
 		"where the layout came from is a -v note: {:?}",
+		faults[1].stderr
+	);
+	assert!(
+		faults[1].stderr.contains("713  freeze frames: VCDS has rows for EV_TestBrake_XX99 only"),
+		"another variant's rows are named, not used: {:?}",
 		faults[1].stderr
 	);
 	// One `19 06` per stored code and no other fault read: the freeze frame is in it.

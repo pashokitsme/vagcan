@@ -692,11 +692,22 @@ pub async fn run<L: UnitLink>(
 	let keys = crate::datadir::or_default(iv_cache, || Ok(crate::project::current()?.rod_keys()))?;
 	let mut namers = Namers::open(&keys, iv_cache.is_some())?;
 	// The freeze-frame layouts `setup` stored from a VCDS install, looked up per unit by the
-	// same identifiers that name its codes.
-	let extracted = crate::extracted::current().for_car(None);
+	// same identifiers that name its codes — and by the car's project, which its VIN says.
+	let extracted = crate::extracted::current();
 	let freeze_known = extracted.knows_freeze_frames();
 
 	let mut backend = open().await?;
+	// One read, and only where a layout could be looked up by it: the project that picks the
+	// unit's own variant out of several (`EV_GatewNF_SK37` for an SK37 car).
+	let vin = match freeze_known {
+		true => {
+			let (link, vin) = crate::units::read_vin(backend).await;
+			backend = link;
+			vin
+		}
+		false => None,
+	};
+	let extracted = extracted.for_car(vin.as_deref());
 
 	if extended {
 		// An extended session is workshop mode; see `crate::safety`.
@@ -861,13 +872,19 @@ pub async fn run<L: UnitLink>(
 				.as_ref()
 				.filter(|_| !namers.is_empty())
 				.map(|(odx, version)| namers.unit(odx, version));
-			let layout = identity
-				.as_ref()
-				.and_then(|(odx, version)| extracted.freeze_frames(Some(odx), Some(version)))
-				.map(|(variant, fields)| {
+			// The unit's own variant's layout, or none: another variant's fields are not this
+			// unit's, and its bytes stay bytes.
+			let layout = match identity.as_ref().map(|(odx, version)| extracted.freeze_frames(Some(odx), Some(version))) {
+				Some(crate::extracted::FreezeLayout::Unit { variant, fields }) => {
 					note!("{request:03X}  freeze frames described by the VCDS rows of {variant}");
-					crate::freezeframe::Layout::new(fields)
-				});
+					Some(crate::freezeframe::Layout::new(fields))
+				}
+				Some(crate::extracted::FreezeLayout::Another { variant }) => {
+					note!("{request:03X}  freeze frames: VCDS has rows for {variant} only, not this unit's variant");
+					None
+				}
+				_ => None,
+			};
 			if let Some(file) = lookup.as_ref().and_then(Namers::sealed)
 				&& !sealed.contains(&file)
 			{
@@ -890,10 +907,11 @@ pub async fn run<L: UnitLink>(
 				let mut context = None;
 				let mut freeze = Vec::new();
 				for record in &records {
-					let (split, parsed) = crate::freezeframe::split(record, layout.as_ref());
+					let frame = crate::freezeframe::split(record, layout.as_ref(), now.as_ref());
 					if freeze.is_empty() {
-						freeze = crate::freezeframe::lines(&split, parsed.as_ref(), layout.as_ref());
+						freeze = crate::freezeframe::lines(&frame, layout.as_ref(), "no layout for this variant");
 					}
+					let parsed = frame.context;
 					if let Some(parsed) = &parsed {
 						note!(
 							"{request:03X}  {}  {}{SEP}{}",

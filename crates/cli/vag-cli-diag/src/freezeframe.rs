@@ -13,12 +13,18 @@
 //!   same numbers for the same units (steering assist 113–125, both; engine 112–113, both),
 //!   and `999` is the multiplexer's default case;
 //! * a row's lead is 100 plus the record's length in 897 of `RF.rod`'s 1,028 records, and it
-//!   is used as one only where every field of the record fits inside it;
+//!   is used as one only where its fields end exactly there;
 //! * a type-11 row is a reserved field VCDS does not show.
 //!
 //! **Nothing is guessed.** A record no row describes, or one whose length is not proven,
 //! takes the rest of the answer and is shown as bytes; so is a field whose type has no
-//! decoding here (multiplexed, raw bytes) or whose layout [`RawForm`] cannot say.
+//! decoding here (multiplexed, raw bytes) or whose layout [`RawForm`] cannot say. An answer
+//! that does not split on its description, or whose standard records fail the unit's own
+//! stamp, is shown as bytes after record `0x02` ([`Frame`]).
+//!
+//! **One source.** Every row read here is a VCDS install's; nothing of an ODIS project's
+//! fills a field, a length or a record of it (CLAUDE.md, "ODIS and VCDS are independent
+//! sources"). Records `0x01`/`0x02` are the UDS framing's, of neither source.
 //!
 //! The ODIS project describes the same records more fully, in its extended-data
 //! multiplexers — whose cases are `DB_CASE` objects, on the reader's permanent refusal list
@@ -31,7 +37,8 @@ use vag_data_db::FreezeField;
 use vag_data_labels::catalog::level_for;
 use vag_data_labels::measure::RawForm;
 use vag_uds_client::dtc::{
-	DtcExtendedData, ExtendedRecord, Extent, FaultContext, STANDARD_DTC_INFORMATION, STANDARD_FREEZE_FRAME, split_records, standard_length,
+	DYNAMIC_FREEZE_FRAME, DtcExtendedData, ExtendedRecord, Extent, FaultContext, STANDARD_DTC_INFORMATION, STANDARD_FREEZE_FRAME, UnitStamp,
+	split_records, standard_length,
 };
 
 /// The key of a unit's default record: the layout of a record number it lists no rows for.
@@ -83,11 +90,13 @@ impl Layout {
 	}
 }
 
-/// A record's length, when its rows prove one: their one lead, less 100, with every field
-/// inside it. Rows that disagree on the lead, or a field running past it, prove nothing.
+/// A record's length, when its rows prove one: their one lead, less 100, **equal** to where
+/// its last field ends — the 897 of `RF.rod`'s 1,028 records whose two readings agree. Rows
+/// that disagree on the lead, a field past it, fields ending short of it (33 records whose
+/// tail nothing describes) and a lead of 200 or more prove nothing.
 fn proven_length(fields: &[FreezeField]) -> Option<usize> {
 	let lead = fields.first()?.lead?;
-	if fields.iter().any(|f| f.lead != Some(lead)) || lead <= 100 {
+	if fields.iter().any(|f| f.lead != Some(lead)) || !(101..200).contains(&lead) {
 		return None;
 	}
 	let length = (lead - 100) as usize;
@@ -96,7 +105,7 @@ fn proven_length(fields: &[FreezeField]) -> Option<usize> {
 		.filter_map(|f| Some(f.bit_offset? + f.bit_length?))
 		.max()
 		.filter(|bits| *bits > 0)?;
-	(extent.div_ceil(8) as usize <= length).then_some(length)
+	(extent.div_ceil(8) as usize == length).then_some(length)
 }
 
 /// One line of a freeze frame: what it is called, and what it read — the unit is in `value`.
@@ -115,33 +124,95 @@ impl Line {
 	}
 }
 
-/// Split an answer into its records and read the standard two: the records, and the fault's
-/// context where both standard records are whole.
-pub fn split<'a>(answer: &'a DtcExtendedData, layout: Option<&Layout>) -> (Vec<ExtendedRecord<'a>>, Option<FaultContext>) {
-	let records = match layout {
-		Some(layout) => split_records(answer, |n| layout.length_of(n)),
-		None => split_records(answer, standard_length),
+/// An answer split into its records, with what the split is worth.
+#[derive(Debug, Clone)]
+pub struct Frame<'a> {
+	records: Vec<ExtendedRecord<'a>>,
+	/// The fault's context, where both standard records are whole and pass the unit's stamp
+	/// ([`FaultContext::from_records`]).
+	pub context: Option<FaultContext>,
+	/// The answer did not split on the unit's description: a record came out short, or the
+	/// standard records failed their check. Everything after record `0x02` is then bytes —
+	/// a default record that matches any number would otherwise read the rest of a
+	/// misaligned answer as its fields. `Some` holds why, in words.
+	misframed: Option<&'static str>,
+}
+
+/// Split an answer into its records and read the standard two, checked against `now`, the
+/// unit's own stamp.
+///
+/// With a layout, a split that ends short or standard records that fail their check mean
+/// the layout and the answer disagree, and the answer is split again on the standard
+/// records alone ([`Frame::misframed`]).
+pub fn split<'a>(answer: &'a DtcExtendedData, layout: Option<&Layout>, now: Option<&UnitStamp>) -> Frame<'a> {
+	let standard_only = || split_records(answer, standard_length);
+	let Some(layout) = layout else {
+		let records = standard_only();
+		let context = FaultContext::from_records(&records, now);
+		return Frame {
+			records,
+			context,
+			misframed: None,
+		};
 	};
-	let context = FaultContext::from_records(&records);
-	(records, context)
+	let records = split_records(answer, |n| layout.length_of(n));
+	let context = FaultContext::from_records(&records, now);
+	let short = records.iter().any(|r| r.extent == Extent::Short);
+	let standard_whole = [STANDARD_DTC_INFORMATION, STANDARD_FREEZE_FRAME]
+		.iter()
+		.all(|n| records.iter().any(|r| r.number == *n && r.extent == Extent::Whole));
+	let why = match (short, standard_whole && context.is_none(), now) {
+		(true, _, _) => Some("the answer does not split on this variant's layout"),
+		(_, true, None) => Some("the unit gave no stamp to check its standard records by"),
+		(_, true, Some(_)) => Some("its standard records fail the unit's own stamp"),
+		_ => None,
+	};
+	if why.is_some() {
+		let records = standard_only();
+		let context = FaultContext::from_records(&records, now);
+		return Frame {
+			records,
+			context,
+			misframed: why,
+		};
+	}
+	Frame {
+		records,
+		context,
+		misframed: None,
+	}
 }
 
 /// What a fault's freeze frame says, line by line: the two standard fields no other column
-/// shows (priority, aging counter), then the unit's own records.
+/// shows (priority, aging counter), then the unit's own records. `no_layout` is why a record
+/// has no description when `layout` is `None` — "no layout for this variant".
 ///
 /// Occurrences, mileage and the date are the code's own line, not repeated here.
-pub fn lines(records: &[ExtendedRecord<'_>], context: Option<&FaultContext>, layout: Option<&Layout>) -> Vec<Line> {
+pub fn lines(frame: &Frame<'_>, layout: Option<&Layout>, no_layout: &str) -> Vec<Line> {
 	let mut out = Vec::new();
+	let context = frame.context.as_ref();
 	if let Some(context) = context {
 		out.push(Line::new("priority", context.priority.to_string()));
 		out.push(Line::new("aging counter", context.aging_counter.to_string()));
 	}
-	for record in records {
+	for record in &frame.records {
 		let standard = matches!(record.number, STANDARD_DTC_INFORMATION | STANDARD_FREEZE_FRAME);
 		if standard && context.is_some() {
 			continue;
 		}
-		let described = layout.and_then(|l| l.record(record.number)).filter(|_| !standard);
+		if standard {
+			let why = "standard record, not checked against the unit's own stamp, not decoded";
+			out.push(Line::new(format!("record {:02X}", record.number), raw(record.data, why)));
+			continue;
+		}
+		if let Some(why) = frame.misframed {
+			out.push(Line::new(
+				format!("record {:02X}", record.number),
+				raw(record.data, &format!("{why}, not decoded")),
+			));
+			continue;
+		}
+		let described = layout.and_then(|l| l.record(record.number));
 		match (described, record.extent) {
 			(Some(described), Extent::Whole) => {
 				for field in described.fields.iter().filter(|f| f.kind != Some(RESERVED)) {
@@ -150,11 +221,13 @@ pub fn lines(records: &[ExtendedRecord<'_>], context: Option<&FaultContext>, lay
 			}
 			(_, extent) => {
 				let why = match extent {
-					Extent::Short => "shorter than its description, not decoded",
-					_ if described.is_some() => "length not proven, not decoded",
-					_ => "not described, not decoded",
+					Extent::Short => "shorter than its description, not decoded".to_string(),
+					_ if record.number == DYNAMIC_FREEZE_FRAME => "runs to the end of the answer, not decoded".to_string(),
+					_ if described.is_some() => "length not proven, not decoded".to_string(),
+					_ if layout.is_none() => format!("{no_layout}, not decoded"),
+					_ => "not described, not decoded".to_string(),
 				};
-				out.push(Line::new(format!("record {:02X}", record.number), raw(record.data, why)));
+				out.push(Line::new(format!("record {:02X}", record.number), raw(record.data, &why)));
 			}
 		}
 	}
@@ -281,10 +354,16 @@ mod tests {
 	}
 
 	/// `01 <priority> <count>`, `02 <aging> <km:3> <indication> <stamp:5>`, then what follows.
+	/// 4096 km, 2026-07-27 00:00:03. Invented.
 	fn answer(tail: &[u8]) -> DtcExtendedData {
 		let mut data = vec![0x02, 0x05, 0x02, 0xB4, 0x00, 0x10, 0x00, 0x00, 0x00, 0x69, 0xF6, 0x00, 0x03];
 		data.extend_from_slice(tail);
 		DtcExtendedData { record: 0x01, data }
+	}
+
+	/// The unit's own stamp, 100 km on: what the standard records are checked against.
+	fn now() -> UnitStamp {
+		UnitStamp::parse(&[0x91, 0x00, 0x10, 0x64, 0x00, 0x00, 0x69, 0xF6, 0x10, 0x03]).unwrap()
 	}
 
 	fn keyed(lines: &[Line]) -> Vec<(&str, &str)> {
@@ -295,14 +374,14 @@ mod tests {
 	fn a_described_record_is_read_field_by_field_and_the_reserved_one_is_left_out() {
 		let layout = layout();
 		let answer = answer(&[0x70, 0x0B, 0xB8, 0x7B, 0x01]);
-		let (records, context) = split(&answer, Some(&layout));
-		let context = context.expect("both standard records are whole");
+		let frame = split(&answer, Some(&layout), Some(&now()));
+		let context = frame.context.expect("both standard records are whole and pass the stamp");
 		assert_eq!(
 			(context.priority, context.occurrences, context.aging_counter, context.mileage_km),
 			(2, 5, 180, 4096)
 		);
 		assert_eq!(
-			keyed(&lines(&records, Some(&context), Some(&layout))),
+			keyed(&lines(&frame, Some(&layout), "")),
 			vec![
 				("priority", "2"),
 				("aging counter", "180"),
@@ -317,37 +396,82 @@ mod tests {
 	fn a_record_with_no_rows_of_its_own_is_read_by_the_default_one() {
 		let layout = layout();
 		let answer = answer(&[0x75, 0x2A]);
-		let (records, context) = split(&answer, Some(&layout));
-		assert_eq!(keyed(&lines(&records, context.as_ref(), Some(&layout)))[2..], [("Counter", "42")]);
+		let frame = split(&answer, Some(&layout), Some(&now()));
+		assert_eq!(keyed(&lines(&frame, Some(&layout), ""))[2..], [("Counter", "42")]);
 	}
 
 	#[test]
 	fn a_record_nobody_describes_takes_the_rest_as_bytes_and_says_so() {
 		// Without a layout the unit's record cannot be split from what follows it: one line
-		// of bytes, not two guessed records.
+		// of bytes, not two guessed records — and the reason the caller gives.
 		let answer = answer(&[0x70, 0x0B, 0xB8, 0x7B, 0x01, 0x71, 0xAA]);
-		let (records, context) = split(&answer, None);
-		let lines = lines(&records, context.as_ref(), None);
-		assert_eq!(keyed(&lines)[2..], [("record 70", "0B B8 7B 01 71 AA (not described, not decoded)")]);
-	}
-
-	#[test]
-	fn a_record_cut_short_is_bytes_and_the_rest_of_the_frame_still_reads() {
-		let layout = layout();
-		let answer = answer(&[0x70, 0x0B, 0xB8]);
-		let (records, context) = split(&answer, Some(&layout));
-		assert!(context.is_some());
+		let frame = split(&answer, None, Some(&now()));
+		let lines = lines(&frame, None, "no layout for this variant");
 		assert_eq!(
-			keyed(&lines(&records, context.as_ref(), Some(&layout)))[2..],
-			[("record 70", "0B B8 (shorter than its description, not decoded)")]
+			keyed(&lines)[2..],
+			[("record 70", "0B B8 7B 01 71 AA (no layout for this variant, not decoded)")]
 		);
 	}
 
 	#[test]
-	fn a_lead_is_a_length_only_where_every_field_fits_inside_it() {
+	fn a_split_that_ends_short_is_misframed_and_everything_after_record_02_is_bytes() {
+		// The default record answers to any number, so a misaligned answer would otherwise
+		// read on as default-case fields. A record cut short says the alignment is wrong.
+		let layout = layout();
+		let answer = answer(&[0x75, 0x2A, 0x70, 0x0B, 0xB8]);
+		let frame = split(&answer, Some(&layout), Some(&now()));
+		assert!(frame.context.is_some(), "the standard records still read");
+		assert_eq!(
+			keyed(&lines(&frame, Some(&layout), ""))[2..],
+			[(
+				"record 75",
+				"2A 70 0B B8 (the answer does not split on this variant's layout, not decoded)"
+			)]
+		);
+	}
+
+	#[test]
+	fn standard_records_that_fail_the_units_stamp_leave_the_whole_frame_as_bytes() {
+		let layout = layout();
+		let answer = answer(&[0x70, 0x0B, 0xB8, 0x7B, 0x01]);
+		// A stamp behind the fault's mileage: the reading is impossible.
+		let behind = UnitStamp::parse(&[0x91, 0x00, 0x0F, 0x00, 0x00, 0x00, 0x69, 0xF6, 0x10, 0x03]).unwrap();
+		let frame = split(&answer, Some(&layout), Some(&behind));
+		assert!(frame.context.is_none());
+		let failed = lines(&frame, Some(&layout), "");
+		assert_eq!(failed.len(), 3, "{failed:?}");
+		assert!(failed[2].value.ends_with("(its standard records fail the unit's own stamp, not decoded)"));
+		// No stamp at all: nothing to check by, said so.
+		let frame = split(&answer, Some(&layout), None);
+		let unchecked = lines(&frame, Some(&layout), "");
+		assert!(unchecked[0].value.contains("standard record, not checked"), "{unchecked:?}");
+		assert!(
+			unchecked[2]
+				.value
+				.ends_with("(the unit gave no stamp to check its standard records by, not decoded)")
+		);
+	}
+
+	#[test]
+	fn the_dynamic_record_is_never_split_by_a_layout() {
+		let layout = Layout::new(vec![field(113, 101, IDENTITY, (0, 8), Some((1.0, 0.0)), "", "One byte")]);
+		let answer = answer(&[0x71, 0x01, 0x02, 0x03]);
+		let frame = split(&answer, Some(&layout), Some(&now()));
+		assert_eq!(
+			keyed(&lines(&frame, Some(&layout), ""))[2..],
+			[("record 71", "01 02 03 (runs to the end of the answer, not decoded)")]
+		);
+	}
+
+	#[test]
+	fn a_lead_is_a_length_only_where_the_fields_end_exactly_there() {
 		// The rule of research/odis-dtc/freeze-frames.md: 897 of RF.rod's 1,028 records.
 		let fits = [field(5, 103, LINEAR, (0, 24), Some((1.0, 0.0)), "", "a")];
 		assert_eq!(proven_length(&fits), Some(3));
+		let short = [field(5, 104, LINEAR, (0, 24), Some((1.0, 0.0)), "", "a")];
+		assert_eq!(proven_length(&short), None, "a tail nothing describes");
+		let big = [field(5, 203, LINEAR, (0, 24), Some((1.0, 0.0)), "", "a")];
+		assert_eq!(proven_length(&big), None, "a lead of 200 or more");
 		let over = [field(5, 103, LINEAR, (16, 16), Some((1.0, 0.0)), "", "a")];
 		assert_eq!(proven_length(&over), None, "a field past the lead");
 		// VCDS's one-row "dynamic" record: a reserved field of no length, lead 203.
