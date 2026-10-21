@@ -201,13 +201,17 @@ objects (the other 17 are overridden on every variant that inherits them). Of th
 
 | | multiplexers |
 |---|---|
-| every field of every fixed record decodes (width and scaling known) | **79** |
-| at least one field that does not | 75 |
+| every field of every fixed record decodes (width and an integer scaling known) | **7** |
+| every field of the unit's own records (all but `0x01`/`0x02`) decodes | **72** |
+| at least one field that does not | 147 |
 
-528 fields do not decode in all; the most common are `Freeze Frame Operation Minute
-Counter` (80), the climate units' `current/maximal/minimal_temperature` (29 each),
-`Parameter` (16) and `last_wakeup` (14 — a multiplexed measurement, still refused). Those
-show as bytes. Records `0x01`/`0x02` by length: `0x01` 2 bytes on 154/154, `0x02` 10 bytes on
+694 fields do not decode in all. A scaling is kept only for an integer coded value (review of
+#53): a string, float or byte field is its bytes. That makes `Time Indication`, a byte field
+in record `0x02`, the most common (130; `faults` reads `0x02` by the protocol anyway), then
+`Freeze Frame Operation Minute Counter` (80), the climate units'
+`current/maximal/minimal_temperature` (29 each), `Parameter` (16) and `last_wakeup` (14 — a
+multiplexed measurement, still refused). Those show as bytes. Before the integer rule: 79
+multiplexers decoded every field, 528 fields did not. Records `0x01`/`0x02` by length: `0x01` 2 bytes on 154/154, `0x02` 10 bytes on
 153/154 and 12 on the camera variant — which the ODIS path now splits right.
 
 **The BCM answer, each source on its own** (`ffcheck`, the cache's VCDS rows for
