@@ -536,7 +536,7 @@ pub fn folder_name(id: &str) -> Result<String> {
 		bail!("a project name with nothing in it is not a name");
 	}
 	if id == "." || id == ".." {
-		bail!("{id:?} already names a folder — the one above, or the one it is in");
+		bail!("{id:?} already names a folder: the one above, or the one it is in");
 	}
 	if id.chars().count() > MAX_ID {
 		bail!(
@@ -545,10 +545,7 @@ pub fn folder_name(id: &str) -> Result<String> {
 		);
 	}
 	if let Some(bad) = id.chars().find(|c| !allowed(*c)) {
-		bail!(
-			"{id:?} cannot be a project name — {bad:?} is not a character a folder under \
-			 ~/.vagcan/data/ may hold. Letters, digits, `-`, `_` and `.` and nothing else."
-		);
+		bail!("{id:?} holds {bad:?}, and a project name is letters, digits, `-`, `_` and `.`");
 	}
 	Ok(id.to_owned())
 }

@@ -40,9 +40,9 @@ pub fn drop_source(selector: &str, yes: bool) -> Result<()> {
 }
 
 /// The project `--project`, the environment or `config.toml` names. Its "nothing is set up"
-/// is said as text: it must not reach `rescue`, whose answer to that is a download.
+/// loses its type, hints kept: it must not reach `rescue`, whose answer to that is a download.
 fn current() -> Result<Project> {
-	crate::project::current().map_err(|e| anyhow::anyhow!("{e:#}"))
+	crate::project::current().map_err(|e| vag_cli_core::report::untyped(&e))
 }
 
 /// The rule behind [`drop_source`], with the asking and the terminal passed in.

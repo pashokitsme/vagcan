@@ -163,9 +163,8 @@ pub fn no_input(vin: &str, path: &Path) -> anyhow::Error {
 	anyhow::anyhow!("no dash.toml for {vin} yet")
 		.note(format!("a build reads {}", path.display()))
 		.help(format!("lay out its pages with `vagcan dev dash edit {vin}`, then write them there"))
-		.help(format!(
-			"the smallest one is in `vagcan dev dash build --help`; every key is in {REFERENCE_DOC} in the vagcan repository"
-		))
+		.help("see the smallest one: `vagcan dev dash build --help`")
+		.help(format!("read every key in {REFERENCE_DOC} in the vagcan repository"))
 		.help(FIND_IDS)
 }
 

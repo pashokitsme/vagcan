@@ -793,8 +793,11 @@ fn unrecognised(dir: &Path) -> anyhow::Error {
 		err = err.help(first);
 	}
 	err
-		.help("with no path, `vagcan setup` asks which, and offers to download an installation")
-		.help(format!("Ross-Tech's own installation: {}", crate::missing::VCDS_DOWNLOAD))
+		.help("run `vagcan setup` with no path: it asks which, and offers to download an installation")
+		.help(format!(
+			"or download Ross-Tech's installation from {}, then run `vagcan setup <folder>`",
+			crate::missing::VCDS_DOWNLOAD
+		))
 }
 
 /// A sentence written for a prompt, as a `note:` line: lower case first, no full stop.

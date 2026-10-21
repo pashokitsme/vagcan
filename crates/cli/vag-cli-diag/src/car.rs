@@ -120,7 +120,7 @@ pub async fn sensors<L: UnitLink>(open: impl AsyncFnOnce(Reach) -> Result<L>, un
 						 and a sweep can stop a unit doing its job while the car moves",
 							PIDS.len()
 						))
-						.help("park the car and run it again"),
+						.help(format!("park the car and run `vagcan sensors --unit {unit_text}` again")),
 				);
 			}
 		};
@@ -468,8 +468,8 @@ pub async fn identification<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, 
 				return Err(
 					anyhow::anyhow!("{why}")
 						.note("256 reads of one unit can stop it doing its job while the car moves")
-						.help("park the car and run it again")
-						.help("`--while-driving` lifts this"),
+						.help(format!("park the car and run `vagcan units --identify {unit_text}` again"))
+						.help("to read it while driving anyway, add `--while-driving`"),
 				);
 			}
 		};

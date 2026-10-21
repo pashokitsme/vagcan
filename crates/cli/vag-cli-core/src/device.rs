@@ -145,7 +145,8 @@ fn env_device(value: Option<std::ffi::OsString>, is_char_device: impl Fn(&std::p
 fn no_board(err: anyhow::Error) -> anyhow::Error {
 	err
 		.note("an adapter on the OBD port is powered by it")
-		.help("turn the ignition on, and bring this computer within range")
+		.help("turn the ignition on")
+		.help("bring this computer within range of the board")
 }
 
 /// What a command talks to the car through, once `--device` is resolved.
@@ -513,9 +514,9 @@ fn choose_usb(listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) -> 
 				why = why.help("close the program holding the port (a monitor, `dashsim`, another vagcan) and try again");
 			}
 			if !silent.is_empty() {
-				why = why.help("reflash the board's `dash` or `slcan` image: `just fw-flash dash`");
+				why = reflash(why);
 			}
-			Ok(Found::Nothing(why.help("or plug in a CAN adapter")))
+			Ok(Found::Nothing(why.help("plug in a CAN adapter instead")))
 		}
 		([only], _) => {
 			for board in &silent {
@@ -547,11 +548,20 @@ fn not_an_adapter(path: &str, answer: &BoardAnswer) -> anyhow::Error {
 		BoardAnswer::Unopened(why) => anyhow!("{path} is a vag-dash board, and it could not be opened: {why}")
 			.note("its firmware is not known until it opens")
 			.help("close the program holding the port (a monitor, `dashsim`, another vagcan) and try again"),
-		_ => anyhow!("{path} is a vag-dash board that answers neither Hello nor slcan")
-			.note("it runs another image, or none, and a car command on it would only time out")
-			.help("reflash its `dash` or `slcan` image: `just fw-flash dash`")
-			.help("or name a CAN adapter with `--device`, or use the board over BLE with `--ble`"),
+		_ => reflash(
+			anyhow!("{path} is a vag-dash board that answers neither Hello nor slcan")
+				.note("it runs another image, or none, and a car command on it would only time out"),
+		)
+		.help("name a CAN adapter instead: `--device <path>`")
+		.help("use the board over BLE instead: `--ble`"),
 	}
+}
+
+/// The two images a board may be given back, each as what to type in a vagcan checkout.
+fn reflash(err: anyhow::Error) -> anyhow::Error {
+	err
+		.help("from a vagcan checkout, reflash the `dash` image: `just fw-flash dash`")
+		.help("to use it as a plain adapter, reflash the `slcan` image: `just fw-flash slcan`")
 }
 
 /// Every candidate adapter, for `vagcan devices` — each vag-dash board asked
@@ -1137,8 +1147,8 @@ mod tests {
 	/// Bluetooth is scanned only when `--device ble…` asks for it: on macOS a scan from an
 	/// app not allowed Bluetooth gets the process killed, and it prompts somebody who has
 	/// no board at all.
-	/// What every car command says with nothing plugged in: what failed, then one `Fix:`
-	/// line (UX review of PR #38).
+	/// What every car command says with nothing plugged in: what failed, then one `help:`
+	/// line per action (UX review of PR #38; cargo's shape since 2026-10-21).
 	#[tokio::test]
 	async fn no_adapter_is_what_failed_and_one_fix_line() {
 		let err = refused(resolve_as(None, Ok(vec![]), never, no_scan(), true, &mut Scripted::new(vec![])).await);

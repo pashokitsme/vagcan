@@ -685,7 +685,7 @@ pub async fn run<L: UnitLink>(
 				return Err(
 					anyhow::anyhow!("`--extended` refused: {why}")
 						.note("an extended diagnostic session can make a control unit stop assisting the driver")
-						.help("stop the car and run it again"),
+						.help("stop the car and run `vagcan faults --extended` again"),
 				);
 			}
 		};

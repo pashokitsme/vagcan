@@ -154,6 +154,23 @@ pub fn hints(err: &anyhow::Error) -> Vec<Hint> {
 		.collect()
 }
 
+/// `err` with its message, its causes and its hints, and without its types: what a site
+/// returns when no caller may recognise the error by downcasting it, and the hints must
+/// still reach the reader.
+pub fn untyped(err: &anyhow::Error) -> anyhow::Error {
+	hints(err).into_iter().fold(anyhow::anyhow!("{err:#}"), |out, hint| match hint {
+		Hint::Note(text) => out.note(text),
+		Hint::Help(text) => out.help(text),
+	})
+}
+
+/// The report without its `error: ` label: the message, then a blank line and the hints,
+/// for a screen that shows an error under a heading of its own.
+pub fn unlabelled(err: &anyhow::Error) -> String {
+	let shown = render(err, 0, Colour::Never);
+	shown.strip_prefix("error: ").unwrap_or(&shown).trim_end().to_string()
+}
+
 /// Whether the report is drawn in colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Colour {
@@ -253,6 +270,23 @@ pub fn report(err: &anyhow::Error) {
 mod tests {
 	use super::{Advice as _, Colour, Hint, find, hints, render};
 	use anyhow::{Context as _, anyhow};
+
+	#[test]
+	fn an_untyped_copy_keeps_the_message_and_every_hint() {
+		#[derive(Debug)]
+		struct Typed;
+		impl std::fmt::Display for Typed {
+			fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+				f.write_str("typed")
+			}
+		}
+		impl std::error::Error for Typed {}
+		let err = anyhow::Error::new(Typed).context("outer").note("why").help("do this");
+		let copy = super::untyped(&err);
+		assert!(find::<Typed>(&copy).is_none(), "the type is gone");
+		assert_eq!(render(&copy, 0, Colour::Never), "error: outer: typed\n\nnote: why\nhelp: do this\n");
+		assert_eq!(super::unlabelled(&err), "outer\ncaused by: typed\n\nnote: why\nhelp: do this");
+	}
 
 	#[test]
 	fn an_error_with_no_hints_is_one_line() {
