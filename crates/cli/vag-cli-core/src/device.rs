@@ -384,6 +384,22 @@ pub struct NotThroughTheBoard<'a> {
 	pub over_ble: &'a str,
 	/// With the board on its cable, on its `dash` image, and no `--slcan`.
 	pub over_usb: &'a str,
+	/// `help:` lines under the BLE refusal: what to type instead.
+	pub ble_help: &'a [&'a str],
+	/// `help:` lines under the refusal through the board.
+	pub usb_help: &'a [&'a str],
+}
+
+impl NotThroughTheBoard<'_> {
+	/// The refusal with `--device ble…`, its help attached.
+	fn refused_over_ble(&self) -> anyhow::Error {
+		self.ble_help.iter().fold(anyhow!("{}", self.over_ble), |err, help| err.help(help))
+	}
+
+	/// The refusal through the board on its `dash` image, its help attached.
+	fn refused_over_usb(&self) -> anyhow::Error {
+		self.usb_help.iter().fold(anyhow!("{}", self.over_usb), |err, help| err.help(help))
+	}
 }
 
 /// Resolve a serial adapter, for a command that does not go through the dash board.
@@ -404,7 +420,7 @@ pub fn resolve_cable_for(requested: Option<&str>, slcan: bool, why: &NotThroughT
 /// data before it resolves a device, and would otherwise answer a BLE request with that.
 pub fn refuse_ble(requested: Option<&str>, slcan: bool, why: &NotThroughTheBoard) -> Result<()> {
 	if requested.is_some_and(|r| ble_request(r).is_some()) {
-		return Err(if slcan { slcan_over_ble() } else { anyhow!("{}", why.over_ble) });
+		return Err(if slcan { slcan_over_ble() } else { why.refused_over_ble() });
 	}
 	Ok(())
 }
@@ -425,12 +441,12 @@ pub fn resolve_cable_for_with(
 		None => match choose_usb(listing, probe, slcan, slcan)? {
 			Found::Picked(usb) => usb,
 			Found::Nothing(no_cable) => return Err(no_cable),
-			Found::OnlyThroughTheBoard => bail!("{}", why.over_usb),
+			Found::OnlyThroughTheBoard => return Err(why.refused_over_usb()),
 		},
 	};
 	match usb.target::<()>(slcan) {
 		Target::Serial(path) => Ok(path),
-		Target::BoardUsb { .. } | Target::Ble(_) => bail!("{}", why.over_usb),
+		Target::BoardUsb { .. } | Target::Ble(_) => Err(why.refused_over_usb()),
 	}
 }
 
@@ -815,6 +831,8 @@ mod tests {
 	const WHY: NotThroughTheBoard<'static> = NotThroughTheBoard {
 		over_ble: "refused over BLE",
 		over_usb: "refused through the dash board",
+		ble_help: &[],
+		usb_help: &[],
 	};
 
 	/// The USB choice for a command that does not go through the board, without `--slcan`.
@@ -1319,10 +1337,14 @@ mod tests {
 			NotThroughTheBoard {
 				over_ble: "identify over BLE",
 				over_usb: "identify through the board",
+				ble_help: &[],
+				usb_help: &[],
 			},
 			NotThroughTheBoard {
 				over_ble: "sniff over BLE",
 				over_usb: "sniff needs --slcan",
+				ble_help: &[],
+				usb_help: &[],
 			},
 		];
 		for why in &commands {

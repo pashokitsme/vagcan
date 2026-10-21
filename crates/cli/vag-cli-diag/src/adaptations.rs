@@ -32,11 +32,12 @@
 
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow};
 use vag_cli_core::adaptation::{self, Adaptation};
 use vag_cli_core::extracted::Unsettled;
 use vag_cli_core::marks::facts;
 use vag_cli_core::plan::UnitIdentity;
+use vag_cli_core::report::Advice as _;
 use vag_cli_core::{note, out, say};
 use vag_uds_can::UnitLink;
 use vag_uds_client::AsyncUdsClient;
@@ -93,32 +94,16 @@ pub enum Skip {
 
 impl Skip {
 	/// The refusal when this unit is the one asked for.
-	fn error(self, unit: UnitAddress, reread: Option<String>) -> String {
+	fn error(self, unit: UnitAddress, reread: Option<String>) -> anyhow::Error {
 		match (self, reread) {
-			(Skip::Silent, _) => format!(
-				"unit {} did not answer\n\
-				 \n\
-				 help: `vagcan units` lists this car's units",
-				named(unit)
-			),
-			(Skip::Undescribed, Some(source)) => format!(
-				"nothing describes the adaptations of unit {}\n\
-				 \n\
-				 note: the ODIS project was read before adaptations were kept\n\
-				 help: read it again: `vagcan setup {source}`",
-				named(unit)
-			),
-			(Skip::Undescribed, None) => format!("nothing describes the adaptations of unit {}", named(unit)),
-			(Skip::Unsettled(why), _) => format!(
-				"nothing describes the adaptations of unit {}\n\
-				 \n\
-				 note: the variant of unit {} is not settled ({})\n\
-				 help: {}",
-				named(unit),
-				named(unit),
-				unsettled(&why),
-				unsettled_help(&why)
-			),
+			(Skip::Silent, _) => anyhow!("unit {} did not answer", named(unit)).help("`vagcan units` lists this car's units"),
+			(Skip::Undescribed, Some(source)) => anyhow!("nothing describes the adaptations of unit {}", named(unit))
+				.note("the ODIS project was read before adaptations were kept")
+				.help(format!("read it again: `vagcan setup {source}`")),
+			(Skip::Undescribed, None) => anyhow!("nothing describes the adaptations of unit {}", named(unit)),
+			(Skip::Unsettled(why), _) => anyhow!("nothing describes the adaptations of unit {}", named(unit))
+				.note(format!("the variant of unit {} is not settled ({})", named(unit), unsettled(&why)))
+				.help(unsettled_help(&why)),
 		}
 	}
 
@@ -210,28 +195,20 @@ impl Project {
 		match extracted.run_source() {
 			Some(vag_data_db::ODIS) => {
 				if let Some(source) = extracted.odis_unread_adaptations().first() {
-					bail!(
-						"project {} describes no adaptations\n\
-						 \n\
-						 note: its ODIS project was read before adaptations were kept\n\
-						 help: read it again: `vagcan setup {}`",
-						project.id,
-						home_short(source)
+					return Err(
+						anyhow!("project {} describes no adaptations", project.id)
+							.note("its ODIS project was read before adaptations were kept")
+							.help(format!("read it again: `vagcan setup {}`", home_short(source))),
 					);
 				}
 				// Read, and none found: reading it again would find none again.
 				if vag_data_db::adaptation_variants(&project.cache()).unwrap_or_default().is_empty() {
-					bail!("this ODIS project describes no adaptations");
+					return Err(anyhow!("this ODIS project describes no adaptations"));
 				}
 				Ok(Project { extracted })
 			}
 			Some(_) => Ok(Project { extracted }),
-			None => bail!(
-				"project {} has no ODIS project or VCDS installation\n\
-				 \n\
-				 help: read one: `vagcan setup <dir>`",
-				project.id
-			),
+			None => Err(anyhow!("project {} has no ODIS project or VCDS installation", project.id).help("read one: `vagcan setup <dir>`")),
 		}
 	}
 }
@@ -299,7 +276,7 @@ pub async fn run<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, which: Whic
 		Which::Pick | Which::All => None,
 	};
 	if which == Which::Pick && !vag_cli_core::ui::can_ask() {
-		bail!("{NO_UNIT}");
+		return Err(no_unit());
 	}
 	let data = Project::current()?;
 	let link = open().await?;
@@ -332,7 +309,7 @@ pub async fn single<L: UnitLink>(link: L, unit: UnitAddress, data: &impl Data) -
 			print(facts(std::iter::once(head).chain(answered(&reads))), &reads);
 			Ok(link)
 		}
-		Outcome::Skipped(skip) => bail!("{}", skip.error(unit, data.reread())),
+		Outcome::Skipped(skip) => Err(skip.error(unit, data.reread())),
 	}
 }
 
@@ -351,7 +328,7 @@ pub async fn all<L: UnitLink>(link: L, data: &impl Data, pause: Duration) -> Res
 		say!("{}", not_offered(unrecorded));
 	}
 	if choices.is_empty() {
-		bail!("{NOTHING_TO_OFFER}");
+		return Err(nothing_to_offer());
 	}
 	note!(
 		"{}",
@@ -393,13 +370,14 @@ pub async fn all<L: UnitLink>(link: L, data: &impl Data, pause: Duration) -> Res
 						print(summary(&reads, skipped, Some((choice.unit, total - at - 1))), &reads);
 						// At level 0: the one notice no run may lose.
 						say!("{}", silent_notice(choice.unit, reads.len()));
-						bail!(
-							"the run was stopped: unit {} did not answer after {} {} had been read\n\
-							 \n\
-							 help: see whether it answers: `vagcan units --identify`",
-							named(choice.unit),
-							reads.len(),
-							plural(reads.len(), "unit")
+						return Err(
+							anyhow!(
+								"the run was stopped: unit {} did not answer after {} {} had been read",
+								named(choice.unit),
+								reads.len(),
+								plural(reads.len(), "unit")
+							)
+							.help("see whether it answers: `vagcan units --identify`"),
 						);
 					}
 					Outcome::Skipped(skip) => {
@@ -467,10 +445,11 @@ fn named(unit: UnitAddress) -> String {
 }
 
 /// No unit named and nobody to pick one: what to type.
-pub const NO_UNIT: &str = "no unit named, and no terminal to pick one at\n\
-                           \n\
-                           help: name the unit: `vagcan adaptations 09`\n\
-                           help: `vagcan units` lists this car's units";
+pub fn no_unit() -> anyhow::Error {
+	anyhow!("no unit named, and no terminal to pick one at")
+		.help("name the unit: `vagcan adaptations 09`")
+		.help("`vagcan units` lists this car's units")
+}
 
 /// Read one unit's adaptations, guarded (see the module docs), into the block to print. The
 /// link comes back for the next unit. `again` is the command a refusal says to run again.
@@ -533,11 +512,9 @@ pub async fn one_unit<L: UnitLink>(link: L, unit: UnitAddress, data: &impl Data,
 	if let Some(halt) = monitor.halted() {
 		// At level 0, through the screen lock: the one notice no run may lose.
 		say!("{}", halt.report().trim_end());
-		bail!(
-			"the read was stopped: control unit {} changed while it was being read\n\
-			 \n\
-			 help: see whether it answers: `vagcan units --identify`",
-			halt.unit()
+		return Err(
+			anyhow!("the read was stopped: control unit {} changed while it was being read", halt.unit())
+				.help("see whether it answers: `vagcan units --identify`"),
 		);
 	}
 	let read = Read {
@@ -554,17 +531,15 @@ pub async fn one_unit<L: UnitLink>(link: L, unit: UnitAddress, data: &impl Data,
 async fn stationary<L: UnitLink>(link: L, again: &str) -> Result<L> {
 	match safety::require_stationary(link).await {
 		Ok(link) => Ok(link),
-		Err((_, safety::NotStationary::Moving(kmh))) => bail!(
-			"the car is moving ({kmh} km/h)\n\
-			 \n\
-			 note: adaptations are read only on a parked car\n\
-			 help: stop the car and run {again} again"
+		Err((_, safety::NotStationary::Moving(kmh))) => Err(
+			anyhow!("the car is moving ({kmh} km/h)")
+				.note("adaptations are read only on a parked car")
+				.help(format!("stop the car and run {again} again")),
 		),
-		Err((_, safety::NotStationary::Unknown)) => bail!(
-			"cannot tell whether the car is moving: the engine did not report road speed\n\
-			 \n\
-			 note: adaptations are read only on a parked car, and no answer counts as moving\n\
-			 help: switch the ignition on and run {again} again"
+		Err((_, safety::NotStationary::Unknown)) => Err(
+			anyhow!("cannot tell whether the car is moving: the engine did not report road speed")
+				.note("adaptations are read only on a parked car, and no answer counts as moving")
+				.help(format!("switch the ignition on and run {again} again")),
 		),
 	}
 }
@@ -672,10 +647,11 @@ async fn candidates<L: UnitLink>(link: L, data: &impl Data) -> (L, Option<String
 }
 
 /// Nothing to pick or to read with `--all`: what to type.
-pub const NOTHING_TO_OFFER: &str = "no recorded unit of this car has adaptations\n\
-                                    \n\
-                                    help: record the car's units: `vagcan units --identify`\n\
-                                    help: or name one: `vagcan adaptations 09`";
+pub fn nothing_to_offer() -> anyhow::Error {
+	anyhow!("no recorded unit of this car has adaptations")
+		.help("record the car's units: `vagcan units --identify`")
+		.help("or name one: `vagcan adaptations 09`")
+}
 
 /// The line for listed units that are not offered, with its hint under it.
 fn not_offered(unrecorded: usize) -> String {
@@ -728,7 +704,7 @@ pub fn choose(choices: &(Vec<Choice>, usize), asker: &mut impl vag_cli_core::ui:
 		asker.say(&not_offered(*unrecorded))?;
 	}
 	if choices.is_empty() {
-		bail!("{NOTHING_TO_OFFER}");
+		return Err(nothing_to_offer());
 	}
 	let labels: Vec<(String, String)> = choices
 		.iter()
@@ -964,7 +940,7 @@ mod tests {
 		for (kmh, why) in [(Some(30), "the car is moving (30 km/h)"), (None, "cannot tell")] {
 			let car = car(kmh);
 			let refused = one_unit(car.clone(), unit(), &described(), AGAIN).await.err().expect("refused");
-			let said = format!("{refused:#}");
+			let said = vag_cli_core::report::unlabelled(&refused);
 			assert!(
 				said.contains(why) && said.contains("help:") && said.contains("`vagcan adaptations 09` again"),
 				"{said}"
@@ -1049,7 +1025,7 @@ mod tests {
 		let capture = Capture::start(0);
 		let refused = single(silent, unit(), &described()).await.err().expect("refused");
 		assert_eq!(
-			refused.to_string(),
+			vag_cli_core::report::unlabelled(&refused),
 			"unit 09 (70E) did not answer\n\nhelp: `vagcan units` lists this car's units"
 		);
 		assert_eq!(capture.finish().stdout, "");
@@ -1071,7 +1047,7 @@ mod tests {
 		}
 		let refused = single(car(Some(0)), unit(), &Stale).await.err().expect("refused");
 		assert_eq!(
-			refused.to_string(),
+			vag_cli_core::report::unlabelled(&refused),
 			"nothing describes the adaptations of unit 09 (70E)\n\
 			 \n\
 			 note: the ODIS project was read before adaptations were kept\n\
@@ -1253,7 +1229,7 @@ mod tests {
 		let stopped = all(car.clone(), &data, Duration::ZERO).await.err().expect("stopped");
 		let said = capture.finish();
 		assert_eq!(
-			stopped.to_string(),
+			vag_cli_core::report::unlabelled(&stopped),
 			"the run was stopped: unit 713 did not answer after 1 unit had been read\n\nhelp: see whether it answers: `vagcan units --identify`"
 		);
 		assert!(
@@ -1308,9 +1284,7 @@ mod tests {
 		let refused = all(car, &data, Duration::ZERO).await.err().expect("refused");
 		capture.finish();
 		assert!(
-			refused
-				.to_string()
-				.ends_with("help: stop the car and run `vagcan adaptations --all` again"),
+			vag_cli_core::report::unlabelled(&refused).ends_with("help: stop the car and run `vagcan adaptations --all` again"),
 			"{refused}"
 		);
 	}
@@ -1340,7 +1314,7 @@ mod tests {
 		let car = car(Some(0));
 		let refused = single(car.clone(), unit(), &Unsure).await.err().expect("refused");
 		assert_eq!(
-			refused.to_string(),
+			vag_cli_core::report::unlabelled(&refused),
 			"nothing describes the adaptations of unit 09 (70E)\n\
 			 \n\
 			 note: the variant of unit 09 (70E) is not settled (F1A2 001001 is none of the 17 variants of its family)\n\
@@ -1356,7 +1330,11 @@ mod tests {
 		let capture = Capture::start(0);
 		let refused = all(car, &none, Duration::ZERO).await.err().expect("nothing");
 		let said = capture.finish();
-		assert_eq!(refused.to_string(), NOTHING_TO_OFFER);
+		assert_eq!(
+			vag_cli_core::report::unlabelled(&refused),
+			vag_cli_core::report::unlabelled(&nothing_to_offer())
+		);
+		assert_eq!(refused.to_string(), "no recorded unit of this car has adaptations");
 		assert_eq!(said.stdout, "", "nothing read, nothing printed");
 		// The engine, the gearbox and the gateway are walked and not in this record.
 		assert!(
@@ -1408,7 +1386,7 @@ mod tests {
 		assert_eq!(choose(&picked, &mut quits).unwrap(), None);
 		let none = choose(&(Vec::new(), 0), &mut vag_cli_core::ui::menu::Scripted::new(vec![])).unwrap_err();
 		assert!(
-			none.to_string().contains("help: record the car's units: `vagcan units --identify`"),
+			vag_cli_core::report::unlabelled(&none).contains("help: record the car's units: `vagcan units --identify`"),
 			"{none}"
 		);
 	}
@@ -1445,6 +1423,7 @@ mod tests {
 
 	#[test]
 	fn no_unit_and_no_terminal_says_the_command_with_a_unit() {
-		assert!(NO_UNIT.contains("\n\nhelp: name the unit: `vagcan adaptations 09`"), "{NO_UNIT}");
+		let said = vag_cli_core::report::unlabelled(&no_unit());
+		assert!(said.contains("\n\nhelp: name the unit: `vagcan adaptations 09`"), "{said}");
 	}
 }

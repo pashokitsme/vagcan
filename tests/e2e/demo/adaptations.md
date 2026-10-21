@@ -47,6 +47,6 @@ nothing asked of it beyond its identification.
 $ vagcan adaptations 713
 ? failed
 note: adapter from VAGCAN_DEVICE=[PORT]
-Error: nothing describes the adaptations of unit 713
+error: nothing describes the adaptations of unit 713
 
 ```

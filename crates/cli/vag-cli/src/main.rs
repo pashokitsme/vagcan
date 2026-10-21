@@ -1003,6 +1003,8 @@ const UNITS_DEVICE_HELP: &str = "Adapter to use: a serial path (a USB-CAN adapte
 const IDENTIFY: NotThroughTheBoard<'static> = NotThroughTheBoard {
 	over_ble: IDENTIFY_OVER_BLE,
 	over_usb: IDENTIFY_OVER_USB,
+	ble_help: &[],
+	usb_help: &[],
 };
 const IDENTIFY_OVER_BLE: &str = "`units --identify <unit>` walks F100–F1FF, a sweep, and a sweep is refused over BLE — use a cable";
 const IDENTIFY_OVER_USB: &str = "`units --identify <unit>` walks F100–F1FF, a sweep, and a sweep does not run through the dash board — use a cable \
@@ -1015,6 +1017,8 @@ const IDENTIFY_OVER_USB: &str = "`units --identify <unit>` walks F100–F1FF, a 
 const SENSORS: NotThroughTheBoard<'static> = NotThroughTheBoard {
 	over_ble: SENSORS_OVER_BLE,
 	over_usb: SENSORS_OVER_USB,
+	ble_help: &[],
+	usb_help: &[],
 };
 const SENSORS_OVER_BLE: &str = "`sensors --unit <unit>` outside 7E0–7E7 asks the unit identifiers it is not bound to answer, a sweep, and a \
                                 sweep is refused over BLE — use a cable";
@@ -1045,20 +1049,19 @@ fn adaptations_cable(
 const ADAPTATIONS: NotThroughTheBoard<'static> = NotThroughTheBoard {
 	over_ble: ADAPTATIONS_OVER_BLE,
 	over_usb: ADAPTATIONS_OVER_USB,
+	ble_help: &["use a cable adapter: `vagcan adaptations <unit> --device <PATH>`"],
+	usb_help: &["use a cable adapter", "or make the board one: `vagcan --slcan adaptations <unit>`"],
 };
-const ADAPTATIONS_OVER_BLE: &str = "reading adaptations is a sweep, and a sweep does not run over BLE\n\
-                                    \n\
-                                    help: use a cable adapter: `vagcan adaptations <unit> --device <PATH>`";
-const ADAPTATIONS_OVER_USB: &str = "reading adaptations is a sweep, and a sweep does not run through the dash board\n\
-                                    \n\
-                                    help: use a cable adapter\n\
-                                    help: or make the board one: `vagcan --slcan adaptations <unit>`";
+const ADAPTATIONS_OVER_BLE: &str = "reading adaptations is a sweep, and a sweep does not run over BLE";
+const ADAPTATIONS_OVER_USB: &str = "reading adaptations is a sweep, and a sweep does not run through the dash board";
 
 /// Why `dev sniff` needs an adapter: it reads CAN frames, and the link to the dash board
 /// carries whole answers only.
 const SNIFF: NotThroughTheBoard<'static> = NotThroughTheBoard {
 	over_ble: SNIFF_OVER_BLE,
 	over_usb: SNIFF_OVER_USB,
+	ble_help: &[],
+	usb_help: &[],
 };
 const SNIFF_OVER_BLE: &str = "`dev sniff` reads CAN frames, and the BLE link carries none — use a cable";
 const SNIFF_OVER_USB: &str = "`dev sniff` reads CAN frames; through the dash board that needs `--slcan`, which makes it a plain adapter";
@@ -1512,8 +1515,9 @@ mod tests {
 		assert!(!IDENTIFY_OVER_USB.contains("on the bench"), "{IDENTIFY_OVER_USB}");
 		assert!(SENSORS_OVER_USB.contains("`vagcan --slcan sensors --unit <unit>`"), "{SENSORS_OVER_USB}");
 		assert!(
-			ADAPTATIONS_OVER_USB.contains("`vagcan --slcan adaptations <unit>`"),
-			"{ADAPTATIONS_OVER_USB}"
+			ADAPTATIONS.usb_help.iter().any(|h| h.contains("`vagcan --slcan adaptations <unit>`")),
+			"{:?}",
+			ADAPTATIONS.usb_help
 		);
 	}
 
