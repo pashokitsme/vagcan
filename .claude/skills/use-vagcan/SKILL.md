@@ -39,6 +39,8 @@ request and answer on the bus; stdout does not change with either.
 | Which car is this? | `vagcan info` |
 | Which control units does it have? | `vagcan units --identify` |
 | What does one unit say about itself? | `vagcan units --identify 01` |
+| One unit's adaptation channels and values | `vagcan adaptations 09` |
+| Every unit's adaptations, one after another | `vagcan adaptations --all` |
 | Fault codes, one unit | `vagcan faults --unit 01` |
 | Fault codes, whole car, **named** | `vagcan faults` |
 | Standard OBD-II sensors | `vagcan sensors --unit 01` |
@@ -171,6 +173,14 @@ discover identifiers nothing declares: `dev survey` was removed on 2026-09-28.
 `vagcan units --identify 713` reads one unit's whole identification block — 256 reads,
 refused on a moving car and never through the dash board.
 
+`vagcan adaptations 09` reads one unit's adaptation channels — exactly the identifiers
+the run's one source describes for its variant (the ODIS project, or the VCDS installation
+when there is no ODIS project; never both), each with
+`0x22`, nothing written. It is a sweep and guarded as one: refused on a moving car, stopped
+the moment the unit stops answering, cable only (`--slcan` for the dash board). With no
+unit it offers the car's recorded units that have adaptations (a terminal is needed);
+`--all` reads each in turn, each guarded on its own, and stops at the first that fails.
+
 ## Never
 
 - **Never pass `--while-driving`.** A sweep is hundreds of requests a unit may never
@@ -179,11 +189,12 @@ refused on a moving car and never through the dash board.
   report speed counts as moving.
 - **Never pass `--extended` casually.** The extended diagnostic session is workshop
   mode, and a unit that assists the driver may stop assisting while it is in one.
-- **Never reach for a sweep to answer a small question.** There are two, each of one
-  unit: `units --identify 01` (256 reads), and `sensors --unit <unit>` on a unit outside
-  7E0–7E7 (the standard OBD-II list). Both need a parked car and a cable adapter.
-  `vagcan units --identify`, `faults --unit` and `watch` answer most questions with four
-  reads a unit, or none.
+- **Never reach for a sweep to answer a small question.** There are three, each of one
+  unit at a time: `units --identify 01` (256 reads), `sensors --unit <unit>` on a unit
+  outside 7E0–7E7 (the standard OBD-II list), and `adaptations` (a unit's adaptation
+  identifiers; `--all` reads every unit with them, one after another). All need a parked
+  car and a cable adapter. `vagcan units --identify`, `faults --unit` and `watch` answer
+  most questions with four reads a unit, or none.
 - **Never suggest adding a write service** — coding, adaptation, clearing faults,
   flashing. `CLAUDE.md` forbids it outright.
 - **Never hardcode a car's identifier, scaling or unit name into the code** to make a

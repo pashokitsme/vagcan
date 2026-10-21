@@ -153,6 +153,13 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 
 8. **The strip, the new pages and PR #23 on the glass** — after 1: the voltage, the titles,
     the stopwatch's rounding and the acceleration's zero at rest.
+8a. **`vagcan adaptations` on the car** (built 2026-10-21): a unit's adaptation channels and
+    values, read with `0x22` — ODIS's `ReadDataByIdentCalibData` rows (`adaptation_channel`,
+    schema 4; an ODIS project read before needs `vagcan setup <dir>` again), or in a run of VCDS
+    its `RA.rod` rows, never mixed. Check against VCDS's own adaptation screen on two units (the BCM's
+    2,426 fields, the brake unit's 45), parked; then `--all`. Guarded as a sweep: one unit (or
+    `--all`, each unit on its own), refused moving, stopped on silence, the part number re-read
+    as a witness, cable only.
 9. **The ESC's acceleration** — [`dash/17`](dash/17-bench-ble-usb.md) §4: a dash on the glass
     the whole drive (2026-09-30); `zero_at_rest` (PR #23) does not touch that. The board's
     console on the car (USB plugged in before OBD power) says whether `713` is polled and what

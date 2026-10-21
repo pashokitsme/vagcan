@@ -18,7 +18,7 @@ mod overview;
 
 use vag_cli_core::device::{ADAPTER_BAUD, DeviceArg, NotThroughTheBoard, Target};
 use vag_cli_core::{config, datadir, device, glossary, interrupt, plan, project};
-use vag_cli_diag::{car, dash, faults, labels, recording, rescue, setup, sim, sniff, vcds, watch};
+use vag_cli_diag::{adaptations, car, dash, faults, labels, recording, rescue, setup, sim, sniff, vcds, watch};
 #[cfg(feature = "measure")]
 use vag_cli_measure as measure;
 
@@ -53,6 +53,7 @@ fn long_about() -> String {
          LOOK AT THE CAR\n  \
          faults                    stored fault codes\n  \
          units --identify 01       everything one unit says about itself\n  \
+         adaptations 09            one unit's adaptation channels and their values\n  \
          sensors                   the standard OBD-II readings\n\n\
          WATCH IT LIVE\n  \
          watch                     values from several units, chosen on screen{}\n\n\
@@ -127,6 +128,7 @@ const GLOBALS_APPLY: &[(&str, &[&str])] = &[
 		"project",
 		&[
 			"units",
+			"adaptations",
 			"faults",
 			"watch",
 			"measure",
@@ -147,6 +149,7 @@ const GLOBALS_APPLY: &[(&str, &[&str])] = &[
 		&[
 			"info",
 			"units",
+			"adaptations",
 			"faults",
 			"sensors",
 			"watch",
@@ -321,6 +324,36 @@ enum Command {
 		/// concludes the tool is broken.
 		#[arg(long, requires = "identify")]
 		while_driving: bool,
+	},
+
+	/// Show one unit's adaptation channels and the values they hold now.
+	///
+	/// Read-only: each value is a `0x22` read of its identifier. Nothing is written —
+	/// changing an adaptation is a write, which this tool cannot do.
+	///
+	/// Which identifiers come from the project: an ODIS project's adaptation reads, and a
+	/// VCDS installation's adaptation lists where ODIS has none. Exactly those of the
+	/// unit's variant are read, and nothing in between.
+	///
+	/// That is a sweep — up to a couple of hundred reads of one unit — so it is refused on
+	/// a moving car, stops the moment the unit stops answering, and needs a cable adapter.
+	///
+	/// With no unit named, it offers this car's recorded units that have adaptations.
+	/// `--all` reads each of them in turn, each guarded on its own.
+	///
+	/// One row per field: `did  name  value  unit`. `-v` says where each row came from.
+	#[command(mut_arg("device", |a| a.help(ADAPTATIONS_DEVICE_HELP)))]
+	Adaptations {
+		#[command(flatten)]
+		device: DeviceArg,
+		/// The unit: a short number (09) or a request id (70E), as `vagcan units` lists
+		/// them. Leave it out to pick one.
+		#[arg(value_name = "UNIT", conflicts_with = "all")]
+		unit: Option<String>,
+		/// Every unit of this car that has adaptations, one after another: each refused on
+		/// a moving car on its own, and the run ends at the first unit that stops answering.
+		#[arg(long)]
+		all: bool,
 	},
 
 	/// Read stored fault codes from every control unit.
@@ -780,6 +813,27 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 			};
 			car::sensors(open, &unit).await
 		}
+		// A sweep, guarded as `--identify <unit>` is: through a cable only, resolved inside
+		// `open`, once the unit and the project's data have been checked. BLE is refused
+		// first, since it needs nothing checked to refuse.
+		Command::Adaptations { device, unit, all } => {
+			// The unit's spelling first, as every command checks its arguments first.
+			labels::install_recorded_units();
+			if let Some(text) = &unit {
+				car::parse_unit("unit", text)?;
+			}
+			device::refuse_ble(device.requested(), slcan, &ADAPTATIONS)?;
+			let which = match (unit, all) {
+				(_, true) => adaptations::Which::All,
+				(Some(unit), false) => adaptations::Which::One(unit),
+				(None, false) => adaptations::Which::Pick,
+			};
+			let open = async || {
+				let path = device::resolve_cable_for(device.requested(), slcan, &ADAPTATIONS)?;
+				device::open_bus(&Target::Serial(path)).await
+			};
+			adaptations::run(open, which).await
+		}
 		Command::Watch {
 			replay: Some(path),
 			data,
@@ -959,6 +1013,26 @@ const SENSORS_OVER_BLE: &str = "`sensors --unit <unit>` outside 7E0–7E7 asks t
 const SENSORS_OVER_USB: &str = "`sensors --unit <unit>` outside 7E0–7E7 asks the unit identifiers it is not bound to answer, a sweep, and a \
                                 sweep does not run through the dash board — use a cable adapter, or `vagcan --slcan sensors --unit <unit>`";
 
+/// `adaptations`' `--device`: the shared help, and why it needs a cable.
+const ADAPTATIONS_DEVICE_HELP: &str = "Adapter to use: a serial path (a USB-CAN adapter), or the dash board's USB cable with `--slcan`. Omit it to use \
+                                       the one adapter on USB. Reading adaptations is a sweep, and a sweep does not run through \
+                                       the dash board or over Bluetooth";
+
+/// Why `adaptations` does not run through the dash board: it reads up to a couple of
+/// hundred identifiers of one unit, a sweep, and a sweep goes over a cable (as
+/// [`IDENTIFY`]).
+const ADAPTATIONS: NotThroughTheBoard<'static> = NotThroughTheBoard {
+	over_ble: ADAPTATIONS_OVER_BLE,
+	over_usb: ADAPTATIONS_OVER_USB,
+};
+const ADAPTATIONS_OVER_BLE: &str = "reading adaptations is a sweep, and a sweep does not run over BLE\n\
+                                    \n\
+                                    help: use a cable adapter: `vagcan adaptations <unit> --device <PATH>`";
+const ADAPTATIONS_OVER_USB: &str = "reading adaptations is a sweep, and a sweep does not run through the dash board\n\
+                                    \n\
+                                    help: use a cable adapter\n\
+                                    help: or make the board one: `vagcan --slcan adaptations <unit>`";
+
 /// Why `dev sniff` needs an adapter: it reads CAN frames, and the link to the dash board
 /// carries whole answers only.
 const SNIFF: NotThroughTheBoard<'static> = NotThroughTheBoard {
@@ -1105,6 +1179,7 @@ mod tests {
 		Ok(match command {
 			Command::Info { device }
 			| Command::Units { device, .. }
+			| Command::Adaptations { device, .. }
 			| Command::Faults { device, .. }
 			| Command::Sensors { device, .. }
 			| Command::Watch { device, .. } => device,
@@ -1128,6 +1203,7 @@ mod tests {
 			vec!["vagcan", "info"],
 			vec!["vagcan", "units"],
 			vec!["vagcan", "units", "--identify", "01"],
+			vec!["vagcan", "adaptations", "--all"],
 			vec!["vagcan", "faults"],
 			vec!["vagcan", "sensors"],
 			vec!["vagcan", "watch"],
@@ -1277,6 +1353,7 @@ mod tests {
 		let mut paths = vec![
 			vec!["info"],
 			vec!["units"],
+			vec!["adaptations"],
 			vec!["faults"],
 			vec!["sensors"],
 			vec!["watch"],
@@ -1345,6 +1422,10 @@ mod tests {
 			!sensors.get_arguments().any(|a| a.get_id() == "while_driving"),
 			"an override on sensors lifts its moving-car refusal: that is a decision, not a flag to add in passing"
 		);
+		// `adaptations` is refused on a moving car with no flag to lift it
+		// (`vag_cli_diag::adaptations`' tests).
+		let adaptations = cli.find_subcommand("adaptations").expect("adaptations exists");
+		assert!(!adaptations.get_arguments().any(|a| a.get_id() == "while_driving"));
 	}
 
 	#[tokio::test]
@@ -1355,6 +1436,9 @@ mod tests {
 		for device in ["ble", "ble:vagcan-dash"] {
 			let cases = [
 				(vec!["vagcan", "units", "--identify", "01", "--device", device], IDENTIFY_OVER_BLE),
+				(vec!["vagcan", "adaptations", "09", "--device", device], ADAPTATIONS_OVER_BLE),
+				(vec!["vagcan", "adaptations", "--all", "--device", device], ADAPTATIONS_OVER_BLE),
+				(vec!["vagcan", "adaptations", "--device", device], ADAPTATIONS_OVER_BLE),
 				(vec!["vagcan", "dev", "sniff", "--device", device], SNIFF_OVER_BLE),
 				// Off the emissions block `sensors` is a sweep; on the engine it reads through
 				// the board, and so is refused only for `--slcan`.
@@ -1387,6 +1471,8 @@ mod tests {
 			(vec!["vagcan", "units", "--identify", "01", "--ble", "--slcan"], device::SLCAN_OVER_BLE),
 			(vec!["vagcan", "sensors", "--unit", "713", "--ble"], SENSORS_OVER_BLE),
 			(vec!["vagcan", "sensors", "--unit", "713", "--ble", "--slcan"], device::SLCAN_OVER_BLE),
+			(vec!["vagcan", "adaptations", "09", "--ble"], ADAPTATIONS_OVER_BLE),
+			(vec!["vagcan", "adaptations", "09", "--ble", "--slcan"], device::SLCAN_OVER_BLE),
 			(vec!["vagcan", "info", "--ble", "--slcan"], device::SLCAN_OVER_BLE),
 		];
 		for (args, why) in cases {
@@ -1404,13 +1490,17 @@ mod tests {
 		);
 		assert!(!IDENTIFY_OVER_USB.contains("on the bench"), "{IDENTIFY_OVER_USB}");
 		assert!(SENSORS_OVER_USB.contains("`vagcan --slcan sensors --unit <unit>`"), "{SENSORS_OVER_USB}");
+		assert!(
+			ADAPTATIONS_OVER_USB.contains("`vagcan --slcan adaptations <unit>`"),
+			"{ADAPTATIONS_OVER_USB}"
+		);
 	}
 
-	/// `sensors --unit <unit>` off the emissions block, through the dash board on its cable:
+	/// `sensors --unit <unit>` off the emissions block and `adaptations`, through the dash board on its cable:
 	/// refused on the `dash` image, picked or named, and read through it once `--slcan` makes
 	/// it a plain adapter. Hardware-free: the listing and the board's answer are handed in.
 	#[test]
-	fn a_sensors_sweep_is_refused_through_the_board_unless_slcan_makes_it_an_adapter() {
+	fn a_sweep_is_refused_through_the_board_unless_slcan_makes_it_an_adapter() {
 		const BOARD: &str = "/dev/cu.usbmodem1101";
 		let listing = || {
 			Ok(vec![vag_uds_can::classify_usb(
@@ -1433,6 +1523,38 @@ mod tests {
 			let path = device::resolve_cable_for_with(requested, true, &SENSORS, listing(), dash).expect("--slcan");
 			assert_eq!(path, BOARD, "{requested:?}");
 		}
+		// `adaptations` resolves its cable the same way, with its own words.
+		for requested in [None, Some(BOARD)] {
+			let refused = device::resolve_cable_for_with(requested, false, &ADAPTATIONS, listing(), dash).expect_err("through the board");
+			assert_eq!(refused.to_string(), ADAPTATIONS_OVER_USB, "{requested:?}");
+			let path = device::resolve_cable_for_with(requested, true, &ADAPTATIONS, listing(), dash).expect("--slcan");
+			assert_eq!(path, BOARD, "{requested:?}");
+		}
+	}
+
+	#[test]
+	fn adaptations_take_one_unit_or_all_and_never_both() {
+		let parse = |args: &[&str]| match Cli::try_parse_from(args).map(|c| c.command) {
+			Ok(Some(Command::Adaptations { unit, all, .. })) => Ok((unit, all)),
+			Ok(_) => panic!("not adaptations"),
+			Err(e) => Err(e.kind()),
+		};
+		assert_eq!(parse(&["vagcan", "adaptations", "09"]), Ok((Some("09".into()), false)));
+		assert_eq!(parse(&["vagcan", "adaptations"]), Ok((None, false)), "no unit: the picker");
+		assert_eq!(parse(&["vagcan", "adaptations", "--all"]), Ok((None, true)));
+		assert_eq!(
+			parse(&["vagcan", "adaptations", "09", "--all"]),
+			Err(clap::error::ErrorKind::ArgumentConflict)
+		);
+		// One unit per run: a second is not taken.
+		assert!(parse(&["vagcan", "adaptations", "09", "17"]).is_err());
+		// No way to lift the moving-car refusal.
+		assert!(parse(&["vagcan", "adaptations", "09", "--while-driving"]).is_err());
+		let help = help_of(&["adaptations"], true);
+		assert!(
+			help.contains("refused on") && help.contains("moving car") && help.contains("Nothing is written"),
+			"{help}"
+		);
 	}
 
 	/// What a command can check without the car goes before the device is resolved: a
@@ -1445,10 +1567,11 @@ mod tests {
 	async fn arguments_are_checked_before_the_device_is_resolved() {
 		const NOWHERE: &str = "/nonexistent/vagcan-test";
 		let keys = format!("{NOWHERE}/rod-keys.json");
-		let cases: [(Vec<&str>, &str); 3] = [
+		let cases: [(Vec<&str>, &str); 4] = [
 			(vec!["vagcan", "sensors", "--unit", "ZZZ"], "--unit"),
 			(vec!["vagcan", "faults", "--unit", "ZZZ", "--iv-cache", &keys], ""),
 			(vec!["vagcan", "units", "--identify", "ZZZ"], "ZZZ"),
+			(vec!["vagcan", "adaptations", "ZZZ"], "ZZZ"),
 		];
 		for (args, why) in cases {
 			let mut args = args.clone();
@@ -1468,6 +1591,7 @@ mod tests {
 		let cases = [
 			(vec!["vagcan", "units", "--identify", "ZZZ"], "--identify: "),
 			(vec!["vagcan", "sensors", "--unit", "ZZZ"], "--unit: "),
+			(vec!["vagcan", "adaptations", "ZZZ"], "unit: "),
 		];
 		for (args, flag) in cases {
 			let mut args = args.clone();
@@ -1487,6 +1611,7 @@ mod tests {
 			&["vagcan", "info", "--slcan"],
 			&["vagcan", "dev", "sniff", "--slcan"],
 			&["vagcan", "units", "--identify", "01", "--slcan"],
+			&["vagcan", "adaptations", "09", "--slcan"],
 		] {
 			assert!(Cli::try_parse_from(args).unwrap().slcan, "{args:?}");
 		}
@@ -1543,7 +1668,7 @@ mod tests {
 		] {
 			assert!(!top.contains(&offline), "{offline} belongs under a group, not at the top");
 		}
-		for live in ["setup", "devices", "info", "units", "faults", "watch", "sensors"] {
+		for live in ["setup", "devices", "info", "units", "adaptations", "faults", "watch", "sensors"] {
 			assert!(top.contains(&live), "{live} needs a car and belongs at the top");
 		}
 		// And the ones that moved are reachable where they were moved to,
