@@ -1,7 +1,7 @@
 //! A unit's adaptation channels: which identifiers hold them, where each field sits in
 //! the answer, and how its bytes read.
 //!
-//! Two sources describe them, ranked as the channels are (owner, 2026-09-28): an ODIS
+//! Two sources describe them, as they do the channels: an ODIS
 //! project's adaptation read (`DiagnServi_ReadDataByIdentCalibData`, cached in
 //! `adaptation_channel`), then a VCDS installation's `RA.rod [ADP]` rows (`registry_row`,
 //! `research/vcds-registry/README.md` §9.1). A run reads one of the two, never both mixed
@@ -156,12 +156,27 @@ impl Adaptation {
 			},
 			Form::Text => match self.bytes(data) {
 				Some(bytes) => String::from_utf8_lossy(bytes).trim_end_matches(['\0', ' ']).to_string(),
-				None => SHORT.to_string(),
+				None => self.undecoded(data),
 			},
 			Form::Bytes => match self.bytes(data) {
 				Some(bytes) => crate::verbosity::hex(bytes),
-				None => SHORT.to_string(),
+				None => self.undecoded(data),
 			},
+		}
+	}
+
+	/// A field with no decoded form that does not start and end on a byte: where its bits
+	/// sit, and the bytes that cover them, in hex — `(3 bits at bit 9, not decoded: 02)`.
+	/// [`SHORT`] only when the answer does not reach the field.
+	fn undecoded(&self, data: &[u8]) -> String {
+		let first = (self.bit_offset / 8) as usize;
+		let (covering, length) = match self.bit_length {
+			Some(length) => (data.get(first..(self.bit_offset + length).div_ceil(8) as usize), format!("{length} bits")),
+			None => (data.get(first..).filter(|rest| !rest.is_empty()), "the rest".to_string()),
+		};
+		match covering {
+			Some(bytes) => format!("({length} at bit {}, not decoded: {})", self.bit_offset, crate::verbosity::hex(bytes)),
+			None => SHORT.to_string(),
 		}
 	}
 }
@@ -283,6 +298,23 @@ mod tests {
 		assert_eq!(raw.value(&[0xDE, 0xAD]), "DE AD");
 		// No identifier that is a DID: no row.
 		assert!(Adaptation::from_vcds(&vcds(0x1_0000, LINEAR, 0, Some(8)), "EV_X").is_none());
+	}
+
+	/// A field off the byte grid with no form to decode it is not "too short" on a full
+	/// answer: it says where its bits are and shows the bytes that hold them.
+	#[test]
+	fn a_field_off_the_byte_grid_shows_its_bits_not_a_short_answer() {
+		let flags = Adaptation::from_vcds(&vcds(0x1079, 7, 9, Some(3)), "EV_X").unwrap();
+		assert_eq!(flags.form, Form::Bytes);
+		assert_eq!(flags.value(&[0x00, 0b0000_1110]), "(3 bits at bit 9, not decoded: 0E)");
+		// Across a byte boundary: both bytes.
+		let across = Adaptation::from_vcds(&vcds(0x107A, 7, 6, Some(4)), "EV_X").unwrap();
+		assert_eq!(across.value(&[0xC0, 0x03, 0xFF]), "(4 bits at bit 6, not decoded: C0 03)");
+		// The answer does not reach it: that is a short answer.
+		assert_eq!(flags.value(&[0x00]), SHORT);
+		// No length, off the grid: from its byte to the end.
+		let rest = Adaptation::from_vcds(&vcds(0x107B, 7, 4, None), "EV_X").unwrap();
+		assert_eq!(rest.value(&[0xAB, 0xCD]), "(the rest at bit 4, not decoded: AB CD)");
 	}
 
 	#[test]

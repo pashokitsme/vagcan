@@ -155,7 +155,7 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
     the stopwatch's rounding and the acceleration's zero at rest.
 8a. **`vagcan adaptations` on the car** (built 2026-10-21): a unit's adaptation channels and
     values, read with `0x22` — ODIS's `ReadDataByIdentCalibData` rows (`adaptation_channel`,
-    schema 4; an ODIS project read before needs `vagcan setup <dir>` again), or in a run of VCDS
+    schema 5; an ODIS project read before needs `vagcan setup <dir>` again), or in a run of VCDS
     its `RA.rod` rows, never mixed. Check against VCDS's own adaptation screen on two units (the BCM's
     2,426 fields, the brake unit's 45), parked; then `--all`. Guarded as a sweep: one unit (or
     `--all`, each unit on its own), refused moving, stopped on silence, the part number re-read

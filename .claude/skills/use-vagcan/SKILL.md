@@ -177,9 +177,13 @@ refused on a moving car and never through the dash board.
 the run's one source describes for its variant (the ODIS project, or the VCDS installation
 when there is no ODIS project; never both), each with
 `0x22`, nothing written. It is a sweep and guarded as one: refused on a moving car, stopped
-the moment the unit stops answering, cable only (`--slcan` for the dash board). With no
-unit it offers the car's recorded units that have adaptations (a terminal is needed);
-`--all` reads each in turn, each guarded on its own, and stops at the first that fails.
+the moment the unit stops answering, cable only (`--slcan` for the dash board). A unit whose
+variant is not settled (`F1A2` missing, or matching no variant better than its family) is
+refused, never read as its family's union. With no unit it offers the car's recorded units
+that have adaptations (a terminal is needed); `--all` reads each in turn, each guarded on its
+own, and stops at the first that is refused or stopped. Once any unit has been read in the
+run, a recorded unit that does not answer its identification ends the run with a STOPPED
+notice; before anything has been read, such a unit is skipped with a note.
 
 ## Never
 

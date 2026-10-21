@@ -331,17 +331,19 @@ enum Command {
 	/// Read-only: each value is a `0x22` read of its identifier. Nothing is written —
 	/// changing an adaptation is a write, which this tool cannot do.
 	///
-	/// Which identifiers come from the project: an ODIS project's adaptation reads, and a
-	/// VCDS installation's adaptation lists where ODIS has none. Exactly those of the
-	/// unit's variant are read, and nothing in between.
+	/// Which identifiers come from the run's one source: the ODIS project, or the VCDS
+	/// installation when there is no ODIS project. Exactly those of the unit's variant are
+	/// read, and nothing in between; a unit whose variant is not settled is not read.
 	///
 	/// That is a sweep — up to a couple of hundred reads of one unit — so it is refused on
 	/// a moving car, stops the moment the unit stops answering, and needs a cable adapter.
 	///
 	/// With no unit named, it offers this car's recorded units that have adaptations.
-	/// `--all` reads each of them in turn, each guarded on its own.
+	/// `--all` reads each of them in turn, each guarded on its own, and stops at the first
+	/// unit that does not answer once any unit has been read.
 	///
-	/// One row per field: `did  name  value  unit`. `-v` says where each row came from.
+	/// A summary line, then a block per unit: a line per field, `did  name  value unit`.
+	/// `-v` says where the rows came from.
 	#[command(mut_arg("device", |a| a.help(ADAPTATIONS_DEVICE_HELP)))]
 	Adaptations {
 		#[command(flatten)]
@@ -829,7 +831,13 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 				(None, false) => adaptations::Which::Pick,
 			};
 			let open = async || {
-				let path = device::resolve_cable_for(device.requested(), slcan, &ADAPTATIONS)?;
+				let requested = device::requested_or_env(device.requested())?;
+				let path = adaptations_cable(
+					requested.as_deref(),
+					slcan,
+					vag_uds_can::list_adapters().map_err(Into::into),
+					device::probe,
+				)?;
 				device::open_bus(&Target::Serial(path)).await
 			};
 			adaptations::run(open, which).await
@@ -1017,6 +1025,19 @@ const SENSORS_OVER_USB: &str = "`sensors --unit <unit>` outside 7E0–7E7 asks t
 const ADAPTATIONS_DEVICE_HELP: &str = "Adapter to use: a serial path (a USB-CAN adapter), or the dash board's USB cable with `--slcan`. Omit it to use \
                                        the one adapter on USB. Reading adaptations is a sweep, and a sweep does not run through \
                                        the dash board or over Bluetooth";
+
+/// The serial path `adaptations` reads through: a cable adapter, or the dash board only once
+/// `--slcan` has made it a plain one — never the board on its `dash` image, and never BLE
+/// ([`ADAPTATIONS`] says why). The listing and the board probe are handed in, so the rule is
+/// tested with no hardware.
+fn adaptations_cable(
+	requested: Option<&str>,
+	slcan: bool,
+	listing: Result<Vec<vag_uds_can::AdapterInfo>>,
+	probe: impl FnMut(&str) -> vag_uds_can::BoardAnswer,
+) -> Result<String> {
+	device::resolve_cable_for_with(requested, slcan, &ADAPTATIONS, listing, probe)
+}
 
 /// Why `adaptations` does not run through the dash board: it reads up to a couple of
 /// hundred identifiers of one unit, a sweep, and a sweep goes over a cable (as
@@ -1496,11 +1517,11 @@ mod tests {
 		);
 	}
 
-	/// `sensors --unit <unit>` off the emissions block and `adaptations`, through the dash board on its cable:
+	/// `sensors --unit <unit>` off the emissions block, through the dash board on its cable:
 	/// refused on the `dash` image, picked or named, and read through it once `--slcan` makes
 	/// it a plain adapter. Hardware-free: the listing and the board's answer are handed in.
 	#[test]
-	fn a_sweep_is_refused_through_the_board_unless_slcan_makes_it_an_adapter() {
+	fn a_sensors_sweep_is_refused_through_the_board_unless_slcan_makes_it_an_adapter() {
 		const BOARD: &str = "/dev/cu.usbmodem1101";
 		let listing = || {
 			Ok(vec![vag_uds_can::classify_usb(
@@ -1523,13 +1544,37 @@ mod tests {
 			let path = device::resolve_cable_for_with(requested, true, &SENSORS, listing(), dash).expect("--slcan");
 			assert_eq!(path, BOARD, "{requested:?}");
 		}
-		// `adaptations` resolves its cable the same way, with its own words.
+	}
+
+	/// `adaptations`' opener resolves its cable through [`adaptations_cable`]: on a listing
+	/// that holds only the dash board on its `dash` image, picked or named, the read is
+	/// refused, and `--slcan` makes the board the adapter. A plain adapter is taken as it is.
+	#[test]
+	fn adaptations_resolve_a_cable_and_never_the_board_on_its_dash_image() {
+		const BOARD: &str = "/dev/cu.usbmodem1101";
+		const CANABLE: &str = "/dev/cu.usbmodem2201";
+		let board = || vag_uds_can::classify_usb(BOARD.into(), 0x303a, 0x1001, Some("USB JTAG/serial debug unit".into()));
+		let dash = |path: &str| {
+			assert_eq!(path, BOARD, "only the board is probed");
+			vag_uds_can::BoardAnswer::Dash {
+				version: "0.1.0".into(),
+				plan: None,
+			}
+		};
 		for requested in [None, Some(BOARD)] {
-			let refused = device::resolve_cable_for_with(requested, false, &ADAPTATIONS, listing(), dash).expect_err("through the board");
+			let refused = adaptations_cable(requested, false, Ok(vec![board()]), dash).expect_err("through the board");
 			assert_eq!(refused.to_string(), ADAPTATIONS_OVER_USB, "{requested:?}");
-			let path = device::resolve_cable_for_with(requested, true, &ADAPTATIONS, listing(), dash).expect("--slcan");
-			assert_eq!(path, BOARD, "{requested:?}");
+			assert_eq!(
+				adaptations_cable(requested, true, Ok(vec![board()]), dash).expect("--slcan"),
+				BOARD,
+				"{requested:?}"
+			);
 		}
+		let canable = vag_uds_can::classify_usb(CANABLE.into(), 0x16d0, 0x117e, Some("CANable".into()));
+		assert_eq!(
+			adaptations_cable(None, false, Ok(vec![canable]), |_| panic!("a CAN adapter is not probed")).expect("a cable"),
+			CANABLE
+		);
 	}
 
 	#[test]

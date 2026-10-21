@@ -116,8 +116,13 @@ the server. Read-only bounds what can be *changed* about a car, not what can be
 - **A sweep is a fuzz test of a diagnostic server.** It is the most invasive thing here.
   Guard anything new that resembles one the way `units --identify <unit>` is guarded: one
   named unit, or `--all` as a sequence of single-unit runs each guarded on its own
-  (stationary check per unit, stop on the first silent unit; owner, 2026-10-21, for
-  `adaptations --all`); a bounded range (its identification block, `F100`–`F1FF`); refused on a moving
+  (owner, 2026-10-21, for `adaptations --all`): a stationary check per unit, and **once any
+  unit has been read in the run, a recorded unit that does not answer its identification ends
+  the run, with a STOPPED notice**; before anything has been read such a unit may be skipped,
+  with a note; a bounded range (its identification block, `F100`–`F1FF`; for `adaptations`,
+  exactly the identifiers of the unit's settled variant — never the union of a family's
+  variants, so a unit whose `F1A2` is missing or matches no variant better than its family is
+  refused); refused on a moving
   car (`require_stationary`, with "no answer" counted as moving); stopped the moment the
   unit falls silent under the reads (`anomaly::Monitor`); never through the dash board —
   `--slcan`, or the board's `slcan` image, either of which makes the board a plain adapter,

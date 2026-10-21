@@ -34,6 +34,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use vag_cli_core::adaptation::{self, Adaptation};
+use vag_cli_core::extracted::Unsettled;
 use vag_cli_core::marks::facts;
 use vag_cli_core::plan::UnitIdentity;
 use vag_cli_core::{note, out, say};
@@ -80,12 +81,14 @@ pub struct Read {
 }
 
 /// Why a unit's adaptations were not read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Skip {
 	/// It did not answer its identification.
 	Silent,
 	/// Nothing on this machine describes the adaptations of its variant.
 	Undescribed,
+	/// Its variant is not settled: the identifiers would be a family's union, never swept.
+	Unsettled(Unsettled),
 }
 
 impl Skip {
@@ -106,6 +109,16 @@ impl Skip {
 				named(unit)
 			),
 			(Skip::Undescribed, None) => format!("nothing describes the adaptations of unit {}", named(unit)),
+			(Skip::Unsettled(why), _) => format!(
+				"nothing describes the adaptations of unit {}\n\
+				 \n\
+				 note: the variant of unit {} is not settled ({})\n\
+				 help: {}",
+				named(unit),
+				named(unit),
+				unsettled(&why),
+				unsettled_help(&why)
+			),
 		}
 	}
 
@@ -113,7 +126,7 @@ impl Skip {
 	fn line(self, unit: UnitAddress, reread: Option<String>) -> String {
 		match (self, reread) {
 			(Skip::Silent, _) => format!(
-				"skipped unit {}: it did not answer\n  (use \"vagcan units\" to list this car's units)",
+				"skipped unit {}: it did not answer, before any unit was read\n  (use \"vagcan units\" to list this car's units)",
 				named(unit)
 			),
 			(Skip::Undescribed, Some(source)) => format!(
@@ -121,7 +134,38 @@ impl Skip {
 				named(unit)
 			),
 			(Skip::Undescribed, None) => format!("skipped unit {}: nothing describes its adaptations", named(unit)),
+			(Skip::Unsettled(why), _) => format!("skipped unit {}: its variant is not settled ({})", named(unit), unsettled(&why)),
 		}
+	}
+}
+
+/// Why a variant is not settled, in a clause: `F1A2 001001 is none of the 17 variants of its
+/// family`.
+fn unsettled(why: &Unsettled) -> String {
+	let n = format!("{} {}", why.candidates, plural(why.candidates, "variant"));
+	match &why.version {
+		Some(version) => format!("F1A2 {version} is none of the {n} of its family"),
+		None => format!("it did not answer F1A2, and {n} of its family would fit"),
+	}
+}
+
+/// What to do about an unsettled variant.
+fn unsettled_help(why: &Unsettled) -> &'static str {
+	match why.version {
+		Some(_) => "a newer ODIS project or VCDS installation may describe it: `vagcan setup <dir>`",
+		None => "see what it answers: `vagcan units --identify`",
+	}
+}
+
+/// A path as a person reads it: under the home directory, `~/…` (CLAUDE.md, Command output).
+fn home_short(path: &str) -> String {
+	match std::env::var_os("HOME").map(std::path::PathBuf::from) {
+		Some(home) if !home.as_os_str().is_empty() => match std::path::Path::new(path).strip_prefix(&home) {
+			Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+			Ok(rest) => format!("~/{}", rest.display()),
+			Err(_) => path.to_string(),
+		},
+		_ => path.to_string(),
 	}
 }
 
@@ -131,7 +175,7 @@ pub trait Data {
 	/// Learn what can be learned about this unit offline — record it, read its VCDS
 	/// rows — and give its adaptation rows.
 	#[allow(async_fn_in_trait)] // static dispatch, as `UnitLink`
-	async fn rows(&self, vin: Option<&str>, unit: &UnitIdentity) -> Vec<Adaptation>;
+	async fn rows(&self, vin: Option<&str>, unit: &UnitIdentity) -> Result<Vec<Adaptation>, Unsettled>;
 
 	/// The ODIS project to read again, when it was read before adaptations were kept: what
 	/// would give a unit with no rows some.
@@ -141,7 +185,8 @@ pub trait Data {
 	/// record that covers the gateway's `listed` units. Nothing is asked of a unit.
 	fn recorded(&self, vin: Option<&str>, listed: &[u16]) -> Vec<UnitIdentity>;
 
-	/// How many adaptation rows a recorded unit has, from what is already on this machine.
+	/// How many adaptation rows a recorded unit has, from what is already on this machine;
+	/// none for a unit whose variant is not settled.
 	fn count(&self, vin: Option<&str>, unit: &UnitIdentity) -> usize;
 }
 
@@ -163,19 +208,22 @@ impl Project {
 		let project = vag_cli_core::project::current()?;
 		let extracted = vag_cli_core::extracted::open(&project);
 		match extracted.run_source() {
-			Some(vag_data_db::ODIS) if extracted.odis_without_adaptations() => {
-				let source = extracted
-					.odis_sources()
-					.into_iter()
-					.next()
-					.unwrap_or_else(|| "<ODIS project>".to_string());
-				bail!(
-					"project {} describes no adaptations\n\
-					 \n\
-					 note: its ODIS project was read before adaptations were kept\n\
-					 help: read it again: `vagcan setup {source}`",
-					project.id
-				);
+			Some(vag_data_db::ODIS) => {
+				if let Some(source) = extracted.odis_unread_adaptations().first() {
+					bail!(
+						"project {} describes no adaptations\n\
+						 \n\
+						 note: its ODIS project was read before adaptations were kept\n\
+						 help: read it again: `vagcan setup {}`",
+						project.id,
+						home_short(source)
+					);
+				}
+				// Read, and none found: reading it again would find none again.
+				if vag_data_db::adaptation_variants(&project.cache()).unwrap_or_default().is_empty() {
+					bail!("this ODIS project describes no adaptations");
+				}
+				Ok(Project { extracted })
 			}
 			Some(_) => Ok(Project { extracted }),
 			None => bail!(
@@ -189,7 +237,7 @@ impl Project {
 }
 
 impl Data for Project {
-	async fn rows(&self, vin: Option<&str>, unit: &UnitIdentity) -> Vec<Adaptation> {
+	async fn rows(&self, vin: Option<&str>, unit: &UnitIdentity) -> Result<Vec<Adaptation>, Unsettled> {
 		walk::record_for(vin, std::slice::from_ref(unit));
 		// VCDS's rows of a unit are read the first time it is seen; a run of ODIS has no use
 		// for them.
@@ -205,14 +253,7 @@ impl Data for Project {
 	}
 
 	fn reread(&self) -> Option<String> {
-		self.extracted.odis_without_adaptations().then(|| {
-			self
-				.extracted
-				.odis_sources()
-				.into_iter()
-				.next()
-				.unwrap_or_else(|| "<ODIS project>".to_string())
-		})
+		self.extracted.odis_unread_adaptations().first().map(|dir| home_short(dir))
 	}
 
 	fn recorded(&self, vin: Option<&str>, listed: &[u16]) -> Vec<UnitIdentity> {
@@ -231,7 +272,7 @@ impl Data for Project {
 			.clone()
 			.for_car(vin)
 			.adaptations(unit.odx_name.as_deref(), unit.odx_version.as_deref())
-			.len()
+			.map_or(0, |rows| rows.len())
 	}
 }
 
@@ -282,7 +323,8 @@ pub async fn run<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, which: Whic
 /// The one unit asked for, read and printed: its summary line, then its block. A unit that
 /// was not read is a refusal that says why.
 pub async fn single<L: UnitLink>(link: L, unit: UnitAddress, data: &impl Data) -> Result<L> {
-	let (link, outcome) = one_unit(link, unit, data).await?;
+	let again = format!("`vagcan adaptations {}`", unit.label());
+	let (link, outcome) = one_unit(link, unit, data, &again).await?;
 	match outcome {
 		Outcome::Read(read) => {
 			let head = format!("{} {} of unit {}", read.fields, plural(read.fields, "adaptation"), named(unit));
@@ -299,7 +341,10 @@ pub async fn single<L: UnitLink>(link: L, unit: UnitAddress, data: &impl Data) -
 ///
 /// The first unit refused or stopped ends the run: the units after it are not read, what was
 /// read before it is printed, and the summary says where the run stopped and how many units
-/// were left.
+/// were left. **A unit that does not answer its identification ends it too, once any unit has
+/// been read in this run**: a unit falling silent during a run of sweeps is what the guard
+/// stops on (CLAUDE.md, Safety), and it says so with a STOPPED notice. Before anything has
+/// been read, such a unit is passed over with a line that says so.
 pub async fn all<L: UnitLink>(link: L, data: &impl Data, pause: Duration) -> Result<L> {
 	let (mut link, vin, (choices, unrecorded)) = candidates(link, data).await;
 	if unrecorded > 0 {
@@ -339,11 +384,24 @@ pub async fn all<L: UnitLink>(link: L, data: &impl Data, pause: Duration) -> Res
 		if at > 0 {
 			tokio::time::sleep(pause).await;
 		}
-		match one_unit(link, choice.unit, data).await {
+		match one_unit(link, choice.unit, data, "`vagcan adaptations --all`").await {
 			Ok((back, outcome)) => {
 				link = back;
 				match outcome {
 					Outcome::Read(read) => reads.push(read),
+					Outcome::Skipped(Skip::Silent) if !reads.is_empty() => {
+						print(summary(&reads, skipped, Some((choice.unit, total - at - 1))), &reads);
+						// At level 0: the one notice no run may lose.
+						say!("{}", silent_notice(choice.unit, reads.len()));
+						bail!(
+							"the run was stopped: unit {} did not answer after {} {} had been read\n\
+							 \n\
+							 help: see whether it answers: `vagcan units --identify`",
+							named(choice.unit),
+							reads.len(),
+							plural(reads.len(), "unit")
+						);
+					}
 					Outcome::Skipped(skip) => {
 						skipped += 1;
 						say!("{}", skip.line(choice.unit, data.reread()));
@@ -358,6 +416,19 @@ pub async fn all<L: UnitLink>(link: L, data: &impl Data, pause: Duration) -> Res
 	}
 	print(summary(&reads, skipped, None), &reads);
 	Ok(link)
+}
+
+/// What `--all` says when a unit falls silent part way through the run.
+fn silent_notice(unit: UnitAddress, read: usize) -> String {
+	format!(
+		"\n\
+		 STOPPED: control unit {} did not answer its identification, after {read} {} had been read in this run.\n\
+		 The run has ended here: a unit that falls silent during a run of sweeps may have stopped\n\
+		 doing its job in the car. Do not clear its faults; the freeze frame is the evidence.\n\
+		 \x20 (use \"vagcan units --identify\" to see whether it answers)",
+		named(unit),
+		plural(read, "unit")
+	)
 }
 
 /// How the reads were answered, as facts for a summary line: refusals and silences only when
@@ -402,9 +473,9 @@ pub const NO_UNIT: &str = "no unit named, and no terminal to pick one at\n\
                            help: `vagcan units` lists this car's units";
 
 /// Read one unit's adaptations, guarded (see the module docs), into the block to print. The
-/// link comes back for the next unit.
-pub async fn one_unit<L: UnitLink>(link: L, unit: UnitAddress, data: &impl Data) -> Result<(L, Outcome)> {
-	let link = stationary(link, unit).await?;
+/// link comes back for the next unit. `again` is the command a refusal says to run again.
+pub async fn one_unit<L: UnitLink>(link: L, unit: UnitAddress, data: &impl Data, again: &str) -> Result<(L, Outcome)> {
+	let link = stationary(link, again).await?;
 	let (link, vin) = walk::read_vin(link).await;
 	// The four identifiers `units --identify` asks every unit for, of this one: not a
 	// sweep, and what picks its variant.
@@ -422,7 +493,10 @@ pub async fn one_unit<L: UnitLink>(link: L, unit: UnitAddress, data: &impl Data)
 			format!("F1A2 {}", identity.odx_version.as_deref().unwrap_or("-")),
 		])
 	);
-	let rows = data.rows(vin.as_deref(), &identity).await;
+	let rows = match data.rows(vin.as_deref(), &identity).await {
+		Ok(rows) => rows,
+		Err(why) => return Ok((link, Outcome::Skipped(Skip::Unsettled(why)))),
+	};
 	if rows.is_empty() {
 		return Ok((link, Outcome::Skipped(Skip::Undescribed)));
 	}
@@ -430,7 +504,7 @@ pub async fn one_unit<L: UnitLink>(link: L, unit: UnitAddress, data: &impl Data)
 	let dids = adaptation::identifiers(&rows);
 
 	// Again, right before the reads: the registry read above can take minutes.
-	let link = stationary(link, unit).await?;
+	let link = stationary(link, again).await?;
 	let mut uds = AsyncUdsClient::new(link.to_unit(
 		vag_uds_transport::CanId::Standard(unit.request),
 		vag_uds_transport::CanId::Standard(unit.response),
@@ -477,8 +551,7 @@ pub async fn one_unit<L: UnitLink>(link: L, unit: UnitAddress, data: &impl Data)
 /// Refuse a moving car, or one that does not say whether it moves:
 /// [`safety::require_stationary`] says which, and this says what it costs — no adaptations
 /// read — and what to type.
-async fn stationary<L: UnitLink>(link: L, unit: UnitAddress) -> Result<L> {
-	let again = format!("`vagcan adaptations {}`", unit.label());
+async fn stationary<L: UnitLink>(link: L, again: &str) -> Result<L> {
 	match safety::require_stationary(link).await {
 		Ok(link) => Ok(link),
 		Err((_, safety::NotStationary::Moving(kmh))) => bail!(
@@ -689,6 +762,8 @@ mod tests {
 	// The car is made up: identifiers, part numbers and values that belong to no car.
 
 	const ENGINE: u16 = 0x7E0;
+	/// What a refusal of one unit's read says to run again.
+	const AGAIN: &str = "`vagcan adaptations 09`";
 	const UNIT: u16 = 0x70E;
 	const SPEED: u16 = 0xF40D;
 
@@ -799,10 +874,10 @@ mod tests {
 	struct Described(Vec<Adaptation>);
 
 	impl Data for Described {
-		async fn rows(&self, vin: Option<&str>, unit: &UnitIdentity) -> Vec<Adaptation> {
+		async fn rows(&self, vin: Option<&str>, unit: &UnitIdentity) -> Result<Vec<Adaptation>, Unsettled> {
 			assert_eq!(vin, Some("TESTVIN0000000009"), "the car's VIN joins the rows");
 			assert_eq!(unit.odx_name.as_deref(), Some("EV_TestUnit"));
-			self.0.clone()
+			Ok(self.0.clone())
 		}
 		fn reread(&self) -> Option<String> {
 			None
@@ -876,7 +951,7 @@ mod tests {
 	#[tokio::test]
 	async fn every_request_is_a_read() {
 		let car = car(Some(0));
-		one_unit(car.clone(), unit(), &described()).await.unwrap();
+		one_unit(car.clone(), unit(), &described(), AGAIN).await.unwrap();
 		let all = sent(&car);
 		assert!(!all.is_empty());
 		for (unit, pdu) in all {
@@ -888,7 +963,7 @@ mod tests {
 	async fn a_moving_car_is_refused_before_the_unit_is_asked_anything() {
 		for (kmh, why) in [(Some(30), "the car is moving (30 km/h)"), (None, "cannot tell")] {
 			let car = car(kmh);
-			let refused = one_unit(car.clone(), unit(), &described()).await.err().expect("refused");
+			let refused = one_unit(car.clone(), unit(), &described(), AGAIN).await.err().expect("refused");
 			let said = format!("{refused:#}");
 			assert!(
 				said.contains(why) && said.contains("help:") && said.contains("`vagcan adaptations 09` again"),
@@ -903,9 +978,9 @@ mod tests {
 	async fn a_car_that_starts_moving_before_the_reads_is_refused_before_them() {
 		struct Moves(Car);
 		impl Data for Moves {
-			async fn rows(&self, _: Option<&str>, _: &UnitIdentity) -> Vec<Adaptation> {
+			async fn rows(&self, _: Option<&str>, _: &UnitIdentity) -> Result<Vec<Adaptation>, Unsettled> {
 				self.0.0.lock().unwrap().records.insert((ENGINE, SPEED), vec![12]);
-				described().0
+				Ok(described().0)
 			}
 			fn reread(&self) -> Option<String> {
 				None
@@ -918,7 +993,7 @@ mod tests {
 			}
 		}
 		let car = car(Some(0));
-		let refused = one_unit(car.clone(), unit(), &Moves(car.clone())).await.err().expect("refused");
+		let refused = one_unit(car.clone(), unit(), &Moves(car.clone()), AGAIN).await.err().expect("refused");
 		assert!(format!("{refused:#}").contains("12 km/h"));
 		assert!(adaptation_reads(&car).is_empty(), "{:?}", adaptation_reads(&car));
 	}
@@ -931,7 +1006,7 @@ mod tests {
 		let car = car(Some(0));
 		car.0.lock().unwrap().dies_after.insert(UNIT, 4 + 2);
 		let capture = Capture::start(0);
-		let stopped = one_unit(car.clone(), unit(), &rows).await.err().expect("stopped");
+		let stopped = one_unit(car.clone(), unit(), &rows, AGAIN).await.err().expect("stopped");
 		let said = capture.finish();
 		assert!(format!("{stopped:#}").contains("was stopped"), "{stopped:#}");
 		assert!(said.stderr.contains("STOPPED"), "{}", said.stderr);
@@ -945,7 +1020,7 @@ mod tests {
 		let n = anomaly::WITNESS_EVERY as u16 + 1;
 		let rows = Described((0..n).map(|k| field(0x0800 + k, 0, "n")).collect());
 		let car = car(Some(0));
-		one_unit(car.clone(), unit(), &rows).await.unwrap();
+		one_unit(car.clone(), unit(), &rows, AGAIN).await.unwrap();
 		let unit_reads: Vec<Vec<u8>> = sent(&car).into_iter().filter(|(u, _)| *u == UNIT).map(|(_, p)| p).collect();
 		let witness = unit_reads.iter().filter(|p| p[..] == [0x22, 0xF1, 0x87]).count();
 		// Identification, the one at the cadence, the one after the last.
@@ -956,12 +1031,12 @@ mod tests {
 	async fn a_unit_that_does_not_answer_or_has_nothing_described_is_not_read() {
 		let car = car(Some(0));
 		car.0.lock().unwrap().records.retain(|(u, _), _| *u != UNIT);
-		let (_, outcome) = one_unit(car.clone(), unit(), &described()).await.unwrap();
+		let (_, outcome) = one_unit(car.clone(), unit(), &described(), AGAIN).await.unwrap();
 		assert_eq!(outcome, Outcome::Skipped(Skip::Silent));
 		assert!(adaptation_reads(&car).is_empty());
 
 		let car = self::car(Some(0));
-		let (_, outcome) = one_unit(car.clone(), unit(), &Described(Vec::new())).await.unwrap();
+		let (_, outcome) = one_unit(car.clone(), unit(), &Described(Vec::new()), AGAIN).await.unwrap();
 		assert_eq!(outcome, Outcome::Skipped(Skip::Undescribed));
 		assert!(adaptation_reads(&car).is_empty());
 	}
@@ -981,8 +1056,8 @@ mod tests {
 
 		struct Stale;
 		impl Data for Stale {
-			async fn rows(&self, _: Option<&str>, _: &UnitIdentity) -> Vec<Adaptation> {
-				Vec::new()
+			async fn rows(&self, _: Option<&str>, _: &UnitIdentity) -> Result<Vec<Adaptation>, Unsettled> {
+				Ok(Vec::new())
 			}
 			fn reread(&self) -> Option<String> {
 				Some("~/odis".into())
@@ -1035,8 +1110,8 @@ mod tests {
 	struct PerUnit(BTreeMap<u16, Vec<Adaptation>>);
 
 	impl Data for PerUnit {
-		async fn rows(&self, _: Option<&str>, unit: &UnitIdentity) -> Vec<Adaptation> {
-			self.0.get(&unit.request).cloned().unwrap_or_default()
+		async fn rows(&self, _: Option<&str>, unit: &UnitIdentity) -> Result<Vec<Adaptation>, Unsettled> {
+			Ok(self.0.get(&unit.request).cloned().unwrap_or_default())
 		}
 		fn reread(&self) -> Option<String> {
 			None
@@ -1167,19 +1242,50 @@ mod tests {
 		assert!(sent_to(&car, THIRD).is_empty(), "the third unit was read: {:02X?}", sent_to(&car, THIRD));
 	}
 
-	/// A unit offered that does not answer its identification now: passed over with a line
-	/// that says so and what to type, and counted in the summary; the run goes on.
+	/// A unit offered that does not answer its identification, once a unit has been read in
+	/// the run: the run ends there, with a STOPPED notice, and the units after it are not
+	/// read (CLAUDE.md, Safety: stop on the first silent unit).
 	#[tokio::test]
-	async fn all_passes_over_a_unit_that_does_not_answer_and_says_so() {
+	async fn all_stops_at_a_unit_that_does_not_answer_once_one_has_been_read() {
 		let (car, data) = three_units();
 		car.0.lock().unwrap().records.retain(|(u, _), _| *u != SECOND);
+		let capture = Capture::start(0);
+		let stopped = all(car.clone(), &data, Duration::ZERO).await.err().expect("stopped");
+		let said = capture.finish();
+		assert_eq!(
+			stopped.to_string(),
+			"the run was stopped: unit 713 did not answer after 1 unit had been read\n\nhelp: see whether it answers: `vagcan units --identify`"
+		);
+		assert!(
+			said
+				.stderr
+				.contains("STOPPED: control unit 713 did not answer its identification, after 1 unit had been read in this run."),
+			"{}",
+			said.stderr
+		);
+		assert!(
+			said.stdout.starts_with(&format!(
+				"1 of 3 units read{SEP}1 adaptation{SEP}1 of 1 identifier answered{SEP}stopped at unit 713, 1 not read\n\n"
+			)),
+			"{}",
+			said.stdout
+		);
+		assert!(sent_to(&car, THIRD).is_empty(), "the third unit was asked: {:02X?}", sent_to(&car, THIRD));
+	}
+
+	/// The same before anything has been read: passed over with a line that says so, and
+	/// counted in the summary; the run goes on.
+	#[tokio::test]
+	async fn all_passes_over_a_unit_that_does_not_answer_before_any_was_read() {
+		let (car, data) = three_units();
+		car.0.lock().unwrap().records.retain(|(u, _), _| *u != UNIT);
 		let capture = Capture::start(0);
 		all(car.clone(), &data, Duration::ZERO).await.unwrap();
 		let said = capture.finish();
 		assert!(
 			said
 				.stderr
-				.contains("skipped unit 713: it did not answer\n  (use \"vagcan units\" to list this car's units)"),
+				.contains("skipped unit 09 (70E): it did not answer, before any unit was read\n  (use \"vagcan units\" to list this car's units)"),
 			"{}",
 			said.stderr
 		);
@@ -1191,6 +1297,56 @@ mod tests {
 			said.stdout
 		);
 		assert!(said.stdout.contains("third's"), "the run went on: {}", said.stdout);
+	}
+
+	/// A refusal part way through `--all` says to run `--all` again, not the one unit.
+	#[tokio::test]
+	async fn an_all_refusal_says_to_run_all_again() {
+		let (car, data) = three_units();
+		car.0.lock().unwrap().moves_on = Some(((UNIT, 0x0600), 20));
+		let capture = Capture::start(0);
+		let refused = all(car, &data, Duration::ZERO).await.err().expect("refused");
+		capture.finish();
+		assert!(
+			refused
+				.to_string()
+				.ends_with("help: stop the car and run `vagcan adaptations --all` again"),
+			"{refused}"
+		);
+	}
+
+	/// A unit whose variant is not settled is refused, and nothing beyond its
+	/// identification is asked of it.
+	#[tokio::test]
+	async fn a_unit_whose_variant_is_not_settled_is_refused_and_not_swept() {
+		struct Unsure;
+		impl Data for Unsure {
+			async fn rows(&self, _: Option<&str>, _: &UnitIdentity) -> Result<Vec<Adaptation>, Unsettled> {
+				Err(Unsettled {
+					version: Some("001001".into()),
+					candidates: 17,
+				})
+			}
+			fn reread(&self) -> Option<String> {
+				None
+			}
+			fn recorded(&self, _: Option<&str>, _: &[u16]) -> Vec<UnitIdentity> {
+				Vec::new()
+			}
+			fn count(&self, _: Option<&str>, _: &UnitIdentity) -> usize {
+				0
+			}
+		}
+		let car = car(Some(0));
+		let refused = single(car.clone(), unit(), &Unsure).await.err().expect("refused");
+		assert_eq!(
+			refused.to_string(),
+			"nothing describes the adaptations of unit 09 (70E)\n\
+			 \n\
+			 note: the variant of unit 09 (70E) is not settled (F1A2 001001 is none of the 17 variants of its family)\n\
+			 help: a newer ODIS project or VCDS installation may describe it: `vagcan setup <dir>`"
+		);
+		assert!(adaptation_reads(&car).is_empty(), "{:?}", adaptation_reads(&car));
 	}
 
 	#[tokio::test]

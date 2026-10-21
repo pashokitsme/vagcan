@@ -178,6 +178,8 @@ CREATE INDEX IF NOT EXISTS idx_long_coding_file   ON long_coding(file_id);
 --   file name, an ODIS project's `VWMCD_ProjectVersionInfo`.
 -- - `detail`: one line more, as `setup` wrote it.
 -- - `parsed_at`: when `setup` last read it, RFC 3339 in UTC.
+-- - `adaptations_at`: when `setup` last read an ODIS project's adaptation
+--   channels, even none; NULL for a project read before they were kept (schema 5).
 --
 -- `dir` is stored absolute. A relative one is a row an older vagcan wrote from a
 -- checkout; nothing resolves it against the working directory (`stored_key`).
@@ -190,6 +192,7 @@ CREATE TABLE IF NOT EXISTS source (
     version   TEXT,
     detail    TEXT,
     parsed_at TEXT,
+    adaptations_at TEXT,
     UNIQUE (kind, dir)
 );
 -- One fault code of one ECU variant, as an ODIS project describes it.
@@ -381,7 +384,7 @@ fn create_schema(conn: &Connection, db_path: &Path) -> Result<(), Error> {
 /// installation fills them.
 /// 4 (2026-10-21): `adaptation_channel` and `adaptation_level`, an ODIS project's
 /// adaptation channels, created empty; the next `vagcan setup` of the project fills them.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// The tables [`migrate`] creates in a cache that predates them. Nothing in them is
 /// derived from what the cache holds, so a missing one is made, empty, rather than the
@@ -389,7 +392,8 @@ const SCHEMA_VERSION: i64 = 4;
 /// the VCDS installation for the registry rows, the ODIS project for the adaptations.
 const MIGRATED_TABLES: &[&str] = &["registry_row", "registry_level", "adaptation_channel", "adaptation_level"];
 
-/// The columns [`migrate`] adds to a cache of the shape before [`SCHEMA_VERSION`] 1. A
+/// The columns [`migrate`] adds to a cache that predates them: the five of the shape before
+/// [`SCHEMA_VERSION`] 1, and `source.adaptations_at` of the shape before 5. A
 /// cache lacking only these is upgraded rather than refused.
 const MIGRATED: &[(&str, &str)] = &[
 	("label_file", "source_id"),
@@ -397,6 +401,7 @@ const MIGRATED: &[(&str, &str)] = &[
 	("source", "version"),
 	("source", "detail"),
 	("source", "parsed_at"),
+	("source", "adaptations_at"),
 ];
 
 /// Refuse a cache an older vagcan wrote: one holding some of this schema's tables but
@@ -587,7 +592,8 @@ fn merge_into(conn: &Connection, keep: i64, other: i64) -> rusqlite::Result<()> 
 		     root      = COALESCE(root,      (SELECT root      FROM source WHERE id = ?2)), \
 		     version   = COALESCE(version,   (SELECT version   FROM source WHERE id = ?2)), \
 		     detail    = COALESCE(detail,    (SELECT detail    FROM source WHERE id = ?2)), \
-		     parsed_at = COALESCE(parsed_at, (SELECT parsed_at FROM source WHERE id = ?2)) \
+		     parsed_at = COALESCE(parsed_at, (SELECT parsed_at FROM source WHERE id = ?2)), \
+		     adaptations_at = COALESCE(adaptations_at, (SELECT adaptations_at FROM source WHERE id = ?2)) \
 		 WHERE id = ?1",
 		params![keep, other],
 	)?;
@@ -1448,7 +1454,26 @@ pub fn put_all_adaptations<'a>(
 	project_dir: &str,
 	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Reading])>,
 ) -> Result<usize, Error> {
-	Ok(write_into(db_path, project_dir, ODIS, variants, Replace::Source, true, ADAPTATIONS)?.unwrap_or_default())
+	let landed = write_into(db_path, project_dir, ODIS, variants, Replace::Source, true, ADAPTATIONS)?.unwrap_or_default();
+	// Kept even when nothing landed: a project that describes no adaptations is read, not
+	// one read before they were kept ([`odis_sources_without_adaptations`]).
+	let conn = Connection::open(db_path)?;
+	if let Some(source) = held_source_id(&conn, ODIS, project_dir)? {
+		conn.execute(
+			"UPDATE source SET adaptations_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1",
+			params![source],
+		)?;
+	}
+	Ok(landed)
+}
+
+/// The ODIS sources whose adaptation channels were never read — read before they were
+/// kept — by directory. A source whose read found none is not among them.
+pub fn odis_sources_without_adaptations(db_path: &Path) -> Result<Vec<String>, Error> {
+	let conn = open_existing(db_path)?;
+	let mut stmt = conn.prepare("SELECT dir FROM source WHERE kind = ?1 AND adaptations_at IS NULL ORDER BY id")?;
+	let rows = stmt.query_map(params![ODIS], |row| row.get(0))?;
+	Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// Where one kind of channel is kept: its rows, its text-table states, and the column
@@ -3237,6 +3262,18 @@ mod tests {
 		drop(conn);
 		put_all_adaptations(&ws.db_path, "/x/SK37X", [("EV_BCM", &[banded(0x0550)][..])]).unwrap();
 		assert_eq!(odis_adaptations_of(&ws.db_path, "EV_BCM").unwrap().len(), 1);
+	}
+
+	/// A project read before adaptations were kept is told from one whose read found none:
+	/// the read is recorded even when no row lands.
+	#[test]
+	fn a_read_of_adaptations_is_recorded_even_when_none_land() {
+		let ws = TempWorkspace::new("adaptations-read");
+		put_readings(&ws.db_path, "/x/SK37X", "EV_BCM", &[banded(0x1000)]).unwrap();
+		assert_eq!(odis_sources_without_adaptations(&ws.db_path).unwrap(), ["/x/SK37X"], "not read yet");
+		put_all_adaptations(&ws.db_path, "/x/SK37X", std::iter::empty()).unwrap();
+		assert!(odis_sources_without_adaptations(&ws.db_path).unwrap().is_empty(), "read, none found");
+		assert!(adaptation_variants(&ws.db_path).unwrap().is_empty());
 	}
 
 	#[test]

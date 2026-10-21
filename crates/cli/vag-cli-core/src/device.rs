@@ -110,8 +110,10 @@ impl DeviceArg {
 	}
 }
 
-/// `requested`, or [`DEVICE_ENV`] when nothing was: the fallback every resolution takes.
-fn requested_or_env(requested: Option<&str>) -> Result<Option<String>> {
+/// `requested`, or [`DEVICE_ENV`] when nothing was: the fallback every resolution takes —
+/// [`resolve`] and [`resolve_cable_for`] here, and a caller that resolves through
+/// [`resolve_cable_for_with`] with its own listing.
+pub fn requested_or_env(requested: Option<&str>) -> Result<Option<String>> {
 	if let Some(requested) = requested {
 		return Ok(Some(requested.to_string()));
 	}
@@ -341,7 +343,9 @@ async fn scan_ble() -> Result<Vec<Board>> {
 	)
 }
 
-fn probe(path: &str) -> BoardAnswer {
+/// Ask the USB device at `path` whether it is the dash board, and on which image: the probe
+/// [`resolve_cable_for`] runs, for a caller that hands [`resolve_cable_for_with`] its own listing.
+pub fn probe(path: &str) -> BoardAnswer {
 	probe_board(path, ADAPTER_BAUD, BOARD_PROBE_WAIT)
 }
 
