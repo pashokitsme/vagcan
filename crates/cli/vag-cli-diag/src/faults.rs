@@ -26,6 +26,7 @@
 //! `0x14`, which the client's allowlist rejects.
 
 use anyhow::Result;
+use vag_cli_core::style::SEP;
 use vag_cli_core::table::Table;
 use vag_cli_core::{note, out, say};
 use vag_uds_can::UnitLink;
@@ -248,7 +249,7 @@ impl Namers {
 			(None, true) => vec!["VCDS".to_string()],
 			(None, false) => Vec::new(),
 		};
-		parts.join(" · ")
+		parts.join(SEP)
 	}
 
 	/// The lines that say where the names come from and how many there are, for `-v`.
@@ -638,7 +639,7 @@ pub fn guessed_line(rows: &[Row], by_family: &[(u16, bool)]) -> Option<String> {
 pub fn summary(stored: usize, failing: usize, units: usize, all: bool) -> String {
 	let what = if all { "listed" } else { "stored" };
 	format!(
-		"{stored} {what} · {failing} failing now · {units} {} read",
+		"{stored} {what}{SEP}{failing} failing now{SEP}{units} {} read",
 		crate::render::plural(units, "unit")
 	)
 }
@@ -854,7 +855,7 @@ pub async fn run<L: UnitLink>(
 					let parsed = FaultContext::parse(&record.data);
 					if let Some(parsed) = &parsed {
 						note!(
-							"{request:03X}  {}  {} · {}",
+							"{request:03X}  {}  {}{SEP}{}",
 							code_hex(dtc.code),
 							describe_status(dtc.status),
 							describe_age(parsed, now.as_ref())
@@ -901,7 +902,7 @@ pub async fn run<L: UnitLink>(
 			out!("{}\n", supported_table.render(width));
 		}
 		out!(
-			"{supported_total} {} supported · {read} {} read\n",
+			"{supported_total} {} supported{SEP}{read} {} read\n",
 			crate::render::plural(supported_total, "code"),
 			crate::render::plural(read, "unit")
 		);

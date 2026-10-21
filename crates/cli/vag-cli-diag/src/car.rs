@@ -14,6 +14,7 @@ use vag_uds_client::address::UnitAddress;
 use vag_uds_client::{AsyncUdsClient, UdsReadExt};
 
 use crate::{anomaly, labels, plan, progress, project, props, render, safety, scan};
+use vag_cli_core::style::facts;
 
 /// Parse how the user named a control unit — `01`, `17`, or a request id like
 /// `70E`. Which id block it lives on, and therefore which response rule
@@ -57,7 +58,10 @@ pub async fn info<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>) -> Result<
 		return Ok(());
 	}
 	out!("{}", render::render_info(engine.vin.as_deref(), &engine, &gearbox));
-	note!("next: `vagcan units` (the other units) · `faults` · `sensors` · `watch`");
+	note!(
+		"next: {}",
+		facts(["`vagcan units` (the other units)", "`faults`", "`sensors`", "`watch`"])
+	);
 	Ok(())
 }
 
@@ -368,13 +372,16 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 	}
 	out!("{}", table.render(vag_cli_core::table::terminal_width()));
 	out!(
-		"\n{} asked · {answered} answered · {} on the gateway's list{}\n",
-		asked.len(),
-		ids.len(),
-		match &label_files_dir {
-			Some(_) => format!(" · {resolved} named"),
-			None => String::new(),
-		}
+		"\n{}\n",
+		facts([
+			format!("{} asked", asked.len()),
+			format!("{answered} answered"),
+			format!("{} on the gateway's list", ids.len()),
+			match &label_files_dir {
+				Some(_) => format!("{resolved} named"),
+				None => String::new(),
+			},
+		])
 	);
 	if let Some(vin) = &vin {
 		note!("vin    {vin}");

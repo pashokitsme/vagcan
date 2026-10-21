@@ -139,7 +139,11 @@ impl DashState {
 		}
 		if let Some(b) = self.brightness {
 			let filled = usize::from(b) * 20 / 255;
-			println!("│ brightness  {b:>3}  [{}{}]", "█".repeat(filled), "·".repeat(20 - filled));
+			println!(
+				"│ brightness  {b:>3}  [{}{}]",
+				"█".repeat(filled),
+				vag_cli_core::style::DOT.to_string().repeat(20 - filled)
+			);
 		}
 		println!("│ storage     {}", self.storage());
 		// No key: an image from before plans had an id.

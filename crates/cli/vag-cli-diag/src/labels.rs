@@ -23,6 +23,7 @@ use vag_cli_core::verbosity::{self, NOTES, WIRE};
 use vag_data_labels::{LabelDb, Measurement, load_label_files};
 
 use crate::render::plural;
+use vag_cli_core::style::{SEP, facts};
 
 // The label directory locator is `core`'s now: the registry read keys its rows
 // by it, and that read runs from `watch` and `measure` as well as from `setup`.
@@ -366,15 +367,14 @@ fn render_summary(found: &Inventory) -> String {
 	let mut out = table.render(table::terminal_width());
 	out.push('\n');
 	let total = found.lbl + found.clb + found.rod;
-	let mut summary = format!(
-		"{total} {} · {} {} parsed",
-		plural(total, "file"),
-		found.parsed,
-		plural(found.parsed, "label file")
-	);
-	if found.read_errors > 0 {
-		summary.push_str(&format!(" · {} unreadable", found.read_errors));
-	}
+	let summary = facts([
+		format!("{total} {}", plural(total, "file")),
+		format!("{} {} parsed", found.parsed, plural(found.parsed, "label file")),
+		match found.read_errors {
+			0 => String::new(),
+			n => format!("{n} unreadable"),
+		},
+	]);
 	out.push_str(&summary);
 	out.push('\n');
 	out
@@ -423,7 +423,7 @@ fn render_block_lookup(db: &LabelDb, block: u16, field: Option<u8>) -> String {
 		out.push_str(&table.render(table::terminal_width()));
 		out.push('\n');
 	}
-	out.push_str(&format!("{} {} · {scope}\n", hits.len(), plural(hits.len(), "definition")));
+	out.push_str(&format!("{} {}{SEP}{scope}\n", hits.len(), plural(hits.len(), "definition")));
 	out
 }
 
@@ -576,7 +576,7 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Resu
 	vag_cli_core::out!("{}", table.render(table::terminal_width()));
 	vag_cli_core::outln!();
 	vag_cli_core::outln!(
-		"{open}/{total} {} open · {} {}",
+		"{open}/{total} {} open{SEP}{} {}",
 		plural(total, "section"),
 		hits.len(),
 		plural(hits.len(), "file")

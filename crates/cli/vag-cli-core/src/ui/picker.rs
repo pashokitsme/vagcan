@@ -777,7 +777,10 @@ fn screen(level: &Level<'_>, choices: &[Choice], at: usize, height: u16, width: 
 		});
 	}
 	if truncated {
-		lines.push(clip(&format!("  … {}-{} of {}", start + 1, start + count, choices.len()), width));
+		lines.push(clip(
+			&format!("  {} {}-{} of {}", crate::style::ELLIPSIS, start + 1, start + count, choices.len()),
+			width,
+		));
 	}
 	lines.push(clip(&keys(level), width));
 	lines
@@ -813,7 +816,11 @@ fn keys(level: &Level<'_>) -> String {
 /// the list up the screen.
 fn clip(line: &str, width: usize) -> String {
 	match line.chars().count() > width {
-		true => line.chars().take(width.saturating_sub(1)).collect::<String>() + "…",
+		true => line
+			.chars()
+			.take(width.saturating_sub(1))
+			.chain([crate::style::ELLIPSIS])
+			.collect::<String>(),
 		false => line.to_string(),
 	}
 }

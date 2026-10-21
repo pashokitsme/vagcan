@@ -232,6 +232,7 @@ pub fn transition_overlap(a: &Column, b: &Column, window: f64) -> f64 {
 }
 
 use crate::render::plural;
+use vag_cli_core::style::SEP;
 use vag_cli_core::table::{Table, terminal_width};
 
 /// How many of a stepped column's values the table shows before `…`.
@@ -260,7 +261,11 @@ pub fn render(columns: &[Column]) -> String {
 				continue;
 			};
 			let shown: Vec<String> = c.values.iter().take(SHOWN_VALUES).cloned().collect();
-			let more = if c.values.len() > shown.len() { " …" } else { "" };
+			let more = if c.values.len() > shown.len() {
+				format!(" {}", vag_cli_core::style::ELLIPSIS)
+			} else {
+				String::new()
+			};
 			table.row(vec![
 				c.name.clone(),
 				levels.to_string(),
@@ -275,7 +280,7 @@ pub fn render(columns: &[Column]) -> String {
 	let continuous = columns.iter().filter(|c| matches!(c.behaviour, Behaviour::Continuous { .. })).count();
 	let constant = columns.iter().filter(|c| c.behaviour == Behaviour::Constant).count();
 	out.push_str(&format!(
-		"{} {} · {} {} · {continuous} continuous · {constant} never moved\n",
+		"{} {}{SEP}{} {}{SEP}{continuous} continuous{SEP}{constant} never moved\n",
 		columns.len(),
 		plural(columns.len(), "column"),
 		candidates.len(),

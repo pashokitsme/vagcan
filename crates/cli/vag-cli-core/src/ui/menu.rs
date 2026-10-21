@@ -241,7 +241,11 @@ fn keys(len: usize) -> String {
 /// count, which walks the menu up the terminal a line at a time.
 fn clip(line: &str, width: usize) -> String {
 	match line.chars().count() > width {
-		true => line.chars().take(width.saturating_sub(1)).collect::<String>() + "…",
+		true => line
+			.chars()
+			.take(width.saturating_sub(1))
+			.chain([crate::style::ELLIPSIS])
+			.collect::<String>(),
 		false => line.to_string(),
 	}
 }

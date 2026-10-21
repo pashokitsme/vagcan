@@ -127,10 +127,13 @@ fn render(hits: &[(&str, &str, &str)], total: usize, limit: usize, tagged: bool)
 		out.push_str(&table.render(table::terminal_width()));
 		out.push('\n');
 	}
-	out.push_str(&format!("{} of {total} {} match", hits.len(), plural(total, "name")));
-	if hits.len() > shown {
-		out.push_str(&format!(" · first {shown} shown (--limit)"));
-	}
+	out.push_str(&vag_cli_core::style::facts([
+		format!("{} of {total} {} match", hits.len(), plural(total, "name")),
+		match hits.len() > shown {
+			true => format!("first {shown} shown (--limit)"),
+			false => String::new(),
+		},
+	]));
 	out.push('\n');
 	out
 }

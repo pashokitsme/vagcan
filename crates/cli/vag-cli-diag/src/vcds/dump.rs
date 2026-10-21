@@ -98,10 +98,13 @@ fn render_summary(s: &Stats) -> String {
 	out.push_str(&records.render(width));
 	out.push('\n');
 	let parsed = s.lbl_files + s.clb_files;
-	out.push_str(&format!("{parsed} {} parsed", plural(parsed, "label file")));
-	if s.read_errors > 0 {
-		out.push_str(&format!(" · {} unreadable", s.read_errors));
-	}
+	out.push_str(&vag_cli_core::style::facts([
+		format!("{parsed} {} parsed", plural(parsed, "label file")),
+		match s.read_errors {
+			0 => String::new(),
+			n => format!("{n} unreadable"),
+		},
+	]));
 	out.push('\n');
 	out
 }

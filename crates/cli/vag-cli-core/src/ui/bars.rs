@@ -36,7 +36,7 @@ use super::chart::{Origin, Series};
 /// occupy the same space and can be compared down the column.
 const FILL_MEASURED: char = '█';
 const FILL_COMPUTED: char = '▒';
-const EMPTY: char = '·';
+const EMPTY: char = crate::style::DOT;
 
 /// One quantity, as much of it as there has been, and how much there is now.
 #[derive(Clone, Debug, PartialEq)]

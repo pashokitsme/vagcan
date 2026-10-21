@@ -35,6 +35,7 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use super::messages;
 use super::session::{self, ARMING_HOLD_S};
 use super::types::Seconds;
+use vag_cli_core::style::SEP;
 use vag_cli_core::ui::bars;
 use vag_cli_core::ui::chart::{Origin, Series};
 
@@ -191,7 +192,7 @@ impl MarkRow {
 		match (self.seconds, self.from_launch) {
 			(Some(seconds), true) => format!("≈{seconds:.2} s"),
 			(Some(seconds), false) => format!("{seconds:.2} s"),
-			(None, _) => "·".to_string(),
+			(None, _) => vag_cli_core::style::DOT.to_string(),
 		}
 	}
 }
@@ -442,8 +443,8 @@ fn status_line(screen: &Screen, width: usize) -> String {
 	if let Some(warning) = &screen.warning {
 		return warning.clone();
 	}
-	let rate = screen.hz.map(|hz| format!("{hz:.1} Hz · ")).unwrap_or_default();
-	let file = screen.file.as_deref().map(|path| format!("  ·  writing {path}")).unwrap_or_default();
+	let rate = screen.hz.map(|hz| format!("{hz:.1} Hz{SEP}")).unwrap_or_default();
+	let file = screen.file.as_deref().map(|path| format!("{SEP}writing {path}")).unwrap_or_default();
 	let keys = HINTS.trim_start();
 	for line in [format!(" {rate}{keys}{file}"), format!(" {rate}{keys}"), format!(" {keys}")] {
 		if line.chars().count() <= width {

@@ -89,7 +89,11 @@ fn row(ts_us: u64, id: &str, dir: &str, len: &str, frames: &str, data: &str) -> 
 pub fn format_pdu(ts_us: u64, pdu: &SnifferPdu) -> String {
 	let mut body = crate::render::hex_spaced(&pdu.data);
 	if pdu.data.len() > SHOWN_BYTES {
-		body = format!("{} …", crate::render::hex_spaced(&pdu.data[..SHOWN_BYTES]));
+		body = format!(
+			"{} {}",
+			crate::render::hex_spaced(&pdu.data[..SHOWN_BYTES]),
+			vag_cli_core::style::ELLIPSIS
+		);
 	}
 	row(
 		ts_us,
@@ -424,7 +428,7 @@ fn summary(s: &Summary<'_>) -> (String, Vec<(u8, String)>) {
 		Drops::None => "drops none".to_string(),
 		Drops::Dropped(bits) => format!("drops 0x{bits:02X}"),
 	});
-	out.push_str(&parts.join(" · "));
+	out.push_str(&parts.join(vag_cli_core::style::SEP));
 	out.push('\n');
 
 	let mut said = Vec::new();

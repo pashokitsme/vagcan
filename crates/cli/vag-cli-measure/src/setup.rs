@@ -47,6 +47,7 @@ use crate::messages::{self, ChannelFound, MissingChannel};
 use crate::plan::{self, UnitIdentity};
 use crate::power::{self, Inertias, KMH_PER_MS};
 use crate::types::Seconds;
+use vag_cli_core::style::SEP;
 
 /// The speed a coastdown starts from by default, in km/h.
 ///
@@ -1292,7 +1293,7 @@ mod screens {
 		let units = identities.len();
 		Message {
 			text: format!(
-				"{channels} channel{} on {units} control unit{} · timing from {}",
+				"{channels} channel{} on {units} control unit{}{SEP}timing from {}",
 				if channels == 1 { "" } else { "s" },
 				if units == 1 { "" } else { "s" },
 				set.leading.source()

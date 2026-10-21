@@ -146,7 +146,7 @@ pub fn no_barometer() -> Message {
                 answer the next two questions from a forecast, or press Enter twice for the ISO 2533 \
                 standard atmosphere: 1013.25 hPa, 15 °C, 1.2250 kg/m³"
 			.to_string(),
-		detail: "the coastdown fit returns ½·ρ·CdA, so density enters the drag term linearly: a day 30 hPa \
+		detail: "the coastdown fit returns ½ρCdA, so density enters the drag term linearly: a day 30 hPa \
                  and 10 °C away from standard puts about 6 % on the aerodynamic half of the fit, and on \
                  every power figure computed from it; the car file records where the density came from"
 			.to_string(),
