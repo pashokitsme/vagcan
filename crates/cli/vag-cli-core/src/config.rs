@@ -66,12 +66,13 @@
 //! **Two language keys, on purpose.** `language` is the glossary's column and a
 //! closed set ([`Language`]): a value nobody wrote a column for is a setting
 //! that cannot be honoured. `[faults] language` is different in kind — it
-//! names which *source* to read fault text from, and a source declares its own
+//! names which of the run's source's texts to show (an ODIS project may hold several sources,
+//! one per language; a VCDS installation has one), and a source declares its own
 //! language as an ISO 639-2 code (`deu`, `eng`, `rus`). The setting takes that
 //! code or its ISO 639-1 short form (`de`, `en`, `ru`), mapped by
 //! [`language_code`]. Widening [`Language`] to carry those would make the
 //! glossary accept a column that does not exist; a second key keeps each
-//! honest. Unset, `faults` shows English wherever a source has it.
+//! honest. Unset, `faults` shows English wherever the run's source has it.
 //!
 //! **The document is kept as a `toml::Table`, not deserialized into a struct.**
 //! A struct would silently drop anything this version does not know about — a
@@ -248,10 +249,13 @@ pub fn language_complaint(document: &Document) -> Option<String> {
 /// Which source a run reads, as `[source] use` spells it, if the file says — checked by
 /// [`crate::source::asked`], which refuses a value that names no source.
 pub fn source(document: &Document) -> Option<String> {
-	Some(document.get("source")?.get("use")?.as_str()?.to_string())
+	let value = document.get("source")?.get("use")?;
+	// Not a string — `use = true` — is given back as written, so it is refused as naming no
+	// source rather than read as unset.
+	Some(value.as_str().map_or_else(|| value.to_string().trim().to_string(), str::to_string))
 }
 
-/// Which source's fault text `faults` prefers — `[faults] language`, as the
+/// Which language among the run's source's fault texts `faults` prefers — `[faults] language`, as the
 /// ISO 639-2 code a source declares ([`language_code`]: `en` and `eng` are both
 /// `eng`). `None` when unset, which is the ordinary state.
 ///

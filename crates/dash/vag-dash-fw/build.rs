@@ -57,13 +57,21 @@ fn plan() {
 		// "X: unit NN has no channel with the id …" — which is what the person needs, and
 		// the hints after it: which source the build read, and how to build from the other.
 		Err(e) => {
-			let hints: Vec<String> = vag_cli_core::report::hints(&e)
+			let mut hints: Vec<String> = vag_cli_core::report::hints(&e)
 				.into_iter()
 				.map(|hint| match hint {
 					vag_cli_core::report::Hint::Note(text) => format!("note: {text}"),
 					vag_cli_core::report::Hint::Help(text) => format!("help: {text}"),
 				})
 				.collect();
+			// A help that names `--source` is `vagcan`'s; this build takes no flag, so how to
+			// give it the same choice is said beside it.
+			if hints.iter().any(|h| h.contains("--source ")) {
+				hints.push(format!(
+					"help: for this build: `{}=<odis|vcds> cargo build`, or `[source] use` in ~/.vagcan/config.toml",
+					vag_cli_core::source::SOURCE_ENV
+				));
+			}
 			panic!("dash plan for VIN {vin}: {e:#}\n{}", hints.join("\n"))
 		}
 	};

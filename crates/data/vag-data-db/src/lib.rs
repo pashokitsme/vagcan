@@ -2987,8 +2987,16 @@ mod tests {
 		)
 		.unwrap();
 		put_readings(&ws.db_path, "/x/SK37X", "EV_Gearbox", &[reading(0x380A, "c", identity)]).unwrap();
-		assert_eq!(channel_counts_of(&ws.db_path, ODIS).unwrap(), (2, 3), "two variants, three channels between them");
-		assert_eq!(channel_counts_of(&ws.db_path, VCDS).unwrap(), (0, 0), "nothing of the other kind is counted");
+		assert_eq!(
+			channel_counts_of(&ws.db_path, ODIS).unwrap(),
+			(2, 3),
+			"two variants, three channels between them"
+		);
+		assert_eq!(
+			channel_counts_of(&ws.db_path, VCDS).unwrap(),
+			(0, 0),
+			"nothing of the other kind is counted"
+		);
 	}
 
 	#[test]
@@ -3027,7 +3035,10 @@ mod tests {
 			)],
 		)
 		.unwrap();
-		assert_eq!(text_ids_of(&ws.db_path, ODIS).unwrap(), [("IDE90001".to_string(), "the odis name".to_string())]);
+		assert_eq!(
+			text_ids_of(&ws.db_path, ODIS).unwrap(),
+			[("IDE90001".to_string(), "the odis name".to_string())]
+		);
 		assert_eq!(
 			text_ids_of(&ws.db_path, VCDS).unwrap(),
 			[

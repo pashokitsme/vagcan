@@ -470,7 +470,12 @@ fn known_text_ids() -> Option<std::collections::BTreeSet<String>> {
 pub(crate) fn known_text_ids_in(run: Option<&crate::source::Run>) -> Option<std::collections::BTreeSet<String>> {
 	let mut known = std::collections::BTreeSet::new();
 	if let Some(run) = run.filter(|run| run.cache().is_file()) {
-		known.extend(vag_data_db::text_ids_of(&run.cache(), run.source.kind()).ok()?.into_iter().map(|(id, _)| id));
+		known.extend(
+			vag_data_db::text_ids_of(&run.cache(), run.source.kind())
+				.ok()?
+				.into_iter()
+				.map(|(id, _)| id),
+		);
 	}
 	Some(known)
 }

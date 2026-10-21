@@ -90,6 +90,14 @@ impl Source {
 		}
 	}
 
+	/// What `setup` is given for one: `<ODIS project>`, `<VCDS installation>`.
+	pub fn placeholder(self) -> &'static str {
+		match self {
+			Source::Odis => "<ODIS project>",
+			Source::Vcds => "<VCDS installation>",
+		}
+	}
+
 	/// The other one.
 	pub fn other(self) -> Source {
 		match self {
@@ -172,36 +180,69 @@ pub fn asked_in(flag: Option<Source>, env: Option<&str>, configured: Option<&str
 }
 
 /// Which sources are set up for this run: the project holds an ODIS source, the VCDS
-/// store an installation. A cache that will not answer is said once and counts as none.
+/// store an installation. A store whose cache will not answer is none of them.
 pub fn held(stores: &Stores) -> Vec<Source> {
-	let mut out = Vec::new();
-	if stores
-		.project
-		.as_ref()
-		.is_some_and(|p| holds(p, Source::Odis, "it is read as holding no ODIS source"))
-	{
-		out.push(Source::Odis);
-	}
-	if holds(&stores.vcds, Source::Vcds, "it is read as holding no VCDS installation") {
-		out.push(Source::Vcds);
-	}
-	out
+	survey(stores).held
 }
 
-fn holds(store: &Project, source: Source, instead: &str) -> bool {
-	match crate::project::has_source(store, source.kind()) {
-		Ok(held) => held,
-		Err(e) => {
-			crate::project::say_unreadable(store, &e, instead);
-			false
+/// What the stores hold, and which of them would not say.
+#[derive(Debug, Default)]
+pub struct Survey {
+	/// The sources set up.
+	pub held: Vec<Source>,
+	/// A store whose cache did not answer — an older vagcan's, or one a running `setup`
+	/// holds — with what it is called and why: `(source, "the ODIS project SK37X", why)`.
+	pub unreadable: Vec<(Source, String, String)>,
+}
+
+/// [`held`], with the stores that did not answer kept apart rather than counted as none.
+pub fn survey(stores: &Stores) -> Survey {
+	let mut out = Survey::default();
+	let stores_of = [(Source::Odis, stores.project.as_ref()), (Source::Vcds, Some(&stores.vcds))];
+	for (source, store) in stores_of {
+		let Some(store) = store else { continue };
+		match crate::project::has_source(store, source.kind()) {
+			Ok(true) => out.held.push(source),
+			Ok(false) => {}
+			Err(e) => {
+				let run = Run {
+					source,
+					store: store.clone(),
+				};
+				out.unreadable.push((source, run.describe(), format!("{e:#}")));
+			}
 		}
 	}
+	out
 }
 
 /// **The one decision**: the source this run reads, given its stores. `None` with neither
 /// set up and none asked for — the ordinary state of a machine `setup` has not run on.
 pub fn run_source(stores: &Stores) -> Result<Option<Source>> {
-	decide(asked()?, &held(stores))
+	decide_over(asked()?, &survey(stores))
+}
+
+/// [`decide`], refusing a store that did not answer where it would have been the one read:
+/// the source asked for, or the default's first choice. Read as holding nothing, it would
+/// hand the run to the other source — a mix of intent, said in one note at most.
+pub fn decide_over(asked: Option<Asked>, survey: &Survey) -> Result<Option<Source>> {
+	let order: Vec<Source> = match &asked {
+		Some(asked) => vec![asked.source],
+		None => Source::ALL.to_vec(),
+	};
+	for source in order {
+		if survey.held.contains(&source) {
+			break;
+		}
+		if let Some((_, what, why)) = survey.unreadable.iter().find(|(s, ..)| *s == source) {
+			return Err(
+				anyhow::anyhow!("{what} did not read: {why}")
+					.help(format!("read it again: `vagcan setup --refresh {}`", source.placeholder()))
+					.help(format!("or read {} for this run: `{}`", source.other().what(), source.other().flag())),
+			);
+		}
+	}
+	decide(asked, &survey.held)
 }
 
 /// The rule behind [`run_source`], with what was asked and what is set up passed in.
@@ -274,12 +315,15 @@ pub fn run(stores: &Stores) -> Result<Option<Run>> {
 	Ok(run_source(stores)?.and_then(|source| Run::of(stores, source)))
 }
 
-/// Refuse a source asked for and not set up, before a command opens anything. Nothing at all
-/// set up, or a project named wrongly, is the command's own to say, in its own words.
+/// Refuse what would make a run read the wrong source, before a command opens anything: a
+/// source asked for and not set up, a store that does not answer, and a project named that is
+/// not there — read without it, the run would quietly be a VCDS run. Nothing set up at all is
+/// the command's own to say, in `missing`'s words, so that it can offer `setup`.
 pub fn check() -> Result<()> {
 	match crate::project::stores() {
 		Ok(stores) => run_source(&stores).map(|_| ()),
-		Err(_) => Ok(()),
+		Err(e) if crate::report::find::<crate::missing::NoLabelData>(&e).is_some() => Ok(()),
+		Err(e) => Err(e),
 	}
 }
 
@@ -340,6 +384,40 @@ mod tests {
 		);
 		// Empty is unset, all the way down.
 		assert_eq!(source(asked_in(None, Some(" "), Some(""))), None);
+	}
+
+	#[test]
+	fn a_store_that_does_not_answer_is_refused_where_it_would_be_read_never_handed_to_the_other() {
+		let unreadable = |source: Source| Survey {
+			held: vec![source.other()],
+			unreadable: vec![(source, format!("the {source} store"), "file is not a database".into())],
+		};
+		// The default's first choice did not answer: an error, not a VCDS run.
+		let err = decide_over(None, &unreadable(Source::Odis)).unwrap_err();
+		assert_eq!(err.to_string(), "the ODIS store did not read: file is not a database");
+		let hints = crate::report::hints(&err);
+		assert_eq!(
+			hints,
+			[
+				crate::report::Hint::Help("read it again: `vagcan setup --refresh <ODIS project>`".into()),
+				crate::report::Hint::Help("or read a VCDS installation for this run: `--source vcds`".into()),
+			]
+		);
+		// Asked for by name: the same refusal, not "not set up".
+		assert!(decide_over(asked(Source::Odis), &unreadable(Source::Odis)).is_err());
+		// The other one asked for, or the default reaching a held source first: no matter.
+		assert_eq!(decide_over(asked(Source::Vcds), &unreadable(Source::Odis)).unwrap(), Some(Source::Vcds));
+		assert_eq!(decide_over(None, &unreadable(Source::Vcds)).unwrap(), Some(Source::Odis));
+	}
+
+	#[test]
+	fn a_setting_that_is_not_a_string_names_no_source() {
+		let doc: toml_edit::DocumentMut = "[source]\nuse = true\n".parse().unwrap();
+		let value = crate::config::source(&doc);
+		assert_eq!(value.as_deref(), Some("true"));
+		assert!(asked_in(None, None, value.as_deref()).is_err());
+		let unset: toml_edit::DocumentMut = "[faults]\nlanguage = \"de\"\n".parse().unwrap();
+		assert_eq!(crate::config::source(&unset), None);
 	}
 
 	#[test]

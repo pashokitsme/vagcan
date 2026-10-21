@@ -709,7 +709,11 @@ async fn run_with(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source
 		.collect();
 	let first = ready(if read_odis { Source::Odis } else { Source::Vcds })?;
 	let closing = Closing {
-		name: chosen.project.as_ref().filter(|_| read_odis).map_or(crate::project::VCDS_STORE, |p| p.id.as_str()),
+		name: chosen
+			.project
+			.as_ref()
+			.filter(|_| read_odis)
+			.map_or(crate::project::VCDS_STORE, |p| p.id.as_str()),
 		landing: chosen.landing,
 		scalings: first.scalings,
 		fault_labels: first.fault_labels,
@@ -1734,16 +1738,17 @@ struct Ready {
 /// The hint when the car commands read a source this run did not read: which, and the flag
 /// that reads the one just read.
 fn reads_instead(stores: &crate::project::Stores, read: &[vag_cli_core::source::Source]) -> Option<String> {
-	let run = vag_cli_core::source::run(stores).ok().flatten()?;
+	let just_read = read.first()?;
+	// A setting that will refuse the next command — `[source] use = "odis"` with no ODIS
+	// project — is said here, where it can be put right, not first at the car.
+	let run = match vag_cli_core::source::run(stores) {
+		Ok(run) => run?,
+		Err(e) => return Some(format!("car commands will refuse: {e}; `{}` reads this one", just_read.flag())),
+	};
 	if read.contains(&run.source) {
 		return None;
 	}
-	let just_read = read.first()?;
-	Some(format!(
-		"car commands read {}; `{}` reads this one",
-		run.describe(),
-		just_read.flag()
-	))
+	Some(format!("car commands read {}; `{}` reads this one", run.describe(), just_read.flag()))
 }
 
 /// One line of what `setup` says, at `level`, indentation and all.
@@ -1861,16 +1866,17 @@ fn tilde_in(text: &str) -> String {
 
 /// The close: one `Ready:` line, what the run came to, and the hint under it.
 fn closing_lines(steps: &[Step], closing: &Closing<'_>) -> Vec<Line> {
-	// With a second source read, each Ready line counts its own source's gaps.
-	let gaps = |of: &dyn Fn(&Step) -> bool| steps.iter().filter(|s| of(s) && s.state.gap()).count();
-	let ready_line = |gaps: usize, ready: Ready, whom: &str| {
+	let gaps = steps.iter().filter(|s| s.state.gap()).count();
+	// What one source holds, for whom: `fault text and scalings for SK37X`. A second source
+	// read in the same run is a second clause of the one result line — each said of itself.
+	let holds = |ready: Ready, whom: &str| {
 		let fault_text = if ready.fault_labels { "fault text" } else { "no fault text" };
 		let scalings = if ready.scalings { "scalings" } else { "no scalings" };
-		let ready = match gaps {
-			0 => "Ready".to_string(),
-			n => format!("Ready with {n} {}", plural(n, "gap")),
-		};
-		Line::at(0, format!("{ready}: {fault_text} and {scalings} for {whom}."))
+		format!("{fault_text} and {scalings} for {whom}")
+	};
+	let ready = match gaps {
+		0 => "Ready".to_string(),
+		n => format!("Ready with {n} {}", plural(n, "gap")),
 	};
 	let whom = match closing.name == crate::project::VCDS_STORE {
 		true => "every car".to_string(),
@@ -1880,13 +1886,11 @@ fn closing_lines(steps: &[Step], closing: &Closing<'_>) -> Vec<Line> {
 		scalings: closing.scalings,
 		fault_labels: closing.fault_labels,
 	};
-	let mut lines = match closing.also {
-		None => vec![ready_line(gaps(&|_| true), first, &whom)],
-		Some(also) => vec![
-			ready_line(gaps(&|s| s.source != vag_data_db::VCDS), first, &whom),
-			ready_line(gaps(&|s| s.source == vag_data_db::VCDS), also, "every car"),
-		],
+	let result = match closing.also {
+		None => holds(first, &whom),
+		Some(also) => format!("{}; {}", holds(first, &whom), holds(also, "every car")),
 	};
+	let mut lines = vec![Line::at(0, format!("{ready}: {result}."))];
 	let hint = |level: u8, text: &str| Line::at(level, format!("{STEP}({text})"));
 	if let Some(instead) = &closing.reads_instead {
 		lines.push(hint(0, instead));
