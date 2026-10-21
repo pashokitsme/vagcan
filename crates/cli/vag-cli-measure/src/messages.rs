@@ -29,6 +29,17 @@ pub struct Message {
 	pub detail: String,
 }
 
+impl Message {
+	/// The refusal as the error a run ends with: its first line the `error:`, each line after
+	/// it a `help:`.
+	pub fn into_error(&self) -> anyhow::Error {
+		use vag_cli_core::report::Advice as _;
+		let mut lines = self.text.lines().map(str::trim).filter(|l| !l.is_empty());
+		let err = anyhow::anyhow!("{}", lines.next().unwrap_or_default());
+		lines.fold(err, |err, line| err.help(line))
+	}
+}
+
 /// One channel the resolution could not find, and what it looked under: the
 /// text ids, then the names, in the order they were tried.
 pub struct MissingChannel {

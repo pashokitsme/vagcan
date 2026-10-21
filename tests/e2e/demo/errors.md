@@ -6,10 +6,10 @@ open a port.
 ```console
 $ vagcan info --device /dev/no-such-adapter
 ? failed
-Error: opening the adapter at /dev/no-such-adapter — run `vagcan devices` to list what is connected
+error: opening the adapter at /dev/no-such-adapter
+caused by: io error: No such file or directory
 
-Caused by:
-    io error: No such file or directory
+help: run `vagcan devices` to list what is connected
 
 $ vagcan sensors --unit 713
 ? success
@@ -19,8 +19,9 @@ check: ignition on · OBD-II pin 6 CAN-H, pin 14 CAN-L, pin 5 GND · adapter ter
 
 $ vagcan dev sim /dev/null
 ? failed
-Error: /dev/null is a device, not a profile: `dev sim` opens no port, it makes its own pseudo-terminal
+error: /dev/null is a device, not a profile
 
-help: vagcan dev sim <profile.toml>   (docs/virtual-car.md)
+note: `dev sim` opens no port, it makes its own pseudo-terminal
+help: give it a profile: `vagcan dev sim <profile.toml>` (docs/virtual-car.md)
 
 ```

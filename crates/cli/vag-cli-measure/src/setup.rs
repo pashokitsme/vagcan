@@ -883,13 +883,13 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 			io.note(screens::units_answered(&identities).trim_end());
 			let refusal = messages::missing_channels(&rows, &missing);
 			io.note(refusal.detail.trim_end());
-			bail!("{}", refusal.text);
+			return Err(refusal.into_error());
 		}
 	};
 	io.tell(&screens::channel_check(&set, &identities));
 	if let Some(refusal) = screens::coast_impossible(&set) {
 		io.note(&refusal.detail);
-		bail!("{}", refusal.text);
+		return Err(refusal.into_error());
 	}
 
 	// 3. The car file, and where it stands. A file for a different car is refused

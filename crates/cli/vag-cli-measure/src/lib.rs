@@ -1236,7 +1236,7 @@ fn refused(refusal: messages::Message) -> anyhow::Error {
 	if !refusal.detail.is_empty() {
 		vag_cli_core::verbosity::say(vag_cli_core::verbosity::NOTES, refusal.detail.trim_end());
 	}
-	anyhow::anyhow!("{}", refusal.text)
+	refusal.into_error()
 }
 
 /// The one line every run says before it starts:
@@ -3880,9 +3880,9 @@ mod tests {
 			.err()
 			.expect("nothing resolves on no units");
 		assert_eq!(
-			refused.to_string(),
-			"no speed, engine speed, gear, pedal channel in this car's catalogs\n\
-			 vagcan setup <ODIS project | VCDS installation> brings the channels; -v lists what was looked for"
+			vag_cli_core::report::render(&refused, 0, vag_cli_core::report::Colour::Never),
+			"error: no speed, engine speed, gear, pedal channel in this car's catalogs\n\n\
+			 help: vagcan setup <ODIS project | VCDS installation> brings the channels; -v lists what was looked for\n"
 		);
 	}
 

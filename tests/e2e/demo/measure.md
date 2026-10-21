@@ -7,7 +7,8 @@ so it stops before it opens the port and says what would bring them.
 $ vagcan measure
 ? 1
 note: adapter from VAGCAN_DEVICE=[PORT]
-Error: no gear channel in this car's catalogs
-vagcan setup <ODIS project | VCDS installation> brings the channels; -v lists what was looked for
+error: no gear channel in this car's catalogs
+
+help: vagcan setup <ODIS project | VCDS installation> brings the channels; -v lists what was looked for
 
 ```

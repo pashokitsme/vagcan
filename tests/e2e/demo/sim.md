@@ -97,8 +97,9 @@ value = "12 C0"
 $ vagcan dev sim --from recording.csv
 ? failed
 Write a profile from recording.csv
-Error: recording.csv is a recording, and a recording does not say which car
+error: recording.csv is a recording, and a recording does not say which car
 
-help: name it with --vin <VIN>, or give the car's units.json first
+help: name the car with `--vin <VIN>`
+help: give the car's units.json instead
 
 ```

@@ -134,9 +134,11 @@ fn env_device(value: Option<std::ffi::OsString>, is_char_device: impl Fn(&std::p
 	};
 	let path = value.to_string_lossy().into_owned();
 	if !is_char_device(std::path::Path::new(&path)) {
-		return Err(anyhow!("{DEVICE_ENV}={path} is not a serial device")
-			.help(format!("unset {DEVICE_ENV}"))
-			.help("or name the adapter with `--device <path>`"));
+		return Err(
+			anyhow!("{DEVICE_ENV}={path} is not a serial device")
+				.help(format!("unset {DEVICE_ENV}"))
+				.help("name the adapter instead: `--device <path>`"),
+		);
 	}
 	Ok(Some(path))
 }
