@@ -9,7 +9,7 @@ run, which has no fault text, shows the engine's code as its number.
 $ vagcan -v faults --unit 01
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
-names    ODIS SIM00-odis (eng)
+note: code names from ODIS SIM00-odis (eng)
 1 fault text for 1 variant from /nowhere/SIM00-odis (en)
 a stored code is a record that something happened once — not a diagnosis, and not necessarily a fault now; `failing` is failing now
 7E0  1 code listed, 1 confirmed
@@ -28,7 +28,8 @@ a stored code is a record that something happened once — not a diagnosis, and 
 $ vagcan -v --source vcds faults --unit 01
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
-names    none — the VCDS installation has no fault text
+note: the codes are not named: the VCDS installation has no fault text
+  (use "--source odis" to name them from an ODIS project)
 codes below are shown as numbers: the VCDS installation has no fault text
 note: looked in [HOME]/rod
 help: read one: `vagcan setup <VCDS installation>`
@@ -60,23 +61,21 @@ help: build from a VCDS installation instead: `vagcan --source vcds dev dash bui
 
 $ vagcan --source vcds dev dash build SIMVIN00000000002
 ? success
-vin        SIMVIN00000000002
-plan       2714d10679e8dd09
-pages      1
-channels   2 on 1 unit
-alarms     0
-plan.json  [HOME]/dash/SIMVIN00000000002/plan.json
-plan.rs    [HOME]/dash/SIMVIN00000000002/plan.rs
+plan 2714d10679e8dd09 · SIMVIN00000000002
+1 page · 2 channels on 1 unit · 0 alarms
+
+WRITTEN
+  ~/.vagcan/dash/SIMVIN00000000002/plan.json
+  ~/.vagcan/dash/SIMVIN00000000002/plan.rs
 
 $ VAGCAN_SOURCE=vcds vagcan dev dash build SIMVIN00000000002
 ? success
-vin        SIMVIN00000000002
-plan       2714d10679e8dd09
-pages      1
-channels   2 on 1 unit
-alarms     0
-plan.json  [HOME]/dash/SIMVIN00000000002/plan.json
-plan.rs    [HOME]/dash/SIMVIN00000000002/plan.rs
+plan 2714d10679e8dd09 · SIMVIN00000000002
+1 page · 2 channels on 1 unit · 0 alarms
+
+WRITTEN
+  ~/.vagcan/dash/SIMVIN00000000002/plan.json
+  ~/.vagcan/dash/SIMVIN00000000002/plan.rs
 
 $ VAGCAN_SOURCE=both vagcan faults
 ? failed
