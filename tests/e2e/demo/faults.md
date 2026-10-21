@@ -35,7 +35,7 @@ names    ODIS SIM00-odis (eng)
 2 fault texts for 2 variants from /nowhere/SIM00-odis (en)
 a stored code is a record that something happened once — not a diagnosis, and not necessarily a fault now; `failing` is failing now
 7E0  1 code listed, 1 confirmed
-7E0  freeze frames described by the ODIS project's EV_SimEngine_001
+7E0  freeze frames described by ODIS's EV_SimEngine_001
 7E0  000129  level 2
 7E0  000129  failed now, confirmed · 123456 km, 3×, 0 s ago, 0 km ago
 unit  id   name        code    dtc      status       km  count  last seen            src   text
