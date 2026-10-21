@@ -200,7 +200,10 @@ fn cars() -> Cars {
 	// as the ambiguity — the list is right either way, and so is "say which".
 	match project::current() {
 		Ok(project) => Cars::One(summarise(&project)),
-		Err(e) if ids.len() < 2 => Cars::Misnamed { ids, why: format!("{e:#}") },
+		Err(e) if ids.len() < 2 => Cars::Misnamed {
+			ids,
+			why: vag_cli_core::report::unlabelled(&e),
+		},
 		Err(_) => Cars::Ambiguous(ids),
 	}
 }
@@ -271,8 +274,9 @@ fn described(cache: &std::path::Path) -> Described {
 /// link goes with it: a cause gets one line however long it is.
 ///
 /// [`Cars::Misnamed`] deliberately does not come through here. Its `why` is not
-/// a cause hung off a state line but `project::current`'s whole message, printed
-/// under "Next:" as the instruction it is, and its blank lines are structure.
+/// a cause hung off a state line but `project::current`'s whole report, hints and
+/// all ([`vag_cli_core::report::unlabelled`]), printed under "Next:" as the
+/// instruction it is, and its blank line is structure.
 fn cause(e: &anyhow::Error) -> String {
 	format!("{e:#}").split_whitespace().collect::<Vec<_>>().join(" ")
 }

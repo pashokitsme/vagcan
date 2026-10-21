@@ -43,6 +43,8 @@ use vag_cli_core::bus::{Bus, Class, Subscription, Unit};
 use crate::plan::Channel;
 use crate::ui::chart;
 use crate::ui::term;
+use vag_cli_core::marks::{SEP, facts};
+use vag_cli_core::report::Advice as _;
 
 /// How many lines the chart draws, however many are marked for it.
 ///
@@ -596,7 +598,7 @@ impl App {
 			0 => String::new(),
 			n => format!(" (and {n} more)"),
 		};
-		format!("  · {}{more}", self.ended_line(request, did, why))
+		format!("{SEP}{}{more}", self.ended_line(request, did, why))
 	}
 
 	fn value_and_age(&self, row: &DisplayRow) -> (String, String) {
@@ -1038,14 +1040,18 @@ fn draw_chart(frame: &mut Frame, page: usize, charted: &Charted, area: Rect) {
 /// last of them is the one that gets clipped — and the one that gets clipped is
 /// the one that says what is missing.
 fn chart_note(charted: &Charted) -> String {
-	let mut note = format!(" last {:.0}s", history::WINDOW_SECONDS);
-	if charted.over_cap > 0 {
-		note.push_str(&format!(" · {} more marked than it draws", charted.over_cap));
-	}
-	if charted.no_number > 0 {
-		note.push_str(&format!(" · {} marked with no proven number", charted.no_number));
-	}
-	note
+	let count = |n: usize, what: &str| match n {
+		0 => String::new(),
+		n => format!("{n} {what}"),
+	};
+	format!(
+		" {}",
+		facts([
+			format!("last {:.0}s", history::WINDOW_SECONDS),
+			count(charted.over_cap, "more marked than it draws"),
+			count(charted.no_number, "marked with no proven number"),
+		])
+	)
 }
 
 /// Draw whichever screen is up.
@@ -1098,7 +1104,7 @@ fn draw_live(frame: &mut Frame, app: &mut App) {
 	// much of the screen the table gets.
 	let charted = app.chart_shown.then(|| app.charted());
 	let rate = match app.live {
-		true => format!("{:.1} Hz · ", app.poll_rate()),
+		true => format!("{:.1} Hz{SEP}", app.poll_rate()),
 		false => String::new(),
 	};
 	let waiting = match app.waiting {
@@ -1114,7 +1120,7 @@ fn draw_live(frame: &mut Frame, app: &mut App) {
 	// at eighty columns the playback keys ran off the end of it, taking `[q]
 	// quit` with them.
 	let help = format!(
-		" {rate}{} of {} shown · [tab] unit  [c] configure  [g] chart  [s] lines  [,] settings  [q] quit{}{waiting}{ended}",
+		" {rate}{} of {} shown{SEP}[tab] unit  [c] configure  [g] chart  [s] lines  [,] settings  [q] quit{}{waiting}{ended}",
 		app.rows().len(),
 		app.channels.iter().filter(|c| c.selected).count(),
 		app.status
@@ -1413,7 +1419,7 @@ fn select_title(app: &App, shown: usize) -> String {
 	}
 	let hidden = app.hidden();
 	if hidden.total() > 0 {
-		let _ = write!(title, " · {} hidden", hidden.total());
+		let _ = write!(title, "{SEP}{} hidden", hidden.total());
 	}
 	title.push(' ');
 	title
@@ -1832,10 +1838,8 @@ fn replay_identities(vin: Option<&str>) -> Result<Vec<crate::plan::UnitIdentity>
 	if let Some(vin) = vin {
 		let record = crate::datadir::units_record(vin)?;
 		return crate::units::read_record(&record)?.ok_or_else(|| {
-			anyhow::anyhow!(
-				"no record of {vin}'s control units at {} — connect to the car once with `vagcan units --identify` or `vagcan watch`",
-				record.display()
-			)
+			anyhow::anyhow!("no record of {vin}'s control units at {}", record.display())
+				.help("connect to the car once with `vagcan units --identify` or `vagcan watch`")
 		});
 	}
 	let cars = match crate::units::recorded_cars() {
@@ -1906,11 +1910,13 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, vin: Option<&st
 	// A state column from before 2026-09-26 holds the whole answer as bare hex.
 	replay::settle_formats(&recording, &mut resolved, &channels);
 	if resolved.is_empty() {
-		anyhow::bail!(
-			"none of the {} columns in {recording_path} matched a channel this build knows. \n\
-             A recording is matched by measurement name or identifier; check that the \n\
-             catalogs in {catalogs} are the ones it was recorded with.",
-			recording.columns.len()
+		return Err(
+			anyhow::anyhow!(
+				"none of the {} columns in {recording_path} matched a channel this build knows",
+				recording.columns.len()
+			)
+			.note("a recording is matched by measurement name or identifier")
+			.help(format!("check that the catalogs in {catalogs} are the ones it was recorded with")),
 		);
 	}
 	// Start with the channels that actually moved. A column that read the same
@@ -1994,7 +2000,7 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, vin: Option<&st
 			false => "  [←→] seek",
 		};
 		app.status = format!(
-			" · [space] pause{seek}  [+-] speed · {:.0}/{:.0}s ×{speed:.2}{}",
+			"{SEP}[space] pause{seek}  [+-] speed{SEP}{:.0}/{:.0}s ×{speed:.2}{}",
 			playhead,
 			duration,
 			if paused { " PAUSED" } else { "" }
@@ -2062,7 +2068,7 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, vin: Option<&st
 	drop(screen);
 	drop(notes_held);
 	vag_cli_core::outln!(
-		"replayed {recording_path} · {:.0} s · {} columns · {} changed",
+		"replayed {recording_path}{SEP}{:.0} s{SEP}{} columns{SEP}{} changed",
 		duration,
 		recording.columns.len(),
 		moved.len()
@@ -2601,7 +2607,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 				() = tokio::time::sleep(Duration::from_secs_f64((wake - app.clock).max(0.0))) => {}
 			}
 		}
-		vag_cli_core::say!("{rows} rows · {}", closing_line(app.readings, bus.secs() - watching_since));
+		vag_cli_core::say!("{rows} rows{SEP}{}", closing_line(app.readings, bus.secs() - watching_since));
 		return Ok(());
 	}
 
@@ -2680,7 +2686,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 /// over one span, rather than a total beside the footer's rate over its last two seconds.
 fn closing_line(readings: u64, secs: f64) -> String {
 	match secs > 0.0 {
-		true => format!("{readings} readings · {secs:.1} s · {:.1}/s", readings as f64 / secs),
+		true => format!("{readings} readings{SEP}{secs:.1} s{SEP}{:.1}/s", readings as f64 / secs),
 		false => format!("{readings} readings"),
 	}
 }

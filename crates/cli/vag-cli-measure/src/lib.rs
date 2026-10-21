@@ -56,6 +56,8 @@ pub mod view;
 
 use channels::Resolved;
 use types::{Seconds, Track};
+use vag_cli_core::marks::{SEP, facts};
+use vag_cli_core::report::Advice as _;
 use vag_cli_core::ui::{chart, term};
 
 /// The session file's format. Checked before anything else is read.
@@ -952,7 +954,10 @@ pub fn write_view(path: &str) -> Result<std::path::PathBuf> {
 				NOTES,
 				"a session cannot be regenerated, so one in another schema is left alone rather than half-read",
 			);
-			anyhow::bail!("{path} is schema {other} and this build reads schema {SCHEMA}\nopen it with a build that reads schema {other}")
+			return Err(
+				anyhow::anyhow!("{path} is schema {other}, and this build reads schema {SCHEMA}")
+					.help(format!("open it with a build that reads schema {other}")),
+			);
 		}
 		None => anyhow::bail!("{path} carries no `schema` field: not a session this tool wrote"),
 	}
@@ -967,7 +972,7 @@ pub fn write_view(path: &str) -> Result<std::path::PathBuf> {
 	say(
 		NOTES,
 		&format!(
-			"{} run{} · {fresh} re-derived from the samples by this build · {} kept as recorded",
+			"{} run{}{SEP}{fresh} re-derived from the samples by this build{SEP}{} kept as recorded",
 			reread.len(),
 			if reread.len() == 1 { "" } else { "s" },
 			reread.len() - fresh
@@ -1231,14 +1236,14 @@ fn refused(refusal: messages::Message) -> anyhow::Error {
 	if !refusal.detail.is_empty() {
 		vag_cli_core::verbosity::say(vag_cli_core::verbosity::NOTES, refusal.detail.trim_end());
 	}
-	anyhow::anyhow!("{}", refusal.text)
+	refusal.into_error()
 }
 
 /// The one line every run says before it starts:
 /// `9 channels on 3 control units · timing from 7E1:F40D · car file none`.
 fn start_line(channels: usize, units: usize, speed_source: &str, car_file: Option<&str>) -> String {
 	format!(
-		"{channels} channel{} on {units} control unit{} · timing from {speed_source} · car file {}",
+		"{channels} channel{} on {units} control unit{}{SEP}timing from {speed_source}{SEP}car file {}",
 		if channels == 1 { "" } else { "s" },
 		if units == 1 { "" } else { "s" },
 		car_file.unwrap_or("none")
@@ -1274,7 +1279,7 @@ fn car_note(car: Option<&carfile::CarFile>, vin: Option<&str>, full: bool) -> St
 			cda.at.as_deref().map(|at| format!(" {at}")).unwrap_or_default()
 		));
 	}
-	format!("car file  {}\n{mode}", described.join(" · "))
+	format!("car file  {}\n{mode}", facts(described))
 }
 
 /// What the units answered, so the reader of a refusal can see the check was
@@ -1874,10 +1879,13 @@ fn exit_lines(recorded: &[Recorded], session: &session::Session, written_to: Opt
 	if let Some(hz) = session.hz() {
 		let cycle = session
 			.cycle_median_s()
-			.map(|s| format!(" · median cycle {:.0} ms", s * 1000.0))
+			.map(|s| format!("median cycle {:.0} ms", s * 1000.0))
 			.unwrap_or_default();
-		let degraded = if session.degraded() { " · degraded" } else { "" };
-		out.push((Some(NOTES), format!("rate  {hz:.1} Hz{cycle}{degraded}")));
+		let degraded = if session.degraded() { "degraded" } else { "" };
+		out.push((
+			Some(NOTES),
+			format!("rate  {}", facts([format!("{hz:.1} Hz"), cycle, degraded.to_string()])),
+		));
 	}
 	out
 }
@@ -2265,7 +2273,7 @@ fn mark_rows(wanted: &[(u32, u32)], closed: &BTreeMap<(u32, u32), Seconds>) -> V
 fn setup_adapter(before: &device::DeviceArg, after: &device::DeviceArg) -> anyhow::Result<Option<String>> {
 	match (before.requested(), after.requested()) {
 		(Some(before), Some(after)) if before != after => {
-			anyhow::bail!("the adapter is named twice, `{before}` before `setup` and `{after}` after it — name it once")
+			Err(anyhow::anyhow!("the adapter is named twice, `{before}` before `setup` and `{after}` after it").help("name it once"))
 		}
 		(before, after) => Ok(after.or(before).map(str::to_owned)),
 	}
@@ -2276,7 +2284,7 @@ fn setup_adapter(before: &device::DeviceArg, after: &device::DeviceArg) -> anyho
 fn setup_rows<'a>(before: Option<&'a str>, after: Option<&'a str>) -> anyhow::Result<Option<&'a str>> {
 	match (before, after) {
 		(Some(before), Some(after)) if before != after => {
-			anyhow::bail!("the rows' directory is named twice, `{before}` before `setup` and `{after}` after it — name it once")
+			Err(anyhow::anyhow!("the rows' directory is named twice, `{before}` before `setup` and `{after}` after it").help("name it once"))
 		}
 		(before, after) => Ok(after.or(before)),
 	}
@@ -3872,9 +3880,9 @@ mod tests {
 			.err()
 			.expect("nothing resolves on no units");
 		assert_eq!(
-			refused.to_string(),
-			"no speed, engine speed, gear, pedal channel in this car's catalogs\n\
-			 vagcan setup <ODIS project | VCDS installation> brings the channels; -v lists what was looked for"
+			vag_cli_core::report::render(&refused, 0, vag_cli_core::report::Colour::Never),
+			"error: no speed, engine speed, gear, pedal channel in this car's catalogs\n\n\
+			 help: vagcan setup <ODIS project | VCDS installation> brings the channels; -v lists what was looked for\n"
 		);
 	}
 

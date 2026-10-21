@@ -17,6 +17,7 @@ use crossterm::terminal::{self, Clear, ClearType};
 use super::engine::Replay;
 use super::glass::{Canvas, braille, half_blocks};
 use crate::ui::term;
+use vag_cli_core::marks::SEP;
 use vag_dash_core::panel::{HEIGHT, WIDTH};
 
 /// What the panel leaves behind: the events of the log — the lines under the panel after
@@ -50,14 +51,14 @@ pub fn show(mut replay: Replay, notes: &[String], title: &str, speed: f64) -> Re
 		canvas.clear();
 		replay.draw(&mut canvas);
 		let status = format!(
-			" {title} · {:.1} / {:.1} s · ×{speed} · [q] quit",
+			" {title}{SEP}{:.1} / {:.1} s{SEP}×{speed}{SEP}[q] quit",
 			tick.t_ms as f64 / 1000.0,
 			end as f64 / 1000.0
 		);
 		paint(&mut out, &canvas, &log, &status)?;
 	}
 	if left.is_none() {
-		paint(&mut out, &canvas, &log, &format!(" {title} · end of the recording — any key to leave"))?;
+		paint(&mut out, &canvas, &log, &format!(" {title}{SEP}end of the recording — any key to leave"))?;
 		loop {
 			if let Event::Key(key) = event::read()?
 				&& key.kind == KeyEventKind::Press
@@ -126,7 +127,7 @@ fn paint(out: &mut impl Write, canvas: &Canvas, log: &[String], status: &str) ->
 	};
 	let inner = panel.first().map_or(0, |line| line.chars().count());
 	let status = match inner + 2 > columns {
-		true => format!("{status} · panel cut, needs {} columns", inner + 2),
+		true => format!("{status}{SEP}panel cut, needs {} columns", inner + 2),
 		false => status.to_string(),
 	};
 	let mut lines = vec![status, format!("┌{}┐", "─".repeat(inner))];

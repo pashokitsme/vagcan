@@ -26,6 +26,8 @@
 //! `0x14`, which the client's allowlist rejects.
 
 use anyhow::Result;
+use vag_cli_core::marks::SEP;
+use vag_cli_core::report::Advice as _;
 use vag_cli_core::table::Table;
 use vag_cli_core::{note, out, say};
 use vag_uds_can::UnitLink;
@@ -248,7 +250,7 @@ impl Namers {
 			(None, true) => vec!["VCDS".to_string()],
 			(None, false) => Vec::new(),
 		};
-		parts.join(" · ")
+		parts.join(SEP)
 	}
 
 	/// The lines that say where the names come from and how many there are, for `-v`.
@@ -369,10 +371,7 @@ fn without_vcds(project: &crate::project::Project, keys: &std::path::Path) -> bo
 /// are a typo, said as one before anything else.
 fn open_vcds(root: &std::path::Path, keys: &std::path::Path, given: bool, without_vcds: bool) -> Result<Option<crate::faultnames::Namer>> {
 	if given && !keys.is_file() {
-		anyhow::bail!(
-			"--iv-cache {}: no such file. Leave the flag out to use this project's rod-keys.json.",
-			keys.display()
-		);
+		return Err(anyhow::anyhow!("--iv-cache {}: no such file", keys.display()).help("leave the flag out to use this project's rod-keys.json"));
 	}
 	if !crate::faultnames::has_fault_labels(root) || (without_vcds && !given) {
 		return Ok(None);
@@ -638,7 +637,7 @@ pub fn guessed_line(rows: &[Row], by_family: &[(u16, bool)]) -> Option<String> {
 pub fn summary(stored: usize, failing: usize, units: usize, all: bool) -> String {
 	let what = if all { "listed" } else { "stored" };
 	format!(
-		"{stored} {what} · {failing} failing now · {units} {} read",
+		"{stored} {what}{SEP}{failing} failing now{SEP}{units} {} read",
 		crate::render::plural(units, "unit")
 	)
 }
@@ -682,10 +681,13 @@ pub async fn run<L: UnitLink>(
 		// An extended session is workshop mode; see `crate::safety`.
 		backend = match crate::safety::require_stationary(backend).await {
 			Ok(backend) => backend,
-			Err((_, why)) => anyhow::bail!(
-				"--extended refused: {why}. An extended diagnostic session can make a control unit stop \
-                 assisting the driver. Stop the car first."
-			),
+			Err((_, why)) => {
+				return Err(
+					anyhow::anyhow!("`--extended` refused: {why}")
+						.note("an extended diagnostic session can make a control unit stop assisting the driver")
+						.help("stop the car and run `vagcan faults --extended` again"),
+				);
+			}
 		};
 	}
 
@@ -854,7 +856,7 @@ pub async fn run<L: UnitLink>(
 					let parsed = FaultContext::parse(&record.data);
 					if let Some(parsed) = &parsed {
 						note!(
-							"{request:03X}  {}  {} · {}",
+							"{request:03X}  {}  {}{SEP}{}",
 							code_hex(dtc.code),
 							describe_status(dtc.status),
 							describe_age(parsed, now.as_ref())
@@ -901,7 +903,7 @@ pub async fn run<L: UnitLink>(
 			out!("{}\n", supported_table.render(width));
 		}
 		out!(
-			"{supported_total} {} supported · {read} {} read\n",
+			"{supported_total} {} supported{SEP}{read} {} read\n",
 			crate::render::plural(supported_total, "code"),
 			crate::render::plural(read, "unit")
 		);
@@ -957,7 +959,8 @@ mod tests {
 		// A project whose sources include VCDS, its keys deleted: that VCDS text is the
 		// project's own, and printing ODIS's in another language instead would be silent.
 		let refused = open_vcds(&base, &keys, false, false).err().expect("ODIS and VCDS, keys missing");
-		assert!(refused.to_string().contains("rod-keys.json"), "{refused}");
+		let refused = vag_cli_core::report::render(&refused, 0, vag_cli_core::report::Colour::Never);
+		assert!(refused.contains("rod-keys.json"), "{refused}");
 		// `--iv-cache` naming a file that is not there is a typo, said as one — whatever
 		// the project was set up from, and whether or not the pool has anything in it.
 		for (pool, odis_alone) in [(base.clone(), true), (base.clone(), false), (base.join("empty"), true)] {

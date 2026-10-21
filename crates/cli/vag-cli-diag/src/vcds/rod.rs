@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::render::plural;
+use vag_cli_core::marks::SEP;
 use vag_cli_core::table::{self, Table};
 use vag_cli_core::verbosity::{self, NOTES, WIRE};
 use vag_data_labels::rod::{IvCache, RodSection, RodStatus, Search, decode_rod_with};
@@ -177,7 +178,7 @@ fn render(path: &str, cache: &Path, sections: &[RodSection], keys: &[Key]) -> St
 	let open = sections.iter().filter(|s| s.text.is_some()).count();
 	let recovered = keys.iter().filter(|k| matches!(k, Key::Recovered(_))).count();
 	out.push_str(&format!(
-		"{open}/{} {} open · {recovered} {} recovered\n",
+		"{open}/{} {} open{SEP}{recovered} {} recovered\n",
 		sections.len(),
 		plural(sections.len(), "section"),
 		plural(recovered, "key")

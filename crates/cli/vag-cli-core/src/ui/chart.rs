@@ -397,7 +397,7 @@ fn key_line<'a>(lines: &[PlotLine], dropped: usize, page: (usize, usize)) -> Lin
 	let mut spans = vec![Span::raw(" ")];
 	for (n, line) in lines.iter().enumerate() {
 		if n > 0 {
-			spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
+			spans.push(Span::styled(crate::marks::SEP, Style::default().fg(Color::DarkGray)));
 		}
 		let mut text = String::new();
 		if line.dotted {
@@ -443,7 +443,7 @@ fn notes_line<'a>(plot: &Plot) -> Line<'a> {
 	}
 	match notes.is_empty() {
 		true => Line::default(),
-		false => Line::styled(format!(" {} ", notes.join(" · ")), Style::default().fg(Color::DarkGray)),
+		false => Line::styled(format!(" {} ", crate::marks::facts(notes)), Style::default().fg(Color::DarkGray)),
 	}
 }
 

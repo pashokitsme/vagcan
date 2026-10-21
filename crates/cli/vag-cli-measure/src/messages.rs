@@ -29,6 +29,17 @@ pub struct Message {
 	pub detail: String,
 }
 
+impl Message {
+	/// The refusal as the error a run ends with: its first line the `error:`, each line after
+	/// it a `help:`.
+	pub fn into_error(&self) -> anyhow::Error {
+		use vag_cli_core::report::Advice as _;
+		let mut lines = self.text.lines().map(str::trim).filter(|l| !l.is_empty());
+		let err = anyhow::anyhow!("{}", lines.next().unwrap_or_default());
+		lines.fold(err, |err, line| err.help(line))
+	}
+}
+
 /// One channel the resolution could not find, and what it looked under: the
 /// text ids, then the names, in the order they were tried.
 pub struct MissingChannel {
@@ -146,7 +157,7 @@ pub fn no_barometer() -> Message {
                 answer the next two questions from a forecast, or press Enter twice for the ISO 2533 \
                 standard atmosphere: 1013.25 hPa, 15 °C, 1.2250 kg/m³"
 			.to_string(),
-		detail: "the coastdown fit returns ½·ρ·CdA, so density enters the drag term linearly: a day 30 hPa \
+		detail: "the coastdown fit returns ½ρCdA, so density enters the drag term linearly: a day 30 hPa \
                  and 10 °C away from standard puts about 6 % on the aerodynamic half of the fit, and on \
                  every power figure computed from it; the car file records where the density came from"
 			.to_string(),

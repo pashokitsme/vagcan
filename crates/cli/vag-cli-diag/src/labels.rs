@@ -23,6 +23,7 @@ use vag_cli_core::verbosity::{self, NOTES, WIRE};
 use vag_data_labels::{LabelDb, Measurement, load_label_files};
 
 use crate::render::plural;
+use vag_cli_core::marks::{SEP, facts};
 
 // The label directory locator is `core`'s now: the registry read keys its rows
 // by it, and that read runs from `watch` and `measure` as well as from `setup`.
@@ -82,10 +83,13 @@ fn cache_is_current(cache: &Path, dir: &Path) -> bool {
 /// [`load_cached`], which is what a directory somebody *named* goes through.
 pub fn load_project(project: &crate::project::Project) -> anyhow::Result<LabelDb> {
 	let cache = project.cache();
-	anyhow::ensure!(
-		cache.is_file(),
-		crate::missing::NoLabelData::new(format!("The project `{}` has no label cache.", project.id)).looked_for(&cache)
-	);
+	if !cache.is_file() {
+		return Err(
+			crate::missing::NoLabelData::new(format!("the project `{}` has no label cache", project.id))
+				.looked_for(&cache)
+				.into_error(),
+		);
+	}
 	vag_data_db::load_db(&cache).map_err(|e| anyhow::anyhow!("reading {}: {e}", cache.display()))
 }
 
@@ -366,15 +370,14 @@ fn render_summary(found: &Inventory) -> String {
 	let mut out = table.render(table::terminal_width());
 	out.push('\n');
 	let total = found.lbl + found.clb + found.rod;
-	let mut summary = format!(
-		"{total} {} · {} {} parsed",
-		plural(total, "file"),
-		found.parsed,
-		plural(found.parsed, "label file")
-	);
-	if found.read_errors > 0 {
-		summary.push_str(&format!(" · {} unreadable", found.read_errors));
-	}
+	let summary = facts([
+		format!("{total} {}", plural(total, "file")),
+		format!("{} {} parsed", found.parsed, plural(found.parsed, "label file")),
+		match found.read_errors {
+			0 => String::new(),
+			n => format!("{n} unreadable"),
+		},
+	]);
 	out.push_str(&summary);
 	out.push('\n');
 	out
@@ -423,7 +426,7 @@ fn render_block_lookup(db: &LabelDb, block: u16, field: Option<u8>) -> String {
 		out.push_str(&table.render(table::terminal_width()));
 		out.push('\n');
 	}
-	out.push_str(&format!("{} {} · {scope}\n", hits.len(), plural(hits.len(), "definition")));
+	out.push_str(&format!("{} {}{SEP}{scope}\n", hits.len(), plural(hits.len(), "definition")));
 	out
 }
 
@@ -462,7 +465,7 @@ fn no_rod(dir: &Path, odx_name: &str) -> Vec<String> {
 	if is_uds_ev(dir) || holds_uds_ev {
 		return vec![missing];
 	}
-	vec![missing, "Fix: pass the VCDS install root, the directory that holds UDS_EV/".to_string()]
+	vec![missing, "  (pass the VCDS install root, the directory that holds UDS_EV/)".to_string()]
 }
 
 /// Resolve the label file a control unit names for itself.
@@ -576,7 +579,7 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Resu
 	vag_cli_core::out!("{}", table.render(table::terminal_width()));
 	vag_cli_core::outln!();
 	vag_cli_core::outln!(
-		"{open}/{total} {} open · {} {}",
+		"{open}/{total} {} open{SEP}{} {}",
 		plural(total, "section"),
 		hits.len(),
 		plural(hits.len(), "file")
@@ -729,7 +732,7 @@ mod tests {
 		};
 		assert!(!has_project_labels(&project));
 		let why = match load_project(&project) {
-			Err(e) => e.to_string(),
+			Err(e) => vag_cli_core::report::render(&e, 0, vag_cli_core::report::Colour::Never),
 			Ok(_) => panic!("a project with no cache loaded one"),
 		};
 		assert!(why.contains("vagcan setup"), "{why}");
@@ -806,7 +809,7 @@ mod tests {
 			no_rod(&root.join("Labels"), "EV_X"),
 			vec![
 				miss(&root.join("Labels")),
-				"Fix: pass the VCDS install root, the directory that holds UDS_EV/".to_string()
+				"  (pass the VCDS install root, the directory that holds UDS_EV/)".to_string()
 			]
 		);
 	}

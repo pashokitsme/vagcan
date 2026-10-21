@@ -471,7 +471,7 @@ impl CarFile {
 				if fitted {
 					bail!(
 						"`cda` says it was measured by a coastdown but does not record the air density it was \
-                         fitted at, and the fit returns ½·ρ·CdA"
+                         fitted at, and the fit returns ½ρCdA"
 					);
 				}
 			} else {

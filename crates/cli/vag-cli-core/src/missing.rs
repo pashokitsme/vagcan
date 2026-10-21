@@ -85,19 +85,22 @@ pub fn scalings_path() -> &'static str {
 /// `vag_cli_diag::rescue` asks before offering to fix it. Rendering it to a
 /// `String` at the call site would erase that and leave the dispatcher matching
 /// on prose.
+///
+/// A site reports it with [`NoLabelData::into_error`], which attaches the note and the
+/// `help:` lines; `vag_cli_core::report::find` still finds the type under them.
 #[derive(Debug)]
 pub struct NoLabelData {
-	/// What was wanted and by what, as one sentence ending in a full stop.
+	/// What was wanted and by what: an `error:` line, lower case, no full stop.
 	headline: String,
-	/// The preposition the reader needs — "Looked for" a file, "Looked in" a
+	/// The preposition the reader needs — "looked for" a file, "looked in" a
 	/// directory — and the path, when the site has one worth showing.
 	looked: Option<(&'static str, String)>,
 }
 
 impl NoLabelData {
-	/// `headline` is the one sentence only this call site can write: what is
-	/// absent, and what wanted it. It ends in a full stop and never in an
-	/// instruction — the instruction is the same for everybody and is added here.
+	/// `headline` is the one line only this call site can write: what is
+	/// absent, and what wanted it. Never an instruction — the instruction is the
+	/// same for everybody and is added here.
 	pub fn new(headline: impl Into<String>) -> NoLabelData {
 		NoLabelData {
 			headline: headline.into(),
@@ -108,37 +111,50 @@ impl NoLabelData {
 	/// A file that would have held it. "Looked **for**", because a reader who
 	/// sees a full path to a named file wants to know it was a file.
 	pub fn looked_for(mut self, path: &Path) -> NoLabelData {
-		self.looked = Some(("Looked for", path.display().to_string()));
+		self.looked = Some(("looked for", path.display().to_string()));
 		self
 	}
 
 	/// A directory that would have held it. "Looked **in**" for the same reason.
 	pub fn looked_in(mut self, path: &Path) -> NoLabelData {
-		self.looked = Some(("Looked in", path.display().to_string()));
+		self.looked = Some(("looked in", path.display().to_string()));
 		self
 	}
-}
 
-impl std::fmt::Display for NoLabelData {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		writeln!(f, "{}", self.headline)?;
-		if let Some((preposition, path)) = &self.looked {
-			writeln!(f, "{preposition}: {path}")?;
+	/// Where it looked, as a `note:` line's text.
+	fn looked(&self) -> Option<String> {
+		self.looked.as_ref().map(|(preposition, path)| format!("{preposition} {path}"))
+	}
+
+	/// The error a command fails with: this, the place it looked as a note, and [`HELP`].
+	pub fn into_error(self) -> anyhow::Error {
+		use crate::report::Advice as _;
+		let looked = self.looked();
+		let mut err = anyhow::Error::new(self);
+		if let Some(looked) = looked {
+			err = err.note(looked);
 		}
-		// The fix. One copy, and the only copy — a second one anywhere is the
-		// bug this type exists to have already fixed. What `setup` does and what to
-		// keep afterwards is `vagcan setup --help`'s.
-		write!(f, "{FIX}")
+		HELP.iter().fold(err, |err, help| err.help(help))
 	}
 }
 
-/// What to type when the label data is not here: the second line of every
-/// [`NoLabelData`].
-pub const FIX: &str = "Fix: `vagcan setup <ODIS project folder | VCDS installation>` — offline; with no path it asks which \
-                       and can fetch VCDS (`vagcan setup --help`)";
+/// The headline alone: the rest is hints, attached by [`NoLabelData::into_error`].
+impl std::fmt::Display for NoLabelData {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(&self.headline)
+	}
+}
 
-/// Nothing to add — the whole message is [`Display`](std::fmt::Display). The
-/// impl exists so the type reaches an `anyhow::Error` intact; see the type docs.
+/// What to type when the label data is not here: the `help:` lines of every
+/// [`NoLabelData`]. One copy, and the only copy — a second one anywhere is the bug
+/// this type exists to have already fixed. What `setup` does and what to keep
+/// afterwards is `vagcan setup --help`'s.
+pub const HELP: [&str; 2] = [
+	"run `vagcan setup <ODIS project folder | VCDS installation>` (offline)",
+	"with no path, `vagcan setup` asks which and can fetch VCDS; see `vagcan setup --help`",
+];
+
+/// The impl exists so the type reaches an `anyhow::Error` intact; see the type docs.
 impl std::error::Error for NoLabelData {}
 
 /// Something `vagcan setup` makes, and this machine has not got.
@@ -154,7 +170,7 @@ impl std::error::Error for NoLabelData {}
 /// Returns the [`NoLabelData`] rather than its text, so that a `bail!` of it
 /// stays recognisable to the offer that can fix it. It still prints itself.
 pub fn no_label_data(what: &str, needed_for: &str, path: &Path) -> NoLabelData {
-	NoLabelData::new(format!("{what} are not on this machine, and {needed_for} needs them.")).looked_for(path)
+	NoLabelData::new(format!("{what} are not on this machine, and {needed_for} needs them")).looked_for(path)
 }
 
 /// The label shortage, met where the codes are about to be printed anyway.
@@ -169,9 +185,18 @@ pub fn no_label_data(what: &str, needed_for: &str, path: &Path) -> NoLabelData {
 /// back as an error would offer to run `setup` in the middle of a fault read
 /// that is going perfectly well.
 pub fn no_fault_labels(looked_in: &Path) -> String {
-	NoLabelData::new("Codes below are shown as numbers: no fault-name labels on this machine.")
-		.looked_in(looked_in)
-		.to_string()
+	let shortage = NoLabelData::new("codes below are shown as numbers: no fault-name labels on this machine").looked_in(looked_in);
+	let mut out = shortage.to_string();
+	for line in shortage
+		.looked()
+		.map(|l| format!("note: {l}"))
+		.into_iter()
+		.chain(HELP.iter().map(|h| format!("help: {h}")))
+	{
+		out.push('\n');
+		out.push_str(&line);
+	}
+	out
 }
 
 /// No scalings for the car in front of the tool: no row proven on a car, and
@@ -245,12 +270,18 @@ mod tests {
 	/// each says what is missing, and ends somewhere to go.
 	#[test]
 	fn the_label_shortage_names_setup_and_where_the_data_comes_from() {
-		let m = no_label_data("The measurement names", "`vagcan dev vcds names`", Path::new("/x/n.json")).to_string();
-		// What failed, where it looked, what to type: three lines, the rest in
-		// `vagcan setup --help`.
+		let err = no_label_data("the measurement names", "`vagcan dev vcds names`", Path::new("/x/n.json")).into_error();
+		let m = crate::report::render(&err, 0, crate::report::Colour::Never);
+		// What failed, where it looked, what to type; the rest in `vagcan setup --help`.
 		assert_eq!(
 			m,
-			format!("The measurement names are not on this machine, and `vagcan dev vcds names` needs them.\nLooked for: /x/n.json\n{FIX}")
+			format!(
+				"error: the measurement names are not on this machine, and `vagcan dev vcds names` needs them\n\n\
+				 note: looked for /x/n.json\n\
+				 help: {}\n\
+				 help: {}\n",
+				HELP[0], HELP[1]
+			)
 		);
 		assert!(m.contains("vagcan setup <ODIS project folder | VCDS installation>"), "{m}");
 		assert!(m.contains("can fetch VCDS"), "no VCDS install is a case, not an oversight:\n{m}");
@@ -286,7 +317,11 @@ mod tests {
 		// with the car after `setup`, and a project short of label data needs
 		// `setup` to have run at all. So only the scalings shortage gives the
 		// setup-then-the-car path.
-		let label = no_label_data("The names", "this", Path::new("/n")).to_string();
+		let label = crate::report::render(
+			&no_label_data("the names", "this", Path::new("/n")).into_error(),
+			0,
+			crate::report::Colour::Never,
+		);
 		let catalog = no_catalog("This car", Path::new("/d"));
 		assert!(label.contains("vagcan setup <ODIS project folder"));
 		assert!(!label.contains(scalings_path()), "{label}");
@@ -351,11 +386,15 @@ mod tests {
 		assert!(no_catalog("x", Path::new("/d")).contains(scalings_path()));
 	}
 
-	/// The fix line, cut out of a rendered message so two of them can be
+	/// The `help:` lines, cut out of a rendered message so two of them can be
 	/// compared without the part that is meant to differ.
 	fn fix_only(message: &str) -> String {
-		let at = message.find("Fix: ").unwrap_or_else(|| panic!("no fix in:\n{message}"));
+		let at = message.find("help: ").unwrap_or_else(|| panic!("no help in:\n{message}"));
 		message[at..].to_string()
+	}
+
+	fn rendered(shortage: NoLabelData) -> String {
+		crate::report::render(&shortage.into_error(), 0, crate::report::Colour::Never)
 	}
 
 	#[test]
@@ -365,17 +404,11 @@ mod tests {
 		// half that tells the reader what to do is one string, so it cannot go
 		// stale in one place and stay current in another.
 		let sites = [
-			no_label_data("The measurement names", "`vagcan dev vcds names`", Path::new("/n.json")).to_string(),
-			no_fault_labels(Path::new("/rod")),
-			NoLabelData::new("No project has been set up yet.")
-				.looked_in(Path::new("/data"))
-				.to_string(),
-			NoLabelData::new("The project `SK37X` has no label cache.")
-				.looked_for(Path::new("/c.sqlite"))
-				.to_string(),
-			NoLabelData::new("There is no label cache to count.")
-				.looked_for(Path::new("/c.sqlite"))
-				.to_string(),
+			rendered(no_label_data("the measurement names", "`vagcan dev vcds names`", Path::new("/n.json"))),
+			format!("{}\n", no_fault_labels(Path::new("/rod"))),
+			rendered(NoLabelData::new("no project has been set up").looked_in(Path::new("/data"))),
+			rendered(NoLabelData::new("the project `SK37X` has no label cache").looked_for(Path::new("/c.sqlite"))),
+			rendered(NoLabelData::new("there is no label cache to count").looked_for(Path::new("/c.sqlite"))),
 		];
 		let first = fix_only(&sites[0]);
 		for site in &sites[1..] {
@@ -389,8 +422,8 @@ mod tests {
 		let vcds = first.find("VCDS installation").expect(&first);
 		assert!(odis < vcds, "ODIS comes first:\n{first}");
 		assert!(first.contains("can fetch VCDS"), "{first}");
-		// One line: what to type, not how the tool works.
-		assert_eq!(first.lines().count(), 1, "{first}");
+		// What to type, not how the tool works: one line per action.
+		assert_eq!(first.lines().count(), HELP.len(), "{first}");
 		// Never the other shortage's fix. That is the mistake this module exists
 		// to prevent, and it must hold for the sites that build their own
 		// headline as much as for the two named ones.
@@ -404,17 +437,20 @@ mod tests {
 		// The two things a call site knows and this module cannot: what was
 		// wanted, and where it was not. Both must survive into the message, or
 		// five sites sharing one fix would have cost the reader the diagnosis.
-		let file = NoLabelData::new("The project `SK37X` has no label cache.").looked_for(Path::new("/x/cache.sqlite"));
-		assert!(file.to_string().starts_with("The project `SK37X` has no label cache.\n"), "{file}");
-		assert!(file.to_string().contains("Looked for: /x/cache.sqlite"), "{file}");
+		let file = rendered(NoLabelData::new("the project `SK37X` has no label cache").looked_for(Path::new("/x/cache.sqlite")));
+		assert!(file.starts_with("error: the project `SK37X` has no label cache\n"), "{file}");
+		assert!(file.contains("\nnote: looked for /x/cache.sqlite\n"), "{file}");
 		// A directory is looked *in*. Same message, and the preposition is the
 		// reader's only clue whether to expect a file at the end of the path.
-		let dir = NoLabelData::new("No project has been set up yet.").looked_in(Path::new("/x/data"));
-		assert!(dir.to_string().contains("Looked in: /x/data"), "{dir}");
+		let dir = rendered(NoLabelData::new("no project has been set up").looked_in(Path::new("/x/data")));
+		assert!(dir.contains("note: looked in /x/data"), "{dir}");
 		// And a site with no path worth showing simply has none, rather than an
 		// empty line where one would have been.
-		let bare = NoLabelData::new("No project has been set up yet.").to_string();
-		assert!(!bare.contains("Looked"), "{bare}");
-		assert_eq!(fix_only(&bare), fix_only(&dir.to_string()));
+		let bare = rendered(NoLabelData::new("no project has been set up"));
+		assert!(!bare.contains("looked"), "{bare}");
+		assert_eq!(fix_only(&bare), fix_only(&dir));
+		// The type is still what the label-data offer looks for, under its hints.
+		let err = NoLabelData::new("no project has been set up").into_error();
+		assert!(crate::report::find::<NoLabelData>(&err).is_some());
 	}
 }

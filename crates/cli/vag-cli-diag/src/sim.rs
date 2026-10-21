@@ -10,7 +10,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow};
+use vag_cli_core::report::Advice as _;
 use vag_uds_sim::profile::{DidSpec, DidTable, Hex, Id, Point, Profile, UnitSpec};
 
 use crate::watch::replay;
@@ -39,19 +40,22 @@ fn step(level: u8, line: &str) {
 /// sim is never pointed at a port, it makes its own.
 pub async fn serve(profile_path: &str, slcan: bool) -> Result<()> {
 	if slcan {
-		bail!("`dev sim` opens no adapter, so --slcan has nothing to apply to\n\nhelp: vagcan dev sim {profile_path}");
+		return Err(
+			anyhow!("`dev sim` opens no adapter, so `--slcan` has nothing to apply to").help(format!("drop it: `vagcan dev sim {profile_path}`")),
+		);
 	}
 	let path = Path::new(profile_path);
 	if is_device(path) {
-		bail!(
-			"{profile_path} is a device, not a profile: `dev sim` opens no port, it makes its own pseudo-terminal\n\n\
-             help: vagcan dev sim <profile.toml>   (docs/virtual-car.md)"
+		return Err(
+			anyhow!("{profile_path} is a device, not a profile")
+				.note("`dev sim` opens no port, it makes its own pseudo-terminal")
+				.help("give it a profile: `vagcan dev sim <profile.toml>` (docs/virtual-car.md)"),
 		);
 	}
 	let text = std::fs::read_to_string(path).with_context(|| format!("reading the profile {profile_path}"))?;
 	let car = Profile::parse(&text)
 		.and_then(|p| p.resolve())
-		.map_err(|e| anyhow::anyhow!("{profile_path}: {e}\n\nhelp: correct the profile (docs/virtual-car.md)"))?;
+		.map_err(|e| anyhow!("{profile_path}: {e}").help("correct the profile (docs/virtual-car.md)"))?;
 	let units = car.units.len();
 	let unit_ids = car
 		.units
@@ -128,7 +132,7 @@ fn kind_of(path: &str, text: &str) -> Result<Source> {
 	if serde_json::from_str::<serde_json::Value>(text).is_ok_and(|v| v.get("units").is_some() && v.get("vin").is_some()) {
 		return Ok(Source::Units);
 	}
-	bail!("{path}: neither a `watch --out` recording, a `dev sniff --out` capture nor a car's units.json")
+	anyhow::bail!("{path}: neither a `watch --out` recording, a `dev sniff --out` capture nor a car's units.json")
 }
 
 /// The profile `files` describe together, as TOML. A unit, an identifier or a fault one
@@ -196,8 +200,10 @@ pub fn profile_from(files: &[String], vin: Option<&str>, catalogs: impl Fn() -> 
 			}
 			Source::Recording => {
 				let Some(vin) = vin.as_deref() else {
-					bail!(
-						"{path} is a recording, and a recording does not say which car\n\nhelp: name it with --vin <VIN>, or give the car's units.json first"
+					return Err(
+						anyhow!("{path} is a recording, and a recording does not say which car")
+							.help("name the car with `--vin <VIN>`")
+							.help("give the car's units.json instead"),
 					);
 				};
 				recording(path, &text, vin, &catalogs()?)?

@@ -65,18 +65,18 @@ pub fn read_file(path: &Path, page: CodePage) -> Result<Table> {
 /// What a reading holds, in one line.
 pub fn summary(table: &Table) -> String {
 	let with_ids = table.texts.iter().filter(|t| t.tail.as_ref().and_then(Tail::odx_id).is_some()).count();
-	let mut line = format!(
-		"{} {} · {with_ids} with an IDE or MAS id",
-		table.texts.len(),
-		plural(table.texts.len(), "record")
-	);
-	if !table.malformed.is_empty() {
-		line.push_str(&format!(" · {} malformed, left out", table.malformed.len()));
-	}
-	if table.not_records > 0 {
-		line.push_str(&format!(" · {} {} not records", table.not_records, plural(table.not_records, "line")));
-	}
-	line
+	vag_cli_core::marks::facts([
+		format!("{} {}", table.texts.len(), plural(table.texts.len(), "record")),
+		format!("{with_ids} with an IDE or MAS id"),
+		match table.malformed.len() {
+			0 => String::new(),
+			n => format!("{n} malformed, left out"),
+		},
+		match table.not_records {
+			0 => String::new(),
+			n => format!("{n} {} not records", plural(n, "line")),
+		},
+	])
 }
 
 /// `names.json`'s text — `{"<6-digit text id>": "<name>"}`, the form `vagcan

@@ -48,6 +48,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+use crate::report::Advice as _;
+
 /// The most a project name may be. A directory name, not a sentence.
 const MAX_ID: usize = 64;
 
@@ -272,12 +274,7 @@ fn current_in(projects: &Path, flag: Option<&str>, env: Option<&str>, covering: 
 		let name = folder_name(id).with_context(|| format!("{whose} named {id:?}"))?;
 		let dir = projects.join(&name);
 		if !dir.is_dir() {
-			bail!(
-				"{whose} names the project {id:?}, and there is no {}.\n\n\
-				 {}",
-				dir.display(),
-				which_there_are(projects)
-			);
+			return Err(anyhow::anyhow!("{whose} names the project {id:?}, and there is no {}", dir.display()).note(which_there_are(projects)));
 		}
 		return Ok(Project { id: name, dir });
 	}
@@ -290,18 +287,21 @@ fn current_in(projects: &Path, flag: Option<&str>, env: Option<&str>, covering: 
 		// The `NoLabelData` itself, not its text: `vag_cli_diag::rescue`
 		// recognises the shortage by downcasting to it, and a rendered string
 		// would leave it matching on prose.
-		[] => bail!(crate::missing::NoLabelData::new("No project has been set up yet.").looked_in(projects)),
+		[] => Err(
+			crate::missing::NoLabelData::new("no project has been set up")
+				.looked_in(projects)
+				.into_error(),
+		),
 		// One project is not a choice, so it is not asked about.
 		[only] => Ok(Project {
 			id: only.clone(),
 			dir: projects.join(only),
 		}),
-		_ => bail!(
-			"more than one project is set up, and nothing says which this is about.\n\n\
-			 {}\n\n\
-			 Say which:  vagcan --project <id> …\n\
-			 or set it for good by running `vagcan setup` on that project's source again.",
-			which_there_are(projects)
+		_ => Err(
+			anyhow::anyhow!("more than one project is set up, and nothing says which")
+				.note(which_there_are(projects))
+				.help("say which with `vagcan --project <id> …`")
+				.help("or set it for good: run `vagcan setup` on that project's source again"),
 		),
 	}
 }
@@ -309,8 +309,8 @@ fn current_in(projects: &Path, flag: Option<&str>, env: Option<&str>, covering: 
 /// The projects there actually are, for a message about one there is not.
 fn which_there_are(projects: &Path) -> String {
 	match list_in(projects).as_slice() {
-		[] => format!("Nothing is set up under {}.", projects.display()),
-		found => format!("Set up here: {}", found.join(", ")),
+		[] => format!("nothing is set up under {}", projects.display()),
+		found => format!("set up here: {}", found.join(", ")),
 	}
 }
 
@@ -536,7 +536,7 @@ pub fn folder_name(id: &str) -> Result<String> {
 		bail!("a project name with nothing in it is not a name");
 	}
 	if id == "." || id == ".." {
-		bail!("{id:?} already names a folder — the one above, or the one it is in");
+		bail!("{id:?} already names a folder: the one above, or the one it is in");
 	}
 	if id.chars().count() > MAX_ID {
 		bail!(
@@ -545,10 +545,7 @@ pub fn folder_name(id: &str) -> Result<String> {
 		);
 	}
 	if let Some(bad) = id.chars().find(|c| !allowed(*c)) {
-		bail!(
-			"{id:?} cannot be a project name — {bad:?} is not a character a folder under \
-			 ~/.vagcan/data/ may hold. Letters, digits, `-`, `_` and `.` and nothing else."
-		);
+		bail!("{id:?} holds {bad:?}, and a project name is letters, digits, `-`, `_` and `.`");
 	}
 	Ok(id.to_owned())
 }
@@ -645,7 +642,8 @@ mod tests {
 	#[test]
 	fn nothing_set_up_says_to_run_setup_rather_than_naming_a_file() {
 		let here = temp();
-		let why = current_in(here.path(), None, None, None, None).unwrap_err().to_string();
+		let why = current_in(here.path(), None, None, None, None).unwrap_err();
+		let why = crate::report::render(&why, 0, crate::report::Colour::Never);
 		assert!(why.contains("vagcan setup"), "{why}");
 	}
 
@@ -661,7 +659,8 @@ mod tests {
 		let here = temp();
 		open_or_create_in(here.path(), "SK37X").unwrap();
 		open_or_create_in(here.path(), "default").unwrap();
-		let why = current_in(here.path(), None, None, None, None).unwrap_err().to_string();
+		let why = current_in(here.path(), None, None, None, None).unwrap_err();
+		let why = crate::report::render(&why, 0, crate::report::Colour::Never);
 		assert!(why.contains("SK37X") && why.contains("default"), "{why}");
 		assert!(why.contains("--project"), "{why}");
 	}
@@ -721,7 +720,11 @@ mod tests {
 		// typo somebody made rather than as a project they have not set up.
 		let here = temp();
 		open_or_create_in(here.path(), "AU21X").unwrap();
-		let why = current_in(here.path(), None, None, Some("SK37X"), None).unwrap_err().to_string();
+		let why = crate::report::render(
+			&current_in(here.path(), None, None, Some("SK37X"), None).unwrap_err(),
+			0,
+			crate::report::Colour::Never,
+		);
 		assert!(why.contains("covering the car that is connected"), "{why}");
 		assert!(why.contains("SK37X") && why.contains("AU21X"), "{why}");
 	}
@@ -732,7 +735,11 @@ mod tests {
 		// the car has no data — the second message would be true and useless.
 		let here = temp();
 		open_or_create_in(here.path(), "SK37X").unwrap();
-		let why = current_in(here.path(), Some("SK37Y"), None, None, None).unwrap_err().to_string();
+		let why = crate::report::render(
+			&current_in(here.path(), Some("SK37Y"), None, None, None).unwrap_err(),
+			0,
+			crate::report::Colour::Never,
+		);
 		assert!(why.contains("SK37Y"), "{why}");
 		assert!(why.contains("SK37X"), "it names the ones that are there: {why}");
 		assert!(!here.path().join("SK37Y").exists(), "it created the project it was complaining about");

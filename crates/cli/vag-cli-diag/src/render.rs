@@ -4,6 +4,7 @@
 //! Each renderer returns the data (stdout) apart from its notes (stderr, at a level):
 //! [`vag_cli_core::verbosity`] has the split.
 
+use vag_cli_core::marks::SEP;
 use vag_cli_core::table::{Table, pairs};
 use vag_data_labels::obd::Unconverted;
 use vag_uds_client::{EcuIdentity, Reading};
@@ -51,7 +52,15 @@ pub fn nothing_answered() -> Vec<(u8, String)> {
 		(0, "no answer from the car".to_string()),
 		(
 			0,
-			"check: ignition on · OBD-II pin 6 CAN-H, pin 14 CAN-L, pin 5 GND · adapter termination off · `vagcan devices`".to_string(),
+			format!(
+				"check: {}",
+				vag_cli_core::marks::facts([
+					"ignition on",
+					"OBD-II pin 6 CAN-H, pin 14 CAN-L, pin 5 GND",
+					"adapter termination off",
+					"`vagcan devices`"
+				])
+			),
 		),
 		(
 			1,
@@ -179,7 +188,7 @@ pub fn render_sensors(unit_label: &str, lines: &[SensorLine]) -> (String, Vec<St
 		notes.push("a row answered at another width than SAE J1979 defines is not that parameter — bytes only".to_string());
 	}
 	let mut out = table.render(vag_cli_core::table::terminal_width());
-	out.push_str(&format!("\n{converted} of {} converted · unit {unit_label}\n", lines.len()));
+	out.push_str(&format!("\n{converted} of {} converted{SEP}unit {unit_label}\n", lines.len()));
 	(out, notes)
 }
 

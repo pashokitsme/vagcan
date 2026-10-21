@@ -61,7 +61,7 @@ pub async fn run(vin: &str) -> Result<()> {
 		bail!(no_renderer(WASM_WHY));
 	}
 	let record = vag_cli_core::datadir::units_record(vin)?;
-	let units = vag_cli_core::units::read_record(&record)?.ok_or_else(|| anyhow::anyhow!("{}", dash::no_record(vin, &record)))?;
+	let units = vag_cli_core::units::read_record(&record)?.ok_or_else(|| dash::no_record(vin, &record))?;
 	// The car's own pages, when it has a `dash.toml`. One that does not parse is refused here
 	// with the build's own words: the editor would open on something other than the file.
 	let input_path = vag_cli_core::datadir::dash_dir(vin)?.join("dash.toml");

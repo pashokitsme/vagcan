@@ -73,7 +73,12 @@ impl Property {
 		if self.data.len() <= 12 {
 			return self.hex();
 		}
-		format!("{} … ({} bytes)", crate::render::hex_spaced(&self.data[..12]), self.data.len())
+		format!(
+			"{} {} ({} bytes)",
+			crate::render::hex_spaced(&self.data[..12]),
+			vag_cli_core::marks::ELLIPSIS,
+			self.data.len()
+		)
 	}
 }
 

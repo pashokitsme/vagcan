@@ -593,22 +593,16 @@ enum Dev {
 	},
 }
 
-/// How a command's error is reported.
+/// How a command's error is reported: cargo's `error:`/`help:` shape, by
+/// [`vag_cli_core::report`], the renderer `dashcfg` uses too.
 ///
-/// `Termination for Result<T, E: Debug>` prints exactly `Error: {err:?}` before
-/// exiting with a failure code; this is that half of it, by hand. **`main`
-/// returns an `ExitCode` rather than a `Result` for one reason**: the label-data
-/// offer has to put the shortage in front of the reader *before* it asks whether
-/// to fix it, and an error already printed there must not be printed again on
-/// the way out. Owning the printing is what keeps a `no` at that question
-/// costing the reader nothing they would not have seen anyway.
-///
-/// Written, not `eprintln!`ed: `eprintln!` panics when stderr will not take the bytes — a
-/// full disk under `2>log`, `2>/dev/full` — and the panic's own message then has nowhere to
-/// go either, which ended a run with exit 101 and nothing said.
+/// **`main` returns an `ExitCode` rather than a `Result` for one reason**: the label-data
+/// offer has to put the shortage in front of the reader *before* it asks whether to fix it,
+/// and an error already printed there must not be printed again on the way out. Owning the
+/// printing is what keeps a `no` at that question costing the reader nothing they would not
+/// have seen anyway.
 fn report(err: &anyhow::Error) {
-	use std::io::Write as _;
-	let _ = writeln!(std::io::stderr(), "Error: {err:?}");
+	vag_cli_core::report::report(err);
 }
 
 #[tokio::main]
@@ -1663,14 +1657,14 @@ mod tests {
 
 	#[test]
 	fn setup_help_says_what_lands_where_and_what_to_keep() {
-		// Said here since the shortage message is one line of what to type
-		// (`vag_cli_core::missing::FIX`), which points at this help.
+		// Said here since the shortage message is what to type
+		// (`vag_cli_core::missing::HELP`), which points at this help.
 		let help = help_of(&["setup"], true);
 		assert!(help.contains("~/.vagcan/data/<id>/"), "{help}");
 		assert!(help.contains("keep it in place"), "a VCDS installation is read again later:\n{help}");
 		assert!(help.contains("ODIS project can be deleted"), "{help}");
 		assert!(help.contains(vag_cli_core::missing::VCDS_DOWNLOAD), "{help}");
-		assert!(vag_cli_core::missing::FIX.contains("vagcan setup --help"));
+		assert!(vag_cli_core::missing::HELP.iter().any(|h| h.contains("vagcan setup --help")));
 	}
 
 	#[test]

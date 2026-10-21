@@ -124,8 +124,8 @@ pub fn fix(gaps: &[Gap], plan: &Plan) -> String {
 	};
 	let record = format!("vagcan watch --did \"{}\" --out FILE", watch_spec(&reads));
 	match gaps.iter().any(|g| g.kind == GapKind::Ambiguous) {
-		true => format!("Fix: give each ambiguous one a name of its own in ~/.vagcan/names.csv (`vagcan dev glossary`), then `{record}`"),
-		false => format!("Fix: `{record}`"),
+		true => format!("give each ambiguous one a name of its own in ~/.vagcan/names.csv (`vagcan dev glossary`), then `{record}`"),
+		false => format!("record them: `{record}`"),
 	}
 }
 
@@ -623,10 +623,10 @@ mod tests {
 		// What to type: the ambiguous one named apart, then both recorded, one group a unit.
 		assert_eq!(
 			fix(&matched.gaps, &plan),
-			"Fix: give each ambiguous one a name of its own in ~/.vagcan/names.csv (`vagcan dev glossary`), \
+			"give each ambiguous one a name of its own in ~/.vagcan/names.csv (`vagcan dev glossary`), \
 			 then `vagcan watch --did \"01:1001,1009\" --out FILE`"
 		);
-		assert_eq!(fix(&matched.gaps[1..], &plan), "Fix: `vagcan watch --did \"01:1009\" --out FILE`");
+		assert_eq!(fix(&matched.gaps[1..], &plan), "record them: `vagcan watch --did \"01:1009\" --out FILE`");
 		assert_eq!(
 			watch_spec(&[(ENGINE, 0x1001), (GEARBOX, 0x2001), (ENGINE, 0x1001), (ENGINE, 0x1002)]),
 			"01:1001,1002 02:2001"

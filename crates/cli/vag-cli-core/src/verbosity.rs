@@ -132,10 +132,8 @@ fn to_stdout(out: &mut impl std::io::Write, text: &str) -> std::io::Result<()> {
 /// Whether `err` is, anywhere in its chain, stdout's reader having gone (`BrokenPipe`): the
 /// normal end of `vagcan watch … | head`, said as nothing and ended with success.
 pub fn is_broken_pipe(err: &anyhow::Error) -> bool {
-	err.chain().any(|e| {
-		e.downcast_ref::<std::io::Error>()
-			.is_some_and(|e| e.kind() == std::io::ErrorKind::BrokenPipe)
-	})
+	// Through `report::any`: a hint attached to the write's error hides it from `chain()`.
+	crate::report::any::<std::io::Error>(err, &|e| e.kind() == std::io::ErrorKind::BrokenPipe)
 }
 
 /// Whether a write to stdout has failed — the reader of a pipe went away. A command that
