@@ -169,15 +169,72 @@ the bytes were kept.
 - **One source.** The VCDS path reads VCDS rows only (`freeze_frame_fields(…, VCDS, …)`);
   records `0x01`/`0x02` are the UDS framing's.
 
-## 5. Why ODIS is not the shipped source for the unit's own records
+## 5. ODIS as a source of its own (2026-10-21)
 
-`MUX_DTCExtenDataRecor` is an `MCD_DB_PARAMETER_MULTIPLEXER` whose cases are `DB_CASE` /
-`DB_DEFAULT_CASE` sub-objects — two of the ten types on the reader's permanent refusal list
-(`vag_data_labels::odis::loaders::REFUSED`; "nothing on this list comes off it"). The
-research above read their strings from hex dumps and never parsed one into code. ODIS would
-give the exact per-variant record → structure map, the camera variant's 12-byte record 0x02
-and the gearbox's case-start offset; whether a reader of these cases, for the
-extended-data multiplexer alone, may be written is the owner's decision, not this branch's.
+**Why `DB_CASE` was refused.** The project spec of 2026-08-07 (`21e63c58`) listed `DB_CASE`,
+`DB_CASES` and `DB_DEFAULT_CASE` among the types "never parsed, regardless of ease", as
+describing "adaptation/coding write cases"; the loader that enforced it (`23bb0b8b`) added the
+consequence that a multiplexed *measurement* is skipped rather than reported wrong. Neither
+was about freeze frames. The owner approved reading the extended-data multiplexer
+(2026-10-21), and that multiplexer alone is read: `loaders::extended::multiplexer` reads its
+cases inline, the dispatcher still refuses all three types, and a multiplexed measurement
+value inside a record is still a field of unknown width.
+
+**What is read.** The multiplexer by its short name through the variant's layers (own, then
+parents nearest first); its case start (the u32 after the type code: 1, or 0 on the two DQ200
+gearboxes, whose structures count the key's byte); the switch key (bit, byte, DOP — 5 bytes and
+a reference; the first reading assumed a sixth byte and failed on every object at byte 23);
+the cases, each two `DB_LIMIT`s and a structure; the default case. A case's limits are the
+record number — or, on the two LLPGen3 headlamp variants, the key's text
+(`"Standard DTC Information"`), turned into the number through the key's own text table. Each
+structure through the shipped structure, DOP and compu loaders; a field whose DOP is a
+structure (the 5-byte time stamp) is its fields at its offset. A record's length: the declared
+size, else where its last field ends, a field of unknown width allowed only where a known one
+follows it.
+
+**Which source.** A run reads the one `Extracted::run_source` names — ODIS when the project
+holds an ODIS source, else VCDS — and that source's rows alone (CLAUDE.md, 2026-10-21).
+
+**Census, all of the reference project's variants.** 717 variants: 524 resolve to an
+extended-data multiplexer, 193 to none, 0 errors. They reach 154 of the 171 multiplexer
+objects (the other 17 are overridden on every variant that inherits them). Of the 154:
+
+| | multiplexers |
+|---|---|
+| every field of every fixed record decodes (width and an integer scaling known) | **7** |
+| every field of the unit's own records (all but `0x01`/`0x02`) decodes | **72** |
+| at least one field that does not | 147 |
+
+694 fields do not decode in all. A scaling is kept only for an integer coded value (review of
+#53): a string, float or byte field is its bytes. That makes `Time Indication`, a byte field
+in record `0x02`, the most common (130; `faults` reads `0x02` by the protocol anyway), then
+`Freeze Frame Operation Minute Counter` (80), the climate units'
+`current/maximal/minimal_temperature` (29 each), `Parameter` (16) and `last_wakeup` (14 — a
+multiplexed measurement, still refused). Those show as bytes. Before the integer rule: 79
+multiplexers decoded every field, 528 fields did not. Records `0x01`/`0x02` by length: `0x01` 2 bytes on 154/154, `0x02` 10 bytes on
+153/154 and 12 on the camera variant — which the ODIS path now splits right.
+
+**The BCM answer, each source on its own** (`ffcheck`, the cache's VCDS rows for
+`EV_BCMMQB_017` against `Project::extended_records` of the same variant, never merged):
+
+| field (VCDS name / ODIS name) | VCDS | ODIS |
+|---|---|---|
+| priority, aging counter | 6, 184 | 6, 184 |
+| Terminal 15 status / signal terminal 15 | OFF | Off |
+| Terminal 50 status / signal terminal 50 | OFF | Off |
+| CAN-Bus_aktiv | On | On |
+| brake light switch HW, CAN | OFF, OFF | Off, Off |
+| light switch: OFF / LDS 0-Stellung | Not operated | not_actuated |
+| Position lamps / LDS-SL-Stellung | Not operated | not_actuated |
+| Automatic high beam assist / automatic_light_control | operated | actuated |
+| Low beams, parking light left, right | Not operated ×3 | not_actuated ×3 |
+| last_wakeup | `0A`, multiplexed, not decoded | width not known, not decoded |
+| Voltage / voltage measurement | 12.3 V | 12.3 V |
+| Outside temperature / Aussentemperatur (CAN) | 22.5 °C | 22.5 °C |
+
+Same split (`01 [2] 02 [10] 70 [5]`, the default case on both), same 15 fields in the same
+order; **13 of 13 fields both decode agree** in value, the wording each source's own; the 14th,
+`last_wakeup`, neither decodes. A cross-check only: `faults` reads one source per run.
 
 ## 6. Reproduction (scratch, not shipped)
 
@@ -188,4 +245,6 @@ extended-data multiplexer alone, may be written is the owner's decision, not thi
   loaders}` that loads a structure and its DOPs and prints the extent; fed the case
   structures a string pass over the multiplexer dumps lists.
 - `rfdump`: `registries::load(Section::FreezeFrame)` over `~/.vagcan/rod`, every row as TSV.
-- `ffcheck`: `freezeframe::split` + `lines` over §4's bytes and a copy of the cache.
+- `ffcheck`: `freezeframe::split` + `lines` over §4's bytes, once per source: a copy of the
+  cache for VCDS, `Project::extended_records` written to a scratch cache for ODIS.
+- `muxcensus`: `Project::extended_data` over every variant, grouped by multiplexer.

@@ -421,7 +421,7 @@ fn stats(db_path: &std::path::Path, named: bool) -> Result<()> {
 	}
 	let counts = vag_data_db::row_counts(db_path)?;
 	// The other registries' rows, by the section a unit selects them with.
-	let sections: Vec<(String, i64)> = vag_data_db::registry_row_counts(db_path)?
+	let sections: Vec<(String, i64)> = vag_data_db::registry_row_counts(db_path, vag_data_db::VCDS)?
 		.into_iter()
 		.map(|(section, n)| (format!("registry_row {section}"), i64::try_from(n).unwrap_or(i64::MAX)))
 		.collect();

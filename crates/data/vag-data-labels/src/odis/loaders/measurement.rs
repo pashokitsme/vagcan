@@ -111,6 +111,13 @@ impl DataType {
 	pub fn is_signed(self) -> bool {
 		matches!(self, DataType::Int32)
 	}
+
+	/// Whether the coded value is an integer, which is the only thing a scaling here turns
+	/// into a number. A string, a float or a byte field read as one would print its bytes
+	/// as a made-up integer (`41 42 43 44` as 1094861636).
+	pub fn is_integer(self) -> bool {
+		matches!(self, DataType::Int32 | DataType::Uint32)
+	}
 }
 
 /// `DB_DIAG_CODED_TYPE`: where a value sits in the response bytes.

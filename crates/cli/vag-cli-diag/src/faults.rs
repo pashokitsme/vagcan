@@ -691,12 +691,16 @@ pub async fn run<L: UnitLink>(
 	let requested = only.map(|spec| unit_list("--unit", spec)).transpose()?;
 	let keys = crate::datadir::or_default(iv_cache, || Ok(crate::project::current()?.rod_keys()))?;
 	let mut namers = Namers::open(&keys, iv_cache.is_some())?;
-	// The freeze-frame layouts `setup` stored from a VCDS install, looked up per unit by the
+	// The freeze-frame layouts `setup` stored from the run's source, looked up per unit by the
 	// same identifiers that name its codes — and by the car's project, which its VIN says.
 	let extracted = crate::extracted::current();
-	// Only when VCDS is the run's one source (`Extracted::run_source`): a project that holds an
-	// ODIS source is read from ODIS alone, and VCDS's rows never describe its records.
-	let freeze_known = extracted.run_source() == Some(vag_data_db::VCDS) && extracted.knows_freeze_frames();
+	// The run's one source (`Extracted::run_source`: ODIS when the project holds one, else
+	// VCDS), and the freeze-frame layouts of that source alone.
+	let freeze_source = extracted
+		.run_source()
+		.and_then(crate::freezeframe::Source::of_kind)
+		.filter(|source| extracted.knows_freeze_frames(source.kind()));
+	let freeze_known = freeze_source.is_some();
 
 	let mut backend = open().await?;
 	// One read, and only where a layout could be looked up by it: the project that picks the
@@ -876,13 +880,20 @@ pub async fn run<L: UnitLink>(
 				.map(|(odx, version)| namers.unit(odx, version));
 			// The unit's own variant's layout, or none: another variant's fields are not this
 			// unit's, and its bytes stay bytes.
-			let layout = match identity.as_ref().map(|(odx, version)| extracted.freeze_frames(Some(odx), Some(version))) {
-				Some(crate::extracted::FreezeLayout::Unit { variant, fields }) => {
-					note!("{request:03X}  freeze frames described by the VCDS rows of {variant}");
-					Some(crate::freezeframe::Layout::new(fields))
+			let found = match (identity.as_ref(), freeze_source) {
+				(Some((odx, version)), Some(source)) => Some((source, extracted.freeze_frames(source.kind(), Some(odx), Some(version)))),
+				_ => None,
+			};
+			let layout = match found {
+				Some((source, crate::extracted::FreezeLayout::Unit { variant, fields })) => {
+					note!("{request:03X}  freeze frames described by {} {variant}", source.name());
+					Some(crate::freezeframe::Layout::new(fields, source))
 				}
-				Some(crate::extracted::FreezeLayout::Another { variant }) => {
-					note!("{request:03X}  freeze frames: VCDS has rows for {variant} only, not this unit's variant");
+				Some((source, crate::extracted::FreezeLayout::Another { variant })) => {
+					note!(
+						"{request:03X}  freeze frames: no layout for this variant ({} {variant} is another variant)",
+						source.name()
+					);
 					None
 				}
 				_ => None,

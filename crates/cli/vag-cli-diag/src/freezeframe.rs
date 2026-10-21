@@ -4,17 +4,22 @@
 //! The answer is records back to back, each a number and its bytes, with no lengths
 //! ([`vag_uds_client::dtc::split_records`]). VW's protocol layer fixes records `0x01` and
 //! `0x02` for every unit (priority, occurrences; aging counter, mileage, time stamp —
-//! [`vag_uds_client::dtc::STANDARD_DTC_INFORMATION`]); the rest are the unit's own, and a
-//! VCDS install describes them per unit in `RF.rod [FFMUX]`, which `setup` stores in the
-//! cache ([`vag_data_db::FreezeField`]). What establishes that, with numbers, is
-//! `research/odis-dtc/freeze-frames.md`:
+//! [`vag_uds_client::dtc::STANDARD_DTC_INFORMATION`]); the rest are the unit's own.
 //!
-//! * a row's key is the record number — the reference project's ODIS multiplexers list the
-//!   same numbers for the same units (steering assist 113–125, both; engine 112–113, both),
-//!   and `999` is the multiplexer's default case;
-//! * a row's lead is 100 plus the record's length in 897 of `RF.rod`'s 1,028 records, and it
-//!   is used as one only where its fields end exactly there;
-//! * a type-11 row is a reserved field VCDS does not show.
+//! **Two sources, each complete on its own, never mixed** ([`Source`]; CLAUDE.md, "ODIS and
+//! VCDS are independent sources"). Both are stored by `setup` in the cache's `registry_row`
+//! ([`vag_data_db::FreezeField`]), each under its own source, and a layout is built from one
+//! kind of row alone:
+//!
+//! * **ODIS** — the variant's extended-data multiplexer
+//!   (`vag_data_labels::odis::Project::extended_records`): every case, the standard records
+//!   among them, with the length the project proves and each field's layout and scaling.
+//! * **VCDS** — `RF.rod [FFMUX]`: a row's key is the record number (`999` the default case),
+//!   its lead 100 plus the record's length in 897 of `RF.rod`'s 1,028 records — used only where
+//!   the fields end exactly there; a type-11 row is a reserved field VCDS does not show. VCDS
+//!   holds no rows for records `0x01`/`0x02`: those are the UDS framing's.
+//!
+//! What establishes it, with numbers: `research/odis-dtc/freeze-frames.md`.
 //!
 //! **Nothing is guessed.** A record no row describes, or one whose length is not proven,
 //! takes the rest of the answer and is shown as bytes; so is a field whose type has no
@@ -22,14 +27,6 @@
 //! that does not split on its description, or whose standard records fail the unit's own
 //! stamp, is shown as bytes after record `0x02` ([`Frame`]).
 //!
-//! **One source.** Every row read here is a VCDS install's; nothing of an ODIS project's
-//! fills a field, a length or a record of it (CLAUDE.md, "ODIS and VCDS are independent
-//! sources"). Records `0x01`/`0x02` are the UDS framing's, of neither source.
-//!
-//! The ODIS project describes the same records more fully, in its extended-data
-//! multiplexers — whose cases are `DB_CASE` objects, on the reader's permanent refusal list
-//! (`vag_data_labels::odis::loaders::REFUSED`). So the unit's own records are named from VCDS
-//! alone.
 
 use std::collections::BTreeMap;
 
@@ -52,51 +49,129 @@ const TEXT_TABLE: u8 = 3;
 /// of the reference car's units, and absent from VCDS's own printout of the same records.
 const RESERVED: u8 = 11;
 
-/// One unit's own extended-data records, as its VCDS rows describe them.
-#[derive(Debug, Clone, Default)]
+/// Which description a layout is read from: one, and only one, per layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+	/// An ODIS project's extended-data multiplexers.
+	Odis,
+	/// A VCDS install's `RF.rod`.
+	Vcds,
+}
+
+impl Source {
+	/// The cache's word for this kind of source.
+	pub fn kind(self) -> &'static str {
+		match self {
+			Source::Odis => vag_data_db::ODIS,
+			Source::Vcds => vag_data_db::VCDS,
+		}
+	}
+
+	/// The possessive a line names a variant's rows with: `ODIS's EV_SimEngine_001`,
+	/// `VCDS's EV_SimEngine_001` — "described by ODIS's …", "(VCDS's … is another variant)".
+	pub fn name(self) -> &'static str {
+		match self {
+			Source::Odis => "ODIS's",
+			Source::Vcds => "VCDS's",
+		}
+	}
+}
+
+impl Source {
+	/// The source a cache kind names (`vag_data_db::ODIS`, `VCDS`), `None` for any other —
+	/// how [`crate::extracted::Extracted::run_source`]'s answer becomes one of these.
+	pub fn of_kind(kind: &str) -> Option<Source> {
+		match kind {
+			vag_data_db::ODIS => Some(Source::Odis),
+			vag_data_db::VCDS => Some(Source::Vcds),
+			_ => None,
+		}
+	}
+}
+
+/// One unit's extended-data records, as one source describes them.
+#[derive(Debug, Clone)]
 pub struct Layout {
+	source: Source,
 	records: BTreeMap<u32, Record>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct Record {
+	/// The last number a range case covers; `None` for a case of one number.
+	upper: Option<u32>,
 	/// The record's length in bytes, where its rows prove one.
 	length: Option<usize>,
 	fields: Vec<FreezeField>,
 }
 
 impl Layout {
-	/// Group a unit's rows by record.
-	pub fn new(fields: Vec<FreezeField>) -> Layout {
+	/// Group one source's rows for a unit by record.
+	pub fn new(fields: Vec<FreezeField>, source: Source) -> Layout {
 		let mut records: BTreeMap<u32, Record> = BTreeMap::new();
 		for field in fields {
-			records.entry(field.record).or_default().fields.push(field);
+			let record = records.entry(field.record).or_default();
+			record.upper = record.upper.or(field.record_upper);
+			record.fields.push(field);
 		}
 		for record in records.values_mut() {
-			record.length = proven_length(&record.fields);
+			record.length = proven_length(&record.fields, source);
 		}
-		Layout { records }
+		Layout { source, records }
 	}
 
-	/// The description of record `number`: its own rows, else the unit's default record's.
+	/// The source the layout is read from.
+	pub fn source(&self) -> Source {
+		self.source
+	}
+
+	/// Record `number`'s own description — its case, or a range case that covers it — but
+	/// not the default case's.
+	fn own(&self, number: u8) -> Option<&Record> {
+		let number = u32::from(number);
+		self.records.get(&number).or_else(|| {
+			self
+				.records
+				.range(..=number)
+				.rev()
+				.find(|(lower, r)| **lower != DEFAULT_RECORD && r.upper.is_some_and(|upper| (**lower..=upper).contains(&number)))
+				.map(|(_, r)| r)
+		})
+	}
+
+	/// The description of record `number`: its own, else the unit's default record's.
 	fn record(&self, number: u8) -> Option<&Record> {
-		self.records.get(&u32::from(number)).or_else(|| self.records.get(&DEFAULT_RECORD))
+		self.own(number).or_else(|| self.records.get(&DEFAULT_RECORD))
 	}
 
-	/// How long record `number` is: the protocol's for the two standard records, the unit's
-	/// rows' for its own, `None` where neither proves one.
+	/// How long record `number` is: the unit's own description's where the source has one
+	/// for that very number (an ODIS variant describes the standard records too, the camera
+	/// variant's `0x02` as twelve bytes), else the protocol's for the two standard records,
+	/// else the unit's rows', `None` where nothing proves one.
 	pub fn length_of(&self, number: u8) -> Option<usize> {
-		standard_length(number).or_else(|| self.record(number)?.length)
+		match self.own(number) {
+			Some(record) if self.source == Source::Odis || standard_length(number).is_none() => record.length,
+			_ => standard_length(number).or_else(|| self.record(number)?.length),
+		}
 	}
 }
 
-/// A record's length, when its rows prove one: their one lead, less 100, **equal** to where
-/// its last field ends — the 897 of `RF.rod`'s 1,028 records whose two readings agree. Rows
-/// that disagree on the lead, a field past it, fields ending short of it (33 records whose
-/// tail nothing describes) and a lead of 200 or more prove nothing.
-fn proven_length(fields: &[FreezeField]) -> Option<usize> {
+/// A record's length, when its rows prove one.
+///
+/// **VCDS:** their one lead, less 100, **equal** to where its last field ends — the 897 of
+/// `RF.rod`'s 1,028 records whose two readings agree. Rows that disagree on the lead, a field
+/// past it, fields ending short of it (33 records whose tail nothing describes) and a lead of
+/// 200 or more prove nothing. **ODIS:** the lead `setup` wrote is the project's own proof —
+/// its declared size, or where its last field ends (`Project::extended_records`).
+fn proven_length(fields: &[FreezeField], source: Source) -> Option<usize> {
 	let lead = fields.first()?.lead?;
-	if fields.iter().any(|f| f.lead != Some(lead)) || !(101..200).contains(&lead) {
+	if fields.iter().any(|f| f.lead != Some(lead)) || lead <= 100 {
+		return None;
+	}
+	if source == Source::Odis {
+		return Some((lead - 100) as usize);
+	}
+	if lead >= 200 {
 		return None;
 	}
 	let length = (lead - 100) as usize;
@@ -158,17 +233,37 @@ pub fn split<'a>(answer: &'a DtcExtendedData, layout: Option<&Layout>, now: Opti
 	let records = split_records(answer, |n| layout.length_of(n));
 	let context = FaultContext::from_records(&records, now);
 	let short = records.iter().any(|r| r.extent == Extent::Short);
-	let standard_whole = [STANDARD_DTC_INFORMATION, STANDARD_FREEZE_FRAME]
+	// The check of the standard records applies where they came out the standard's shape;
+	// a description that lays them out otherwise (an ODIS variant's twelve-byte `0x02`) is
+	// read by its own fields instead.
+	let standard_whole = [STANDARD_DTC_INFORMATION, STANDARD_FREEZE_FRAME].iter().all(|n| {
+		records
+			.iter()
+			.any(|r| r.number == *n && r.extent == Extent::Whole && Some(r.data.len()) == standard_length(*n))
+	});
+	// A source that lays a standard record out otherwise than the standard (an ODIS variant's
+	// twelve-byte `0x02`) has no stamp check to catch a misaligned split, and a default case of
+	// fixed length reads on through any bytes. The records after it are then read only when
+	// they end exactly where the answer does, every one whole.
+	let redefined = [STANDARD_DTC_INFORMATION, STANDARD_FREEZE_FRAME]
 		.iter()
-		.all(|n| records.iter().any(|r| r.number == *n && r.extent == Extent::Whole));
+		.any(|n| layout.own(*n).is_some() && layout.length_of(*n) != standard_length(*n));
+	let standard = |n: u8| matches!(n, STANDARD_DTC_INFORMATION | STANDARD_FREEZE_FRAME);
+	let tail_whole = records.iter().filter(|r| !standard(r.number)).all(|r| r.extent == Extent::Whole);
 	let why = match (short, standard_whole && context.is_none(), now) {
 		(true, _, _) => Some("the answer does not split on this variant's layout"),
 		(_, true, None) => Some("the unit gave no stamp to check its standard records by"),
 		(_, true, Some(_)) => Some("its standard records fail the unit's own stamp"),
+		_ if redefined && !tail_whole => Some("the answer does not end where this variant's layout says"),
 		_ => None,
 	};
 	if why.is_some() {
-		let records = standard_only();
+		// Split again on the standard records alone — as this layout gives their lengths
+		// where it redefines them — and leave everything after them as bytes.
+		let records = match redefined {
+			true => split_records(answer, |n| if standard(n) { layout.length_of(n) } else { None }),
+			false => standard_only(),
+		};
 		let context = FaultContext::from_records(&records, now);
 		return Frame {
 			records,
@@ -200,7 +295,10 @@ pub fn lines(frame: &Frame<'_>, layout: Option<&Layout>, no_layout: &str) -> Vec
 		if standard && context.is_some() {
 			continue;
 		}
-		if standard {
+		// A standard record the source describes itself, laid out otherwise than the
+		// standard, is read by that description; any other goes unread without the check.
+		let described_standard = standard && frame.misframed.is_none() && Some(record.data.len()) != standard_length(record.number);
+		if standard && !described_standard {
 			let why = "standard record, not checked against the unit's own stamp, not decoded";
 			out.push(Line::new(format!("record {:02X}", record.number), raw(record.data, why)));
 			continue;
@@ -212,7 +310,10 @@ pub fn lines(frame: &Frame<'_>, layout: Option<&Layout>, no_layout: &str) -> Vec
 			));
 			continue;
 		}
-		let described = layout.and_then(|l| l.record(record.number));
+		let described = match standard {
+			true => layout.and_then(|l| l.own(record.number)),
+			false => layout.and_then(|l| l.record(record.number)),
+		};
 		match (described, record.extent) {
 			(Some(described), Extent::Whole) => {
 				for field in described.fields.iter().filter(|f| f.kind != Some(RESERVED)) {
@@ -241,7 +342,7 @@ fn field_name(field: &FreezeField) -> String {
 /// A field's value as a person reads it, or its bytes and why they are bytes.
 fn field_value(field: &FreezeField, data: &[u8]) -> String {
 	let (Some(bit_offset), Some(bit_length)) = (field.bit_offset, field.bit_length) else {
-		return "(no layout)".to_string();
+		return "(width not known, not decoded)".to_string();
 	};
 	let first = (bit_offset / 8) as usize;
 	let last = (bit_offset + bit_length).div_ceil(8) as usize;
@@ -326,6 +427,7 @@ mod tests {
 	fn field(record: u32, lead: u32, kind: u8, bits: (u32, u32), scale: Option<(f64, f64)>, unit: &str, name: &str) -> FreezeField {
 		FreezeField {
 			record,
+			record_upper: None,
 			lead: Some(lead),
 			kind: Some(kind),
 			signed: false,
@@ -344,13 +446,16 @@ mod tests {
 	fn layout() -> Layout {
 		let mut flag = field(112, 104, TEXT_TABLE, (24, 1), None, "", "Switch");
 		flag.levels = vec![vag_data_labels::Level::point(0, "off"), vag_data_labels::Level::point(1, "on")];
-		Layout::new(vec![
-			field(112, 104, LINEAR, (0, 16), Some((0.25, 0.0)), "/min", "Speed"),
-			field(112, 104, LINEAR, (16, 8), Some((0.1, 0.0)), "V", "Voltage"),
-			flag,
-			field(112, 104, RESERVED, (25, 7), None, "", "Reserved"),
-			field(DEFAULT_RECORD, 101, IDENTITY, (0, 8), Some((1.0, 0.0)), "", "Counter"),
-		])
+		Layout::new(
+			vec![
+				field(112, 104, LINEAR, (0, 16), Some((0.25, 0.0)), "/min", "Speed"),
+				field(112, 104, LINEAR, (16, 8), Some((0.1, 0.0)), "V", "Voltage"),
+				flag,
+				field(112, 104, RESERVED, (25, 7), None, "", "Reserved"),
+				field(DEFAULT_RECORD, 101, IDENTITY, (0, 8), Some((1.0, 0.0)), "", "Counter"),
+			],
+			Source::Vcds,
+		)
 	}
 
 	/// `01 <priority> <count>`, `02 <aging> <km:3> <indication> <stamp:5>`, then what follows.
@@ -454,7 +559,7 @@ mod tests {
 
 	#[test]
 	fn the_dynamic_record_is_never_split_by_a_layout() {
-		let layout = Layout::new(vec![field(113, 101, IDENTITY, (0, 8), Some((1.0, 0.0)), "", "One byte")]);
+		let layout = Layout::new(vec![field(113, 101, IDENTITY, (0, 8), Some((1.0, 0.0)), "", "One byte")], Source::Vcds);
 		let answer = answer(&[0x71, 0x01, 0x02, 0x03]);
 		let frame = split(&answer, Some(&layout), Some(&now()));
 		assert_eq!(
@@ -467,22 +572,122 @@ mod tests {
 	fn a_lead_is_a_length_only_where_the_fields_end_exactly_there() {
 		// The rule of research/odis-dtc/freeze-frames.md: 897 of RF.rod's 1,028 records.
 		let fits = [field(5, 103, LINEAR, (0, 24), Some((1.0, 0.0)), "", "a")];
-		assert_eq!(proven_length(&fits), Some(3));
+		assert_eq!(proven_length(&fits, Source::Vcds), Some(3));
 		let short = [field(5, 104, LINEAR, (0, 24), Some((1.0, 0.0)), "", "a")];
-		assert_eq!(proven_length(&short), None, "a tail nothing describes");
+		assert_eq!(proven_length(&short, Source::Vcds), None, "a tail nothing describes");
 		let big = [field(5, 203, LINEAR, (0, 24), Some((1.0, 0.0)), "", "a")];
-		assert_eq!(proven_length(&big), None, "a lead of 200 or more");
+		assert_eq!(proven_length(&big, Source::Vcds), None, "a lead of 200 or more");
 		let over = [field(5, 103, LINEAR, (16, 16), Some((1.0, 0.0)), "", "a")];
-		assert_eq!(proven_length(&over), None, "a field past the lead");
+		assert_eq!(proven_length(&over, Source::Vcds), None, "a field past the lead");
 		// VCDS's one-row "dynamic" record: a reserved field of no length, lead 203.
 		let mut dynamic = field(113, 203, RESERVED, (0, 0), None, "", "");
 		dynamic.bit_length = None;
-		assert_eq!(proven_length(&[dynamic]), None);
+		assert_eq!(proven_length(&[dynamic], Source::Vcds), None);
 		let split = [
 			field(5, 103, LINEAR, (0, 8), Some((1.0, 0.0)), "", "a"),
 			field(5, 104, LINEAR, (8, 8), Some((1.0, 0.0)), "", "b"),
 		];
-		assert_eq!(proven_length(&split), None, "two leads for one record");
+		assert_eq!(proven_length(&split, Source::Vcds), None, "two leads for one record");
+	}
+
+	/// An ODIS-only layout as `setup` stores a variant's multiplexer: record 0x01, a record
+	/// 0x02 laid out otherwise than the standard (twelve bytes, a reserved byte first, as one
+	/// camera variant has it), and an own record 0x70. Invented.
+	fn odis_layout() -> Layout {
+		let mut fields = vec![
+			field(1, 102, IDENTITY, (0, 8), Some((1.0, 0.0)), "", "Sim priority"),
+			field(1, 102, IDENTITY, (8, 8), Some((1.0, 0.0)), "", "Sim count"),
+			field(2, 112, RESERVED, (0, 8), None, "", "Sim reserved"),
+			field(2, 112, IDENTITY, (8, 8), Some((1.0, 0.0)), "", "Sim aging"),
+			field(2, 112, IDENTITY, (16, 24), Some((1.0, 0.0)), "km", "Sim mileage"),
+			field(112, 103, LINEAR, (0, 16), Some((0.25, 0.0)), "1/min", "Sim engine speed"),
+			field(112, 103, LINEAR, (16, 8), Some((0.1, 0.0)), "V", "Sim supply voltage"),
+		];
+		for f in &mut fields {
+			f.record_upper = None;
+		}
+		Layout::new(fields, Source::Odis)
+	}
+
+	#[test]
+	fn an_odis_layout_decodes_a_unit_on_its_own_its_standard_records_included() {
+		// The ODIS path alone: the record lengths are the project's, so record 0x02 is split
+		// as twelve bytes, read by its own fields, and the record after it lines up.
+		let layout = odis_layout();
+		let mut data = vec![0x02, 0x05, 0x02, 0x00, 0xB4, 0x00, 0x10, 0x00, 0, 0, 0, 0, 0, 0, 0];
+		data.extend_from_slice(&[0x70, 0x0B, 0xB8, 0x7B]);
+		let answer = DtcExtendedData { record: 0x01, data };
+		let frame = split(&answer, Some(&layout), Some(&now()));
+		assert!(frame.context.is_none(), "not the standard's shape, so not the standard's reading");
+		assert_eq!(
+			keyed(&lines(&frame, Some(&layout), "")),
+			vec![
+				(
+					"record 01",
+					"02 05 (standard record, not checked against the unit's own stamp, not decoded)"
+				),
+				("Sim aging", "180"),
+				("Sim mileage", "4096 km"),
+				("Sim engine speed", "750 1/min"),
+				("Sim supply voltage", "12.3 V"),
+			]
+		);
+	}
+
+	#[test]
+	fn a_redefined_record_02_decodes_the_rest_only_where_it_ends_with_the_answer() {
+		// The camera case: the layout's record 0x02 is twelve bytes, the unit's answer is the
+		// standard ten. Split on the layout, 0x02 swallows the next record's number, a stray
+		// byte reads as a default record of two bytes, and nothing comes up short — but the
+		// split does not end on a whole record, so nothing after 0x02 is decoded.
+		let mut fields = odis_layout().records.into_values().flat_map(|r| r.fields).collect::<Vec<_>>();
+		fields.push(field(DEFAULT_RECORD, 102, IDENTITY, (0, 16), Some((1.0, 0.0)), "", "Sim value"));
+		let layout = Layout::new(fields, Source::Odis);
+		let answer = answer(&[0x70, 0x0B, 0xB8, 0x01, 0x02, 0x71, 0xCC]);
+		let frame = split(&answer, Some(&layout), Some(&now()));
+		let lines = lines(&frame, Some(&layout), "");
+		assert!(lines.iter().all(|l| l.key != "Sim value"), "a stray byte decoded: {lines:?}");
+		let tail = lines.last().unwrap();
+		assert!(
+			tail
+				.value
+				.ends_with("(the answer does not end where this variant's layout says, not decoded)"),
+			"{lines:?}"
+		);
+		// The same layout over an answer that does end with a whole record is read.
+		let exact = DtcExtendedData {
+			record: 0x01,
+			data: vec![0x02, 0x05, 0x02, 0, 0xB4, 0x00, 0x10, 0x00, 0, 0, 0, 0, 0, 0, 0, 0x75, 0x01, 0x02],
+		};
+		let frame = split(&exact, Some(&layout), Some(&now()));
+		assert!(lines_of(&frame, &layout).contains(&("Sim value".to_string(), "258".to_string())));
+	}
+
+	fn lines_of(frame: &Frame<'_>, layout: &Layout) -> Vec<(String, String)> {
+		lines(frame, Some(layout), "").into_iter().map(|l| (l.key, l.value)).collect()
+	}
+
+	#[test]
+	fn an_odis_layout_of_the_standard_shape_reads_like_the_standard() {
+		let mut fields = odis_layout().records.into_values().flat_map(|r| r.fields).collect::<Vec<_>>();
+		fields.retain(|f| f.record != 2);
+		fields.push(field(2, 110, IDENTITY, (0, 8), Some((1.0, 0.0)), "", "Sim aging"));
+		let layout = Layout::new(fields, Source::Odis);
+		let answer = answer(&[0x70, 0x0B, 0xB8, 0x7B]);
+		let frame = split(&answer, Some(&layout), Some(&now()));
+		assert!(frame.context.is_some());
+		assert_eq!(
+			keyed(&lines(&frame, Some(&layout), ""))[2..],
+			[("Sim engine speed", "750 1/min"), ("Sim supply voltage", "12.3 V")]
+		);
+	}
+
+	#[test]
+	fn a_source_is_named_by_its_cache_kind_and_nothing_else() {
+		for source in [Source::Odis, Source::Vcds] {
+			assert_eq!(Source::of_kind(source.kind()), Some(source));
+		}
+		assert_eq!(Source::of_kind("other"), None);
 	}
 
 	#[test]

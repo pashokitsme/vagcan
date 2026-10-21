@@ -430,6 +430,22 @@ fn as_i32(value: &Value) -> Option<i32> {
 	}
 }
 
+/// The whole number a closed limit names: its value as an integer, or as the decimal text
+/// a multiplexer case writes it in (`"113"`). `None` for an open or infinite limit, which a
+/// record number's case never has.
+pub fn closed_bound(limit: &Limit) -> Option<i32> {
+	if limit.kind != LimitKind::Closed {
+		return None;
+	}
+	let value = limit.value.as_ref()?;
+	as_i32(value).or_else(|| as_text(value)?.trim().parse().ok())
+}
+
+/// The text a limit names, when its value is a string.
+pub fn limit_text(limit: &Limit) -> Option<String> {
+	limit.value.as_ref().and_then(as_text)
+}
+
 /// A value as text, when it is a string.
 fn as_text(value: &Value) -> Option<String> {
 	match value {

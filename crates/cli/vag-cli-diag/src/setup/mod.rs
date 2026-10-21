@@ -905,6 +905,7 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 		Result<Vec<vag_data_labels::odis::Fault>, vag_data_labels::odis::Error>,
 		Result<Vec<vag_data_labels::odis::Reading>, vag_data_labels::odis::Error>,
 		Result<Vec<vag_data_labels::odis::Reading>, vag_data_labels::odis::Error>,
+		Result<Vec<vag_data_labels::odis::EnvironmentRecord>, vag_data_labels::odis::Error>,
 	);
 	let walked: Vec<Walked> = {
 		use rayon::prelude::*;
@@ -919,9 +920,11 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 					let readings = odis.readings(variant);
 					// The adaptation read: the same chain from the other `0x22` service.
 					let adaptations = odis.adaptations(variant);
+					// The fault records' layouts: what `faults` decodes a freeze frame by.
+					let records = odis.extended_records(variant);
 					let finished = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
 					reporter.set(&format!("{finished} of {} — {}", variants.len(), variant.name));
-					(faults, readings, adaptations)
+					(faults, readings, adaptations, records)
 				})
 				.collect()
 		})
@@ -933,7 +936,14 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 	let mut fault_rows: Vec<(&str, &[vag_data_labels::odis::Fault])> = Vec::new();
 	let (mut adaptation_rows, mut with_adaptations, mut adaptation_skipped): (Vec<(&str, &[vag_data_labels::odis::Reading])>, usize, Skipped) =
 		(Vec::new(), 0, Skipped::default());
-	for (variant, (faults, readings, adaptations)) in variants.iter().zip(&walked) {
+	let mut frame_rows: Vec<(&str, &[vag_data_labels::odis::EnvironmentRecord])> = Vec::new();
+	let mut frame_skipped = Skipped::default();
+	for (variant, (faults, readings, adaptations, records)) in variants.iter().zip(&walked) {
+		match records {
+			Ok(records) if !records.is_empty() => frame_rows.push((variant.name.as_str(), records.as_slice())),
+			Ok(_) => {}
+			Err(e) => frame_skipped.count(e),
+		}
 		match adaptations {
 			Err(e) => adaptation_skipped.count(e),
 			Ok(rows) if rows.is_empty() => {}
@@ -975,6 +985,10 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 		vag_data_db::put_all_faults(&project.cache(), &source, fault_rows)
 	})
 	.map_err(|e| anyhow::anyhow!("writing the fault codes to {}: {e}", project.cache().display()))?;
+	let frames = timed("odis freeze frames (sqlite)", || {
+		vag_data_db::put_all_odis_freeze_frames(&project.cache(), &source, frame_rows)
+	})
+	.map_err(|e| anyhow::anyhow!("writing the freeze-frame layouts to {}: {e}", project.cache().display()))?;
 	let faults_took = faults_started.elapsed();
 	let channels = timed("odis readings (sqlite)", || {
 		vag_data_db::put_all_readings(&project.cache(), &source, channel_rows)
@@ -1024,10 +1038,12 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 		"faults",
 		State::Wrote,
 		format!(
-			"{codes} {}, {with_faults} {}{}",
+			"{codes} {}, {with_faults} {}{}{SEP}{frames} freeze-frame {}{}",
 			plural(codes, "code"),
 			plural(with_faults, "variant"),
-			fault_skipped.note()
+			fault_skipped.note(),
+			plural(frames, "field"),
+			frame_skipped.note()
 		),
 	)
 	.at(project.cache());
