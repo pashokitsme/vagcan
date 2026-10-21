@@ -168,3 +168,30 @@ fn no_literal_glyphs() {
 		found.join("\n")
 	);
 }
+
+/// One source per run (CLAUDE.md, "ODIS and VCDS are independent sources"): a reader of
+/// label data is handed the run's one store, `vag_cli_core::source::Run`, never both. So
+/// outside the code that owns the stores — `project.rs`, `source.rs`, `extracted.rs` — and
+/// `setup`, which reads a named source into its store, nothing picks a cache by kind out of
+/// `Stores` (`cache_of`), or opens a source other than the run's (`open_from`). Either
+/// would let a command read the other source beside its own.
+#[test]
+fn no_reader_picks_a_store_past_the_runs_one_source() {
+	let owners = [
+		"vag-cli-core/src/project.rs",
+		"vag-cli-core/src/source.rs",
+		"vag-cli-core/src/extracted.rs",
+	];
+	let found: Vec<String> = code_lines(&owners)
+		.into_iter()
+		.filter(|(file, _, _)| !file.contains("vag-cli-diag/src/setup/"))
+		.filter(|(_, _, line)| ["cache_of(", "open_from(", ".caches()"].iter().any(|p| code_part(line).contains(p)))
+		.map(|(file, n, line)| format!("{file}:{n}: {}", line.trim()))
+		.collect();
+	assert!(
+		found.is_empty(),
+		"a reader reaching a store past the run's one source: take a `vag_cli_core::source::Run` \
+		 (`source::run`) or `extracted::open`\n{}",
+		found.join("\n")
+	);
+}

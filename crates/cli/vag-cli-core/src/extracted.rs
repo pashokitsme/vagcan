@@ -8,11 +8,18 @@
 //! function the `.rod` directory walk uses, so a name the walk would find and a
 //! name this finds can never disagree.
 //!
+//! **One source per run** (CLAUDE.md, "ODIS and VCDS are independent sources"). An
+//! [`Extracted`] is opened over the run's one source ([`crate::source::Run`]) — an ODIS
+//! project, or the machine's VCDS installation — and holds that source's cache and
+//! nothing else, so no row, name or text id of the other can reach a reader through it.
+//! A field the run's source does not describe is not described.
+//!
 //! **Everything here is evidence, not a catalog** (design §4.5). A row proven on
 //! the actual car in front of the tool always wins; an extracted row fills in
 //! only what no drive has established yet. [`merge`] is where that is enforced,
 //! once, so that nothing downstream — `watch`, `measure`, the dash build —
-//! ever has to ask which source a row came from.
+//! ever has to ask which source a row came from. A proven row is not a source in
+//! the sense above: it is a measurement of this car.
 //!
 //! ## The gear conflict is not settled here, and must not be
 //!
@@ -25,32 +32,36 @@
 //! here picks a winner on the strength of an argument.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use vag_data_labels::catalog::{MeasurementDef, ReadId};
 use vag_data_labels::label_files::{OdxMatch, odx_match};
 use vag_data_labels::measure::RawForm;
 
 use crate::config::Language;
+use crate::source::Source;
 
-/// One project's extracted channels, ready to be asked about a control unit.
+/// One run's extracted channels, ready to be asked about a control unit.
 ///
 /// Holds the variant names rather than the channels: a project has hundreds of
 /// variants and a third of a million channels, and a car needs the handful
 /// belonging to the one variant it turns out to be.
 ///
-/// It also holds the project's `names.json`, because a channel's wording is a
-/// lookup through a **text id** the row itself carries, never a table of names
-/// in this source. Which ids meet is not what this once said: an ODIS row
-/// carries VW's id (`IDE00594`), while `names.json` is keyed by the VCDS text
-/// table's own record ids (`000080`). The two meet through `odx-ids.json`,
-/// which maps a record to the `IDE`/`MAS` it names — a file [`Self::name_of`]
-/// does not read yet.
+/// **One source, one cache.** `source` and `cache` are the run's one source and the file
+/// its rows are in; there is no second path here to read, which is what keeps a run from
+/// mixing the two.
+///
+/// It also holds the VCDS installation's `names.json` on a VCDS run, because a channel's
+/// wording is a lookup through a **text id** the row itself carries, never a table of names
+/// in this source. An ODIS row is named by its own name.
 #[derive(Debug, Clone)]
 pub struct Extracted {
-	/// Where each kind of source's rows are: an ODIS project's cache, the VCDS store's.
-	caches: Caches,
-	/// Which project this came out of, for a sentence that has to name it.
+	/// The run's one source; `None` with nothing set up, or a source asked for and not set up.
+	source: Option<Source>,
+	/// Where that source's rows are: the ODIS project's cache, or the VCDS store's.
+	cache: PathBuf,
+	/// Which store the rows came out of, for a sentence that has to name it: the ODIS
+	/// project's id, or the VCDS store's (`VCDS`).
 	///
 	/// Carried rather than re-resolved because "is there a project, and which"
 	/// and "what does it know about this unit" are one question asked twice:
@@ -58,15 +69,10 @@ pub struct Extracted {
 	/// caller that asks [`crate::project::current`] again can get a different
 	/// answer from the one these rows came from.
 	project: Option<String>,
-	/// The variants each source holds rows for, **in the order the sources
-	/// rank**: an ODIS project, then a VCDS install's registry (owner,
-	/// 2026-09-28: ODIS wins where both describe a channel, and VCDS fills only
-	/// what ODIS lacks). Kept per source because the two can spell a variant
-	/// alike, and each source's best match is found among its own.
-	variants: Vec<(&'static str, Vec<String>)>,
-	/// text id → what the label files call it. Empty for a project that has
-	/// none, which is not an error: `watch --catalogs <dir>` has no project at
-	/// all, and a project set up before names were recovered has no file.
+	/// The variants the source holds channels for.
+	variants: Vec<String>,
+	/// text id → what the VCDS installation calls it — on a VCDS run only. Empty on an ODIS
+	/// run, and for an installation whose names were not recovered, which is not an error.
 	names: BTreeMap<String, String>,
 	/// text id → what **this machine's owner** calls it, one map per language
 	/// the glossary has a column for — see [`crate::glossary`].
@@ -75,14 +81,15 @@ pub struct Extracted {
 	/// somebody who has to read it at an open driver's door. It is also global
 	/// rather than per project: a text id is VW's key for a piece of text, not
 	/// a fact about a platform, so a translation written once holds for every
-	/// car afterwards.
+	/// car afterwards. It is the owner's, not a source's, so it is read whichever
+	/// source the run reads.
 	mine: BTreeMap<Language, BTreeMap<String, String>>,
 	/// Which of `mine`'s columns [`Self::name_of`] reads: the one `config.toml`
 	/// names, unless a reader asks for another ([`Self::in_language`]).
 	language: Language,
 	/// The project codes of the car these channels are for (`SK37`), which pick the
 	/// VCDS rows read for that car's project ([`best_variants`]). Empty until
-	/// [`Self::for_car`] names the car, or when its project is not known.
+	/// [`Self::for_car`] names the car on a VCDS run, or when its project is not known.
 	car_projects: Vec<String>,
 	/// Per unit `(F19E, F1A2)`, trimmed, the stem the registry read stored the car's VCDS rows
 	/// under ([`crate::registry::CarJoin`]): joined exactly, before any rank rule.
@@ -103,22 +110,6 @@ pub enum FreezeLayout {
 	None,
 }
 
-/// The cache each kind of source is read from — one file for both in a test's fixture.
-#[derive(Debug, Clone, Default)]
-struct Caches {
-	odis: PathBuf,
-	vcds: PathBuf,
-}
-
-impl Caches {
-	fn of(&self, kind: &str) -> &Path {
-		match kind {
-			vag_data_db::VCDS => &self.vcds,
-			_ => &self.odis,
-		}
-	}
-}
-
 /// One channel a unit offers, with everything known about how to name it.
 ///
 /// Three separate facts, and collapsing any two of them loses something a
@@ -132,8 +123,8 @@ pub struct Resolved {
 	pub def: MeasurementDef,
 	/// Whether a drive on a car established this scaling — see [`tagged`].
 	pub proven: bool,
-	/// What this project's `names.json` calls the channel's text id, when the
-	/// row carried one and the file knows it.
+	/// What the owner's glossary, or on a VCDS run the installation's `names.json`, calls
+	/// the channel's text id, when the row carried one and either knows it.
 	pub named: Option<String>,
 	/// The row's own text id, kept rather than consumed.
 	///
@@ -144,10 +135,10 @@ pub struct Resolved {
 	pub text_id: Option<String>,
 }
 
-/// What this run's project knows, or nothing when there is no project.
+/// What this run's source knows, or nothing when there is none.
 ///
 /// The ordinary entry point: a command that is about to resolve channels has a
-/// `CatalogStore` and needs the extracted rows that go underneath it. No project
+/// `CatalogStore` and needs the extracted rows that go underneath it. No source
 /// is not an error — `--catalogs <dir>` names proven rows directly, and a
 /// machine where `vagcan setup` has not run has none of either.
 pub fn current() -> Extracted {
@@ -157,47 +148,44 @@ pub fn current() -> Extracted {
 	}
 }
 
-/// Read a project's variant list, or nothing when it has no extracted rows.
+/// The run's source over these stores ([`crate::source::run_source`]), opened.
+///
+/// A source asked for and not set up opens as nothing: the command refuses it before it
+/// gets here ([`crate::source::check`]), and nothing of the other source stands in for it.
+pub fn open(stores: &crate::project::Stores) -> Extracted {
+	let source = crate::source::run_source(stores).unwrap_or(None);
+	open_from(stores, source)
+}
+
+/// One source of these stores, opened — for a reader that is told which, rather than asking
+/// the run: `setup`, closing on the source it has just read.
+pub fn open_from(stores: &crate::project::Stores, source: Option<Source>) -> Extracted {
+	match source.and_then(|source| crate::source::Run::of(stores, source)) {
+		Some(run) => open_run(&run),
+		None => Extracted::none(),
+	}
+}
+
+/// The rows of one run's store.
 ///
 /// Having none is an ordinary state rather than an error: a VCDS installation
 /// brings rows only for the units `setup` read its registry for, and a project
 /// set up before that has none.
-pub fn open(stores: &crate::project::Stores) -> Extracted {
-	let caches = Caches {
-		// No project: a path that is no file, which every query answers with nothing.
-		odis: stores.cache_of(vag_data_db::ODIS).unwrap_or_default(),
-		vcds: stores.vcds.cache(),
-	};
-	let variants = variants_by_source(&caches);
-	let store = &stores.vcds;
+pub fn open_run(run: &crate::source::Run) -> Extracted {
+	let cache = run.cache();
 	Extracted {
-		caches,
-		project: Some(stores.id().to_string()),
-		variants,
-		// **Only when a VCDS installation has actually contributed.** The join
-		// through a text id is right and stays; what was wrong is trusting
-		// `names.json` to hold VCDS wording on a project that has only ever
-		// seen ODIS runs. There it holds ODIS's *pooled* text for the id, while
-		// the row carries that parameter's name in this ECU variant — and the
-		// pooled one is the worse of the two, measured on the owner's car: 0
-		// channels gained a name, 340 got different and mostly worse wording,
-		// and two distinct channels collapsed onto one label.
-		//
-		// A file cannot say who wrote it, so the project's own source log is
-		// asked instead (`crate::project::has_source`).
-		names: match crate::project::has_source(store, vag_data_db::VCDS) {
-			Ok(true) => read_names(&store.names()),
-			Ok(false) => BTreeMap::new(),
-			// A cache that did not answer says nothing either way: the file is taken
-			// as what it promises, as before the sources were asked, and that is said.
-			Err(e) => {
-				crate::project::say_unreadable(store, &e, "names.json is read as VCDS wording");
-				read_names(&store.names())
-			}
+		variants: variants_in(&cache, run.source),
+		source: Some(run.source),
+		cache,
+		project: Some(run.store.id.clone()),
+		// `names.json` is the VCDS text table's wording, and only a VCDS run reads it. On an
+		// ODIS run a row is named by its own name: the table is the other source's.
+		names: match run.source {
+			Source::Vcds => read_names(&run.store.names()),
+			Source::Odis => BTreeMap::new(),
 		},
-		// Read for every project, whatever its sources: this file is the
-		// owner's, not a vendor's, and the id it is keyed by is VW's rather than
-		// this platform's.
+		// Read for every run, whatever its source: this file is the owner's, not a
+		// vendor's, and the id it is keyed by is VW's rather than this platform's.
 		mine: crate::glossary::load(),
 		language: crate::config::language(&crate::config::load()),
 		car_projects: Vec::new(),
@@ -205,32 +193,28 @@ pub fn open(stores: &crate::project::Stores) -> Extracted {
 	}
 }
 
-/// Each source's variants, in the order the sources rank.
+/// The source's variants in its cache.
 ///
 /// A cache that will not open holds none. One an older vagcan wrote, or a file that is not a
-/// database, is also said, once, on stderr: every channel the project would give is
-/// missing, and the line says what to run.
-fn variants_by_source(caches: &Caches) -> Vec<(&'static str, Vec<String>)> {
-	let mut said = false;
-	[vag_data_db::ODIS, vag_data_db::VCDS]
-		.into_iter()
-		.map(|kind| match vag_data_db::reading_variants_of(caches.of(kind), kind) {
-			Ok(variants) => (kind, variants),
-			Err(why) => {
-				if matches!(why, vag_data_db::Error::OlderCache { .. } | vag_data_db::Error::NotACache { .. }) && !std::mem::replace(&mut said, true) {
-					crate::say!("{why}");
-				}
-				(kind, Vec::new())
+/// database, is also said on stderr: every channel the source would give is missing, and the
+/// line says what to run.
+fn variants_in(cache: &std::path::Path, source: Source) -> Vec<String> {
+	match vag_data_db::reading_variants_of(cache, source.kind()) {
+		Ok(variants) => variants,
+		Err(why) => {
+			if matches!(why, vag_data_db::Error::OlderCache { .. } | vag_data_db::Error::NotACache { .. }) {
+				crate::say!("{why}");
 			}
-		})
-		.collect()
+			Vec::new()
+		}
+	}
 }
 
-/// A project's `names.json` as a map, or nothing at all.
+/// A store's `names.json` as a map, or nothing at all.
 ///
-/// A missing or unparseable file is a project whose names have not been
+/// A missing or unparseable file is an installation whose names have not been
 /// recovered, which is an ordinary state and not a failure: every channel then
-/// keeps whatever its own source called it. Failing the run over it would take
+/// keeps whatever its own row called it. Failing the run over it would take
 /// `watch` off a car for the sake of nicer wording.
 fn read_names(path: &std::path::Path) -> BTreeMap<String, String> {
 	std::fs::read_to_string(path)
@@ -240,14 +224,15 @@ fn read_names(path: &std::path::Path) -> BTreeMap<String, String> {
 }
 
 impl Extracted {
-	/// A project that knows nothing — for a caller with no project to hand.
+	/// A source that knows nothing — for a caller with no source to hand.
 	///
 	/// Not only for tests: `watch --catalogs <dir>` and `measure --catalogs
 	/// <dir>` name a directory of proven rows directly, without a project, and
 	/// there is nothing extracted to go under them.
 	pub fn none() -> Extracted {
 		Extracted {
-			caches: Caches::default(),
+			source: None,
+			cache: PathBuf::new(),
 			project: None,
 			variants: Vec::new(),
 			names: BTreeMap::new(),
@@ -258,22 +243,38 @@ impl Extracted {
 		}
 	}
 
-	/// A project made of nothing but a cache and a name table, for tests in
-	/// other modules that must not read the owner's own `~/.vagcan`.
+	/// A run made of nothing but a cache and a name table, for tests in other modules that
+	/// must not read the owner's own `~/.vagcan`. Its source is the one the default would
+	/// pick for that cache: ODIS where it records an ODIS source, else VCDS.
 	///
 	/// The glossary is left empty on purpose: [`open`] reads the owner's, and
 	/// a test that went through it would pass or fail on what they wrote.
 	#[cfg(any(test, feature = "test-util"))]
 	pub fn synthetic(cache: PathBuf, names: BTreeMap<String, String>) -> Extracted {
-		let caches = Caches {
-			odis: cache.clone(),
-			vcds: cache,
-		};
+		let kinds: Vec<String> = vag_data_db::sources_of(&cache)
+			.unwrap_or_default()
+			.into_iter()
+			.map(|(kind, _)| kind)
+			.collect();
+		let source = Source::ALL
+			.into_iter()
+			.find(|s| kinds.iter().any(|k| k == s.kind()))
+			.unwrap_or(Source::Odis);
+		Extracted::synthetic_from(source, cache, names)
+	}
+
+	/// The same, reading `source`'s rows of the cache and no other's.
+	#[cfg(any(test, feature = "test-util"))]
+	pub fn synthetic_from(source: Source, cache: PathBuf, names: BTreeMap<String, String>) -> Extracted {
 		Extracted {
-			variants: variants_by_source(&caches),
-			caches,
+			variants: variants_in(&cache, source),
+			source: Some(source),
+			cache,
 			project: Some("TEST".to_string()),
-			names,
+			names: match source {
+				Source::Vcds => names,
+				Source::Odis => BTreeMap::new(),
+			},
 			mine: BTreeMap::new(),
 			language: Language::default(),
 			car_projects: Vec::new(),
@@ -288,19 +289,24 @@ impl Extracted {
 		self
 	}
 
-	/// The same project, for a car: a unit joins to the VCDS rows the registry read stored
-	/// for this car's own lookup — the stem the log names for the car's project
+	/// The same run, for a car: on a VCDS run, a unit joins to the rows the registry read
+	/// stored for this car's own lookup — the stem the log names for the car's project
 	/// ([`crate::registry::car_join`]). A car whose model code `chassis.clb` does not list,
 	/// and a car with no VIN, join by the stems of the lookups made with no project; a car
 	/// with no VIN is never recorded, so a unit it shares with recorded cars may have no
 	/// such lookup, and that unit joins by the rank rule. So does every unit with no log, or
 	/// with the installation gone for a car whose VIN would say its project.
+	///
+	/// An ODIS run is left as it is: the join is the VCDS store's log, and the car's project
+	/// comes from VCDS's `chassis.clb` — neither is the ODIS project's to use.
 	pub fn for_car(mut self, vin: Option<&str>) -> Extracted {
-		// The VCDS store's log: the registry read is that store's.
+		if self.source != Some(Source::Vcds) {
+			return self;
+		}
 		let join = self
 			.project
 			.as_ref()
-			.and(self.caches.vcds.parent())
+			.and(self.cache.parent())
 			.and_then(|dir| crate::registry::car_join(&crate::project::vcds_at(dir), vin))
 			.unwrap_or_default();
 		self.car_projects = join.project.into_iter().collect();
@@ -312,12 +318,12 @@ impl Extracted {
 		self
 	}
 
-	/// The variants one source's rows for a unit are read from: for VCDS, exactly the stem
-	/// the car's own lookup stored ([`Self::for_car`]) — and nothing when the cache holds no
-	/// rows under it, since the rank rule would hand it the rows of other cars' lookups that
-	/// tie with it; for a unit with no stem logged, the rank rule ([`best_variants`]).
-	fn variants_of<'a>(&self, kind: &str, names: &'a [String], odx_name: Option<&str>, version: Option<&str>) -> Vec<&'a String> {
-		if kind == vag_data_db::VCDS
+	/// The variants the source's rows for a unit are read from: on a VCDS run, exactly the
+	/// stem the car's own lookup stored ([`Self::for_car`]) — and nothing when the cache holds
+	/// no rows under it, since the rank rule would hand it the rows of other cars' lookups
+	/// that tie with it; for a unit with no stem logged, the rank rule ([`best_variants`]).
+	fn variants_of<'a>(&self, names: &'a [String], odx_name: Option<&str>, version: Option<&str>) -> Vec<&'a String> {
+		if self.source == Some(Source::Vcds)
 			&& let Some(odx_name) = odx_name
 			&& let Some(stem) = self.car_stems.get(&(trimmed(odx_name), trimmed(version.unwrap_or(""))))
 		{
@@ -331,24 +337,23 @@ impl Extracted {
 		self.language
 	}
 
-	/// The same project, reading the owner's glossary in `language` — for a reader whose
+	/// The same run, reading the owner's glossary in `language` — for a reader whose
 	/// wording is not `config.toml`'s: a dash plan's labels are in the plan's language.
 	pub fn in_language(mut self, language: Language) -> Extracted {
 		self.language = language;
 		self
 	}
 
-	/// What the label files call a text id, when this project has recovered it.
+	/// What a text id is called: the owner's glossary first, then on a VCDS run what the
+	/// installation's text table recovered.
 	///
 	/// The whole of the name join, in one place: nothing else in this tool maps
 	/// an id to words, so a caller cannot end up with a name from somewhere
-	/// this project cannot point at.
+	/// this run cannot point at.
 	pub fn name_of(&self, text_id: Option<&str>) -> Option<&str> {
 		let id = text_id?;
-		// The owner's own glossary first, then whatever the label files
-		// recovered. An id the glossary does not mention falls straight
-		// through, which is what makes the file worth writing one line at a
-		// time instead of all at once.
+		// An id the glossary does not mention falls straight through, which is what makes
+		// the file worth writing one line at a time instead of all at once.
 		self
 			.mine
 			.get(&self.language)
@@ -358,7 +363,8 @@ impl Extracted {
 			.filter(|name| !name.trim().is_empty())
 	}
 
-	/// Every text id this project has recovered wording for, and that wording.
+	/// Every text id this run's source has recovered wording for, and that wording — VCDS's
+	/// `names.json`; nothing on an ODIS run.
 	///
 	/// For [`crate::glossary::seed`], which fills the `current` column of the
 	/// rows already in the glossary with it, so that translating is reading
@@ -368,9 +374,16 @@ impl Extracted {
 		self.names.clone()
 	}
 
-	/// The layout of a unit's own extended-data records — its freeze frames — as one kind
-	/// of source describes it (`vag_data_db::ODIS` or `VCDS`), and only that kind: no row of
-	/// the other is read here, so a record is never described by both.
+	/// The run's one source: an ODIS project when it has one, otherwise a VCDS installation,
+	/// unless `--source`, `VAGCAN_SOURCE` or `[source] use` picked the other — decided once,
+	/// by [`crate::source::run_source`], when this was opened. `None` with neither.
+	pub fn run_source(&self) -> Option<Source> {
+		self.source
+	}
+
+	/// The layout of a unit's own extended-data records — its freeze frames — as the run's
+	/// source describes it, and only that source: no row of the other is read here, so a
+	/// record is never described by both.
 	///
 	/// The unit's variant is the stem the car's own lookup stored ([`Self::for_car`], VCDS),
 	/// else the best rank of the rule its channels use. **Only a name of the unit's own
@@ -380,63 +393,79 @@ impl Extracted {
 	/// `EV_BCMMQB_017`'s fields for a unit on F1A2 `015…` — and decoding the unit's bytes with
 	/// it would print the wrong fields as fact, so it comes back as [`FreezeLayout::Another`]
 	/// and the bytes stay raw.
-	pub fn freeze_frames(&self, kind: &str, odx_name: Option<&str>, version: Option<&str>) -> FreezeLayout {
-		let Ok(names) = vag_data_db::freeze_frame_variants(self.caches.of(kind), kind) else {
+	pub fn freeze_frames(&self, odx_name: Option<&str>, version: Option<&str>) -> FreezeLayout {
+		let Some(source) = self.source else {
 			return FreezeLayout::None;
 		};
-		let Some(variant) = self.variants_of(kind, &names, odx_name, version).into_iter().next().cloned() else {
+		let Ok(names) = vag_data_db::freeze_frame_variants(&self.cache, source.kind()) else {
+			return FreezeLayout::None;
+		};
+		let Some(variant) = self.variants_of(&names, odx_name, version).into_iter().next().cloned() else {
 			return FreezeLayout::None;
 		};
 		let rank = odx_name.and_then(|odx| odx_match(&variant, odx, version.unwrap_or(""), &self.car_projects));
 		if !rank.is_some_and(OdxMatch::is_vcds_lookup) {
 			return FreezeLayout::Another { variant };
 		}
-		match vag_data_db::freeze_frame_fields(self.caches.of(kind), kind, &variant) {
+		match vag_data_db::freeze_frame_fields(&self.cache, source.kind(), &variant) {
 			Ok(fields) if !fields.is_empty() => FreezeLayout::Unit { variant, fields },
 			_ => FreezeLayout::None,
 		}
 	}
 
-	/// Whether the cache holds freeze-frame rows of one kind of source for any unit at all —
-	/// so whether a unit's identity is worth reading to look its own up.
-	pub fn knows_freeze_frames(&self, kind: &str) -> bool {
-		vag_data_db::freeze_frame_variants(self.caches.of(kind), kind).is_ok_and(|v| !v.is_empty())
+	/// Whether the run's source holds freeze-frame rows for any unit at all — so whether a
+	/// unit's identity is worth reading to look its own up.
+	pub fn knows_freeze_frames(&self) -> bool {
+		self
+			.source
+			.is_some_and(|source| vag_data_db::freeze_frame_variants(&self.cache, source.kind()).is_ok_and(|v| !v.is_empty()))
 	}
 
-	/// Whether this project knows any channels at all.
+	/// Whether the run's source knows any channels at all.
 	pub fn is_empty(&self) -> bool {
-		self.variants.iter().all(|(_, names)| names.is_empty())
+		self.variants.is_empty()
 	}
 
-	/// The project these rows came out of, when one resolved.
+	/// The store these rows came out of, when one resolved: the ODIS project's id, or
+	/// `VCDS` for the machine's VCDS store.
 	///
-	/// `None` is two different states on purpose — no project is set up at all,
+	/// `None` is two different states on purpose — no source is set up at all,
 	/// and `--catalogs <dir>` naming proven rows without one — and neither can
-	/// name a project in a sentence, which is the only thing this is for.
+	/// name a store in a sentence, which is the only thing this is for.
 	pub fn project(&self) -> Option<&str> {
 		self.project.as_deref()
 	}
 
+	/// The run's source in a sentence, `the ODIS project SK37X` or `the VCDS installation`,
+	/// when there is one ([`crate::source::Run::describe`]).
+	pub fn describe(&self) -> Option<String> {
+		match (self.source?, self.project.as_deref()) {
+			(Source::Odis, Some(id)) => Some(format!("the ODIS project {id}")),
+			(Source::Odis, None) => Some("the ODIS project".to_string()),
+			(Source::Vcds, _) => Some("the VCDS installation".to_string()),
+		}
+	}
+
 	/// Whether this unit's states were cached before each level kept its whole
 	/// band — so a state read inside a band, rather than on its lower end, shows
-	/// as bytes until the project is read again.
+	/// as bytes until the source is read again.
 	///
 	/// Asked of the same variants [`Self::for_unit`] reads, and nothing else: a
 	/// stale level on a unit that is not in the car is not worth a sentence.
 	pub fn levels_predate_bounds(&self, odx_name: Option<&str>, version: Option<&str>) -> bool {
-		!self.is_empty()
-			&& self.variants.iter().any(|(kind, names)| {
-				self
-					.variants_of(kind, names, odx_name, version)
-					.into_iter()
-					.any(|name| vag_data_db::levels_predate_bounds(self.caches.of(kind), name).unwrap_or(false))
-			})
+		self
+			.variants_of(&self.variants, odx_name, version)
+			.into_iter()
+			.any(|name| vag_data_db::levels_predate_bounds(&self.cache, name).unwrap_or(false))
 	}
 
-	/// The ODIS projects this cache was read from, as `setup` recorded them —
-	/// what to point `setup` at to read them again.
+	/// The ODIS projects this run's cache was read from, as `setup` recorded them — what to
+	/// point `setup` at to read them again. Empty on a VCDS run.
 	pub fn odis_sources(&self) -> Vec<String> {
-		vag_data_db::sources_of(&self.caches.odis)
+		if self.source != Some(Source::Odis) {
+			return Vec::new();
+		}
+		vag_data_db::sources_of(&self.cache)
 			.unwrap_or_default()
 			.into_iter()
 			.filter(|(kind, _)| kind == vag_data_db::ODIS)
@@ -444,7 +473,7 @@ impl Extracted {
 			.collect()
 	}
 
-	/// The channels this project knows for a unit, given what the unit said.
+	/// The channels this run's source knows for a unit, given what the unit said.
 	///
 	/// `odx_name` is `F19E` and `version` is `F1A2`, **passed through exactly as
 	/// the car answered them** — padding, NULs and full length. [`odx_match`]
@@ -458,8 +487,8 @@ impl Extracted {
 		self.described(odx_name, version).into_iter().map(|(def, _)| def).collect()
 	}
 
-	/// The row the project itself declares at `def`'s field on this unit — what a proven row
-	/// at that field stands in front of ([`tagged`]). `None` where the project declares none.
+	/// The row the source itself declares at `def`'s field on this unit — what a proven row
+	/// at that field stands in front of ([`tagged`]). `None` where the source declares none.
 	pub fn declared_at(&self, odx_name: Option<&str>, version: Option<&str>, def: &MeasurementDef) -> Option<MeasurementDef> {
 		self.described(odx_name, version).into_iter().map(|(d, _)| d).find(|d| same_field(d, def))
 	}
@@ -467,87 +496,45 @@ impl Extracted {
 	/// The same, with each row's **text id** still attached.
 	///
 	/// Split out rather than folded into [`Self::for_unit`] because the id is
-	/// what reaches `names.json`, and dropping it here is exactly how every
-	/// channel on the selection screen came to be called after the ODIS long
+	/// what reaches the glossary and `names.json`, and dropping it here is exactly how
+	/// every channel on the selection screen came to be called after the ODIS long
 	/// name — or, where there was none, after its own identifier.
 	fn described(&self, odx_name: Option<&str>, version: Option<&str>) -> Vec<(MeasurementDef, Option<String>)> {
-		self.described_from(None, odx_name, version)
-	}
-
-	/// The channels one kind of source alone declares for a unit.
-	///
-	/// For a reader that must hear one kind of source alone: the registry
-	/// read's check of what an ODIS variant describes.
-	pub fn for_unit_from(&self, kind: &str, odx_name: Option<&str>, version: Option<&str>) -> Vec<MeasurementDef> {
-		self
-			.described_from(Some(kind), odx_name, version)
-			.into_iter()
-			.map(|(def, _)| def)
-			.collect()
-	}
-
-	/// [`Self::described`], from every source or from one kind of source alone.
-	fn described_from(&self, only: Option<&str>, odx_name: Option<&str>, version: Option<&str>) -> Vec<(MeasurementDef, Option<String>)> {
-		// A project that knows nothing answers nothing, without opening a cache
+		// A source that knows nothing answers nothing, without opening a cache
 		// that has nothing in it.
-		if self.is_empty() {
+		let Some(source) = self.source.filter(|_| !self.is_empty()) else {
 			return Vec::new();
-		}
+		};
 		let mut out: Vec<(MeasurementDef, Option<String>)> = Vec::new();
-		// Source by source in rank order, so a field an ODIS variant describes is
-		// held before a VCDS row for it comes up — the rule below then keeps the
-		// first — and VCDS fills only the fields ODIS has no row for.
-		for (kind, names) in self.variants.iter().filter(|(kind, _)| only.is_none_or(|only| only == *kind)) {
-			// The ids a source ranked higher has given this unit's fields are
-			// that source's. VCDS names a field by the record of the name it
-			// shows, and several fields can show one name, so a VCDS row at a
-			// field ODIS lacks can carry the id of a field ODIS has: it keeps its
-			// channel and gives up the id, and `unit:IDE…` picks out the one
-			// field it picked out with ODIS alone.
-			let claimed: std::collections::BTreeSet<String> = out.iter().filter_map(|(_, id)| id.clone()).collect();
-			for name in self.variants_of(kind, names, odx_name, version) {
-				let Ok(readings) = vag_data_db::readings_of_kind(self.caches.of(kind), kind, name) else {
+		for name in self.variants_of(&self.variants, odx_name, version) {
+			let Ok(readings) = vag_data_db::readings_of_kind(&self.cache, source.kind(), name) else {
+				continue;
+			};
+			for reading in readings {
+				let Some(def) = to_def(&reading) else {
 					continue;
 				};
-				for reading in readings {
-					let text_id = reading.text_id.clone().filter(|id| !claimed.contains(id));
-					let Some(def) = to_def(&reading) else { continue };
-					// Two variants of one family can describe the same **field**. The
-					// first wins, which is the alphabetically first — arbitrary, but
-					// stable, and a run that reported a different name each time
-					// would be worse than one that reports a fixed one.
-					//
-					// The field, not the identifier. Keying this by DID alone was
-					// worth 1,952 channels of 3,963 on the reference car: everything
-					// a control unit packed into a response after the first field
-					// was parsed, scaled, named — and then dropped one line before
-					// it could be shown.
-					if !out.iter().any(|(held, _)| same_field(held, &def)) {
-						out.push((def, text_id));
-					}
+				// Two variants of one family can describe the same **field**. The
+				// first wins, which is the alphabetically first — arbitrary, but
+				// stable, and a run that reported a different name each time
+				// would be worse than one that reports a fixed one.
+				//
+				// The field, not the identifier. Keying this by DID alone was
+				// worth 1,952 channels of 3,963 on the reference car: everything
+				// a control unit packed into a response after the first field
+				// was parsed, scaled, named — and then dropped one line before
+				// it could be shown.
+				if !out.iter().any(|(held, _)| same_field(held, &def)) {
+					out.push((def, reading.text_id.clone()));
 				}
 			}
 		}
 		out
 	}
 
-	/// The one source a run of this project reads, by kind: an ODIS project when it has one,
-	/// otherwise a VCDS installation; `None` with neither. ODIS and VCDS are independent
-	/// sources and a run never mixes them (CLAUDE.md). The default only: `[source] use` and
-	/// `--source`, which pick the other, are not built yet.
-	pub fn run_source(&self) -> Option<&'static str> {
-		// Each kind asked of its own store: the project's cache, the VCDS store's.
-		[vag_data_db::ODIS, vag_data_db::VCDS].into_iter().find(|kind| {
-			vag_data_db::sources_of(self.caches.of(kind))
-				.unwrap_or_default()
-				.iter()
-				.any(|(k, _)| k == kind)
-		})
-	}
-
-	/// The adaptation channels this project knows for a unit, given what it said (`F19E`,
-	/// `F1A2`, passed through as the car answered them), in DID order — the whole list a
-	/// read of the unit's adaptations asks for.
+	/// The adaptation channels this run's source knows for a unit, given what it said
+	/// (`F19E`, `F1A2`, passed through as the car answered them), in DID order — the whole
+	/// list a read of the unit's adaptations asks for.
 	///
 	/// From [`Self::run_source`] alone: an ODIS project's `ReadDataByIdentCalibData` rows, or
 	/// a VCDS installation's `RA.rod [ADP]` rows, never one filling a gap in the other. The
@@ -561,11 +548,8 @@ impl Extracted {
 	/// sweep is bounded to the identifiers its variant describes, so that unit is refused.
 	pub fn adaptations(&self, odx_name: Option<&str>, version: Option<&str>) -> Result<Vec<crate::adaptation::Adaptation>, Unsettled> {
 		use crate::adaptation::Adaptation;
-		if self.caches.odis.as_os_str().is_empty() && self.caches.vcds.as_os_str().is_empty() {
-			return Ok(Vec::new());
-		}
 		// One source's rows, every best-ranked variant's, the alphabetically first variant
-		// winning a field two of them describe — as `described_from` does.
+		// winning a field two of them describe — as `described` does.
 		let gather = |rows: Vec<Adaptation>, out: &mut Vec<Adaptation>| {
 			for row in rows {
 				if !out.iter().any(|held| held.same_field(&row)) {
@@ -574,22 +558,22 @@ impl Extracted {
 			}
 		};
 		let mut out = Vec::new();
-		match self.run_source() {
-			Some(vag_data_db::ODIS) => {
-				let variants = vag_data_db::adaptation_variants(&self.caches.odis).unwrap_or_default();
-				for variant in self.settled_variants(vag_data_db::ODIS, &variants, odx_name, version)? {
-					let rows = vag_data_db::odis_adaptations_of(&self.caches.odis, variant).unwrap_or_default();
+		match self.source {
+			Some(Source::Odis) => {
+				let variants = vag_data_db::adaptation_variants(&self.cache).unwrap_or_default();
+				for variant in self.settled_variants(&variants, odx_name, version)? {
+					let rows = vag_data_db::odis_adaptations_of(&self.cache, variant).unwrap_or_default();
 					gather(rows.iter().map(|r| Adaptation::from_odis(r, variant)).collect(), &mut out);
 				}
 			}
-			Some(vag_data_db::VCDS) => {
-				let variants = vag_data_db::registry_variants(&self.caches.vcds, ADAPTATION_SECTION).unwrap_or_default();
-				for variant in self.settled_variants(vag_data_db::VCDS, &variants, odx_name, version)? {
-					let rows = vag_data_db::registry_entries(&self.caches.vcds, variant, ADAPTATION_SECTION).unwrap_or_default();
+			Some(Source::Vcds) => {
+				let variants = vag_data_db::registry_variants(&self.cache, ADAPTATION_SECTION).unwrap_or_default();
+				for variant in self.settled_variants(&variants, odx_name, version)? {
+					let rows = vag_data_db::registry_entries(&self.cache, variant, ADAPTATION_SECTION).unwrap_or_default();
 					gather(rows.iter().filter_map(|r| Adaptation::from_vcds(r, variant)).collect(), &mut out);
 				}
 			}
-			_ => {}
+			None => {}
 		}
 		out.sort_by_key(|a| (a.did, a.bit_offset));
 		for row in &mut out {
@@ -604,16 +588,11 @@ impl Extracted {
 	/// answered, or no variant better than [`OdxMatch::Family`]. A VCDS stem the car's own
 	/// lookup stored is its variant, whatever the rank. No variant at all is not refused:
 	/// nothing describes the unit.
-	fn settled_variants<'a>(
-		&self,
-		kind: &str,
-		names: &'a [String],
-		odx_name: Option<&str>,
-		version: Option<&str>,
-	) -> Result<Vec<&'a String>, Unsettled> {
-		let picked = self.variants_of(kind, names, odx_name, version);
+	fn settled_variants<'a>(&self, names: &'a [String], odx_name: Option<&str>, version: Option<&str>) -> Result<Vec<&'a String>, Unsettled> {
+		let picked = self.variants_of(names, odx_name, version);
 		let answered = version.map(trimmed).filter(|v| !v.is_empty());
-		let stem = kind == vag_data_db::VCDS && odx_name.is_some_and(|odx| self.car_stems.contains_key(&(trimmed(odx), trimmed(version.unwrap_or("")))));
+		let stem =
+			self.source == Some(Source::Vcds) && odx_name.is_some_and(|odx| self.car_stems.contains_key(&(trimmed(odx), trimmed(version.unwrap_or("")))));
 		if picked.is_empty() || (stem && answered.is_some()) {
 			return Ok(picked);
 		}
@@ -633,11 +612,24 @@ impl Extracted {
 		}
 	}
 
-	/// The ODIS sources of this project whose adaptation channels were never read — read
-	/// before they were kept, which `vagcan setup` must read again to have them. A source
-	/// whose read found none is not among them.
+	/// The ODIS sources of this run whose adaptation channels were never read — read before
+	/// they were kept, which `vagcan setup` must read again to have them. A source whose read
+	/// found none is not among them. Empty on a VCDS run.
 	pub fn odis_unread_adaptations(&self) -> Vec<String> {
-		vag_data_db::odis_sources_without_adaptations(&self.caches.odis).unwrap_or_default()
+		if self.source != Some(Source::Odis) {
+			return Vec::new();
+		}
+		vag_data_db::odis_sources_without_adaptations(&self.cache).unwrap_or_default()
+	}
+
+	/// Whether the run's source describes any adaptation at all — an ODIS project read before
+	/// adaptations were kept, or whose read found none, describes none.
+	pub fn describes_adaptations(&self) -> bool {
+		match self.source {
+			Some(Source::Odis) => !vag_data_db::adaptation_variants(&self.cache).unwrap_or_default().is_empty(),
+			Some(Source::Vcds) => true,
+			None => false,
+		}
 	}
 }
 
@@ -659,7 +651,6 @@ const ADAPTATION_SECTION: &str = vag_data_labels::registries::Section::Adaptatio
 fn trimmed(identifier: &str) -> String {
 	identifier.trim_end_matches(['\0', ' ']).to_string()
 }
-
 /// The variant names a unit's `F19E`/`F1A2` pick out of a list, best rank only.
 ///
 /// **The one rule for matching a unit to its ODIS variants**, shared by the
@@ -822,34 +813,26 @@ mod tests {
 	use vag_data_labels::catalog::Scaling;
 	use vag_data_labels::measure::LinearScale;
 
-	/// A cache holding one project's channels. **Every byte is synthetic** — no
-	/// test reads a real ODIS project or the owner's own `~/.vagcan`.
+	/// A cache holding one ODIS project's channels, and an ODIS run over it. **Every byte is
+	/// synthetic** — no test reads a real ODIS project or the owner's own `~/.vagcan`.
 	fn cache_with(dir: &Path, variants: &[(&str, Vec<vag_data_labels::odis::Reading>)]) -> Extracted {
-		named_cache_with(dir, variants, &[])
-	}
-
-	/// The same, with a `names.json` beside it — text id to what the label
-	/// files call it. **Every byte is synthetic**, ids included.
-	fn named_cache_with(dir: &Path, variants: &[(&str, Vec<vag_data_labels::odis::Reading>)], names: &[(&str, &str)]) -> Extracted {
 		let cache = dir.join("cache.sqlite");
 		for (name, readings) in variants {
 			vag_data_db::put_readings(&cache, "/nowhere/SK37X", name, readings).expect("the fixture writes");
 		}
-		let caches = Caches {
-			odis: cache.clone(),
-			vcds: cache,
-		};
-		Extracted {
-			variants: variants_by_source(&caches),
-			caches,
-			project: Some("SK37X".to_string()),
-			names: names.iter().map(|(id, text)| (id.to_string(), text.to_string())).collect(),
-			// Never the owner's real one: a test must not read `~/.vagcan`.
-			mine: BTreeMap::new(),
-			language: Language::default(),
-			car_projects: Vec::new(),
-			car_stems: BTreeMap::new(),
-		}
+		Extracted::synthetic_from(Source::Odis, cache, BTreeMap::new())
+	}
+
+	/// A cache holding one VCDS installation's channels, with a `names.json` — text id to
+	/// what its text table calls it — and a VCDS run over it. **Every byte is synthetic**,
+	/// ids included.
+	fn named_cache_with(dir: &Path, variants: &[(&str, Vec<vag_data_labels::odis::Reading>)], names: &[(&str, &str)]) -> Extracted {
+		let cache = dir.join("cache.sqlite");
+		vag_data_db::record_language(&cache, vag_data_db::VCDS, "/nowhere/vcds-en", "eng").unwrap();
+		let rows: Vec<(&str, &[vag_data_labels::odis::Reading])> = variants.iter().map(|(name, r)| (*name, &r[..])).collect();
+		vag_data_db::put_all_vcds_readings(&cache, "/nowhere/vcds-en", rows).expect("the fixture writes");
+		let names = names.iter().map(|(id, text)| (id.to_string(), text.to_string())).collect();
+		Extracted::synthetic_from(Source::Vcds, cache, names)
 	}
 
 	/// One directory as both stores: the fixtures put both kinds of row in one cache.
@@ -934,7 +917,7 @@ mod tests {
 		let cache = here.path().join("cache.sqlite");
 		put_odis_adaptations(&cache);
 		let x = Extracted::synthetic(cache, BTreeMap::new());
-		assert_eq!(x.run_source(), Some(vag_data_db::ODIS));
+		assert_eq!(x.run_source(), Some(Source::Odis));
 		assert_eq!(adaptations_of(&x), [(0x0600, 0, "odis".to_string(), vag_data_db::ODIS)]);
 		// A unit of another family gets none of them.
 		assert_eq!(x.adaptations(Some("EV_Gateway"), Some("001")), Ok(Vec::new()));
@@ -978,7 +961,7 @@ mod tests {
 		let cache = here.path().join("cache.sqlite");
 		put_vcds_adaptations(&cache);
 		let x = Extracted::synthetic(cache, BTreeMap::new());
-		assert_eq!(x.run_source(), Some(vag_data_db::VCDS));
+		assert_eq!(x.run_source(), Some(Source::Vcds));
 		assert_eq!(
 			adaptations_of(&x),
 			[
@@ -997,16 +980,20 @@ mod tests {
 		let cache = here.path().join("cache.sqlite");
 		put_odis_adaptations(&cache);
 		put_vcds_adaptations(&cache);
-		let x = Extracted::synthetic(cache, BTreeMap::new());
-		assert_eq!(x.run_source(), Some(vag_data_db::ODIS));
+		let x = Extracted::synthetic(cache.clone(), BTreeMap::new());
+		assert_eq!(x.run_source(), Some(Source::Odis));
 		assert_eq!(adaptations_of(&x), [(0x0600, 0, "odis".to_string(), vag_data_db::ODIS)]);
+		// The other source picked: its rows alone, none of ODIS's.
+		let vcds = Extracted::synthetic_from(Source::Vcds, cache, BTreeMap::new());
+		assert!(adaptations_of(&vcds).iter().all(|(.., source)| *source == vag_data_db::VCDS));
+		assert_eq!(adaptations_of(&vcds).len(), 3);
 	}
 
+	/// One source per run (owner, 2026-10-21, replacing 2026-09-28's "ODIS outranks VCDS,
+	/// field by field"): with both in one cache, a run of either reads that source's fields
+	/// alone, and a field only the other describes is not described.
 	#[test]
-	fn an_odis_row_wins_its_field_and_a_vcds_row_fills_only_what_odis_lacks() {
-		// The owner's decision of 2026-09-28. The VCDS file stem ranks `Exact`
-		// and the ODIS variant `Version`, each among its own source's variants —
-		// the source ranks first, so neither rank is a reason for VCDS to win.
+	fn a_run_reads_one_source_and_nothing_of_the_other_fills_a_field() {
 		let here = tempfile::tempdir().unwrap();
 		let cache = here.path().join("cache.sqlite");
 		vag_data_db::put_readings(&cache, "/nowhere/SK37X", "EV_TCMDQ200021_001", &[reading(0x380A, "odis", 0, 16, false)]).unwrap();
@@ -1019,8 +1006,10 @@ mod tests {
 			[("EV_TCMDQ200021", &gearbox[..]), ("EV_Brake1UDS", &brake[..])],
 		)
 		.unwrap();
-		let x = Extracted::synthetic(cache, BTreeMap::new());
-		let named = |odx: &str, version: &str| -> Vec<(u16, String)> {
+		let odis = Extracted::synthetic(cache.clone(), BTreeMap::new());
+		assert_eq!(odis.run_source(), Some(Source::Odis), "the default with both");
+		let vcds = Extracted::synthetic_from(Source::Vcds, cache, BTreeMap::new());
+		let named = |x: &Extracted, odx: &str, version: &str| -> Vec<(u16, String)> {
 			x.for_unit(Some(odx), Some(version))
 				.into_iter()
 				.map(|def| {
@@ -1030,15 +1019,21 @@ mod tests {
 				.collect()
 		};
 		assert_eq!(
-			named("EV_TCMDQ200021", "001017"),
-			[(0x380A, "odis".to_string()), (0x380B, "vcds".to_string())]
+			named(&odis, "EV_TCMDQ200021", "001017"),
+			[(0x380A, "odis".to_string())],
+			"0x380B is VCDS's"
 		);
-		// A unit only VCDS knows reads from VCDS alone.
-		assert_eq!(named("EV_Brake1UDS", "036010"), [(0x1822, "vcds".to_string())]);
+		assert_eq!(
+			named(&vcds, "EV_TCMDQ200021", "001017"),
+			[(0x380A, "vcds".to_string()), (0x380B, "vcds".to_string())]
+		);
+		// A unit only VCDS knows: nothing on an ODIS run, VCDS's on a VCDS run.
+		assert!(named(&odis, "EV_Brake1UDS", "036010").is_empty());
+		assert_eq!(named(&vcds, "EV_Brake1UDS", "036010"), [(0x1822, "vcds".to_string())]);
 	}
 
 	#[test]
-	fn across_the_project_and_the_vcds_store_odis_still_wins_its_field() {
+	fn across_the_project_and_the_vcds_store_a_run_reads_one_of_them() {
 		// The same rule with the two sources in two caches: the ODIS project's, and the
 		// machine's VCDS store. And with no project at all, the store alone answers.
 		let here = tempfile::tempdir().unwrap();
@@ -1068,12 +1063,18 @@ mod tests {
 				})
 				.collect()
 		};
-		let both = open(&crate::project::Stores {
+		let stores = crate::project::Stores {
 			project: Some(project.clone()),
 			vcds: store.clone(),
-		});
-		assert_eq!(named(&both), [(0x380A, "odis".to_string()), (0x380B, "vcds".to_string())]);
+		};
+		let both = open(&stores);
+		assert_eq!(both.run_source(), Some(Source::Odis));
+		assert_eq!(named(&both), [(0x380A, "odis".to_string())]);
 		assert_eq!(both.project(), Some("SK37X"));
+		let vcds = open_from(&stores, Some(Source::Vcds));
+		assert_eq!(named(&vcds), [(0x380A, "vcds".to_string()), (0x380B, "vcds".to_string())]);
+		assert_eq!(vcds.project(), Some(crate::project::VCDS_STORE));
+		assert!(vcds.odis_sources().is_empty());
 		let vcds_alone = open(&crate::project::Stores { project: None, vcds: store });
 		assert_eq!(named(&vcds_alone), [(0x380A, "vcds".to_string()), (0x380B, "vcds".to_string())]);
 		assert!(vcds_alone.odis_sources().is_empty());
@@ -1091,7 +1092,7 @@ mod tests {
 		vag_data_db::put_readings(&cache, "/nowhere/SK37X", "EV_Other_001", &[reading(0x1000, "odis", 0, 8, true)]).unwrap();
 		vag_data_db::record_language(&cache, vag_data_db::VCDS, "/nowhere/vcds-en", "eng").unwrap();
 		vag_data_db::put_all_vcds_readings(&cache, "/nowhere/vcds-en", [("EV_InvGatew_SK37", &sk[..]), ("EV_InvGatew_VW48", &vw[..])]).unwrap();
-		let mut x = Extracted::synthetic(cache, BTreeMap::new());
+		let mut x = Extracted::synthetic_from(Source::Vcds, cache, BTreeMap::new());
 		let mut names = |projects: &[&str]| -> Vec<String> {
 			x.car_projects = projects.iter().map(|p| p.to_string()).collect();
 			x.for_unit(Some("EV_InvGatew"), Some("013020"))
@@ -1128,7 +1129,7 @@ mod tests {
 			[("EV_InvACC_006_SK37", &sk[..]), ("EV_InvACC_006_VW27", &vw[..])],
 		)
 		.unwrap();
-		let mut x = Extracted::synthetic(cache, BTreeMap::new());
+		let mut x = Extracted::synthetic_from(Source::Vcds, cache, BTreeMap::new());
 		let names = |x: &Extracted| -> Vec<String> {
 			x.for_unit(Some("EV_InvACC\0"), Some("006145 "))
 				.into_iter()
@@ -1153,12 +1154,11 @@ mod tests {
 	}
 
 	#[test]
-	fn a_vcds_row_gives_up_an_id_odis_gives_another_field_of_the_unit() {
+	fn each_source_keeps_its_own_text_ids_and_lends_none_to_the_other() {
 		// VCDS names a field by the record of the name it shows, and several
-		// fields can show one name — an odometer's among them. Where ODIS already
-		// gives that id to one field of the unit, a VCDS row filling another field
-		// keeps its channel and loses the id, so `unit:IDE…` still picks out the
-		// one field it did with ODIS alone.
+		// fields can show one name — an odometer's among them. With one source per
+		// run no id is claimed across the two: an ODIS run has ODIS's fields and ids,
+		// a VCDS run VCDS's, each as its own rows carry them.
 		let here = tempfile::tempdir().unwrap();
 		let cache = here.path().join("cache.sqlite");
 		let with_id = |did, offset, id: &str| vag_data_labels::odis::Reading {
@@ -1173,20 +1173,23 @@ mod tests {
 		];
 		vag_data_db::record_language(&cache, vag_data_db::VCDS, "/nowhere/vcds", "eng").unwrap();
 		vag_data_db::put_all_vcds_readings(&cache, "/nowhere/vcds", [("EV_Unit_VW37", &vcds[..])]).unwrap();
-		let both = Extracted::synthetic(cache, BTreeMap::new());
-		let ids: Vec<(u16, u32, Option<String>)> = both
-			.described(Some("EV_Unit"), Some("001001"))
-			.into_iter()
-			.map(|(def, id)| {
-				let ReadId::Uds(did) = def.address;
-				(did, def.raw_form.bit_offset(), id)
-			})
-			.collect();
+		let ids = |x: &Extracted| -> Vec<(u16, u32, Option<String>)> {
+			x.described(Some("EV_Unit"), Some("001001"))
+				.into_iter()
+				.map(|(def, id)| {
+					let ReadId::Uds(did) = def.address;
+					(did, def.raw_form.bit_offset(), id)
+				})
+				.collect()
+		};
+		let odis = Extracted::synthetic_from(Source::Odis, cache.clone(), BTreeMap::new());
+		assert_eq!(ids(&odis), [(0x2203, 0, Some("IDE90001".to_string()))]);
+		let vcds = Extracted::synthetic_from(Source::Vcds, cache, BTreeMap::new());
 		assert_eq!(
-			ids,
+			ids(&vcds),
 			[
-				(0x2203, 0, Some("IDE90001".to_string())),
-				(0x2CD1, 48, None),
+				(0x2203, 0, Some("IDE90009".to_string())),
+				(0x2CD1, 48, Some("IDE90001".to_string())),
 				(0x2CD1, 128, Some("IDE90002".to_string())),
 			]
 		);
@@ -1326,8 +1329,7 @@ mod tests {
 		// assumed to hold VCDS wording.
 		assert!(open(&one_dir(&project)).names.is_empty(), "it trusted a file nothing vouched for");
 
-		// A log naming only ODIS runs: same answer, and this is the owner's
-		// actual machine.
+		// A log naming only ODIS runs: an ODIS run, which reads no `names.json` at all.
 		crate::project::record_source(
 			&project,
 			crate::project::SourceEntry {
@@ -1340,8 +1342,9 @@ mod tests {
 		.unwrap();
 		assert!(open(&one_dir(&project)).names.is_empty(), "{:?}", open(&one_dir(&project)).names);
 
-		// Once an installation has contributed, the file is what it promises
-		// and the join through the text id does its job.
+		// Once an installation has contributed, the default is still the ODIS project, and
+		// an ODIS run still reads no VCDS wording; a VCDS run reads it, and the join through
+		// the text id does its job.
 		crate::project::record_source(
 			&project,
 			crate::project::SourceEntry {
@@ -1352,17 +1355,21 @@ mod tests {
 			},
 		)
 		.unwrap();
+		assert!(open(&one_dir(&project)).names.is_empty(), "an ODIS run borrowed VCDS's wording");
 		assert_eq!(
-			open(&one_dir(&project)).names.get("MAS14374").map(String::as_str),
+			open_from(&one_dir(&project), Some(Source::Vcds))
+				.names
+				.get("MAS14374")
+				.map(String::as_str),
 			Some("Total_CarWakeup_Events_Counter")
 		);
 	}
 
 	#[test]
-	fn a_cache_whose_sources_do_not_read_does_not_cost_the_vcds_wording() {
+	fn a_cache_whose_sources_do_not_read_is_no_source_and_a_vcds_run_keeps_its_wording() {
 		// Review of #37: an unreadable cache was taken for "no VCDS source", and
-		// `names.json` dropped with nothing said. It says nothing either way: the file is
-		// read as what it promises, and a note says so.
+		// `names.json` dropped with nothing said. Now such a store is no source for the
+		// default (said once, on stderr); a VCDS run asked for reads the file it has.
 		let here = tempfile::tempdir().unwrap();
 		let project = crate::project::Project {
 			id: "SK37X".into(),
@@ -1370,8 +1377,12 @@ mod tests {
 		};
 		std::fs::write(project.cache(), b"this is not an SQLite file, and it is longer than a header").unwrap();
 		std::fs::write(project.names(), r#"{"MAS14374": "Total_CarWakeup_Events_Counter"}"#).unwrap();
+		assert_eq!(open(&one_dir(&project)).run_source(), None);
 		assert_eq!(
-			open(&one_dir(&project)).names.get("MAS14374").map(String::as_str),
+			open_from(&one_dir(&project), Some(Source::Vcds))
+				.names
+				.get("MAS14374")
+				.map(String::as_str),
 			Some("Total_CarWakeup_Events_Counter")
 		);
 	}
@@ -1641,19 +1652,7 @@ mod tests {
 		// The tool worked this way until an ODIS project became a second source,
 		// and a VCDS-only project still does.
 		let here = tempfile::tempdir().unwrap();
-		let x = Extracted {
-			caches: Caches {
-				odis: here.path().join("nothing.sqlite"),
-				vcds: here.path().join("nothing.sqlite"),
-			},
-			project: None,
-			variants: Vec::new(),
-			names: BTreeMap::new(),
-			mine: BTreeMap::new(),
-			language: Language::default(),
-			car_projects: Vec::new(),
-			car_stems: BTreeMap::new(),
-		};
+		let x = Extracted::synthetic_from(Source::Vcds, here.path().join("nothing.sqlite"), BTreeMap::new());
 		assert!(x.is_empty());
 		assert!(x.for_unit(Some("EV_TCMDQ200021"), Some("001")).is_empty());
 		// And the join over it is exactly the proven rows, unchanged.

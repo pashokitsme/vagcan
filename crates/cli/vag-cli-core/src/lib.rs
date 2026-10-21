@@ -41,6 +41,7 @@ pub mod progress;
 pub mod project;
 pub mod registry;
 pub mod report;
+pub mod source;
 pub mod table;
 pub mod ui;
 pub mod units;

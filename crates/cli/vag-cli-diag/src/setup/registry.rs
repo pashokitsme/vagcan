@@ -123,7 +123,7 @@ pub(super) async fn registry_channels(root: &Path, stores: &crate::project::Stor
 			of: 0,
 			looked_up: None,
 		};
-		crate::registry::read(&root, &stores, &units, &mut said)
+		crate::registry::read(&root, &stores.vcds, &units, &mut said)
 	})
 	.await
 	.map_err(|e| anyhow::anyhow!("the registry read did not finish: {e}"))??;

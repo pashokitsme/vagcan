@@ -121,15 +121,12 @@ enum Made {
 /// `channels.json` in `dir`: the catalog, made again only when what it is made from changed.
 fn channels(vin: &str, dir: &Path, language: Option<Language>, units: &[UnitIdentity]) -> Result<Made> {
 	let stores = vag_cli_core::project::stores()?;
+	// The run's one source, and only its files: the catalog is that source's channels.
+	let run = vag_cli_core::source::run(&stores)?;
 	let default_language = vag_cli_core::config::language(&vag_cli_core::config::load());
 	let mut sources = vec![vag_cli_core::datadir::units_record(vin)?];
-	sources.extend(stores.caches());
-	sources.extend([
-		stores.measurements_dir(),
-		stores.vcds.names(),
-		stores.vcds.registry_log(),
-		vag_cli_core::glossary::path()?,
-	]);
+	sources.extend(run.iter().flat_map(vag_cli_core::source::Run::files));
+	sources.extend([stores.measurements_dir(), vag_cli_core::glossary::path()?]);
 	// Not `config.toml` itself: `watch` writes its marks there, and the one thing in it the
 	// catalog reads — the language — is in the key below.
 	// This build of the tool: a new one may resolve differently.
@@ -137,8 +134,9 @@ fn channels(vin: &str, dir: &Path, language: Option<Language>, units: &[UnitIden
 		sources.push(me);
 	}
 	let key = format!(
-		"format {CATALOG_FORMAT}\nproject {}\nlanguage {}\n{}",
+		"format {CATALOG_FORMAT}\nproject {}\nsource {}\nlanguage {}\n{}",
 		stores.id(),
+		run.as_ref().map_or("none", |r| r.source.word()),
 		language.unwrap_or(default_language).code(),
 		fingerprint(&sources)
 	);
@@ -151,7 +149,11 @@ fn channels(vin: &str, dir: &Path, language: Option<Language>, units: &[UnitIden
 		return Ok(Made::Kept(rows.len()));
 	}
 	let store = CatalogStore::open(stores.measurements_dir());
-	let extracted = vag_cli_core::extracted::open(&stores).for_car(Some(vin));
+	let extracted = match &run {
+		Some(run) => vag_cli_core::extracted::open_run(run),
+		None => vag_cli_core::extracted::Extracted::none(),
+	}
+	.for_car(Some(vin));
 	let rows = catalog::rows(&catalog::Sources {
 		vin,
 		language,

@@ -5,8 +5,9 @@
 //! ODIS-Service project describes one **platform** (`SK37X`: every Octavia III, Karoq
 //! and Kodiaq), so it is a project, and a machine may hold several. A VCDS installation
 //! describes **every** VAG car, so there is one per machine, read for whichever car is
-//! connected ([`vcds`]). A command reads both ([`stores`]): the car's ODIS project when
-//! there is one, and the VCDS store. Where both describe a channel, ODIS wins.
+//! connected ([`vcds`]). A command resolves both ([`stores`]) — the car's ODIS project when
+//! there is one, and the VCDS store — and then reads **one** of them: the run's source
+//! ([`crate::source::run_source`]). The two are never mixed.
 //!
 //! ```text
 //! ~/.vagcan/
@@ -81,8 +82,9 @@ pub struct Project {
 	pub dir: PathBuf,
 }
 
-/// What a command reads: the ODIS project this run is about, when there is one, and the
-/// machine's VCDS store, which is there whether or not `setup` has read anything into it.
+/// Where a command's sources are: the ODIS project this run is about, when there is one, and
+/// the machine's VCDS store, which is there whether or not `setup` has read anything into it.
+/// A run reads one of the two ([`crate::source::Run`]), never both.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stores {
 	pub project: Option<Project>,
@@ -97,16 +99,6 @@ impl Stores {
 			vag_data_db::VCDS => Some(self.vcds.cache()),
 			_ => self.project.as_ref().map(Project::cache),
 		}
-	}
-
-	/// Both caches, the project's first — what a reader asking every source walks.
-	pub fn caches(&self) -> Vec<PathBuf> {
-		self
-			.project
-			.iter()
-			.map(Project::cache)
-			.chain(std::iter::once(self.vcds.cache()))
-			.collect()
 	}
 
 	/// Where the rows proven on a car are read from: the project's `measurements/`, or
@@ -2252,7 +2244,10 @@ mod tests {
 		};
 		assert_eq!(stores.cache_of(vag_data_db::ODIS), None);
 		assert_eq!(stores.cache_of(vag_data_db::VCDS), Some(here.path().join("vcds").join("cache.sqlite")));
-		assert_eq!(stores.caches(), vec![here.path().join("vcds").join("cache.sqlite")]);
+		assert!(
+			crate::source::Run::of(&stores, crate::source::Source::Odis).is_none(),
+			"no project, no ODIS run"
+		);
 		assert_eq!(stores.id(), VCDS_STORE);
 	}
 

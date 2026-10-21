@@ -42,9 +42,15 @@
 //! # Show each channel's own key at the end of its row.
 //! show_key = false
 //!
-//! # Which language `faults` shows fault text in: `en`, `de`, `ru`, … (or the
-//! # three-letter code a source declares, `eng`, `deu`, `rus`). Unset, English
-//! # wherever a source has it, else the ODIS project's own.
+//! # Which source a run reads: "odis" or "vcds" — one per run, never mixed. Unset, the
+//! # ODIS project when there is one, else the VCDS installation. `--source` and
+//! # VAGCAN_SOURCE override it.
+//! [source]
+//! use = "vcds"
+//!
+//! # Which language `faults` shows fault text in, among the run's source's own: `en`,
+//! # `de`, `ru`, … (or the three-letter code a source declares, `eng`, `deu`, `rus`).
+//! # Unset, English wherever the source has it, else its own.
 //! [faults]
 //! language = "de"
 //!
@@ -137,9 +143,15 @@ const FRESH: &str = "\
 # can be found in names.csv.\n\
 # show_key = false\n\
 \n\
-# Which language `faults` shows fault text in when the sources set up declare\n\
-# several: \"en\", \"de\", \"ru\", ... Unset, English wherever a source has it,\n\
-# else the ODIS project's own.\n\
+# Which source a run reads: \"odis\" or \"vcds\" -- one per run, never mixed.\n\
+# Unset, the ODIS project when there is one, else the VCDS installation.\n\
+# `--source` and VAGCAN_SOURCE override it.\n\
+# [source]\n\
+# use = \"vcds\"\n\
+\n\
+# Which language `faults` shows fault text in when the run's source declares\n\
+# several: \"en\", \"de\", \"ru\", ... Unset, English wherever the source has it,\n\
+# else its own.\n\
 # [faults]\n\
 # language = \"de\"\n\
 \n\
@@ -231,6 +243,12 @@ pub fn language_complaint(document: &Document) -> Option<String> {
 			Language::default().code()
 		)),
 	}
+}
+
+/// Which source a run reads, as `[source] use` spells it, if the file says — checked by
+/// [`crate::source::asked`], which refuses a value that names no source.
+pub fn source(document: &Document) -> Option<String> {
+	Some(document.get("source")?.get("use")?.as_str()?.to_string())
 }
 
 /// Which source's fault text `faults` prefers — `[faults] language`, as the

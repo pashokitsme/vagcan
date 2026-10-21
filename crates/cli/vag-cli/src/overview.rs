@@ -102,7 +102,11 @@ pub struct CarData {
 	/// the name and stops, rather than inventing a provenance for it.
 	pub from_vcds: bool,
 	pub from_odis: bool,
-	/// ECU variants described, and channels across them.
+	/// The one source a car command reads ([`vag_cli_core::source::run_source`]), or why
+	/// none can be: a source asked for that is not set up.
+	pub reads: Result<Option<vag_cli_core::source::Source>, String>,
+	/// ECU variants described, and channels across them — in [`CarData::reads`]'s source
+	/// alone, never the two summed: a run reads one.
 	pub described: Described,
 	/// How many catalog files carry rows proven on a car — one file per key,
 	/// and the key is a part number *or* an ODX name, whichever the unit
@@ -239,32 +243,64 @@ fn store(dir: &std::path::Path) -> Store {
 /// command reads; with neither, nothing is set up.
 fn vcds_alone(vcds: Option<&project::Project>) -> Cars {
 	match vcds {
-		Some(store) => Cars::One(CarData {
-			id: "VCDS store (every car)".to_string(),
-			from_vcds: true,
-			from_odis: false,
-			described: described(&store.cache()),
-			proven_catalogs: proven_catalogs(&store.measurements_dir()),
-		}),
+		Some(store) => {
+			let stores = project::Stores {
+				project: None,
+				vcds: store.clone(),
+			};
+			let reads = reads(&stores);
+			Cars::One(CarData {
+				id: "VCDS store (every car)".to_string(),
+				from_vcds: true,
+				from_odis: false,
+				described: described_in(&stores, &reads),
+				reads,
+				proven_catalogs: proven_catalogs(&store.measurements_dir()),
+			})
+		}
 		None => Cars::None,
 	}
 }
 
 /// What one project holds, with the VCDS store beside it, in the queries that answer it
-/// cheaply.
+/// cheaply: the channels of the source a car command reads, and no other.
 fn summarise(project: &project::Project, vcds: Option<&project::Project>) -> CarData {
-	let mut described = described(&project.cache());
-	if let (Described::Channels(variants, channels), Some(Described::Channels(more, also))) =
-		(&described, vcds.map(|store| self::described(&store.cache())))
-	{
-		described = Described::Channels(variants + more, channels + also);
-	}
+	let stores = project::Stores {
+		project: Some(project.clone()),
+		vcds: vcds.cloned().unwrap_or_else(|| project::vcds_at(&project.dir.join("no-vcds-store"))),
+	};
+	let reads = reads(&stores);
 	CarData {
 		id: project.id.clone(),
 		from_vcds: vcds.is_some(),
 		from_odis: project::has_source(project, "odis").unwrap_or(false),
-		described,
+		described: described_in(&stores, &reads),
+		reads,
 		proven_catalogs: proven_catalogs(&project.measurements_dir()),
+	}
+}
+
+/// The source a car command reads over these stores, or the refusal as one line.
+fn reads(stores: &project::Stores) -> Result<Option<vag_cli_core::source::Source>, String> {
+	vag_cli_core::source::run_source(stores).map_err(|e| cause(&e))
+}
+
+/// What the source a car command reads describes; nothing to count without one.
+fn described_in(stores: &project::Stores, reads: &Result<Option<vag_cli_core::source::Source>, String>) -> Described {
+	match reads
+		.as_ref()
+		.ok()
+		.copied()
+		.flatten()
+		.and_then(|s| vag_cli_core::source::Run::of(stores, s))
+	{
+		Some(run) => described(&run.cache(), run.source),
+		// No source to read: the project's cache still says whether it was built, or will
+		// not open — the two states that send somebody to `setup`.
+		None => match &stores.project {
+			Some(project) => described(&project.cache(), vag_cli_core::source::Source::Odis),
+			None => Described::None,
+		},
 	}
 }
 
@@ -273,14 +309,14 @@ fn summarise(project: &project::Project, vcds: Option<&project::Project>) -> Car
 /// A cache that will not open and a cache with no ODIS rows in it are both
 /// "no channel count", and printing them the same way tells somebody whose
 /// `cache.sqlite` is truncated that their VCDS-only project is normal.
-fn described(cache: &std::path::Path) -> Described {
+fn described(cache: &std::path::Path, source: vag_cli_core::source::Source) -> Described {
 	// Asked before opening, because the reader opens read-only and so cannot
 	// tell "there is no file" from "the file will not parse" out of one error
 	// — and those two send somebody to different places.
 	if !cache.is_file() {
 		return Described::Unbuilt;
 	}
-	match vag_data_db::channel_counts(cache).with_context(|| format!("reading {}", cache.display())) {
+	match vag_data_db::channel_counts_of(cache, source.kind()).with_context(|| format!("reading {}", cache.display())) {
 		Ok((variants, channels)) if channels > 0 => Described::Channels(variants, channels),
 		Ok(_) => Described::None,
 		Err(e) => Described::Unknown(cause(&e)),
@@ -362,7 +398,13 @@ fn state(facts: &Facts) -> String {
 			out.push_str(&format!("  Project   {}{}\n", car.id, provenance(car)));
 			match &car.described {
 				Described::Channels(variants, channels) => {
-					out.push_str(&format!("            {channels} channels across {variants} control-unit variants\n"));
+					let whose = match car.reads {
+						Ok(Some(source)) => format!(", in {source}"),
+						_ => String::new(),
+					};
+					out.push_str(&format!(
+						"            {channels} channels across {variants} control-unit variants{whose}\n"
+					));
 				}
 				Described::None => {}
 				Described::Unbuilt => out.push_str("            not built yet — `vagcan setup` reads a source into it\n"),
@@ -370,6 +412,17 @@ fn state(facts: &Facts) -> String {
 					out.push_str("            its label cache is there and will not open — `vagcan setup --refresh` rewrites it\n");
 					out.push_str(&caused_by(why));
 				}
+			}
+			// Which source car commands read, where there is a choice — or why the one asked
+			// for cannot be.
+			match &car.reads {
+				Ok(Some(source)) if car.from_vcds && car.from_odis => out.push_str(&format!(
+					"            car commands read {source}; `{}` reads {}\n",
+					source.other().flag(),
+					source.other()
+				)),
+				Err(why) => out.push_str(&caused_by(why)),
+				_ => {}
 			}
 			if car.proven_catalogs > 0 {
 				out.push_str(&format!(
@@ -520,6 +573,7 @@ mod tests {
 			id: "SK37X".to_string(),
 			from_vcds: true,
 			from_odis: true,
+			reads: Ok(Some(vag_cli_core::source::Source::Odis)),
 			described: Described::Channels(669, 399_283),
 			proven_catalogs: 3,
 		}
@@ -713,7 +767,7 @@ mod tests {
 		// read", which is the sentence this cause exists to qualify.
 		let cache = root.join("cache.sqlite");
 		std::fs::write(&cache, b"this is not a database").unwrap();
-		let Described::Unknown(why) = described(&cache) else {
+		let Described::Unknown(why) = described(&cache, vag_cli_core::source::Source::Odis) else {
 			panic!("a truncated cache does not answer");
 		};
 		assert!(why.contains(&cache.display().to_string()), "{why}");

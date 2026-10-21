@@ -2270,48 +2270,45 @@ fn read_variant(db_path: &Path, variant: &str, kind: Option<&str>, table: Channe
 	Ok(out)
 }
 
-/// Every text id this cache knows, with one name it is used under.
+/// Every text id one kind of source's rows carry ([`ODIS`], [`VCDS`]), with one name it is
+/// used under — of that kind alone: a run reads one source, and no id or name of the other
+/// kind's rows is in the answer.
 ///
 /// The seed for the owner's own glossary (`~/.vagcan/names.csv`): a person
 /// writing their own wording needs the id to key it by and a reminder of what
 /// the channel is currently called, or they are translating a list of opaque
 /// keys. `MIN()` picks the name rather than an arbitrary row so two runs on one
 /// cache produce the same file.
-///
-/// An id an ODIS row carries takes ODIS's name: a VCDS row can carry the id of
-/// another field — several fields can show one name — and the reader gives the
-/// id to ODIS's field (`vag-cli-core`'s `extracted`), so the reminder names that
-/// one.
-pub fn text_ids(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
+pub fn text_ids_of(db_path: &Path, kind: &str) -> Result<Vec<(String, String)>, Error> {
 	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare(
-		"SELECT r.text_id, COALESCE(MIN(CASE WHEN s.kind = ?1 THEN r.name END), MIN(r.name)) \
-         FROM reading r LEFT JOIN source s ON s.id = r.source_id \
-         WHERE r.text_id IS NOT NULL AND r.text_id <> '' GROUP BY r.text_id ORDER BY r.text_id",
+		"SELECT r.text_id, MIN(r.name) FROM reading r JOIN source s ON s.id = r.source_id \
+         WHERE s.kind = ?1 AND r.text_id IS NOT NULL AND r.text_id <> '' GROUP BY r.text_id ORDER BY r.text_id",
 	)?;
-	let rows = stmt.query_map(params![ODIS], |row| Ok((row.get(0)?, row.get(1)?)))?;
+	let rows = stmt.query_map(params![kind], |row| Ok((row.get(0)?, row.get(1)?)))?;
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// How much of a car the sources described: `(variants, channels)`, an ODIS
-/// project's rows and a VCDS install's registry rows together.
+/// How much of a car one kind of source described: `(variants, channels)` — an ODIS
+/// project's rows or a VCDS install's registry rows, never the two summed.
 ///
 /// One query rather than `reading_variants(…).len()`, because a caller that
 /// wants the size of the answer should not have to materialise it — a project
 /// is hundreds of variant names and hundreds of thousands of channels, and the
 /// only place this is asked from is a status line printed before anything else
-/// happens. Both halves ride `idx_reading_lookup`, so it stays in milliseconds
-/// on the owner's 92 MB cache.
+/// happens.
 ///
-/// `(0, 0)` for a project whose VCDS installation was read with no car yet
-/// connected: its label files live in another table, which is D1's split, and
-/// the registry rows come only for the units of the cars recorded on this
-/// machine. [`row_counts`] is the per-table dump for somebody who wants that.
-pub fn channel_counts(db_path: &Path) -> Result<(u64, u64), Error> {
+/// `(0, 0)` for a VCDS installation read with no car yet connected: its label files live
+/// in another table, which is D1's split, and the registry rows come only for the units of
+/// the cars recorded on this machine. [`row_counts`] is the per-table dump for somebody
+/// who wants that.
+pub fn channel_counts_of(db_path: &Path, kind: &str) -> Result<(u64, u64), Error> {
 	let conn = open_existing(db_path)?;
-	let (variants, channels): (i64, i64) = conn.query_row("SELECT COUNT(DISTINCT variant), COUNT(*) FROM reading", [], |row| {
-		Ok((row.get(0)?, row.get(1)?))
-	})?;
+	let (variants, channels): (i64, i64) = conn.query_row(
+		"SELECT COUNT(DISTINCT variant), COUNT(*) FROM reading WHERE source_id IN (SELECT id FROM source WHERE kind = ?1)",
+		params![kind],
+		|row| Ok((row.get(0)?, row.get(1)?)),
+	)?;
 	Ok((variants.max(0) as u64, channels.max(0) as u64))
 }
 
@@ -2980,7 +2977,7 @@ mod tests {
 		let identity = Scaling::Linear(vag_data_labels::LinearScale { factor: 1.0, offset: 0.0 });
 		write_fixture_labels(&ws);
 		build_db(&ws.labels_dir, &ws.db_path).unwrap();
-		assert_eq!(channel_counts(&ws.db_path).unwrap(), (0, 0));
+		assert_eq!(channel_counts_of(&ws.db_path, ODIS).unwrap(), (0, 0));
 
 		put_readings(
 			&ws.db_path,
@@ -2990,7 +2987,8 @@ mod tests {
 		)
 		.unwrap();
 		put_readings(&ws.db_path, "/x/SK37X", "EV_Gearbox", &[reading(0x380A, "c", identity)]).unwrap();
-		assert_eq!(channel_counts(&ws.db_path).unwrap(), (2, 3), "two variants, three channels between them");
+		assert_eq!(channel_counts_of(&ws.db_path, ODIS).unwrap(), (2, 3), "two variants, three channels between them");
+		assert_eq!(channel_counts_of(&ws.db_path, VCDS).unwrap(), (0, 0), "nothing of the other kind is counted");
 	}
 
 	#[test]
@@ -3009,10 +3007,9 @@ mod tests {
 	}
 
 	#[test]
-	fn the_glossary_hint_for_an_id_odis_carries_is_odis_s_name() {
-		// A VCDS row can carry an id ODIS gives another field — several fields
-		// can show one name — and the reader gives the id to ODIS's field. The
-		// glossary's reminder of what a channel is called follows the same rule.
+	fn each_kind_s_text_ids_carry_its_own_names_and_none_of_the_other_s() {
+		// A VCDS row can carry an id ODIS gives another field — several fields can show
+		// one name. One source per run: each kind is asked alone, and its names are its own.
 		let ws = TempWorkspace::new("hint");
 		let linear = Scaling::Linear(vag_data_labels::LinearScale { factor: 1.0, offset: 0.0 });
 		let with_id = |did, name: &str, id: &str| vag_data_labels::odis::Reading {
@@ -3030,10 +3027,11 @@ mod tests {
 			)],
 		)
 		.unwrap();
+		assert_eq!(text_ids_of(&ws.db_path, ODIS).unwrap(), [("IDE90001".to_string(), "the odis name".to_string())]);
 		assert_eq!(
-			text_ids(&ws.db_path).unwrap(),
+			text_ids_of(&ws.db_path, VCDS).unwrap(),
 			[
-				("IDE90001".to_string(), "the odis name".to_string()),
+				("IDE90001".to_string(), "a vcds name".to_string()),
 				("IDE90002".to_string(), "only vcds".to_string())
 			]
 		);
@@ -3270,7 +3268,7 @@ mod tests {
 			1,
 			"the reread kept a variant it no longer has, or dropped another source's"
 		);
-		assert_eq!(channel_counts(&ws.db_path).unwrap(), (2, 2));
+		assert_eq!(channel_counts_of(&ws.db_path, ODIS).unwrap(), (2, 2));
 		let conn = open_existing(&ws.db_path).unwrap();
 		let orphans: i64 = conn
 			.query_row(
@@ -3983,8 +3981,8 @@ mod tests {
 		assert!(source_of(&ws.db_path).is_none());
 		assert!(sources_of(&ws.db_path).is_err());
 		assert!(readings_of(&ws.db_path, "EV_ECM").is_err());
-		assert!(text_ids(&ws.db_path).is_err());
-		assert!(channel_counts(&ws.db_path).is_err());
+		assert!(text_ids_of(&ws.db_path, ODIS).is_err());
+		assert!(channel_counts_of(&ws.db_path, ODIS).is_err());
 		assert!(reading_variants(&ws.db_path).is_err());
 		assert!(load_files(&ws.db_path).is_err());
 		assert!(row_counts(&ws.db_path).is_err());
@@ -3996,7 +3994,7 @@ mod tests {
 		write_fixture_labels(&ws);
 		build_db(&ws.labels_dir, &ws.db_path).expect("build_db creates the cache it builds");
 		assert!(ws.db_path.is_file());
-		assert!(channel_counts(&ws.db_path).is_ok(), "the same reads work once it is there");
+		assert!(channel_counts_of(&ws.db_path, ODIS).is_ok(), "the same reads work once it is there");
 	}
 
 	/// The cache's shape before [`SCHEMA_VERSION`] 1, as `master` wrote it on 2026-10-19:
