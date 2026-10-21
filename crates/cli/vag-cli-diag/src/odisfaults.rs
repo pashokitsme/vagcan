@@ -188,6 +188,19 @@ impl Naming {
 }
 
 impl OdisFaults {
+	/// The languages the current project's ODIS sources declare, ISO 639-2 — what a VCDS run
+	/// offers `--source odis` for when its own build lacks the one asked. Its source rows only:
+	/// no fault row is read.
+	pub fn project_languages() -> Vec<String> {
+		let Ok(project) = crate::project::current() else { return Vec::new() };
+		vag_data_db::source_languages(&project.cache())
+			.unwrap_or_default()
+			.into_iter()
+			.filter(|(kind, _, _)| kind == vag_data_db::ODIS)
+			.filter_map(|(_, _, l)| l.map(|l| crate::config::language_code(&l)))
+			.collect()
+	}
+
 	/// Open the current project's fault tables, or `None` when there are no
 	/// rows — a project set up from a VCDS installation alone, or none at all.
 	pub fn open() -> Option<OdisFaults> {
@@ -230,7 +243,7 @@ impl OdisFaults {
 	}
 
 	/// Every language this run can show, sorted: the ODIS sources' declared ones.
-	fn languages(&self) -> Vec<&str> {
+	pub fn languages(&self) -> Vec<&str> {
 		let mut languages: Vec<&str> = self
 			.sources
 			.iter()

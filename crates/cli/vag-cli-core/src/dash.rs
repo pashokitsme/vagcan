@@ -3553,8 +3553,14 @@ pub fn resolve(inputs: Inputs) -> anyhow::Result<Resolved> {
 	// ODIS run reads none of them, and a unit ODIS does not describe is refused by the build.
 	let (used_note, unused_note) = match run.as_ref().map(|r| r.source) {
 		Some(crate::source::Source::Vcds) => {
-			let used = refuse_unread(&vin, read_attempted, crate::registry::unread(&stores.vcds, &used)?)?;
-			(used, unread_note(&vin, read_attempted, crate::registry::unread(&stores.vcds, &unused)?))
+			// The command that reads them, as this run would have to be typed again: with its
+			// `--source` where a bare command would read the other source.
+			let build = format!(
+				"vagcan {}dev dash build {vin}",
+				crate::source::flag_for(&stores, crate::source::Source::Vcds)
+			);
+			let used = refuse_unread(&build, read_attempted, crate::registry::unread(&stores.vcds, &used)?)?;
+			(used, unread_note(&build, read_attempted, crate::registry::unread(&stores.vcds, &unused)?))
 		}
 		_ => (None, None),
 	};
@@ -3639,12 +3645,13 @@ fn unread_subject(units: &std::collections::BTreeSet<(String, String)>) -> Strin
 }
 
 /// What reads the channels of units still unread, for the refusal and the note:
-/// `dev dash build`, unless that is the command speaking — it has just tried, and
-/// the line it printed says what stopped the read.
-fn what_reads_them(vin: &str, read_attempted: bool, said_where: &str) -> String {
+/// `dev dash build` (`build`, typed as this run would be, `--source` and all), unless that is
+/// the command speaking — it has just tried, and the line it printed says what stopped the
+/// read.
+fn what_reads_them(build: &str, read_attempted: bool, said_where: &str) -> String {
 	match read_attempted {
 		true => format!("{said_where} what stopped the read"),
-		false => format!("`vagcan dev dash build {vin}` reads them once, offline, or a command with the car does"),
+		false => format!("`{build}` reads them once, offline, or a command with the car does"),
 	}
 }
 
@@ -3661,27 +3668,31 @@ const ABOVE_THE_NOTE: &str = "the first lines of this output say";
 /// in the cache, and the plan is built from them — the firmware's build script, too, after
 /// a [`crate::registry::READ_VERSION`] bump. The note that comes back says so; a command
 /// with the car reads them again once.
-fn refuse_unread(vin: &str, read_attempted: bool, unread: crate::registry::Unread) -> anyhow::Result<Option<String>> {
+fn refuse_unread(build: &str, read_attempted: bool, unread: crate::registry::Unread) -> anyhow::Result<Option<String>> {
 	use crate::registry::Unread;
 	match unread {
 		Unread::Nothing => Ok(None),
-		Unread::Outdated { units, .. } => Ok(Some(outdated_note(vin, &units))),
-		Unread::Readable { units, .. } => anyhow::bail!("{} — {}", unread_subject(&units), what_reads_them(vin, read_attempted, ABOVE_THE_REFUSAL)),
+		Unread::Outdated { units, .. } => Ok(Some(outdated_note(build, &units))),
+		Unread::Readable { units, .. } => anyhow::bail!(
+			"{} — {}",
+			unread_subject(&units),
+			what_reads_them(build, read_attempted, ABOVE_THE_REFUSAL)
+		),
 		Unread::Unreadable { units, why } => anyhow::bail!("{}, and {why}", unread_subject(&units)),
 	}
 }
 
 /// The note behind [`resolve`] for the units the plan does not use: their channels are
 /// not read yet, and why — the build goes ahead without them, and says so once.
-fn unread_note(vin: &str, read_attempted: bool, unread: crate::registry::Unread) -> Option<String> {
+fn unread_note(build: &str, read_attempted: bool, unread: crate::registry::Unread) -> Option<String> {
 	use crate::registry::Unread;
 	match unread {
 		Unread::Nothing => None,
-		Unread::Outdated { units, .. } => Some(outdated_note(vin, &units)),
+		Unread::Outdated { units, .. } => Some(outdated_note(build, &units)),
 		Unread::Readable { units, .. } => Some(format!(
 			"{}, which the plan does not use; {}",
 			unread_subject(&units),
-			what_reads_them(vin, read_attempted, ABOVE_THE_NOTE)
+			what_reads_them(build, read_attempted, ABOVE_THE_NOTE)
 		)),
 		Unread::Unreadable { units, why } => Some(format!("{}, which the plan does not use, and {why}", unread_subject(&units))),
 	}
@@ -3689,10 +3700,10 @@ fn unread_note(vin: &str, read_attempted: bool, unread: crate::registry::Unread)
 
 /// What a build says of units an older version of this tool read: built from the rows the
 /// cache holds, and what reads them again.
-fn outdated_note(vin: &str, units: &std::collections::BTreeSet<(String, String)>) -> String {
+fn outdated_note(build: &str, units: &std::collections::BTreeSet<(String, String)>) -> String {
 	format!(
 		"{} {} read by an older version of this tool: built from the channels the cache holds; \
-		 `vagcan dev dash build {vin}`, or a command with the car, reads {} again once",
+		 `{build}`, or a command with the car, reads {} again once",
 		units.len(),
 		if units.len() == 1 { "control unit was" } else { "control units were" },
 		if units.len() == 1 { "it" } else { "them" }
@@ -3896,13 +3907,15 @@ mod tests {
 		// The plan's units are refused; the rest are a note, with the cause.
 		use crate::registry::Unread;
 		let units = |names: &[&str]| names.iter().map(|n| (n.to_string(), "001".to_string())).collect();
-		assert_eq!(refuse_unread("VIN", false, Unread::Nothing).unwrap(), None);
-		assert_eq!(unread_note("VIN", false, Unread::Nothing), None);
+		assert_eq!(refuse_unread("vagcan dev dash build VIN", false, Unread::Nothing).unwrap(), None);
+		assert_eq!(unread_note("vagcan dev dash build VIN", false, Unread::Nothing), None);
 		let readable = Unread::Readable {
 			units: units(&["EV_Sixteenth"]),
 			root: PathBuf::from("/vcds"),
 		};
-		let refusal = refuse_unread("VIN", false, readable.clone()).unwrap_err().to_string();
+		let refusal = refuse_unread("vagcan dev dash build VIN", false, readable.clone())
+			.unwrap_err()
+			.to_string();
 		assert!(
 			refusal.starts_with("the channels of 1 control unit of this car have not been read"),
 			"{refusal}"
@@ -3911,16 +3924,18 @@ mod tests {
 			refusal.contains("(EV_Sixteenth)") && refusal.contains("`vagcan dev dash build VIN`"),
 			"{refusal}"
 		);
-		let note = unread_note("VIN", false, readable.clone()).unwrap();
+		let note = unread_note("vagcan dev dash build VIN", false, readable.clone()).unwrap();
 		assert!(note.contains("(EV_Sixteenth), which the plan does not use"), "{note}");
 		assert!(note.contains("`vagcan dev dash build VIN`"), "{note}");
 		// `dev dash build` itself has just tried to read them: it is not told to
 		// run itself (found in review, 2026-09-28).
-		let refusal = refuse_unread("VIN", true, readable.clone()).unwrap_err().to_string();
+		let refusal = refuse_unread("vagcan dev dash build VIN", true, readable.clone())
+			.unwrap_err()
+			.to_string();
 		assert!(refusal.ends_with("the lines above say what stopped the read"), "{refusal}");
 		assert!(!refusal.contains("dev dash build"), "{refusal}");
 		// The note comes after the plan's lines, so it points at the top of the output.
-		let note = unread_note("VIN", true, readable).unwrap();
+		let note = unread_note("vagcan dev dash build VIN", true, readable).unwrap();
 		assert!(
 			note.ends_with("which the plan does not use; the first lines of this output say what stopped the read"),
 			"{note}"
@@ -3932,20 +3947,22 @@ mod tests {
 			units: units(&["EV_Gatew", "EV_Brake"]),
 			root: PathBuf::from("/vcds"),
 		};
-		let note = refuse_unread("VIN", false, outdated.clone()).unwrap().expect("a note");
+		let note = refuse_unread("vagcan dev dash build VIN", false, outdated.clone())
+			.unwrap()
+			.expect("a note");
 		assert!(note.starts_with("2 control units were read by an older version of this tool"), "{note}");
 		assert!(note.contains("built from the channels the cache holds"), "{note}");
-		assert_eq!(unread_note("VIN", false, outdated), Some(note));
+		assert_eq!(unread_note("vagcan dev dash build VIN", false, outdated), Some(note));
 		let gone = Unread::Unreadable {
 			units: units(&["EV_A", "EV_B"]),
 			why: "the VCDS installation to read from is not on this machine any more".into(),
 		};
-		let refusal = refuse_unread("VIN", false, gone.clone()).unwrap_err().to_string();
+		let refusal = refuse_unread("vagcan dev dash build VIN", false, gone.clone()).unwrap_err().to_string();
 		assert!(
 			refusal.contains("2 control units") && refusal.contains("not on this machine any more"),
 			"{refusal}"
 		);
-		let note = unread_note("VIN", true, gone).unwrap();
+		let note = unread_note("vagcan dev dash build VIN", true, gone).unwrap();
 		assert!(
 			note.contains("(EV_A, EV_B), which the plan does not use, and the VCDS installation"),
 			"{note}"

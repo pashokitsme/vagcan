@@ -144,6 +144,32 @@ pub struct Asked {
 	pub source: Source,
 	/// What asked, as the person wrote it.
 	pub by: String,
+	/// Where it was asked — which is where another source is asked for instead.
+	pub origin: Origin,
+}
+
+/// Where a source was asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+	Flag,
+	Env,
+	Config,
+}
+
+impl Asked {
+	/// The `help:` line that asks for `other` where this was asked: the flag for a flag, the
+	/// variable for the variable, the setting for the setting.
+	pub fn switch_to(&self, other: Source) -> String {
+		match self.origin {
+			Origin::Flag => format!("or read {} instead: `{}`", other.what(), other.flag()),
+			Origin::Env => format!("or read {} instead: `{SOURCE_ENV}={}`", other.what(), other.word()),
+			Origin::Config => format!(
+				"or read {} instead: set `[source] use = \"{}\"` in ~/.vagcan/config.toml",
+				other.what(),
+				other.word()
+			),
+		}
+	}
 }
 
 /// What this run asks for, if anything does: the flag, the environment, `config.toml`.
@@ -159,13 +185,18 @@ pub fn asked() -> Result<Option<Asked>> {
 /// The rule behind [`asked`], with every input passed in. An empty value is unset.
 pub fn asked_in(flag: Option<Source>, env: Option<&str>, configured: Option<&str>) -> Result<Option<Asked>> {
 	if let Some(source) = flag {
-		return Ok(Some(Asked { source, by: source.flag() }));
+		return Ok(Some(Asked {
+			source,
+			by: source.flag(),
+			origin: Origin::Flag,
+		}));
 	}
-	for (value, by) in [
-		(env, format!("{SOURCE_ENV}={}", env.unwrap_or_default().trim())),
+	for (value, by, origin) in [
+		(env, format!("{SOURCE_ENV}={}", env.unwrap_or_default().trim()), Origin::Env),
 		(
 			configured,
 			format!("[source] use = {:?} in config.toml", configured.unwrap_or_default().trim()),
+			Origin::Config,
 		),
 	] {
 		let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) else {
@@ -174,7 +205,7 @@ pub fn asked_in(flag: Option<Source>, env: Option<&str>, configured: Option<&str
 		let Some(source) = Source::parse(value) else {
 			return Err(anyhow::anyhow!("{by}: not a source").help("name one: `odis` or `vcds`"));
 		};
-		return Ok(Some(Asked { source, by }));
+		return Ok(Some(Asked { source, by, origin }));
 	}
 	Ok(None)
 }
@@ -183,6 +214,12 @@ pub fn asked_in(flag: Option<Source>, env: Option<&str>, configured: Option<&str
 /// store an installation. A store whose cache will not answer is none of them.
 pub fn held(stores: &Stores) -> Vec<Source> {
 	survey(stores).held
+}
+
+/// [`held`] over this run's stores — which sources a line may offer the other of. Source rows
+/// only: nothing of either source's data is read.
+pub fn held_here() -> Vec<Source> {
+	crate::project::stores_or_vcds().map(|stores| held(&stores)).unwrap_or_default()
 }
 
 /// What the stores hold, and which of them would not say.
@@ -235,11 +272,16 @@ pub fn decide_over(asked: Option<Asked>, survey: &Survey) -> Result<Option<Sourc
 			break;
 		}
 		if let Some((_, what, why)) = survey.unreadable.iter().find(|(s, ..)| *s == source) {
-			return Err(
-				anyhow::anyhow!("{what} did not read: {why}")
-					.help(format!("read it again: `vagcan setup --refresh {}`", source.placeholder()))
-					.help(format!("or read {} for this run: `{}`", source.other().what(), source.other().flag())),
-			);
+			let mut err = anyhow::anyhow!("{what} did not read: {why}").help(format!("read it again: `vagcan setup --refresh {}`", source.placeholder()));
+			// The other source only where it is set up, asked for the way this one was.
+			let other = source.other();
+			if survey.held.contains(&other) {
+				err = err.help(match &asked {
+					Some(asked) => asked.switch_to(other),
+					None => format!("or read {} for this run: `{}`", other.what(), other.flag()),
+				});
+			}
+			return Err(err);
 		}
 	}
 	decide(asked, &survey.held)
@@ -260,9 +302,19 @@ pub fn decide(asked: Option<Asked>, held: &[Source]) -> Result<Option<Source>> {
 	let mut err = anyhow::anyhow!("{}: {none}", asked.by).help(asked.source.setup_help());
 	let other = asked.source.other();
 	if held.contains(&other) {
-		err = err.help(format!("or read {} instead: `{}`", other.what(), other.flag()));
+		err = err.help(asked.switch_to(other));
 	}
 	Err(err)
+}
+
+/// `--source <word> ` for a command a line tells the reader to type, when `source` is not the
+/// one a bare command would read over these stores — so that typing it reads the same source
+/// again. Empty when it is.
+pub fn flag_for(stores: &Stores, source: Source) -> String {
+	match decide(None, &held(stores)) {
+		Ok(Some(default)) if default == source => String::new(),
+		_ => format!("{} ", source.flag()),
+	}
 }
 
 /// The one store a run reads, and which source it holds — the single accessor every reader
@@ -332,7 +384,11 @@ mod tests {
 	use super::*;
 
 	fn asked(source: Source) -> Option<Asked> {
-		Some(Asked { source, by: source.flag() })
+		Some(Asked {
+			source,
+			by: source.flag(),
+			origin: Origin::Flag,
+		})
 	}
 
 	#[test]
@@ -408,6 +464,45 @@ mod tests {
 		// The other one asked for, or the default reaching a held source first: no matter.
 		assert_eq!(decide_over(asked(Source::Vcds), &unreadable(Source::Odis)).unwrap(), Some(Source::Vcds));
 		assert_eq!(decide_over(None, &unreadable(Source::Vcds)).unwrap(), Some(Source::Odis));
+	}
+
+	#[test]
+	fn the_other_source_is_offered_only_where_it_is_set_up_and_where_this_one_was_asked() {
+		// A store that does not answer, and nothing else set up: no `--source vcds` to offer.
+		let alone = Survey {
+			held: Vec::new(),
+			unreadable: vec![(Source::Odis, "the ODIS project SK37X".into(), "locked".into())],
+		};
+		let hints = crate::report::hints(&decide_over(None, &alone).unwrap_err());
+		assert_eq!(hints.len(), 1, "{hints:?}");
+		// Asked in config.toml or the environment: the switch is that setting, not a flag.
+		let config = asked_in(None, None, Some("odis")).unwrap();
+		let hints = crate::report::hints(&decide(config, &[Source::Vcds]).unwrap_err());
+		assert_eq!(
+			hints.last(),
+			Some(&crate::report::Hint::Help(
+				"or read a VCDS installation instead: set `[source] use = \"vcds\"` in ~/.vagcan/config.toml".into()
+			))
+		);
+		let env = asked_in(None, Some("vcds"), None).unwrap();
+		let hints = crate::report::hints(&decide(env, &[Source::Odis]).unwrap_err());
+		assert_eq!(
+			hints.last(),
+			Some(&crate::report::Hint::Help("or read an ODIS project instead: `VAGCAN_SOURCE=odis`".into()))
+		);
+	}
+
+	#[test]
+	fn a_command_a_line_names_carries_the_runs_source_where_it_is_not_the_default() {
+		let here = tempfile::tempdir().unwrap();
+		let stores = both(here.path());
+		assert_eq!(flag_for(&stores, Source::Odis), "", "the default needs no flag");
+		assert_eq!(flag_for(&stores, Source::Vcds), "--source vcds ");
+		let vcds_only = Stores {
+			project: None,
+			vcds: stores.vcds.clone(),
+		};
+		assert_eq!(flag_for(&vcds_only, Source::Vcds), "", "VCDS alone is the default");
 	}
 
 	#[test]

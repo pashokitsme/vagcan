@@ -34,8 +34,7 @@ note: the codes are not named: no label data on this machine
   (use "vagcan setup" to read it)
 codes below are shown as numbers: no fault-name labels on this machine
 note: looked in [HOME]/rod
-help: run `vagcan setup <ODIS project or VCDS installation>` (offline)
-help: with no path, `vagcan setup` asks which and can fetch VCDS; see `vagcan setup --help`
+help: read one: `vagcan setup <VCDS installation>`
 a stored code is a record that something happened once — not a diagnosis, and not necessarily a fault now; `failing` is failing now
 713  1 code listed, 1 confirmed
 713  047120 (291104)  confirmed · 123392 km, 1×, 2 s ago, 64 km ago

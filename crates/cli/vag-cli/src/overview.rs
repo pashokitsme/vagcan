@@ -141,7 +141,12 @@ pub struct CarData {
 /// because a USB port node could not be enumerated would report the tool broken
 /// over something the reader did not ask for and may not need.
 pub fn settled(facts: &Facts) -> bool {
-	!matches!(facts.cars, Cars::Misnamed { .. } | Cars::Unknown(_))
+	match &facts.cars {
+		Cars::Misnamed { .. } | Cars::Unknown(_) => false,
+		// A source asked for that cannot be read is an instruction that cannot be honoured.
+		Cars::One(car) => car.reads.is_ok(),
+		_ => true,
+	}
 }
 
 /// Everything the overview knows, gathered without opening the adapter.
@@ -281,12 +286,25 @@ fn summarise(project: &project::Project, vcds: Option<&project::Project>) -> Car
 }
 
 /// The source a car command reads over these stores, or the refusal as one line.
+/// The refusal, as its cause and then a `help:` line per fix, one line each.
 fn reads(stores: &project::Stores) -> Result<Option<vag_cli_core::source::Source>, String> {
-	vag_cli_core::source::run_source(stores).map_err(|e| cause(&e))
+	vag_cli_core::source::run_source(stores).map_err(|e| {
+		let mut lines = vec![cause(&e)];
+		for hint in vag_cli_core::report::hints(&e) {
+			if let vag_cli_core::report::Hint::Help(text) = hint {
+				lines.push(format!("help: {text}"));
+			}
+		}
+		lines.join("\n")
+	})
 }
 
 /// What the source a car command reads describes; nothing to count without one.
 fn described_in(stores: &project::Stores, reads: &Result<Option<vag_cli_core::source::Source>, String>) -> Described {
+	// No source can be read — one asked for is not there: no count, of the other or any.
+	if reads.is_err() {
+		return Described::None;
+	}
 	match reads
 		.as_ref()
 		.ok()
@@ -421,7 +439,13 @@ fn state(facts: &Facts) -> String {
 					source.other().flag(),
 					source.other()
 				)),
-				Err(why) => out.push_str(&caused_by(why)),
+				Err(why) => {
+					let mut lines = why.lines();
+					out.push_str(&caused_by(lines.next().unwrap_or_default()));
+					for help in lines {
+						out.push_str(&format!("            {help}\n"));
+					}
+				}
 				_ => {}
 			}
 			if car.proven_catalogs > 0 {
@@ -742,6 +766,37 @@ mod tests {
 			text.contains("            caused by: reading /Users/x/.vagcan/data/SK37X/cache.sqlite: sqlite error: file is not a database"),
 			"{text}"
 		);
+	}
+
+	#[test]
+	fn a_source_asked_for_and_not_there_shows_no_count_and_the_fix() {
+		let facts = Facts {
+			adapters: Adapters::None,
+			cars: Cars::One(CarData {
+				reads: Err(
+					"[source] use = \"vcds\" in config.toml: no VCDS installation is set up\n\
+				             help: read one: `vagcan setup <VCDS installation>`"
+						.to_string(),
+				),
+				described: Described::None,
+				..car()
+			}),
+		};
+		let text = render(&facts);
+		assert!(!text.contains("channels across"), "{text}");
+		assert!(text.contains("            caused by: [source] use = \"vcds\" in config.toml"), "{text}");
+		assert!(text.contains("            help: read one: `vagcan setup <VCDS installation>`"), "{text}");
+		assert!(!settled(&facts), "an instruction that cannot be honoured fails");
+		// And the count is never the other source's.
+		let here = tempfile::tempdir().unwrap();
+		let stores = project::Stores {
+			project: Some(project::Project {
+				id: "SK37X".into(),
+				dir: here.path().to_path_buf(),
+			}),
+			vcds: project::vcds_at(&here.path().join("vcds")),
+		};
+		assert_eq!(described_in(&stores, &Err("no".into())), Described::None);
 	}
 
 	#[test]

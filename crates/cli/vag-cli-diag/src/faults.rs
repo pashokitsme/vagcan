@@ -174,9 +174,11 @@ pub struct Namers {
 	vcds: Option<crate::faultnames::Namer>,
 	/// Where the VCDS files were looked for, for the note when there are none.
 	vcds_root: std::path::PathBuf,
-	/// What to say about `[faults] language` on a VCDS run, if it asks for a language the
-	/// installation does not have.
-	vcds_language_note: Option<String>,
+	/// The other source, when it is set up: what a line that cannot be answered here offers.
+	other: Option<vag_cli_core::source::Source>,
+	/// `[faults] language` naming a language the run's source does not have: a `warning:` and,
+	/// where the other source has it, the `help:` that reads it — said at level 0.
+	language_warning: Vec<String>,
 }
 
 /// What the run's source knows about one unit, looked up once.
@@ -232,12 +234,23 @@ impl Namers {
 		if given && !keys.is_file() {
 			return Err(anyhow::anyhow!("--iv-cache {}: no such file", keys.display()).help("leave the flag out to use the VCDS store's rod-keys.json"));
 		}
+		// Which sources are set up, for the lines that offer the other one: metadata — a source
+		// row, a file name — never the other source's text.
+		let held = vag_cli_core::source::held_here();
+		let other = source.map(Source::other).filter(|other| held.contains(other));
 		let mut namers = Namers {
 			source,
 			odis: None,
 			vcds: None,
 			vcds_root,
-			vcds_language_note: None,
+			other,
+			language_warning: Vec::new(),
+		};
+		let setting = crate::config::fault_language(&crate::config::load());
+		let vcds_language = || {
+			crate::odisfaults::VcdsBuild::of(&namers.vcds_root)
+				.language
+				.map(|l| crate::config::language_code(&l))
 		};
 		match source {
 			Some(Source::Odis) => {
@@ -247,14 +260,21 @@ impl Namers {
 				if given {
 					say!("note: --iv-cache opens VCDS fault text, and this run reads the ODIS project; `--source vcds` reads VCDS");
 				}
+				if let Some(odis) = &namers.odis {
+					let available: Vec<String> = odis.languages().into_iter().map(str::to_string).collect();
+					let elsewhere = other.is_some() && setting.as_ref().is_some_and(|s| vcds_language().as_ref() == Some(s));
+					namers.language_warning = language_warning(setting.as_deref(), Source::Odis, &available, elsewhere);
+				}
 			}
 			Some(Source::Vcds) => {
 				namers.vcds = open_vcds(&namers.vcds_root, keys)?;
 				if namers.vcds.is_some() {
-					namers.vcds_language_note = vcds_language_note(
-						crate::config::fault_language(&crate::config::load()).as_deref(),
-						crate::odisfaults::VcdsBuild::of(&namers.vcds_root).language.as_deref(),
-					);
+					let available: Vec<String> = vcds_language().into_iter().collect();
+					let elsewhere = other.is_some()
+						&& setting
+							.as_ref()
+							.is_some_and(|s| crate::odisfaults::OdisFaults::project_languages().contains(s));
+					namers.language_warning = language_warning(setting.as_deref(), Source::Vcds, &available, elsewhere);
 				}
 			}
 			None => {}
@@ -262,19 +282,57 @@ impl Namers {
 		Ok(namers)
 	}
 
+	/// The level-0 lines when `[faults] language` names a language the run's source lacks.
+	pub fn language_warning(&self) -> &[String] {
+		&self.language_warning
+	}
+
+	/// Why the codes are not named, for the `note:` line: what the run's source lacks.
+	pub fn none_because(&self) -> &'static str {
+		match self.source {
+			Some(vag_cli_core::source::Source::Odis) => "the ODIS project has no fault table",
+			Some(vag_cli_core::source::Source::Vcds) => "the VCDS installation has no fault text",
+			None => "no label data on this machine",
+		}
+	}
+
+	/// The hint under that line: what reads the run's source's fault text, or the other
+	/// source's flag where it is set up and names them.
+	pub fn none_hint(&self) -> String {
+		use vag_cli_core::source::Source;
+		match (self.source, self.other) {
+			(Some(_), Some(other)) => format!("use \"{}\" to name them from {}", other.flag(), other.what()),
+			(Some(Source::Odis), None) => "use \"vagcan setup <ODIS project>\" to read it again".to_string(),
+			(Some(Source::Vcds), None) => "use \"vagcan setup <VCDS installation>\" to read one".to_string(),
+			(None, _) => "use \"vagcan setup\" to read it".to_string(),
+		}
+	}
+
 	/// Whether there is nothing at all to name a code with.
 	pub fn is_empty(&self) -> bool {
 		self.odis.is_none() && self.vcds.is_none()
 	}
 
-	/// What to say, with `-v`, when nothing names the codes: what the run's source lacks.
+	/// What to say, with `-v`, when nothing names the codes: what the run's source lacks, what
+	/// sets it up, and — where the other source is set up — the flag that names them from it.
 	pub fn empty_note(&self) -> String {
-		match self.source {
-			Some(vag_cli_core::source::Source::Odis) => "codes below are shown as numbers: the ODIS project has no fault table\n\
-				 help: read it again: `vagcan setup <ODIS project>`"
-				.to_string(),
-			_ => crate::missing::no_fault_labels(&self.vcds_root),
+		use vag_cli_core::source::Source;
+		let mut lines = match self.source {
+			Some(Source::Odis) => vec![
+				"codes below are shown as numbers: the ODIS project has no fault table".to_string(),
+				"help: read it again: `vagcan setup <ODIS project>`".to_string(),
+			],
+			Some(Source::Vcds) => vec![
+				"codes below are shown as numbers: the VCDS installation has no fault text".to_string(),
+				format!("note: looked in {}", self.vcds_root.display()),
+				"help: read one: `vagcan setup <VCDS installation>`".to_string(),
+			],
+			None => return crate::missing::no_fault_labels(&self.vcds_root),
+		};
+		if let Some(other) = self.other {
+			lines.push(format!("help: or name them from {}: `{}`", other.what(), other.flag()));
 		}
+		lines.join("\n")
 	}
 
 	/// The `names` line above a listing: the run's source that names the codes,
@@ -305,9 +363,6 @@ impl Namers {
 			));
 			if let Some(note) = vcds.redirect_note() {
 				out.push(note.to_string());
-			}
-			if let Some(note) = &self.vcds_language_note {
-				out.push(note.clone());
 			}
 		}
 		out
@@ -360,19 +415,31 @@ impl Namers {
 	}
 }
 
-/// The line a VCDS run says when `[faults] language` asks for a language the installation's
-/// build is not in: an installation has one, and the other source's text does not stand in.
-fn vcds_language_note(setting: Option<&str>, build: Option<&str>) -> Option<String> {
-	let setting = crate::config::language_code(setting?);
-	let build = build.map(crate::config::language_code);
-	if build.as_deref() == Some(setting.as_str()) {
-		return None;
+/// What a run says, at level 0, when `[faults] language` asks for a language the run's source
+/// does not have (`available`, ISO 639-2): a `warning:` naming both, and — where the other
+/// source has it (`elsewhere`) — the `help:` that reads it. Never the other source's text in
+/// its place: a reader who wants it is told what to type.
+fn language_warning(setting: Option<&str>, source: vag_cli_core::source::Source, available: &[String], elsewhere: bool) -> Vec<String> {
+	let Some(setting) = setting.map(crate::config::language_code) else {
+		return Vec::new();
+	};
+	if available.iter().any(|l| crate::config::language_code(l) == setting) {
+		return Vec::new();
 	}
-	Some(format!(
-		"config.toml sets [faults] language = {:?}, which this VCDS installation does not have — showing {}.",
-		crate::config::short_language(&setting),
-		build.map_or("its own".to_string(), |b| crate::config::short_language(&b))
-	))
+	let short = crate::config::short_language(&setting);
+	let mut have: Vec<String> = available.iter().map(|l| crate::config::short_language(l)).collect();
+	have.sort_unstable();
+	have.dedup();
+	let have = if have.is_empty() { "none".to_string() } else { have.join(", ") };
+	let whose = match source {
+		vag_cli_core::source::Source::Odis => "the ODIS project",
+		vag_cli_core::source::Source::Vcds => "the VCDS installation",
+	};
+	let mut lines = vec![format!("warning: no {short} fault text in {whose} (available: {have})")];
+	if elsewhere {
+		lines.push(format!("help: run with `{}` for {short}", source.other().flag()));
+	}
+	lines
 }
 
 /// The VCDS half of [`Namers`] on a VCDS run, or `None` where the pool holds no fault labels.
@@ -777,12 +844,15 @@ pub async fn run<L: UnitLink>(
 	if !supported {
 		match namers.is_empty() {
 			true => {
-				say!("note: the codes are not named: no label data on this machine");
-				say!("  (use \"vagcan setup\" to read it)");
+				say!("note: the codes are not named: {}", namers.none_because());
+				say!("  ({})", namers.none_hint());
 				note!("{}", namers.empty_note());
 			}
 			false => {
 				say!("note: code names from {}", namers.summary());
+				for line in namers.language_warning() {
+					say!("{line}");
+				}
 				for line in namers.describe() {
 					note!("{line}");
 				}
@@ -1076,14 +1146,32 @@ mod tests {
 	}
 
 	#[test]
-	fn a_vcds_run_says_when_the_language_asked_for_is_not_its_own() {
-		assert_eq!(vcds_language_note(None, Some("eng")), None, "unset: nothing to say");
-		assert_eq!(vcds_language_note(Some("en"), Some("eng")), None, "honoured, in either spelling");
-		assert_eq!(
-			vcds_language_note(Some("de"), Some("eng")).as_deref(),
-			Some("config.toml sets [faults] language = \"de\", which this VCDS installation does not have — showing en.")
+	fn a_language_the_runs_source_lacks_is_a_warning_with_the_other_source_where_it_has_it() {
+		use vag_cli_core::source::Source;
+		let eng = ["eng".to_string()];
+		let deu = ["deu".to_string()];
+		assert!(language_warning(None, Source::Vcds, &eng, true).is_empty(), "unset: nothing to say");
+		assert!(
+			language_warning(Some("en"), Source::Vcds, &eng, true).is_empty(),
+			"honoured, in either spelling"
 		);
-		assert!(vcds_language_note(Some("de"), None).unwrap().ends_with("showing its own."));
+		// The owner's machine: `language = "en"`, a German ODIS project, an English VCDS build.
+		assert_eq!(
+			language_warning(Some("en"), Source::Odis, &deu, true),
+			[
+				"warning: no en fault text in the ODIS project (available: de)",
+				"help: run with `--source vcds` for en"
+			]
+		);
+		// The other source does not have it either, or is not set up: the warning alone.
+		assert_eq!(
+			language_warning(Some("de"), Source::Vcds, &eng, false),
+			["warning: no de fault text in the VCDS installation (available: en)"]
+		);
+		assert_eq!(
+			language_warning(Some("de"), Source::Vcds, &[], false),
+			["warning: no de fault text in the VCDS installation (available: none)"]
+		);
 	}
 
 	/// An ODIS row as the reference project's two textless ones are shaped: a

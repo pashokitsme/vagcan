@@ -43,19 +43,14 @@ pub struct NamesFile {
 	pub path: std::path::PathBuf,
 }
 
-/// The files `names` searches when none is named: the VCDS store's `names.json` and
-/// the project's `names-odis.json`, whichever `setup` wrote. A machine with an ODIS
-/// project alone has only the second, one with a VCDS installation alone the first.
-pub fn project_files(stores: &crate::project::Stores) -> Vec<NamesFile> {
-	let mut files = vec![NamesFile {
+/// The file `dev vcds names` searches when none is named: the VCDS store's `names.json`,
+/// the VCDS text table's names, and no other — it is a VCDS tool, and an ODIS project's
+/// pooled names are another source's (CLAUDE.md, "ODIS and VCDS are independent sources").
+pub fn project_files(vcds: &crate::project::Project) -> Vec<NamesFile> {
+	vec![NamesFile {
 		source: "VCDS",
-		path: stores.vcds.names(),
-	}];
-	files.extend(stores.project.as_ref().map(|project| NamesFile {
-		source: "ODIS",
-		path: project.odis_names(),
-	}));
-	files
+		path: vcds.names(),
+	}]
 }
 
 /// Run the command (see the module docs) over every file of `files` that is
@@ -182,9 +177,9 @@ mod tests {
 	}
 
 	#[test]
-	fn a_project_set_up_from_odis_alone_is_searched_through_its_odis_names() {
-		// `setup` from an ODIS project writes `names-odis.json` and no
-		// `names.json`; the search used to refuse such a project.
+	fn the_search_reads_the_vcds_names_alone_never_the_odis_projects() {
+		// One source per run: `dev vcds names` searches VCDS's `names.json`, and an ODIS
+		// project's `names-odis.json` beside it is not searched, nor stands in for it.
 		// Held so the hits are not written into another test's capture.
 		let _quiet = vag_cli_core::verbosity::Capture::start(0);
 		let dir = std::env::temp_dir().join(format!("vagcan-names-{}", std::process::id()));
@@ -194,18 +189,15 @@ mod tests {
 			id: "X".into(),
 			dir: dir.clone(),
 		};
-		let stores = crate::project::Stores {
-			project: Some(project.clone()),
-			vcds: project.clone(),
-		};
-		assert!(
-			run("boost", 40, &project_files(&stores)).is_err(),
-			"neither file: still the setup message"
-		);
+		assert!(run("boost", 40, &project_files(&project)).is_err(), "no file: still the setup message");
 		std::fs::write(project.odis_names(), catalog().to_string()).unwrap();
-		run("manifold", 40, &project_files(&stores)).expect("the ODIS names alone are enough");
+		assert!(
+			run("manifold", 40, &project_files(&project)).is_err(),
+			"the ODIS names stood in for VCDS's"
+		);
+		assert!(project_files(&project).iter().all(|f| f.source == "VCDS"));
 		std::fs::write(project.names(), catalog().to_string()).unwrap();
-		run("manifold", 40, &project_files(&stores)).expect("both files are searched");
+		run("manifold", 40, &project_files(&project)).expect("VCDS's names are searched");
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 

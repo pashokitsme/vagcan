@@ -28,11 +28,11 @@ a stored code is a record that something happened once — not a diagnosis, and 
 $ vagcan -v --source vcds faults --unit 01
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
-names    none — `vagcan setup` names the codes
-codes below are shown as numbers: no fault-name labels on this machine
+names    none — the VCDS installation has no fault text
+codes below are shown as numbers: the VCDS installation has no fault text
 note: looked in [HOME]/rod
-help: run `vagcan setup <ODIS project or VCDS installation>` (offline)
-help: with no path, `vagcan setup` asks which and can fetch VCDS; see `vagcan setup --help`
+help: read one: `vagcan setup <VCDS installation>`
+help: or name them from an ODIS project: `--source odis`
 a stored code is a record that something happened once — not a diagnosis, and not necessarily a fault now; `failing` is failing now
 7E0  1 code listed, 1 confirmed
 7E0  freeze frames described by VCDS's EV_SimEngine
