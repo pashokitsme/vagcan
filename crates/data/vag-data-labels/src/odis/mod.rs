@@ -176,6 +176,47 @@ pub struct Fault {
 	pub temporary: bool,
 }
 
+/// One record a variant's fault records can hold — what its extended-data multiplexer says
+/// of one case (`research/odis-dtc/freeze-frames.md`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnvironmentRecord {
+	/// The record numbers this case covers, both ends included; `None` for the default
+	/// case, which covers every number no other case does.
+	pub range: Option<(i32, i32)>,
+	/// The case's long name (`Standard Freeze Frame#1`).
+	pub name: Option<String>,
+	/// The record's length in bytes after its number, where the file proves one: the
+	/// structure's declared size, else the end of its last field. `None` for a record whose
+	/// length is not fixed (the dynamic and unknown records run to the end of the answer)
+	/// or not established.
+	pub length: Option<u32>,
+	/// Its fields, with bit offsets counted from the first byte after the record number.
+	pub fields: Vec<EnvironmentField>,
+}
+
+/// One field of an [`EnvironmentRecord`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnvironmentField {
+	pub name: Option<String>,
+	/// The text id of [`EnvironmentField::name`].
+	pub text_id: Option<String>,
+	pub unit: Option<String>,
+	/// Bits from the first byte after the record number. `None` where the field sits in
+	/// the record number's own byte or before it, which no field of the reference project does.
+	pub bit_offset: Option<u32>,
+	/// `None` where the width is not a fixed number of bits: a field of a type this reader
+	/// does not load (a multiplexed value), or one that runs to the end of the answer.
+	pub bit_length: Option<u32>,
+	pub signed: bool,
+	pub big_endian: bool,
+	/// `None` where the conversion is not one this crate can represent honestly: the raw
+	/// bytes are then the value.
+	pub scaling: Option<crate::catalog::Scaling>,
+	/// A coded constant: a field with no data object property of its own, a placeholder
+	/// the unit fills with a fixed value. Kept for its position, not shown.
+	pub constant: bool,
+}
+
 /// One vehicle a project declares it covers.
 ///
 /// Read from `PRNR-INFO.xml` — see [`Project::vehicles`] for why that file and
@@ -578,6 +619,105 @@ impl Project {
 		Ok(out)
 	}
 
+	/// What a variant's fault records hold: every case of its extended-data multiplexer,
+	/// the standard records `0x01`/`0x02` among them, with each field's layout and scaling.
+	///
+	/// The multiplexer is found by its short name
+	/// ([`loaders::extended::EXTENDED_DATA_MULTIPLEXER`]) in the variant's own layer, then in
+	/// each parent's in order — the base variant, the shared libraries, the protocol — the
+	/// way ODX inheritance resolves a short name. An empty list means no layer names one.
+	///
+	/// A field this reader cannot lay out (a multiplexed measurement value, a type it has
+	/// no loader for) is kept with no width rather than dropping the record: its bytes are
+	/// still the record's, and the record's length may still be proven by what follows.
+	pub fn extended_records(&self, variant: &Variant) -> Result<Vec<EnvironmentRecord>, Error> {
+		Ok(self.extended_data(variant)?.map(|(_, records)| records).unwrap_or_default())
+	}
+
+	/// [`Self::extended_records`], with the ObjectID of the multiplexer they came from —
+	/// `None` where no layer names one.
+	pub fn extended_data(&self, variant: &Variant) -> Result<Option<(String, Vec<EnvironmentRecord>)>, Error> {
+		let mut store = Store::new(self);
+		let Some(own) = store.layer_data(variant)? else {
+			return Ok(None);
+		};
+		let Some(found) = store.extended_multiplexer(&own)? else {
+			return Ok(None);
+		};
+		let (mux_id, mux_pool) = found;
+		let strings = &self.strings;
+		let Some(bytes) = self.pool(&mux_pool)?.map(|files| files.object(strings, &mux_id)).transpose()?.flatten() else {
+			return Err(Error::Missing(format!("{}'s {mux_id} is not in {mux_pool}", variant.name)));
+		};
+		let (type_code, mut stream) = object::Stream::open(&bytes, strings)?;
+		if type_code != loaders::code::MCD_DB_PARAMETER_MULTIPLEXER {
+			return Err(Error::Format(format!("{mux_id} is type {type_code:#06x}, not a multiplexer")));
+		}
+		let mux = loaders::extended::multiplexer(&mut stream)?;
+		stream.end()?;
+
+		// A case keyed by the key's text is turned into the number through the key's own
+		// text table — never matched by position or guessed.
+		let key_levels = match (&mux.key_dop, mux.cases.iter().any(|c| c.text.is_some())) {
+			(Some(target), true) => match store.object(&own, &variant.pool, target)? {
+				Some(loaders::Object::Dop(dop)) => match dop.compu.as_ref().map(|c| c.scaling()) {
+					Some(Ok(crate::catalog::Scaling::Enum { levels })) => levels,
+					_ => Vec::new(),
+				},
+				_ => Vec::new(),
+			},
+			_ => Vec::new(),
+		};
+		let range_of = |case: &loaders::extended::Case| match (&case.range, &case.text) {
+			(Some(range), _) => Ok(Some(*range)),
+			(None, Some(text)) => key_levels
+				.iter()
+				.find(|level| level.name() == text)
+				.map(|level| Some((level.lower(), level.upper())))
+				.ok_or_else(|| Error::Format(format!("{mux_id}: no record number in its key's table is named {text:?}"))),
+			(None, None) => Ok(None),
+		};
+
+		let mut out = Vec::new();
+		for case in &mux.cases {
+			let range = range_of(case)?;
+			let mut fields = Vec::new();
+			let mut declared = None;
+			if let Some(target) = &case.structure {
+				match store.object(&own, &variant.pool, target)? {
+					Some(loaders::Object::Structure(structure)) => {
+						declared = (structure.bytes > 0).then_some(u32::from(structure.bytes));
+						store.environment_fields(&own, &variant.pool, &structure, 0, &mut fields)?;
+					}
+					_ => {
+						return Err(Error::Missing(format!(
+							"{}'s case {:?} names no structure",
+							variant.name, case.short_name
+						)));
+					}
+				}
+			}
+			// Positions in the file count from the multiplexer's start, the record number's
+			// byte, plus where the cases start; the decoder counts from the byte after the
+			// number. On 169 of 171 multiplexers that is no shift at all.
+			let shift = i64::from(mux.case_start) * 8 - 8;
+			for field in &mut fields {
+				field.bit_offset = field.bit_offset.and_then(|bits| u32::try_from(i64::from(bits) + shift).ok());
+			}
+			let length = match declared {
+				Some(bytes) => (mux.case_start + bytes).checked_sub(1),
+				None => known_extent(&fields),
+			};
+			out.push(EnvironmentRecord {
+				range,
+				name: case.long_name.clone().or_else(|| case.short_name.clone()),
+				length,
+				fields,
+			});
+		}
+		Ok(Some((mux_id, out)))
+	}
+
 	/// Every human-readable name this project knows, keyed by its text id, for
 	/// merging into `names.json`.
 	///
@@ -856,6 +996,90 @@ impl<'a> Store<'a> {
 	/// The layer that declares the fault-code properties, and its pool —
 	/// [`Store::measurement_layer`] for the fault chain, and the same rule:
 	/// the variant's own layer if it names any, else the first parent that does.
+	/// The extended-data multiplexer a variant resolves to: `(ObjectID, pool)` of the first
+	/// layer — its own, then each parent nearest first — whose property index names
+	/// [`loaders::extended::EXTENDED_DATA_MULTIPLEXER`].
+	fn extended_multiplexer(&mut self, own: &loaders::identity::LayerData) -> Result<Option<(String, String)>, Error> {
+		let wanted = loaders::extended::EXTENDED_DATA_MULTIPLEXER;
+		let find = |layer: &loaders::identity::LayerData| {
+			layer
+				.properties
+				.iter()
+				.find(|(name, _)| name.as_deref() == Some(wanted))
+				.and_then(|(_, target)| Some((target.object.clone()?, target.pool.clone()?)))
+		};
+		if let Some(found) = find(own) {
+			return Ok(Some(found));
+		}
+		for pool_id in own.parents.clone() {
+			if let Some(loaders::Object::LayerData(parent)) = self.named(&pool_id, loaders::identity::LAYER_DATA_ID)?
+				&& let Some(found) = find(&parent)
+			{
+				return Ok(Some(found));
+			}
+		}
+		Ok(None)
+	}
+
+	/// The fields of one case structure, flattened: a field whose data object property is a
+	/// structure itself (the time stamp) is its fields, at its own byte position plus
+	/// theirs. `base` is that position, in bytes from the multiplexer's start.
+	fn environment_fields(
+		&mut self,
+		layer: &loaders::identity::LayerData,
+		home: &str,
+		structure: &loaders::measurement::Structure,
+		base: u32,
+		out: &mut Vec<EnvironmentField>,
+	) -> Result<(), Error> {
+		for field in &structure.fields {
+			let byte = base.saturating_add(field.byte_position.unwrap_or(0));
+			let bit_offset = Some(byte.saturating_mul(8).saturating_add(u32::from(field.bit_position)));
+			let mut item = EnvironmentField {
+				name: field.long_name.clone(),
+				text_id: field.long_name_id.clone(),
+				unit: None,
+				bit_offset,
+				bit_length: None,
+				signed: false,
+				big_endian: true,
+				scaling: None,
+				constant: field.dop.is_none(),
+			};
+			let Some(target) = field.dop.clone() else {
+				out.push(item);
+				continue;
+			};
+			// A refusal or a type with no loader costs this field its layout, not the
+			// record: a multiplexed measurement value sits inside some records.
+			match self.object(layer, home, &target) {
+				Ok(Some(loaders::Object::Structure(inner))) => {
+					self.environment_fields(layer, home, &inner, byte, out)?;
+					continue;
+				}
+				Ok(Some(loaders::Object::Dop(dop))) => {
+					if let Some(coded) = &dop.coded {
+						item.bit_length = coded.bits.filter(|_| coded.length == loaders::measurement::CodedLength::Standard);
+						item.signed = coded.base.is_signed();
+						item.big_endian = coded.high_low_byte_order;
+					}
+					item.scaling = dop.compu.as_ref().and_then(|c| c.scaling().ok());
+					item.unit = match dop.unit.clone() {
+						Some(target) => match self.object(layer, home, &target) {
+							Ok(Some(loaders::Object::Unit(unit))) => unit.display_name.or(unit.long_name),
+							_ => None,
+						},
+						None => None,
+					};
+				}
+				Err(Error::Io(e)) => return Err(Error::Io(e)),
+				_ => {}
+			}
+			out.push(item);
+		}
+		Ok(())
+	}
+
 	fn fault_layer(&mut self, variant: &Variant, own: loaders::identity::LayerData) -> Result<Option<(loaders::identity::LayerData, String)>, Error> {
 		if !own.dtc_properties.is_empty() {
 			return Ok(Some((own, variant.pool.clone())));
@@ -1058,6 +1282,24 @@ impl<'a> Store<'a> {
 /// with underscores. That is a defect in VW's own files — their kernel
 /// complains about it too — so the swap is tried rather than the channel
 /// dropped.
+/// A record's length from its fields, in bytes after the record number: where its last
+/// field ends, when that is known.
+///
+/// A field of unknown width (a multiplexed value, a coded constant) is allowed only where a
+/// field of known width comes after it — it then ends before that one starts. A record whose
+/// last field's width is unknown has no length here.
+fn known_extent(fields: &[EnvironmentField]) -> Option<u32> {
+	let end = fields
+		.iter()
+		.filter_map(|f| Some(f.bit_offset? + f.bit_length?))
+		.max()
+		.filter(|bits| *bits > 0)?;
+	let unbounded_after = fields
+		.iter()
+		.any(|f| f.bit_length.is_none() && f.bit_offset.is_none_or(|start| start >= end));
+	(!unbounded_after).then(|| end.div_ceil(8))
+}
+
 fn row_for(rows: &[(Option<String>, loaders::Ref)], name: &str) -> Option<loaders::Ref> {
 	let spaced = name.replace('_', " ");
 	rows
@@ -1542,6 +1784,9 @@ mod tests {
 		// property index is keyed by; the object is what the index points at.
 		let dtcdop = b.a("DTCDOP_VAGUDS");
 		let dtcdop_object = b.a("DOP_EV_Test_DTCDOP_VAGUDS");
+		// The extended-data multiplexer, indexed beside it by its short name.
+		let mux_key = b.a(loaders::extended::EXTENDED_DATA_MULTIPLEXER);
+		let mux_object = b.a("DOP_EV_Test_MUX_DTCExtenDataRecor");
 		let layer = |variant_hash: u32, services: bool, parents: bool| {
 			let mut o = Obj::default()
 				.u32(0)
@@ -1565,7 +1810,16 @@ mod tests {
 			// inheritance case exercises both chains at once: one DTC property
 			// by name, and the property index entry that resolves it.
 			o = match services {
-				true => o.u16(1).hash(dtcdop).u16(1).hash(dtcdop).hash(dtcdop_object).u32(0),
+				true => o
+					.u16(1)
+					.hash(dtcdop)
+					.u16(2)
+					.hash(dtcdop)
+					.hash(dtcdop_object)
+					.u32(0)
+					.hash(mux_key)
+					.hash(mux_object)
+					.hash(pool_hash),
 				false => o.u16(0).u16(0),
 			};
 			o = o
@@ -1795,6 +2049,50 @@ mod tests {
 				.u8(0), // no unit group references
 		);
 
+		// The fault records: an extended-data multiplexer keyed by the record number.
+		// Case 1, two one-byte fields, two bytes declared; case 112, an engine speed (the
+		// 16-bit `/min` property above) and an 8-bit voltage, no size declared; and a
+		// default case with no structure.
+		let byte_dop = dop(&mut b, "DOP_Byte_inner", 8, identical(), None);
+		b.put("DOP_Byte", code::DB_DOP_SIMPLE_BASE, byte_dop);
+		let volt_dop = dop(&mut b, "DOP_Volt_inner", 8, linear(0.0, 1.0, 10.0), None);
+		b.put("DOP_Volt", code::DB_DOP_SIMPLE_BASE, volt_dop);
+		let structure = |b: &mut Build, bytes: u16, fields: &[(&str, u32, &str)]| {
+			let mut o = Obj::default().u32(0).u32(0).u32(0).u32(0).u32(0).u32(0).u16(bytes);
+			o = o.some(code::MCD_DB_PARAMETERS).u16(fields.len() as u16);
+			for (name, byte, property) in fields {
+				o = o.some(code::MCD_DB_PARAMETER);
+				let field = parameter_head(b, Some(name), None, *byte, Some(property));
+				o.out.extend_from_slice(&field.out);
+			}
+			o
+		};
+		let info = structure(&mut b, 2, &[("Priority", 0, "DOP_Byte"), ("Occurrences", 1, "DOP_Byte")]);
+		b.put("STRUC_Info", code::MCD_DB_PARAMETER_STRUCTURE, info);
+		let own = structure(&mut b, 0, &[("Engine speed", 0, "DOP_Rpm"), ("Voltage", 2, "DOP_Volt")]);
+		b.put("STRUC_Own", code::MCD_DB_PARAMETER_STRUCTURE, own);
+		let key_dop = b.a("DOP_UINTHEX1Byte");
+		let mut mux = Obj::default()
+			.u32(1) // the cases start one byte in, after the record number
+			.some(0x004C)
+			.u8(0)
+			.u32(0)
+			.hash(key_dop)
+			.u32(0)
+			.some(code::DB_CASES)
+			.u32(2);
+		for (number, short, target) in [(1u32, "Case_Info", "STRUC_Info"), (112, "Case_Own", "STRUC_Own")] {
+			mux = mux.some(code::DB_CASE);
+			for _ in 0..2 {
+				mux = mux.some(code::DB_LIMIT).uint_value(number).u8(2);
+			}
+			let (short, long, target) = (b.a(short), b.u("a case"), b.a(target));
+			mux = mux.hash(short).hash(long).u32(0).u32(0).u32(0).u32(0).u8(1).hash(target).hash(pool_hash);
+		}
+		let (short, long) = (b.a("Case_Unknown"), b.u("unknown freeze frame"));
+		mux = mux.some(code::DB_DEFAULT_CASE).hash(short).hash(long).u32(0).u32(0).u32(0).u32(0).u8(0);
+		b.put("DOP_EV_Test_MUX_DTCExtenDataRecor", code::MCD_DB_PARAMETER_MULTIPLEXER, mux);
+
 		// The fault memory: a table of two codes, each its own object. The
 		// numbers are the reference car's brake unit's `00 01 29` and steering
 		// column's `04 71 20`, read as one integer each, which is what the join
@@ -1954,6 +2252,34 @@ mod tests {
 		assert_eq!(adaptations.len(), 2);
 		// And inherited from a base variant by the same rule.
 		assert_eq!(rows(loaders::identity::RDBI_ADAPTATION, true).0, adaptations);
+	}
+
+	#[test]
+	fn a_variants_fault_records_come_from_its_extended_data_multiplexer() {
+		for inherit in [false, true] {
+			let dir = tempfile::tempdir().expect("a temporary directory");
+			let (project, _) = miniature_project(dir.path(), inherit);
+			let variants = project.variants().expect("the project data parses");
+			let ev = variants.iter().find(|v| v.name == "EV_Test").expect("the ECU variant is listed");
+			let records = project.extended_records(ev).expect("the multiplexer reads");
+			let shape = records.iter().map(|r| (r.range, r.length, r.fields.len())).collect::<Vec<_>>();
+			assert_eq!(
+				shape,
+				vec![(Some((1, 1)), Some(2), 2), (Some((112, 112)), Some(3), 2), (None, None, 0)],
+				"inherit {inherit}"
+			);
+			let speed = &records[1].fields[0];
+			assert_eq!(
+				(speed.name.as_deref(), speed.bit_offset, speed.bit_length, speed.unit.as_deref()),
+				(Some("Engine speed"), Some(0), Some(16), Some("/min"))
+			);
+			assert_eq!(
+				speed.scaling,
+				Some(crate::catalog::Scaling::Linear(crate::LinearScale { factor: 0.25, offset: 0.0 }))
+			);
+			let volts = &records[1].fields[1];
+			assert_eq!((volts.bit_offset, volts.bit_length), (Some(16), Some(8)));
+		}
 	}
 
 	#[test]

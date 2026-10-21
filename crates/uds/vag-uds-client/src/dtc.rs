@@ -294,6 +294,11 @@ impl FaultContext {
 	pub fn from_records(records: &[ExtendedRecord<'_>], now: Option<&UnitStamp>) -> Option<FaultContext> {
 		let whole = |n: u8| records.iter().find(|r| r.number == n && r.extent == Extent::Whole).map(|r| r.data);
 		let (info, frame) = (whole(STANDARD_DTC_INFORMATION)?, whole(STANDARD_FREEZE_FRAME)?);
+		// A description that gives a record another length lays it out otherwise: this
+		// reading is the standard's, and only of the standard's lengths.
+		if Some(info.len()) != standard_length(STANDARD_DTC_INFORMATION) || Some(frame.len()) != standard_length(STANDARD_FREEZE_FRAME) {
+			return None;
+		}
 		let context = FaultContext {
 			priority: info[0],
 			occurrences: info[1],

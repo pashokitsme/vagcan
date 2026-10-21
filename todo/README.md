@@ -180,12 +180,10 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
     `watch --out` recording with `200A`–`200D` for the replay.
 13. **The rest of `dash/17` §4** — through the board over the cable (USB before OBD power), the
     moving-car guard (`bleuds`), the CANable on car traffic, the ESC's wheel speeds; §2 item 8.
-14. **Freeze frames** — built 2026-10-21: `faults` prints each code's frame from its `19 06`
-    answer, the unit's own records laid out by VCDS's `RF.rod` rows (key = record number,
-    `999` = default, lead − 100 = length where the fields fit). On the car: compare a code's
-    frame with VCDS's printout of it. Open: ODIS keeps the same layouts, more fully, in
-    `MUX_DTCExtenDataRecor` multiplexers whose cases are `DB_CASE` — on the refusal list;
-    reading them is the owner's call (`research/odis-dtc/freeze-frames.md` §5).
+14. **Freeze frames on the car** — the reading is built (2026-10-21, either source alone,
+    `research/odis-dtc/freeze-frames.md`): `vagcan faults -v` beside a VCDS auto-scan, one
+    code's frame field by field, once with the ODIS project alone and once with the VCDS
+    install alone.
 15. **Questions only the car answers** — `dash/06`.
 16. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.

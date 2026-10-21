@@ -31,6 +31,14 @@
 //! data object properties, and no channel at all beats a channel decoded
 //! through a code path that also knows how to describe a write.
 //!
+//! **One exception, and only one** (owner, 2026-10-21): the extended-data
+//! multiplexer, `MUX_DTCExtenDataRecor`, whose cases are a fault record's layout
+//! keyed by the record number the `0x19 06` answer itself carries.
+//! [`extended::multiplexer`] reads its cases inline; [`load`] and [`nested_any`]
+//! still refuse all three types, so a multiplexed measurement is skipped as before.
+//! The list was written (spec of 2026-08-07) to keep "adaptation/coding write cases"
+//! unread; this multiplexer is neither.
+//!
 //! ## The access key, and the route taken around it
 //! `MCD_ACCESS_KEY` is refused, and `ODIS-project-explorer` reaches an ECU
 //! variant's layer data *through* one — `ecu.location_refs[0].access_key
@@ -43,6 +51,7 @@ use super::Error;
 use super::object::Stream;
 
 pub mod dtc;
+pub mod extended;
 pub mod identity;
 pub mod measurement;
 

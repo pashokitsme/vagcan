@@ -1664,3 +1664,4 @@ slcan USB-CAN adapter (`vag-uds-can`); the seam every backend implements is
 protocol crates. Listen-only mode and the moving-car guard have to hold on it exactly
 as they do on slcan — read `CLAUDE.md`'s safety section before the first connection.
 
+- 2026-10-21: todo item 14, freeze frames — the reading built from either source alone (VCDS `RF.rod`, PR #47; the ODIS extended-data multiplexer, its stacked PR); the car check stays as item 14.

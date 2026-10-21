@@ -1782,8 +1782,12 @@ pub struct FreezeField {
 	/// The extended-data record number the field belongs to, or `999` for the unit's
 	/// default record — the layout of any record number the unit lists no rows for.
 	pub record: u32,
-	/// The row's first field as written: 100 plus the record's length in bytes in 897 of
-	/// `RF.rod`'s 1,028 records.
+	/// The last record number of a case that covers a range (an ODIS case's upper limit);
+	/// `None` for a case of one number.
+	pub record_upper: Option<u32>,
+	/// The row's first field as written: for a VCDS row, 100 plus the record's length in
+	/// bytes in 897 of `RF.rod`'s 1,028 records; for an ODIS row, 100 plus the length the
+	/// project proves ([`put_all_odis_freeze_frames`]), `None` where it proves none.
 	pub lead: Option<u32>,
 	/// `RM.rod`'s value type: 0 linear, 2 identity, 3 text table, 6 multiplexed, 7 raw
 	/// bytes, 11 a reserved field VCDS does not show.
@@ -1816,7 +1820,7 @@ pub fn freeze_frame_variants(db_path: &Path, kind: &str) -> Result<Vec<String>, 
 pub fn freeze_frame_fields(db_path: &Path, kind: &str, variant: &str) -> Result<Vec<FreezeField>, Error> {
 	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare(
-		"SELECT id, key, lead, kind, signed, big_endian, bit_offset, bit_length, factor, offset, unit, name \
+		"SELECT id, key, lead, kind, signed, big_endian, bit_offset, bit_length, factor, offset, unit, name, case_upper \
          FROM registry_row WHERE variant = ?1 AND section = ?2 \
            AND source_id IN (SELECT id FROM source WHERE kind = ?3) ORDER BY id",
 	)?;
@@ -1838,6 +1842,7 @@ pub fn freeze_frame_fields(db_path: &Path, kind: &str, variant: &str) -> Result<
 					scale: factor.zip(offset),
 					unit: row.get(10)?,
 					name: row.get(11)?,
+					record_upper: row.get(12)?,
 					levels: Vec::new(),
 				},
 			))
@@ -1855,6 +1860,118 @@ pub fn freeze_frame_fields(db_path: &Path, kind: &str, variant: &str) -> Result<
 		out.push(field);
 	}
 	Ok(out)
+}
+
+/// Every ODIS variant's extended-data records, as `vag_data_labels::odis::Project::extended_records`
+/// reads them, in one transaction, replacing every freeze-frame row this ODIS source wrote
+/// before — and only those: a VCDS install's rows are another source's, never touched, and
+/// never read together with these ([`freeze_frame_fields`] takes one kind).
+///
+/// A row per field, in the `registry_row` shape VCDS's rows have: `key` the record number
+/// (`999` for the default case), `case_lower`/`case_upper` an ODIS case's range, `lead` 100
+/// plus the record's proven length, `kind` 0 linear, 3 text table, 7 raw bytes, 11 a coded
+/// constant. A record with no fields is kept as one constant row, for its length. Returns
+/// how many rows landed. `--drop` of the source removes them with the rest of its rows.
+pub fn put_all_odis_freeze_frames<'a>(
+	db_path: &Path,
+	project_dir: &str,
+	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::EnvironmentRecord])>,
+) -> Result<usize, Error> {
+	const DEFAULT: u32 = 999;
+	let mut conn = Connection::open(db_path)?;
+	create_schema(&conn, db_path)?;
+	conn.pragma_update(None, "synchronous", "FULL")?;
+	conn.pragma_update(None, "cache_size", -65536)?;
+	let tx = conn.transaction()?;
+	let source = source_id(&tx, ODIS, project_dir)?;
+	let mine = "SELECT id FROM registry_row WHERE source_id = ?1 AND section = ?2";
+	tx.execute(
+		&format!("DELETE FROM registry_level WHERE registry_row_id IN ({mine})"),
+		params![source, FREEZE_FRAME_SECTION],
+	)?;
+	tx.execute(
+		&format!("DELETE FROM registry_row WHERE id IN ({mine})"),
+		params![source, FREEZE_FRAME_SECTION],
+	)?;
+	let mut written = 0usize;
+	{
+		let mut insert = tx.prepare(
+			"INSERT INTO registry_row \
+                (source_id, variant, section, line, key, case_lower, case_upper, lead, kind, signed, big_endian, \
+                 bit_offset, bit_length, factor, offset, unit, name, text_id, raw) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, '')",
+		)?;
+		let mut insert_level = tx.prepare("INSERT INTO registry_level (registry_row_id, raw, upper, meaning) VALUES (?1, ?2, ?3, ?4)")?;
+		for (variant, records) in variants {
+			let mut line = 0i64;
+			for record in records {
+				let (lower, upper) = match record.range {
+					Some((lower, upper)) => (u32::try_from(lower).ok(), u32::try_from(upper).ok()),
+					None => (None, None),
+				};
+				let key = match (record.range, lower) {
+					(None, _) => DEFAULT,
+					(Some(_), Some(lower)) => lower,
+					// A negative record number is not one a byte carries.
+					(Some(_), None) => continue,
+				};
+				let lead = record.length.map(|l| l + 100);
+				let constant = vag_data_labels::odis::EnvironmentField {
+					name: None,
+					text_id: None,
+					unit: None,
+					bit_offset: None,
+					bit_length: None,
+					signed: false,
+					big_endian: true,
+					scaling: None,
+					constant: true,
+				};
+				let fields = match record.fields.is_empty() {
+					true => std::slice::from_ref(&constant),
+					false => record.fields.as_slice(),
+				};
+				for f in fields {
+					line += 1;
+					let (kind, scale) = match (&f.scaling, f.constant) {
+						(_, true) => (11u8, None),
+						(Some(Scaling::Linear(l)), _) => (0, Some((l.factor, l.offset))),
+						(Some(Scaling::Enum { .. }), _) => (3, None),
+						_ => (7, None),
+					};
+					insert.execute(params![
+						source,
+						variant,
+						FREEZE_FRAME_SECTION,
+						line,
+						key,
+						lower.filter(|_| record.range.is_some_and(|(l, u)| l != u)),
+						upper.filter(|_| record.range.is_some_and(|(l, u)| l != u)),
+						lead,
+						kind,
+						f.signed,
+						f.big_endian,
+						f.bit_offset,
+						f.bit_length,
+						scale.map(|s| s.0),
+						scale.map(|s| s.1),
+						f.unit,
+						f.name,
+						f.text_id,
+					])?;
+					let id = tx.last_insert_rowid();
+					if let Some(Scaling::Enum { levels }) = &f.scaling {
+						for level in levels {
+							insert_level.execute(params![id, level.lower(), level.upper(), level.name()])?;
+						}
+					}
+					written += 1;
+				}
+			}
+		}
+	}
+	tx.commit()?;
+	Ok(written)
 }
 
 /// One variant's rows of one section, as `(identifier, ordinal, name, raw, levels)` — for tests.
@@ -3314,6 +3431,87 @@ mod tests {
 			(Some(8), Some((0.1, 0.0)), Some("V"))
 		);
 		assert!(freeze_frame_fields(&ws.db_path, VCDS, "EV_UnitB").unwrap().is_empty());
+	}
+
+	#[test]
+	fn odis_freeze_frames_are_their_own_sources_rows_and_go_when_it_is_dropped() {
+		use vag_data_labels::odis::{EnvironmentField, EnvironmentRecord};
+		let ws = TempWorkspace::new("odis-freeze-frames");
+		let field = |name: &str, bit: u32, scaling: Option<Scaling>| EnvironmentField {
+			name: Some(name.into()),
+			text_id: None,
+			unit: None,
+			bit_offset: Some(bit),
+			bit_length: Some(8),
+			signed: false,
+			big_endian: true,
+			scaling,
+			constant: false,
+		};
+		let records = [
+			EnvironmentRecord {
+				range: Some((112, 112)),
+				name: Some("own".into()),
+				length: Some(2),
+				fields: vec![
+					field(
+						"volts",
+						0,
+						Some(Scaling::Linear(vag_data_labels::LinearScale { factor: 0.1, offset: 0.0 })),
+					),
+					field(
+						"state",
+						8,
+						Some(Scaling::Enum {
+							levels: vec![Level::point(0, "off"), Level::point(1, "on")],
+						}),
+					),
+				],
+			},
+			EnvironmentRecord {
+				range: Some((120, 125)),
+				name: Some("a range".into()),
+				length: None,
+				fields: vec![field("raw", 0, None)],
+			},
+			EnvironmentRecord {
+				range: None,
+				name: Some("unknown freeze frame".into()),
+				length: None,
+				fields: Vec::new(),
+			},
+		];
+		record_language(&ws.db_path, VCDS, "/x/vcds-en", "eng").unwrap();
+		put_all_vcds_registry_rows(&ws.db_path, "/x/vcds-en", [("EV_UnitA", &[described(FREEZE_FRAME_SECTION, 0, 0)][..])]).unwrap();
+		assert_eq!(
+			put_all_odis_freeze_frames(&ws.db_path, "/x/SK37X", [("EV_UnitA_001", &records[..])]).unwrap(),
+			4
+		);
+
+		assert_eq!(freeze_frame_variants(&ws.db_path, ODIS).unwrap(), vec!["EV_UnitA_001".to_string()]);
+		let rows = freeze_frame_fields(&ws.db_path, ODIS, "EV_UnitA_001").unwrap();
+		let shape = rows.iter().map(|r| (r.record, r.record_upper, r.lead, r.kind)).collect::<Vec<_>>();
+		assert_eq!(
+			shape,
+			vec![
+				(112, None, Some(102), Some(0)),
+				(112, None, Some(102), Some(3)),
+				(120, Some(125), None, Some(7)),
+				(999, None, None, Some(11)),
+			]
+		);
+		assert_eq!(rows[1].levels.len(), 2);
+		// The VCDS rows are untouched and never read with them.
+		assert_eq!(freeze_frame_fields(&ws.db_path, VCDS, "EV_UnitA").unwrap().len(), 1);
+		assert!(freeze_frame_fields(&ws.db_path, VCDS, "EV_UnitA_001").unwrap().is_empty());
+
+		// A second write replaces the first; dropping the source takes its rows.
+		put_all_odis_freeze_frames(&ws.db_path, "/x/SK37X", [("EV_UnitA_001", &records[..1])]).unwrap();
+		assert_eq!(freeze_frame_fields(&ws.db_path, ODIS, "EV_UnitA_001").unwrap().len(), 2);
+		let odis = sources(&ws.db_path).unwrap().into_iter().find(|s| s.kind == ODIS).unwrap();
+		drop_source(&ws.db_path, odis.id).unwrap();
+		assert!(freeze_frame_variants(&ws.db_path, ODIS).unwrap().is_empty());
+		assert_eq!(freeze_frame_fields(&ws.db_path, VCDS, "EV_UnitA").unwrap().len(), 1);
 	}
 
 	#[test]
