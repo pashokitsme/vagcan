@@ -96,7 +96,8 @@ pub enum Described {
 /// One project, summarised in what can be read in milliseconds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CarData {
-	pub id: String,
+	/// The ODIS project's id; `None` when the machine's VCDS installation is all there is.
+	pub project: Option<String>,
 	/// Which sources have contributed, from the project's own provenance log.
 	/// Both `false` on a project whose log is missing — then the summary says
 	/// the name and stops, rather than inventing a provenance for it.
@@ -255,7 +256,7 @@ fn vcds_alone(vcds: Option<&project::Project>) -> Cars {
 			};
 			let reads = reads(&stores);
 			Cars::One(CarData {
-				id: "VCDS store (every car)".to_string(),
+				project: None,
 				from_vcds: true,
 				from_odis: false,
 				described: described_in(&stores, &reads),
@@ -276,7 +277,7 @@ fn summarise(project: &project::Project, vcds: Option<&project::Project>) -> Car
 	};
 	let reads = reads(&stores);
 	CarData {
-		id: project.id.clone(),
+		project: Some(project.id.clone()),
 		from_vcds: vcds.is_some(),
 		from_odis: project::has_source(project, "odis").unwrap_or(false),
 		described: described_in(&stores, &reads),
@@ -413,7 +414,7 @@ fn state(facts: &Facts) -> String {
 	}
 	match &facts.cars {
 		Cars::One(car) => {
-			out.push_str(&format!("  Project   {}{}\n", car.id, provenance(car)));
+			out.push_str(&format!("  Data      {}\n", sources(car)));
 			match &car.described {
 				Described::Channels(variants, channels) => {
 					let whose = match car.reads {
@@ -458,13 +459,13 @@ fn state(facts: &Facts) -> String {
 		}
 		// How to pick belongs to the "Next" block below, and saying it twice
 		// trains a reader to skim the state lines.
-		Cars::Ambiguous(ids) => out.push_str(&format!("  Project   set up: {} — none picked for this run\n", ids.join(", "))),
+		Cars::Ambiguous(ids) => out.push_str(&format!("  Data      projects set up: {} — none picked for this run\n", ids.join(", "))),
 		// Likewise the reason: the state line says what is on disk, and why
 		// this run does not land on it is the "Next" block's business.
-		Cars::Misnamed { ids, .. } => out.push_str(&format!("  Project   set up: {} — not what this run names\n", ids.join(", "))),
-		Cars::None => out.push_str("  Project   none — nothing has been set up yet\n"),
+		Cars::Misnamed { ids, .. } => out.push_str(&format!("  Data      projects set up: {} — not what this run names\n", ids.join(", "))),
+		Cars::None => out.push_str("  Data      none — nothing has been set up yet\n"),
 		Cars::Unknown(why) => {
-			out.push_str("  Project   could not be read under ~/.vagcan/data/\n");
+			out.push_str("  Data      could not be read under ~/.vagcan/data/\n");
 			out.push_str(&caused_by(why));
 		}
 	}
@@ -481,19 +482,23 @@ fn caused_by(why: &str) -> String {
 	format!("            caused by: {why}\n")
 }
 
-/// Where a project's data came from, as a clause to hang off its name.
+/// What this machine holds, as one line of facts: the ODIS project by its id, and the VCDS
+/// installation, which is the machine's and read for every car — not a part of the project.
 ///
-/// Empty when its provenance log says nothing, because the two sources are not
-/// interchangeable — an ODIS project carries scalings and a VCDS installation
-/// does not — and guessing which one is behind a name would misdescribe what
-/// the tool can do with it.
-fn provenance(car: &CarData) -> String {
-	match (car.from_vcds, car.from_odis) {
-		(true, true) => ", from a VCDS installation and an ODIS project".to_string(),
-		(true, false) => ", from a VCDS installation".to_string(),
-		(false, true) => ", from an ODIS project".to_string(),
-		(false, false) => String::new(),
+/// A project whose provenance log says nothing is named and not credited to ODIS, because
+/// the two sources are not interchangeable and guessing which one is behind a name would
+/// misdescribe what the tool can do with it.
+fn sources(car: &CarData) -> String {
+	let mut facts = Vec::new();
+	match (&car.project, car.from_odis) {
+		(Some(id), true) => facts.push(format!("ODIS project {id}")),
+		(Some(id), false) => facts.push(format!("project {id}")),
+		(None, _) => {}
 	}
+	if car.from_vcds {
+		facts.push("VCDS installation, for every car".to_string());
+	}
+	vag_cli_core::marks::facts(facts)
 }
 
 /// What to type next — which depends on what is missing, in that order.
@@ -594,7 +599,7 @@ mod tests {
 
 	fn car() -> CarData {
 		CarData {
-			id: "SK37X".to_string(),
+			project: Some("SK37X".to_string()),
 			from_vcds: true,
 			from_odis: true,
 			reads: Ok(Some(vag_cli_core::source::Source::Odis)),
@@ -637,7 +642,7 @@ mod tests {
 			adapters: Adapters::None,
 			cars: Cars::None,
 		});
-		assert!(text.contains("  Project   none — nothing has been set up yet"), "{text}");
+		assert!(text.contains("  Data      none — nothing has been set up yet"), "{text}");
 		assert!(text.contains("vagcan setup     read a car model's data, offline."), "{text}");
 		assert!(!text.contains("Car data") && !text.contains("learn a car"), "{text}");
 		assert!(text.contains("ODIS"), "{text}");
@@ -698,7 +703,10 @@ mod tests {
 		});
 		assert!(text.contains("/dev/cu.usbmodem2101"), "{text}");
 		assert!(text.contains("CANable 2.0 (slcan)"), "{text}");
-		assert!(text.contains("SK37X, from a VCDS installation and an ODIS project"), "{text}");
+		assert!(
+			text.contains("  Data      ODIS project SK37X · VCDS installation, for every car\n"),
+			"{text}"
+		);
 		assert!(text.contains("399283 channels across 669 control-unit variants"), "{text}");
 		assert!(text.contains("3 catalog files with scalings proven"), "{text}");
 		for command in ["vagcan info", "vagcan units", "vagcan faults", "vagcan watch"] {
@@ -745,7 +753,7 @@ mod tests {
 			adapters: Adapters::None,
 			cars: Cars::Unknown(unreadable()),
 		});
-		assert!(text.contains("  Project   could not be read under ~/.vagcan/data/"), "{text}");
+		assert!(text.contains("  Data      could not be read under ~/.vagcan/data/"), "{text}");
 		assert!(
 			text.contains("            caused by: reading /Users/x/.vagcan/data: Permission denied (os error 13)"),
 			"{text}"
@@ -832,6 +840,29 @@ mod tests {
 		let _ = std::fs::remove_dir_all(&root);
 	}
 
+	/// The VCDS installation is the machine's, read for every car: it is never said to be a
+	/// part of the ODIS project beside it, and with no project it stands alone.
+	#[test]
+	fn the_vcds_installation_is_the_machines_not_the_projects() {
+		let line = |car: CarData| {
+			let text = render(&Facts {
+				adapters: Adapters::None,
+				cars: Cars::One(car),
+			});
+			text.lines().find(|l| l.starts_with("  Data ")).unwrap_or_default().to_string()
+		};
+		assert_eq!(
+			line(CarData {
+				project: None,
+				from_odis: false,
+				..car()
+			}),
+			"  Data      VCDS installation, for every car"
+		);
+		assert_eq!(line(CarData { from_vcds: false, ..car() }), "  Data      ODIS project SK37X");
+		assert_eq!(line(car()), "  Data      ODIS project SK37X · VCDS installation, for every car");
+	}
+
 	#[test]
 	fn a_project_that_cannot_say_where_it_came_from_is_only_named() {
 		// `has_source` answers false for a project with no provenance log, and
@@ -847,8 +878,8 @@ mod tests {
 				..car()
 			}),
 		});
-		assert!(text.contains("  Project   SK37X\n"), "{text}");
-		assert!(!text.contains("from a"), "{text}");
+		assert!(text.contains("  Data      project SK37X\n"), "{text}");
+		assert!(!text.contains("ODIS"), "{text}");
 		// And a cache with no channels in it claims no channels.
 		assert!(!text.contains("channels"), "{text}");
 	}
