@@ -103,6 +103,7 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 | Knock retard alarm −6.0/−4.5, from the research (owner, 2026-09-26) | `dash/04` |
 | An alarm is a channel's minimum and maximum with an "off" value each, not a rule of its own; `[[alarm]]` removed; priority by `alarm_priority`, then the file's order; no bus-budget refusal — the build only says what is read (owner, 2026-10-19) | `dash/04` |
 | ~~A proven row outranks ODIS, and ODIS outranks VCDS, field by field (owner, 2026-09-28)~~ — superseded 2026-10-21: ODIS and VCDS are independent, one source per run, never mixed (`CLAUDE.md`) | `label-lookup/02` (archived) |
+| One source per run, picked by `--source`, then `VAGCAN_SOURCE`, then `[source] use` in `config.toml`, else ODIS when the project has one, else VCDS; a source asked for and not set up is an error; built 2026-10-21. Open: `units`/`info`/`sensors` still number and name units from VCDS's label files whatever the run's source (owner to decide) | `vag_cli_core::source` |
 | `calibrate` removed entirely — «паразитный, никто этим заморачиваться не будет» (owner, 2026-09-28) | `label-lookup/02` (archived) |
 | `dev survey` removed entirely, with `faults --from`, `--diff` and the blind sweep: nobody runs a command just to feed the tool — the commands that meet the car record its units (owner, «б», 2026-09-28) | `label-lookup/03` (archived) |
 | `measure` times a run from the gearbox's speed, the board's stopwatch channel, and finds its roles by text id (owner, 2026-09-28) | PR #17 |

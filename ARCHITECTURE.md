@@ -40,8 +40,8 @@ So there are four sources and they are not interchangeable:
 | | comes from | rebuildable? |
 |---|---|---|
 | which identifiers a variant answers, their shape and scaling; fault codes and their text | an ODIS project, via `vagcan setup` | yes, in minutes |
-| names, unit numbers, fault text where the project has none | a VCDS installation, via `vagcan setup` | yes, in minutes |
-| identifier, shape and scaling of a connected car's units, where ODIS has none | a VCDS installation's registry `RM.rod`, via `vagcan setup` and the first `watch`, `measure` or `units --identify` with the car | yes, in minutes |
+| names, unit numbers, fault text | a VCDS installation, via `vagcan setup` | yes, in minutes |
+| identifier, shape and scaling of a connected car's units | a VCDS installation's registry `RM.rod`, via `vagcan setup` and the first `watch`, `measure` or `units --identify` with the car on a VCDS run | yes, in minutes |
 | `(identifier, raw form, factor, offset)` | measured on a vehicle | only by driving |
 
 An ODIS project lands in a **project** — `~/.vagcan/data/<project id>/`, holding its
@@ -56,9 +56,9 @@ land in the project's `measurements/`.
 platform, a VCDS installation describes every VAG car. Filed under a project, the same
 installation needed a copy per platform, and a machine with VCDS alone needed a project named
 for nothing. So the store holds one installation, `setup` asks no name for it, and every car
-command reads two caches: the car's ODIS project, when there is one, and the store
-(`vag_cli_core::project::Stores`). Both caches have one schema and one set of readers; ODIS
-still wins where both describe a channel. VCDS rows an older vagcan wrote into a project's
+command resolves both — the car's ODIS project, when there is one, and the store
+(`vag_cli_core::project::Stores`) — and reads one of them (below). Both caches have one
+schema and one set of readers. VCDS rows an older vagcan wrote into a project's
 cache move into the store the first time either is opened (`project::migrate_in`): the
 installation read last is kept, its files and rows are copied and counted back, and only then
 do the projects lose theirs — so a run stopped anywhere is finished by the next one. A move in
@@ -94,45 +94,68 @@ its units — is keyed by the VIN the car itself answers, under `~/.vagcan/cars/
 transcribes which vehicles each of VW's project names covers; nothing in the tool reads
 it, because a project declares its own coverage in `PRNR-INFO.xml`.
 
-### The two sources compose rather than compete
+### One source per run
 
-`setup`'s first menu entry offers both at once, and it is not a convenience. An ODIS
-project names a channel the way a database does —
-`Brake_pedal_information_plausibility` — and carries a **text id** beside it
-(`MAS11563`, `IDE00030`). VCDS's `TTTEXT.ROD` names the same ids: a record's tail says
-which `IDE`/`MAS` it is the text of. `names.json` is keyed by the record's own id
-(`000080`), and `odx-ids.json` maps that id to the `IDE`/`MAS` it names. So one source
-supplies which identifiers a variant answers, where the value sits in the reply and how
-to scale it, and the other can supply the human wording for the very same ids. **That
-join is written, not yet read:** a channel's name is looked up in `names.json` by the
-row's `IDE`/`MAS` id, which never matches a record id, so with both sources a channel
-still shows its ODIS phrasing. Neither source replaces the other, and a project holding
-only the ODIS half is valid and useful — the channels simply keep their machine
-phrasing.
+An ODIS project and a VCDS installation are **independent sources** (owner, 2026-10-21,
+replacing 2026-09-28's "ODIS outranks VCDS, field by field"): each describes a car on its
+own, and a run names everything — channels, scalings, fault text, freeze frames,
+adaptations — from one of them. Nothing of one fills a gap in the other; what the run's
+source does not describe is shown raw, or as its number, and says so.
+
+**Which one** is decided once, by `vag_cli_core::source::run_source`: `--source odis|vcds`,
+then `VAGCAN_SOURCE` (the firmware's build has no flag), then `[source] use` in
+`config.toml`, then the ODIS project when the run's project holds one, else the VCDS store
+when it holds an installation. A source asked for and not set up is an `error:` naming what
+asked, with the `setup` to type — never answered from the other. Every car command refuses
+it before it opens the adapter.
+
+**How it holds:** the decision yields a `source::Run`, one store and the source it holds,
+and every reader of label data is handed that and nothing else. `extracted::Extracted` is
+opened over one `Run` and holds one cache path; the dash build's and the editor's inputs are
+`Run::files`; the glossary seed and `--did`'s text ids ask `vag_data_db::text_ids_of` the
+run's kind. Two guards keep it so: a test opens both sources and checks that no reader of a
+run sees the other's channels, wording or ids, and a scan of the CLI crates refuses
+`cache_of`, `open_from` or a both-caches accessor outside the code that owns the stores.
+
+What that means per reader:
+
+- **channels:** the run's source's rows alone, a proven row still in front (it is a
+  measurement of this car, not a source). A VCDS installation's `names.json` names VCDS rows
+  only; an ODIS row keeps its own name. The owner's `names.csv` is read on every run.
+- **fault text:** the ODIS project's tables, or the VCDS chain — never one borrowing from the
+  other; an ODIS row with a display code and no text shows the code alone.
+  `[faults] language` picks among the run's source's own languages.
+- **the VCDS registry read** (`registry::ensure`) runs only on a VCDS run, for every unit of
+  the car the installation has not been tried for, ODIS-described or not; an ODIS run reads
+  none. "Unread" is a VCDS-run question: the dash build refuses unread units only there.
+- **the dash build** refuses a channel the run's source does not describe, with a note saying
+  which source it read and, where the other is set up, the flag that builds from it.
+- **the overview and `setup`** count and close on one source each: the overview the run's,
+  `setup` each source it read, with a hint when car commands read another.
 
 The two sources write their names to separate files — VCDS to `names.json`, wholesale,
 ODIS to `names-odis.json`, merged — so neither run overwrites the other's names.
 
-**Fault text comes from the project first, and the VCDS chain is the fallback.** An
+**Fault text on an ODIS run comes from the project's own tables.** An
 ODIS project carries, per ECU variant, a fault table (`DB_DOP_DTC`) mapping every
 24-bit number the unit can send to a code object (`MCD_DB_DIAG_TROUBLE_CODE`) holding
 the display code a tester prints and the text in the clear — 282,621 codes across the
 reference project's 621 variants that have one. `setup` writes them into `cache.sqlite`'s
 `fault` table keyed by variant and number, and `vagcan faults` names a code from the
 variant the unit identifies itself as, by the same `F19E`/`F1A2` match the channels use.
-The VCDS chain below answers for a unit the project has no table for. The layouts and the
-evidence are in [`research/odis-dtc/README.md`](research/odis-dtc/README.md).
+On a VCDS run the VCDS chain below names the codes instead. The layouts and the evidence are
+in [`research/odis-dtc/README.md`](research/odis-dtc/README.md).
 
 A text is one per code, in the language its supplier wrote — the object model has no
 language field and no translations, and the reference project's engine texts are English
 inside a project that declares `deu`. So language is a property of the *source*: each
 `source` row records what its source declared (an ODIS project's `<LANGUAGE>`, a VCDS
 build's `Codes.dat` or `Code-RUS.dat`), a second project in another language is a second
-source, and `[faults] language` in `config.toml` chooses between sources (`en`, `de`, `ru`,
-or the ISO 639-2 code a source declares). Unset, English wins wherever a source has it — an
-ODIS project that declares `eng`, else the VCDS text when the build in `~/.vagcan/rod` is
-English (read off its own files, not the source rows), asked before the project — and
-otherwise the project's own; the listing says which in one line.
+source, and `[faults] language` in `config.toml` chooses among the run's source's languages
+(`en`, `de`, `ru`, or the ISO 639-2 code a source declares). On an ODIS run, unset, English
+wins wherever an ODIS source of the project declares it, otherwise the project's own; the
+listing says which in one line. A VCDS installation has one build's language (read off its
+own files in `~/.vagcan/rod`); a setting it does not have is said at `-v`.
 
 ---
 
@@ -405,14 +428,12 @@ have not been read is refused, and the refusal names `dev dash build` — or `se
 installation is no longer where `setup` read it. A recorded unit the plan does not use is a note,
 never a refusal.
 
-The rows sit beside ODIS's under the installation's own source, and the last installation
-read replaces the one before, as its label files do. **ODIS wins every field it describes
-and VCDS fills only what ODIS lacks** (owner, 2026-09-28), and a proven row outranks both.
-ODIS also keeps the ODX ids it gives: VCDS names a field by the record of the name it shows,
-several fields can show one name, and a VCDS row filling a field ODIS lacks gives up an id
-ODIS gives another field of the unit, so `unit:IDE…` picks out what it picked out with ODIS
-alone. A VCDS list comes from whichever of a family's platform files read first — which is
-why a row from it ranks below ODIS's; there is no sweep left for a list to widen (2026-09-28).
+The rows sit in the VCDS store under the installation's own source, and the last
+installation read replaces the one before, as its label files do. They are read on a VCDS
+run alone (one source per run, above), a proven row in front of them; each row keeps the
+ODX id it carries — no id is given up to the other source's fields, since the two are never
+read together. A VCDS list comes from whichever of a family's platform files read first;
+there is no sweep left for a list to widen (2026-09-28).
 
 Step 1 copies only what is newer than the pool's copy, and step 2 is skipped when its cache
 is newer than the label files; `--refresh` forces both. Step 4 searches only for keys not

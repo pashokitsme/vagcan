@@ -22,10 +22,11 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 | `vagcan info` | VIN, and the engine's and gearbox's part numbers and software versions |
 | `vagcan units` | The car's control units, named from your label files and earlier `--identify` runs. `--identify` makes each one name itself |
 | `vagcan adaptations <unit>` | One unit's adaptation channels and their current values, read only. No unit: pick one. `--all`: every unit that has them. Refused on a moving car; needs a cable adapter |
-| `vagcan faults` | Stored fault codes with VW's own text, in English where a source has it. `[faults] language = "de"` (or `en`, `ru`, …) in the config picks another. Under each code, its freeze frame: priority, aging counter and the unit's own conditions (engine speed, voltage, temperatures, …) from an ODIS project or a VCDS install; bytes nothing describes are shown raw |
+| `vagcan faults` | Stored fault codes with VW's own text, in English where the run's source has it. `[faults] language = "de"` (or `en`, `ru`, …) in the config picks another of its languages. Under each code, its freeze frame: priority, aging counter and the unit's own conditions (engine speed, voltage, temperatures, …) from the ODIS project or the VCDS install; a code the source has no text for shows as its number, bytes nothing describes are shown raw |
 | `vagcan sensors` | Standard OBD-II readings. `--unit <unit>` outside 7E0–7E7: parked car and a cable adapter only |
 | `vagcan watch` | Live values from several units at once, with a chart of up to 6 channels. States show by name. `--out` records to CSV |
 | `vagcan measure` | Acceleration run timing from the car's own speed signal. `measure view` opens a saved run as a chart |
+| `--source odis\|vcds` | On the car commands and `dev dash build`/`edit`: which source names everything, for one run. One source per run, never mixed. Default: the ODIS project when there is one, else the VCDS installation |
 | `-v`, `-vv` | On any command. `-v`: where the data came from, why a row is unnamed or skipped, caveats, timings. `-vv`: also every request and answer on the bus. Data is on stdout, the rest on stderr |
 
 ### Development commands – `vagcan dev`
@@ -42,9 +43,10 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 
 ### Where names and numbers come from
 
-- **ODIS-Service project** (preferred): channels, byte layout, scaling and fault text for every control-unit variant.
-- **VCDS installation** (fallback): channel names, fault text, and the channels of the units of every car `watch`, `measure` or `units --identify` has run with.
-- **Your own drives**: a scaling measured on a car overrides both.
+- **ODIS-Service project** (the default when there is one): channels, byte layout, scaling and fault text for every control-unit variant.
+- **VCDS installation** (with no ODIS project, or `--source vcds`): channel names, fault text, and the channels of the units of every car `watch`, `measure` or `units --identify` has run with.
+- **Your own drives**: a scaling measured on a car overrides either.
+- A run reads one of the two sources, never both mixed: `--source odis|vcds` picks it.
 
 Everything lives under `~/.vagcan/`. Nothing about any car is built into the tool.
 
@@ -85,7 +87,7 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 
 ## Roadmap
 
-Updated 2026-10-21.
+Updated 2026-10-21 (one source per run).
 
 **Done**
 - [x] Read the car: identity, units, faults, OBD-II sensors, live values, acceleration timing with html-report
@@ -110,6 +112,7 @@ Updated 2026-10-21.
 - [x] A virtual car, `dev sim`, and e2e cases of the commands against it: `just e2e` (2026-10-21)
 - [x] One VCDS installation per machine, for every car, in `~/.vagcan/vcds/`; projects are ODIS's alone; an older layout moves on its own (2026-10-21)
 - [x] `setup` and `faults` print in the shape of established tools: steps as lines under a heading, faults as a block per unit (2026-10-21)
+- [x] ODIS and VCDS independent: one source per run, never mixed; `--source`, `VAGCAN_SOURCE` or `[source] use` picks it (2026-10-21)
 - [ ] Adaptation channels and their values, read only: `vagcan adaptations <unit>`, `--all` (built 2026-10-21, waiting for the car)
 - [ ] Freeze frames under each stored code in `vagcan faults`, from an ODIS project or a VCDS install alone (built 2026-10-21, checked offline on one recorded answer; waits for the car)
 - [ ] Page the dash with buttons on its pins
@@ -249,12 +252,12 @@ ODIS-Service is VW's own diagnostic software for dealers. vagcan does not includ
    vagcan setup ~/Downloads/SK37X
    ```
 
-### A VCDS installation (fallback)
+### A VCDS installation
 
 For cars no ODIS project covers.
 
 - It has names and fault text, and the channels of the units of the cars `watch`, `measure` or `units --identify` records.
-- About 40 % of its unit files are locked to VCDS itself; ODIS covers those.
+- About 40 % of its unit files are locked to VCDS itself: a run that reads VCDS shows those units raw. An ODIS project describes them, in a run of its own.
 - It reads in about 3 s cold. The keys of VCDS's encrypted files come from their file names.
 - **A Russian-only VCDS gives fault text, but no measurement names.** `watch` then shows its channels by reading id. Read an English VCDS instead: `vagcan setup` with no path, then pick "Download VCDS". A second VCDS installation replaces the first.
 - **One installation serves every car.** It is saved once, in `~/.vagcan/vcds/`, and `setup` asks no name for it.
@@ -274,12 +277,22 @@ vagcan watch           # with the car: records its units, reads their channels o
 
 ### Both
 
-The first menu entry of `vagcan setup` reads both. Where both describe a channel, ODIS wins; VCDS fills in what ODIS lacks.
+The first menu entry of `vagcan setup` reads both. They are independent sources: a run reads **one** of them for everything — channels, scalings, fault text, freeze frames, adaptations. Nothing of one fills a gap in the other; what the run's source does not describe is shown raw or as its number.
 
 - An ODIS project is saved as a **project** in `~/.vagcan/data/<project id>/`, one per platform. `setup` asks what to call it when its folder name will not do.
 - A VCDS installation is saved in `~/.vagcan/vcds/`, one per machine, for every car.
-- Every car command reads both: the car's ODIS project, when there is one, and the VCDS installation.
+- A car command reads the car's ODIS project when there is one, otherwise the VCDS installation.
 - Data about one specific car is saved in `~/.vagcan/cars/<VIN>/`.
+
+Pick the other source:
+
+| For | Type |
+|---|---|
+| one command | `vagcan --source vcds watch` |
+| a shell, or the firmware build | `export VAGCAN_SOURCE=vcds` |
+| every run | `[source] use = "vcds"` in `~/.vagcan/config.toml` |
+
+The flag wins over `VAGCAN_SOURCE`, which wins over `config.toml`. A source asked for that is not set up is an error, never answered from the other one.
 
 What `setup` prints, on stderr:
 
@@ -427,7 +440,7 @@ Everything is in `~/.vagcan/`. Nothing is written to the checkout.
 
 ```
 ~/.vagcan/
-  config.toml           settings: current project, name language, fault text language, favourites
+  config.toml           settings: current project, source, name language, fault text language, favourites
   names.csv             your own channel names (vagcan dev glossary)
   rod/                  VCDS .rod files and fault text
   vcds/                 the VCDS installation, one per machine, for every car
