@@ -1007,6 +1007,10 @@ mod tests {
 		assert!(opening(true, None, false)[0].1.contains("normal mode (--active)"));
 	}
 
+	/// How far into a session a frame already waiting may be stamped: the status-flag wait
+	/// it is read in (20 ms below), and room for a machine busy with other tests.
+	const STAMPED_WITHIN: f64 = 0.5;
+
 	/// The frames a session prints are data and nothing else is, at every level.
 	#[tokio::test]
 	async fn the_frames_are_stdout_and_the_adapter_notes_stderr() {
@@ -1038,8 +1042,22 @@ mod tests {
 			drop(adapter);
 			runs.push(run);
 		}
-		// Arrived before the session started: stamped 0, so every run prints the same line.
-		assert_eq!(runs[0].stdout, "    0.000       7E0  ->      3    1  22 F1 90\n");
+		// Waiting before the session started, but stamped when the backend reads it, inside
+		// the status-flag wait after `started`: a few milliseconds in on a loaded machine,
+		// which printed `0.002` where this once wanted `0.000`. The time is held to the start
+		// of the session, the rest of the line exactly, and the time column is then set
+		// aside so the runs compare as the split wants.
+		for run in &mut runs {
+			let mut lines = Vec::new();
+			for line in run.stdout.lines() {
+				let (time, rest) = line.trim_start().split_once(' ').unwrap_or_else(|| panic!("no time column: {line:?}"));
+				let secs: f64 = time.parse().unwrap_or_else(|_| panic!("not a time: {line:?}"));
+				assert!((0.0..STAMPED_WITHIN).contains(&secs), "stamped {secs} s in, not at the start: {line:?}");
+				lines.push(format!("[time] {}", rest.trim_start()));
+			}
+			run.stdout = lines.iter().map(|l| format!("{l}\n")).collect();
+		}
+		assert_eq!(runs[0].stdout, "[time] 7E0  ->      3    1  22 F1 90\n");
 		assert_eq!(runs[0].stderr, "", "nothing on stderr by default");
 		assert!(runs[1].stderr.contains("skipped: "), "{}", runs[1].stderr);
 		assert_split("dev sniff", &runs);
