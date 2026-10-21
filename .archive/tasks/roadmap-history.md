@@ -1,11 +1,77 @@
-# vagcan roadmap — history, 2026-08-02 to 2026-10-19
+# vagcan roadmap — history, 2026-08-02 to 2026-10-21
 
 Moved here verbatim from `todo/README.md` on 2026-09-14, when the roadmap was cut down to
 what is live. Commands are spelled as they were on the day each section was written; the
 old → new table is in `todo/README.md`. Nothing here is current. The 2026-09-15 section came
 on 2026-09-22, the 2026-09-22 one on 2026-09-26, the 2026-09-26 one on 2026-09-27, the
 2026-09-27 one and the first 2026-09-28 one on 2026-09-28, when PRs #15–#18 merged; the second 2026-09-28 one on
-2026-09-30, when PR #21 merged; the 2026-09-30 one on 2026-10-19, after PRs #22–#24.
+2026-09-30, when PR #21 merged; the 2026-09-30 one on 2026-10-19, after PRs #22–#24; the 2026-10-19 one on
+2026-10-21, after PRs #31–#56, without the two later items appended to it (they are in
+`todo/README.md`'s 2026-10-21 status).
+
+---
+
+## Where things stood on 2026-10-19, after PRs #24–#30 merged — a status strip and the owner's pages
+
+**Milestone: a status strip on every page, and the pages laid out by the owner in a browser
+editor — PR #24 merged 2026-10-19** (`e855a3b`). Since the 2026-09-30 status (moved to
+[`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-10-19):
+PR #22 (cleanup), the justfile and CI on its recipes (`648d637`, `fc13720`), PR #23 (`70d26e6`:
+the stopwatch's speed shown rounded down; `zero_at_rest` for the ESC's acceleration), PR #24.
+`cargo test --workspace` 2,120 passed on PR #24's branch; firmware static RAM unchanged by
+#24 (140,996 B with BLE, 131,536 B without). Merged after it: #29 (`f8b7536`, the first-run
+path), #26 (`409ace9`, thresholds on the channel), #27 (`210048d`, the settings record names
+its plan), #28 (`31eb581`, the icons in the strip), #30 (`b06d00e`, the plan's joins),
+2026-10-19.
+
+- **The strip** (PR #24): the battery voltage at the left, the page's `title` in the middle,
+  no rule; `[strip] volts = "<channel>"`, a page's `volts = false`; the voltage hides on a page
+  that shows its channel; with a title, a chart's header drops its label. The link icons and
+  the fault badge are at the strip's right end since PR #28, and the page under the strip keeps
+  its width. Watts beside the voltage are [`dash/23`](dash/23-power-consumption.md), not started.
+- **The owner's layout** (2026-10-19), from [`research/dash/layout-editor/`](../research/dash/layout-editor/README.md)
+  (the real renderer in WebAssembly, every channel `dash::build` resolves — 6,583 on the car;
+  since 2026-10-19 the command `vagcan dev dash edit <VIN>`):
+  DRIVE, TEMPERATURES, an RPM chart, IGNITION TIMING ANGLE (the knock-retard cylinders),
+  MISFIRE, BRAKES; English labels; three new channels (ambient air `F446`, brake booster
+  `2005`, brake pressure `3803` on the gearbox) and the strip's `01:IDE00018`. In
+  `~/.vagcan/dash/XW8AD4NE9JH008917/dash.toml`, the file before it beside it
+  (`.before-layout-2026-10-19`); master's `dev dash build` takes it: 23 channels, 4 units,
+  6 pages.
+- **Thresholds on the channel** — PR #26 (`409ace9`, merged 2026-10-19): `alarm_max`/`alarm_min`
+  with `alarm_max_off`/`alarm_min_off` and `drift_*` keys on `[[channel]]`, an explicit `alarm_priority`; `[[alarm]]` refused with
+  its rewrite; `MAX_ALARMS` gone, and no count or budget refuses a plan: the build estimates bus
+  time, below (the review of 2026-10-19 showed a reads-a-second budget is the wrong unit). The
+  owner's file is on the new keys, with oil 115/110 and the gearbox's control module
+  120/110 ([`research/dash/alarm-thresholds.md`](../research/dash/alarm-thresholds.md), 2026-10-19:
+  the Škoda manual's 80–110 °C oil; SSP 390's 139 °C torque cut on the 0AM, inferred for the 0CW).
+- **Bus time** — PR #33 (`1069daf`, merged 2026-10-20;
+  [`dash/24`](../.archive/tasks/done/dash/24-bus-time-check.md)): the build runs the board's
+  planner over the plan offline, each page on the glass with cruise off and on and a stopwatch
+  run, at 34 ms an exchange (the car's 10 Hz BLE `watch` of 2026-09-26, an upper bound), and
+  prints each page's estimated share and the reads it would thin. **It refuses nothing**
+  (2026-10-20): at 34 ms it called every page of the owner's plan short, and that plan runs on
+  the car — the constant is radio and host time, not CAN time. The board now counts its own
+  exchanges (`exch=…/s exch_ms=…` in `state`, a `bus:` console line every 10 s); a drive with it
+  gives the car's number, and a strict check can follow that measurement.
+- **The board in the car** runs a `dash` built before PR #23 (the commit was not recorded);
+  neither #23 nor #24 is on it. Its glass is wired SDIN `GPIO8`, CS `GPIO20`, RES `GPIO21`
+  (`365c21e`), the standard since 2026-10-03.
+- **The housing** ([`dash/15`](dash/15-enclosure.md), CAD in `~/CAD/projects/vagcan/`): round 3
+  printed by the owner; then a 0.4 mm rim in the wall in front of the socket, the ESP's clip
+  0.5 mm further off and the face's teeth 0.7 mm (CAD `9554fc9`, `44c19c7`, 2026-10-03), not
+  printed. The owner took the enclosure off the README roadmap on 2026-10-19.
+- **README roadmap ticks by the owner (2026-10-19):** the laptop through the dash (BLE), the
+  drift alarm, `faults` with ODIS text only, scalings from a VCDS install alone, the 0–100
+  stopwatch, the fault count — done. Their task files keep their open car checks
+  ([`dash/18`](dash/18-setpoints-and-drift.md), [`dash/20`](dash/20-fault-count.md),
+  [`dash/19`](dash/19-stalk-and-stopwatch.md)) until the owner says they are closed.
+
+**Not verified on hardware:** the strip and PR #23 on the glass; the pin buttons; `+`/`−` never
+opening the stopwatch; a 0–100 against `vagcan measure`; the run saved before `GO`; the retard
+alarm and the blink on a drive; the cable through the board on the car; the moving-car guard;
+the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch temperatures
+(`02:102A`–`102C`) answer — outside the August survey's pages.
 
 ---
 

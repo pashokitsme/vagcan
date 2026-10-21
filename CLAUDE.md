@@ -275,7 +275,8 @@ research/        RE writeups + tooling (NOT shipped) for work still in progress:
   measure/             `roles-sweep/`: `measure`'s roles over every engine and gearbox of an
                        ODIS project, run by hand against a machine's own cache
   tools/               one-shot tools that found bugs: `orphans.py` (pub items only tests
-                       use), `sigint.py` (does Ctrl-C end a long command)
+                       use), `sigint.py` (does Ctrl-C end a long command),
+                       `skill-commands.py` (the skills' commands against `--help`)
 .archive/        retired paths kept as evidence — see .archive/README.md for the map:
   research/            subjects whose findings are implemented and shipped:
     labels/              VW's label files — the `.rod`/`.clb`/`.lbl` crack, the TTTEXT
@@ -473,8 +474,9 @@ With no path, `vagcan setup` asks which, and offers to download an installation;
   same `vag-uds-*` crates compile `no_std` for the board under embassy
   (`default-features = false`).
 - `vag-data-labels`/`vag-data-db` stay sync (CPU-bound). **Label lookup must be
-  FAST** — `vagcan setup` caches the parsed label files to SQLite under
-  `~/.vagcan/data/<project>/cache.sqlite`.
+  FAST** — `vagcan setup` caches the parsed label files to SQLite: an ODIS project's in
+  `~/.vagcan/data/<project>/cache.sqlite`, the machine's one VCDS installation's in
+  `~/.vagcan/vcds/cache.sqlite` (`vag-cli-core/src/datadir.rs` owns the layout).
 - **Host = macOS Apple Silicon (M4).**
 
 ## Development workflow

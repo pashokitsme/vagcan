@@ -6,6 +6,12 @@ were merged on 2026-09-28 and moved to
 [`.archive/tasks/done/label-lookup/`](../../.archive/tasks/done/label-lookup/). This file carries
 what they left open, each with where it was found. Nothing here is started.
 
+**2026-10-21:** item 4 is done (PR #39, 2026-10-20: a unit is looked up in VCDS's own order,
+version and project before the bare name, the project from `chassis.clb` — the gateway reads
+`EV_GatewNF_SK37 → EV_GatewNF_VW37` now). Item 8 no longer exists: since PR #56 a VCDS run reads
+VCDS alone, and `registry::ensure` reads a unit whether or not an ODIS project describes it. Since
+PR #50 the pool is one per machine, in `~/.vagcan/vcds/`; items 5 and 7 are read against that.
+
 ## For the owner to decide
 
 1. **The gateway's four identification reads.** Since #18 the gateway (`0x710`) is asked
@@ -24,10 +30,12 @@ what they left open, each with where it was found. Nothing here is started.
 
 ## Open, without the car
 
-4. **Which platform file a unit reads** (02, "Left" 1). The first readable in name order wins,
+4. ~~**Which platform file a unit reads**~~ — done 2026-10-20, PR #39 (above). (02, "Left" 1). The first readable in name order wins,
    so the gateway reads `EV_GatewNF_AU37`, not `_SK37`; the brands' lists differ by 1–5 rows of
    the same identifiers. Choose by the car: `chassis.clb`, as VCDS does.
-5. **A Russian-only installation** (02, decision 3 and "Left" 3). Its text and unit tables are
+5. **A Russian-only installation** (02, decision 3 and "Left" 3). Since PR #50 (2026-10-21) a
+   machine keeps one installation, so the English one the decision names would be a second
+   installation kept beside it — the owner's call before any of it is built. Its text and unit tables are
    shifted, so its channels are named by their identifier in hex and carry no ODX id, and a
    `dash.toml` `unit:IDE…` reference cannot resolve there. The owner's decision: take names and
    units from an English installation on the same machine, by text id and unit id — first check
@@ -36,7 +44,8 @@ what they left open, each with where it was found. Nothing here is started.
    tried, refused and searched again; caching by the section's own bytes would end that.
 7. **The shared pool can mix two builds** of one language (02, "Left" 5): the copy is
    freshness-gated per file. Step 5 reads the installation itself; the fault chain does not.
-8. **VCDS's fill for units ODIS describes, on a car recorded after a pair setup** (03, "Left").
+8. ~~**VCDS's fill for units ODIS describes, on a car recorded after a pair setup**~~ — gone with
+   the fill, PR #56, 2026-10-21 (above). (03, "Left").
    `registry::ensure` skips ODIS-described units, to spare minutes of key search, so such a car
    gets that fill only from the next `setup`.
 9. **Two `setup` runs at once share the pool** (review, 2026-09-28): step 1's sweep of leftover
@@ -44,6 +53,13 @@ what they left open, each with where it was found. Nothing here is started.
    pid is still running.
 10. **Not built** (02, "Left" 4): the `dev vcds` command that prints one unit's rows; `[INC]` for
     the fault chain (`UnitLookup::NoSection`).
+
+12. **`rod::recover_classic_key` has no caller since PR #40** (cleanup pass, 2026-10-21;
+    `research/tools/orphans.py` between `0ad5502` and `f58678c`). It searched one classic
+    section's key for a registry read; #40 opens every classic section with the key its file name
+    gives and dropped that search from `registry::read_section`. Uncalled, and its reason gone with
+    the closed-form key — unless a classic section ever fails to open under its own name, which
+    nothing has shown. The owner's call: delete it with its test, or keep it for that case.
 
 ## Open, with the car
 

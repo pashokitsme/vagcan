@@ -344,6 +344,28 @@ mixed in.
   live file with what the agent read (`diff`, or its `.before-*` backup's time) and redo it on
   the current file.
 
+### Rules established on the 2026-10-21 pass
+
+- **Phase 5 is `research/tools/skill-commands.py`, and it checks flags too.** It splits the words
+  itself, so zsh's unsplit `$c` cannot fake a "MISSING" again, and it looks for every `--flag` a
+  skill names in that command's `--help`: a removed flag leaves its subcommand resolving
+  (`faults --from` went on 2026-09-28 and `faults` still parsed), so a subcommand check alone
+  passes a skill that tells an agent to type something clap refuses. Give it a non-test build
+  (`target/e2e/vagcan` after `just e2e`); a test build prints a note on every run.
+- **Phase 4 runs `research/tools/orphans.py` over the range since the last pass**, every pass,
+  not only after a removal. On 2026-10-21 it found `rod::recover_classic_key` with no caller: a
+  performance PR (#40) dropped its one call site, and that PR's review never asked what the
+  change orphaned. The base is the last pass's commit or the first merge after it; `git archive`
+  of the two commits into the scratchpad is enough, no worktree. Each hit still goes through the
+  two-part "genuinely dead" test, and one that fails the second half is the owner's call.
+- **A merged agent's worktree goes in the same pass, not only its `target/`.** Ten were left on
+  2026-10-21, each with its branch merged and nothing in `git status`. The check per worktree is
+  `gh pr list --state merged --head <branch>` naming a PR and an empty `git status --porcelain`;
+  then `git worktree remove` (never `--force`) — the branch stays.
+- **When a board's image does not record its commit, date it from the session log.** The flash's
+  timestamp in the transcript (`Flashing has completed`), against `git log --format='%h %cI'` on
+  `master`, names the commit `master` was at; the status line says it was found that way.
+
 ## What a cleanup pass produces
 
 Five things, and no more:
