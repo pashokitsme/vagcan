@@ -2596,11 +2596,17 @@ pub fn drop_kind(db_path: &Path, kind: &str) -> Result<Rows, Error> {
 		gone.faults += rows.faults;
 	}
 	tx.commit()?;
-	// The file gives back the pages the rows held: a project's cache lost most of itself.
-	if gone.total() > 0 {
-		conn.execute_batch("VACUUM")?;
-	}
 	Ok(gone)
+}
+
+/// Give back the pages deleted rows held: after [`drop_kind`], a project's cache that lost
+/// most of itself. Apart from the drop, so a VACUUM that fails — the file busy, the disk
+/// full — or a process stopped during it leaves the drop done.
+pub fn vacuum(db_path: &Path) -> Result<(), Error> {
+	let conn = open_existing(db_path)?;
+	conn.busy_timeout(std::time::Duration::from_secs(5))?;
+	conn.execute_batch("VACUUM")?;
+	Ok(())
 }
 
 #[cfg(test)]

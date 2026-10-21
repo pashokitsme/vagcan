@@ -647,6 +647,27 @@ fn migration_lock(store: &Project) -> PathBuf {
 	store.dir.join(".migrate.lock")
 }
 
+/// A move in progress, beside the store: written before the winner's files are staged, and
+/// removed once they are in place and the move is recorded. What it holds — the
+/// installation moved, which of its files the project had, the record entry — is what the
+/// next run needs to finish a move stopped after its rows committed ([`recover_move`]).
+fn move_marker(store: &Project) -> PathBuf {
+	store.dir.join(".migrating.json")
+}
+
+/// Where a file of the store is staged while a move is in progress: `.names.json.migrating`.
+fn staging_of(store: &Project, file: &Path) -> PathBuf {
+	let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+	store.dir.join(format!(".{name}.migrating"))
+}
+
+/// A project whose VCDS rows are being taken out: written before its files go and kept
+/// until [`remove_if_empty`] has had its say, so a run stopped after the rows went — during
+/// the VACUUM, say — still removes a project left empty.
+fn taken_out_marker(project: &Project) -> PathBuf {
+	project.dir.join(".vcds-taken-out")
+}
+
 /// What a migration left a record of, beside the store: `migrated.json`, one entry per
 /// migration that moved or dropped anything — when, from which projects, which
 /// installation was kept and which were replaced. Notes on stderr are lost to a kill or a
@@ -740,7 +761,7 @@ fn anything_to_migrate(projects: &Path) -> bool {
 	list_in(projects).into_iter().any(|id| {
 		let project = Project { dir: projects.join(&id), id };
 		let holds_vcds = project.cache().is_file() && newest_vcds(&project).map_or(true, |held| held.is_some());
-		holds_vcds || vcds_files(&project).iter().any(|file| file.is_file())
+		holds_vcds || taken_out_marker(&project).is_file() || vcds_files(&project).iter().any(|file| file.is_file())
 	})
 }
 
@@ -766,7 +787,7 @@ fn anything_to_migrate(projects: &Path) -> bool {
 /// no earlier than the project's. Stopped anywhere, the next open finishes it.
 pub fn migrate_in(projects: &Path, store: &Project) -> Migrated {
 	let mut out = Migrated::default();
-	if !anything_to_migrate(projects) {
+	if !anything_to_migrate(projects) && !move_marker(store).is_file() {
 		return out;
 	}
 	let _lock = match vag_data_db::exclusive(&migration_lock(store), std::time::Duration::from_secs(120)) {
@@ -778,6 +799,10 @@ pub fn migrate_in(projects: &Path, store: &Project) -> Migrated {
 			return out;
 		}
 	};
+	// A move a stopped run began is finished, or undone, before anything is weighed.
+	if let Some(note) = recover_move(store) {
+		out.notes.push(note);
+	}
 	let mut held: Vec<Held> = Vec::new();
 	let mut bare: Vec<Project> = Vec::new();
 	for id in list_in(projects) {
@@ -810,11 +835,52 @@ pub fn migrate_in(projects: &Path, store: &Project) -> Migrated {
 			}
 		},
 	};
+	// What this migration does, decided and recorded before anything moves: the record
+	// goes out with the move ([`move_into`]) or, with nothing to move, before any project
+	// loses a row — a stop after either keeps it.
 	let mut record = serde_json::Map::new();
-	if let Some(winner) = held.first() {
-		let moves = in_store.as_ref().is_none_or(|(stamp, _)| winner.parsed_at > *stamp);
-		if moves {
-			if let Err(e) = move_into(&winner.project, store) {
+	let mut said = Vec::new();
+	let winner = held.first().filter(|w| in_store.as_ref().is_none_or(|(stamp, _)| w.parsed_at > *stamp));
+	if let Some(winner) = winner {
+		record.insert(
+			"moved".into(),
+			serde_json::json!({ "from": winner.project.dir, "installation": winner.path, "read": winner.parsed_at }),
+		);
+	}
+	// Every installation not kept, the store's own among them when this one replaced it.
+	let mut replaced: Vec<serde_json::Value> = Vec::new();
+	if winner.is_some()
+		&& let Some((stamp, path)) = &in_store
+	{
+		said.push(format!(
+			"replaced the installation {} the store held, read {}",
+			crate::datadir::tilde(Path::new(path)),
+			stamp.as_deref().unwrap_or("at an unknown time")
+		));
+		replaced.push(serde_json::json!({ "from": store.dir, "installation": path, "read": stamp }));
+	}
+	for h in held.iter().skip(usize::from(winner.is_some())) {
+		// The store's own, stamped alike: the copy a stopped run already made.
+		if in_store.as_ref().is_some_and(|(stamp, _)| *stamp == h.parsed_at) {
+			continue;
+		}
+		said.push(format!(
+			"dropped the installation {} from {}, read {}: the one read last is kept",
+			crate::datadir::tilde(Path::new(&h.path)),
+			h.project.id,
+			h.parsed_at.as_deref().unwrap_or("at an unknown time")
+		));
+		replaced.push(serde_json::json!({ "from": h.project.dir, "installation": h.path, "read": h.parsed_at }));
+	}
+	if !replaced.is_empty() {
+		record.insert("replaced".into(), serde_json::Value::Array(replaced));
+	}
+	if !record.is_empty() {
+		record.insert("at".into(), serde_json::Value::String(chrono::Utc::now().to_rfc3339()));
+	}
+	match winner {
+		Some(winner) => {
+			if let Err(e) = move_into(&winner.project, store, &record) {
 				out.notes.push(format!(
 					"warning: the VCDS installation in {} did not move to {} ({e:#}); it stays there until the next run",
 					crate::datadir::tilde(&winner.project.dir),
@@ -827,38 +893,15 @@ pub fn migrate_in(projects: &Path, store: &Project) -> Migrated {
 				crate::datadir::tilde(&winner.project.dir),
 				crate::datadir::tilde(&store.dir)
 			));
-			record.insert(
-				"moved".into(),
-				serde_json::json!({ "from": winner.project.dir, "installation": winner.path, "read": winner.parsed_at }),
-			);
 		}
-		// Every installation not kept, the store's own among them when this one replaced it.
-		let mut replaced: Vec<serde_json::Value> = Vec::new();
-		if moves && let Some((stamp, path)) = &in_store {
-			out.notes.push(format!(
-				"replaced the installation {} the store held, read {}",
-				crate::datadir::tilde(Path::new(path)),
-				stamp.as_deref().unwrap_or("at an unknown time")
-			));
-			replaced.push(serde_json::json!({ "from": store.dir, "installation": path, "read": stamp }));
-		}
-		for h in held.iter().skip(usize::from(moves)) {
-			// The store's own, stamped alike: the copy a stopped run already made.
-			if in_store.as_ref().is_some_and(|(stamp, _)| *stamp == h.parsed_at) && !moves {
-				continue;
+		None if !record.is_empty() => {
+			if let Err(e) = append_record(store, serde_json::Value::Object(record)) {
+				out.notes.push(format!("warning: the record of this migration was not written ({e:#})"));
 			}
-			out.notes.push(format!(
-				"dropped the installation {} from {}, read {}: the one read last is kept",
-				crate::datadir::tilde(Path::new(&h.path)),
-				h.project.id,
-				h.parsed_at.as_deref().unwrap_or("at an unknown time")
-			));
-			replaced.push(serde_json::json!({ "from": h.project.dir, "installation": h.path, "read": h.parsed_at }));
 		}
-		if !replaced.is_empty() {
-			record.insert("replaced".into(), serde_json::Value::Array(replaced));
-		}
+		None => {}
 	}
+	out.notes.extend(said);
 	// Under the same lock, and only while the store holds an installation read no earlier
 	// than the project's: what is taken out is in the store.
 	let kept = match store.cache().is_file() {
@@ -873,9 +916,28 @@ pub fn migrate_in(projects: &Path, store: &Project) -> Migrated {
 			));
 			continue;
 		}
+		// The store holds this very installation (stamped alike): a file of it the store
+		// lacks is the project's to give — a move stopped before its files were in place
+		// left them only in the project. Until the store has it, the project keeps it all.
+		if kept.as_ref().is_some_and(|(stamp, _)| *stamp == h.parsed_at)
+			&& let Some(missing) = give_missing_files(&h.project, store)
+		{
+			out.notes.push(format!(
+				"warning: the VCDS rows in {} stay there: {} did not reach the store",
+				crate::datadir::tilde(&h.project.cache()),
+				crate::datadir::tilde(&missing)
+			));
+			continue;
+		}
 		match take_out(&h.project) {
-			Ok(()) => {
-				if let Some(note) = remove_if_empty(&h.project, store, &mut out.removed) {
+			Ok(vacuumed) => {
+				if let Err(e) = vacuumed {
+					out.notes.push(format!(
+						"note: {} keeps the space its VCDS rows held ({e}); they are gone",
+						crate::datadir::tilde(&h.project.cache())
+					));
+				}
+				if let Some(note) = settle_taken_out(&h.project, store, &mut out.removed) {
 					out.notes.push(note);
 				}
 			}
@@ -891,14 +953,112 @@ pub fn migrate_in(projects: &Path, store: &Project) -> Migrated {
 		if let Some(note) = adopt_files(project, store) {
 			out.notes.push(note);
 		}
-	}
-	if !record.is_empty() {
-		record.insert("at".into(), serde_json::Value::String(chrono::Utc::now().to_rfc3339()));
-		if let Err(e) = append_record(store, serde_json::Value::Object(record)) {
-			out.notes.push(format!("warning: the record of this migration was not written ({e:#})"));
+		// Its VCDS rows went in a run stopped before it was settled: an empty project is
+		// removed now, as that run would have.
+		if taken_out_marker(project).is_file()
+			&& let Some(note) = settle_taken_out(project, store, &mut out.removed)
+		{
+			out.notes.push(note);
 		}
 	}
 	out
+}
+
+/// After a project's VCDS rows went: [`remove_if_empty`], and the project's marker gone
+/// once nothing is left to retry — the project removed, or kept for its other sources.
+fn settle_taken_out(project: &Project, store: &Project, removed: &mut Vec<String>) -> Option<String> {
+	let note = remove_if_empty(project, store, removed);
+	let retry = note.as_deref().is_some_and(|n| n.starts_with("warning:"));
+	if project.dir.is_dir() && !retry {
+		let _ = std::fs::remove_file(taken_out_marker(project));
+	}
+	note
+}
+
+/// Copy into the store each VCDS file of `project` the store lacks. The first that does not
+/// arrive is returned, and the rest are not tried.
+fn give_missing_files(project: &Project, store: &Project) -> Option<PathBuf> {
+	for (from, to) in vcds_files(project).into_iter().zip(vcds_files(store)) {
+		if from.is_file() && !to.is_file() && crate::datadir::copy_file(&from, &to).is_err() {
+			return Some(to);
+		}
+	}
+	None
+}
+
+/// Finish, or undo, a move a stopped run began ([`move_marker`]). Its rows committed — the
+/// store's newest installation is the one the marker names — the staged files are renamed
+/// into place and the move recorded; otherwise the staged files are removed and the next
+/// step makes the move again. Staged files with no marker (a vagcan before the marker) are
+/// removed: the project still holds what they copied, and gives it again
+/// ([`give_missing_files`]).
+fn recover_move(store: &Project) -> Option<String> {
+	let marker = move_marker(store);
+	let Some(moving) = std::fs::read_to_string(&marker)
+		.ok()
+		.and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+	else {
+		let _ = std::fs::remove_file(&marker);
+		for file in vcds_files(store) {
+			let _ = std::fs::remove_file(staging_of(store, &file));
+		}
+		return None;
+	};
+	let committed = store.cache().is_file()
+		&& newest_vcds(store)
+			.ok()
+			.flatten()
+			.is_some_and(|(stamp, path)| stamp.as_deref() == moving["read"].as_str() && path == moving["installation"].as_str().unwrap_or_default());
+	if !committed {
+		for file in vcds_files(store) {
+			let _ = std::fs::remove_file(staging_of(store, &file));
+		}
+		let _ = std::fs::remove_file(&marker);
+		return None;
+	}
+	Some(match finish_move(store, &moving) {
+		Ok(()) => format!(
+			"finished moving the installation {} into {}",
+			crate::datadir::tilde(Path::new(moving["installation"].as_str().unwrap_or("?"))),
+			crate::datadir::tilde(&store.dir)
+		),
+		Err(e) => format!(
+			"warning: a stopped move into {} is not finished ({e:#}); the next run finishes it",
+			crate::datadir::tilde(&store.dir)
+		),
+	})
+}
+
+/// The last half of a move, after its rows committed: each staged file renamed into place,
+/// a file the project did not have removed from the store, the move recorded once, the
+/// marker gone. Every step is one a second pass makes again safely.
+fn finish_move(store: &Project, moving: &serde_json::Value) -> Result<()> {
+	let had: Vec<&str> = moving["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str()).collect();
+	for to in vcds_files(store) {
+		let name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+		let staging = staging_of(store, &to);
+		match had.contains(&name.as_str()) {
+			true if staging.is_file() => std::fs::rename(&staging, &to).with_context(|| format!("replacing {}", to.display()))?,
+			// Renamed already, by the run that stopped.
+			true => {}
+			false => match std::fs::remove_file(&to) {
+				Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+					return Err(e).with_context(|| format!("removing {}", to.display()));
+				}
+				_ => {}
+			},
+		}
+	}
+	if let Some(entry) = moving.get("record").filter(|r| r.as_object().is_some_and(|r| !r.is_empty())) {
+		let recorded = std::fs::read_to_string(migration_record(store))
+			.ok()
+			.and_then(|text| serde_json::from_str::<Vec<serde_json::Value>>(&text).ok())
+			.is_some_and(|entries| entries.iter().any(|e| e["at"] == entry["at"]));
+		if !recorded {
+			append_record(store, entry.clone())?;
+		}
+	}
+	std::fs::remove_file(move_marker(store)).with_context(|| format!("removing {}", move_marker(store).display()))
 }
 
 /// Add one entry to [`migration_record`].
@@ -912,57 +1072,58 @@ fn append_record(store: &Project, entry: serde_json::Value) -> Result<()> {
 	crate::datadir::replace_file(&path, serde_json::to_string_pretty(&entries)?.as_bytes())
 }
 
-/// The winner's half of [`migrate_in`]: its files staged in the store, its rows copied,
-/// and only then the files renamed into place. A file it lacks is removed from the store,
-/// where it would describe the installation replaced. A copy that fails leaves the store's
-/// files and rows as they were.
-fn move_into(project: &Project, store: &Project) -> Result<()> {
+/// The winner's half of [`migrate_in`]: the move marked, its files staged in the store,
+/// its rows copied, and only then the files renamed into place and `record` recorded. A
+/// file it lacks is removed from the store, where it would describe the installation
+/// replaced. A copy that fails leaves the store's files and rows as they were; a run
+/// stopped after the copy committed is finished by the next ([`recover_move`]).
+fn move_into(project: &Project, store: &Project, record: &serde_json::Map<String, serde_json::Value>) -> Result<()> {
+	let moving = begin_move(project, store, record)?;
+	finish_move(store, &moving)
+}
+
+/// [`move_into`] up to its rows committed: the marker written, the files staged, the rows
+/// copied. What it returns is the marker's content, for [`finish_move`].
+fn begin_move(project: &Project, store: &Project, record: &serde_json::Map<String, serde_json::Value>) -> Result<serde_json::Value> {
 	std::fs::create_dir_all(&store.dir).with_context(|| format!("creating {}", store.dir.display()))?;
-	let staged: Vec<(PathBuf, PathBuf, PathBuf)> = vcds_files(project)
-		.into_iter()
-		.zip(vcds_files(store))
-		.map(|(from, to)| {
-			let name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-			let staging = store.dir.join(format!(".{name}.migrating"));
-			(from, staging, to)
-		})
+	let (read, installation) = newest_vcds(project)?.with_context(|| format!("{} holds no VCDS installation", project.cache().display()))?;
+	let pairs: Vec<(PathBuf, PathBuf)> = vcds_files(project).into_iter().zip(vcds_files(store)).collect();
+	let had: Vec<String> = pairs
+		.iter()
+		.filter(|(from, _)| from.is_file())
+		.filter_map(|(_, to)| to.file_name().map(|n| n.to_string_lossy().into_owned()))
 		.collect();
-	let unstage = || {
-		for (_, staging, _) in &staged {
-			let _ = std::fs::remove_file(staging);
+	let moving = serde_json::json!({ "installation": installation, "read": read, "files": had, "record": record });
+	crate::datadir::replace_file(&move_marker(store), serde_json::to_string_pretty(&moving)?.as_bytes())?;
+	let undo = || {
+		for (_, to) in &pairs {
+			let _ = std::fs::remove_file(staging_of(store, to));
 		}
+		let _ = std::fs::remove_file(move_marker(store));
 	};
-	for (from, staging, _) in staged.iter().filter(|(from, _, _)| from.is_file()) {
-		if let Err(e) = crate::datadir::copy_file(from, staging) {
-			unstage();
+	for (from, to) in pairs.iter().filter(|(from, _)| from.is_file()) {
+		if let Err(e) = crate::datadir::copy_file(from, &staging_of(store, to)) {
+			undo();
 			return Err(e);
 		}
 	}
 	if let Err(e) = vag_data_db::copy_kind(&project.cache(), &store.cache(), vag_data_db::VCDS) {
-		unstage();
+		undo();
 		anyhow::bail!(
 			"copying the VCDS rows of {} to {}: {e}",
 			project.cache().display(),
 			store.cache().display()
 		);
 	}
-	for (from, staging, to) in &staged {
-		match from.is_file() {
-			true => std::fs::rename(staging, to).with_context(|| format!("replacing {}", to.display()))?,
-			false => match std::fs::remove_file(to) {
-				Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-					return Err(e).with_context(|| format!("removing {}", to.display()));
-				}
-				_ => {}
-			},
-		}
-	}
-	Ok(())
+	Ok(moving)
 }
 
-/// The projects' half of [`migrate_in`]: a project's VCDS files, then its VCDS rows. In
-/// that order, so a stop between the two leaves rows to find, and the next run finishes it.
-fn take_out(project: &Project) -> Result<()> {
+/// The projects' half of [`migrate_in`]: the project marked ([`taken_out_marker`]), its VCDS
+/// files, then its VCDS rows. In that order, so a stop between the two leaves rows to find,
+/// and the next run finishes it. The cache's VACUUM after them is its own result: one that
+/// fails leaves the rows gone, and is a note.
+fn take_out(project: &Project) -> Result<std::result::Result<(), vag_data_db::Error>> {
+	std::fs::write(taken_out_marker(project), b"").with_context(|| format!("writing {}", taken_out_marker(project).display()))?;
 	for file in vcds_files(project) {
 		match std::fs::remove_file(&file) {
 			Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
@@ -971,9 +1132,12 @@ fn take_out(project: &Project) -> Result<()> {
 			_ => {}
 		}
 	}
-	vag_data_db::drop_kind(&project.cache(), vag_data_db::VCDS)
+	let gone = vag_data_db::drop_kind(&project.cache(), vag_data_db::VCDS)
 		.map_err(|e| anyhow::anyhow!("removing the VCDS rows of {}: {e}", project.cache().display()))?;
-	Ok(())
+	Ok(match gone.total() {
+		0 => Ok(()),
+		_ => vag_data_db::vacuum(&project.cache()),
+	})
 }
 
 /// A project emptied by the migration — it held a VCDS installation and nothing else — is
@@ -983,7 +1147,9 @@ fn remove_if_empty(project: &Project, store: &Project, removed: &mut Vec<String>
 	if !sources(project).is_ok_and(|rows| rows.is_empty()) {
 		return None;
 	}
-	let known = |name: &str| name == "cache.sqlite" || name.starts_with("cache.sqlite-") || name == "measurements" || name == "names-odis.json";
+	let known = |name: &str| {
+		name == "cache.sqlite" || name.starts_with("cache.sqlite-") || name == "measurements" || name == "names-odis.json" || name == ".vcds-taken-out"
+	};
 	let entries: Vec<std::fs::DirEntry> = std::fs::read_dir(&project.dir).ok()?.flatten().collect();
 	if !entries.iter().all(|e| known(&e.file_name().to_string_lossy())) {
 		return None;
@@ -1748,13 +1914,133 @@ mod tests {
 		std::thread::sleep(std::time::Duration::from_millis(5));
 		let (other, _) = with_both(here.path(), "SCRATCH", "vcds-new");
 		let store = vcds_at(&here.path().join("vcds"));
-		move_into(&other, &store).unwrap();
+		move_into(&other, &store, &Default::default()).unwrap();
 		std::fs::remove_dir_all(&other.dir).unwrap();
 		let notes = migrate_in(&here.path().join("data"), &store).notes;
 		assert_eq!(notes.len(), 1, "{notes:?}");
 		assert!(notes[0].contains(&crate::datadir::tilde(&old_root)), "{notes:?}");
 		assert!(sources(&store).unwrap()[0].path().ends_with("vcds-new"));
 		assert_eq!(counts(&p.cache()), (0, 0, 2, 1));
+	}
+
+	/// Whether any staged file or a move marker is left in the store.
+	fn leftovers_in(store: &Project) -> Vec<String> {
+		std::fs::read_dir(&store.dir)
+			.unwrap()
+			.flatten()
+			.map(|e| e.file_name().to_string_lossy().into_owned())
+			.filter(|name| name.ends_with(".migrating") || name == ".migrating.json")
+			.collect()
+	}
+
+	#[test]
+	fn a_move_stopped_after_its_rows_committed_puts_its_files_in_place_and_records_it() {
+		// Review of #50: a kill after `copy_kind` committed and before the renames left the
+		// store with the rows and only staged files. The next open saw the stamps alike, took
+		// the project's four files out, and they lived on only as files nothing reads.
+		let here = temp();
+		let (older, old_root) = with_both(here.path(), "OLD", "vcds-old");
+		let store = vcds_at(&here.path().join("vcds"));
+		move_into(&older, &store, &Default::default()).unwrap();
+		std::fs::remove_dir_all(&older.dir).unwrap();
+		std::thread::sleep(std::time::Duration::from_millis(5));
+		let (p, _) = with_both(here.path(), "SK37X", "vcds-new");
+		let files: Vec<Vec<u8>> = vcds_files(&p).iter().map(|f| std::fs::read(f).unwrap()).collect();
+		// The record a migration makes of this move: the store's own installation replaced.
+		let mut record = serde_json::Map::new();
+		record.insert("at".into(), "2026-10-21T08:00:00+00:00".into());
+		record.insert("moved".into(), serde_json::json!({ "from": p.dir }));
+		record.insert("replaced".into(), serde_json::json!([{ "installation": old_root }]));
+		// Killed here: rows committed, files staged, nothing renamed.
+		begin_move(&p, &store, &record).unwrap();
+		assert_eq!(leftovers_in(&store).len(), 5, "four staged files and the marker");
+
+		let notes = migrate_in(&here.path().join("data"), &store).notes;
+		assert!(notes.iter().any(|n| n.starts_with("finished moving the installation ")), "{notes:?}");
+		for (file, bytes) in vcds_files(&store).iter().zip(&files) {
+			assert_eq!(&std::fs::read(file).unwrap(), bytes, "{file:?} is not the moved installation's");
+		}
+		assert!(leftovers_in(&store).is_empty(), "{:?}", leftovers_in(&store));
+		assert_eq!((counts(&store.cache()), counts(&p.cache())), ((1, 2, 0, 0), (0, 0, 2, 1)));
+		for file in vcds_files(&p) {
+			assert!(!file.exists(), "{file:?} stayed in the project");
+		}
+		// The record of the replaced installation survived the kill, once.
+		let entries = || -> Vec<serde_json::Value> { serde_json::from_str(&std::fs::read_to_string(migration_record(&store)).unwrap()).unwrap() };
+		assert_eq!(entries().len(), 1, "{:?}", entries());
+		assert!(entries()[0]["replaced"][0]["installation"].as_str().unwrap().ends_with("vcds-old"));
+		assert!(migrate_in(&here.path().join("data"), &store).notes.is_empty());
+		assert_eq!(entries().len(), 1, "recorded twice");
+
+		// Killed before the rows committed: the staged files are undone, and the move is
+		// made again from the project, which still holds everything.
+		let here = temp();
+		let (p, _) = with_both(here.path(), "SK37X", "vcds-en");
+		let store = vcds_at(&here.path().join("vcds"));
+		begin_move(&p, &store, &Default::default()).unwrap();
+		vag_data_db::drop_kind(&store.cache(), vag_data_db::VCDS).unwrap();
+		let notes = migrate_in(&here.path().join("data"), &store).notes;
+		assert!(notes.iter().any(|n| n.starts_with("moved the installation's data")), "{notes:?}");
+		assert!(leftovers_in(&store).is_empty());
+		assert_eq!((counts(&store.cache()), counts(&p.cache())), ((1, 2, 0, 0), (0, 0, 2, 1)));
+		assert!(vcds_files(&store).iter().all(|f| f.is_file()));
+
+		// The same stop by a vagcan that wrote no marker: the project gives its files again.
+		let here = temp();
+		let (p, _) = with_both(here.path(), "SK37X", "vcds-en");
+		let store = vcds_at(&here.path().join("vcds"));
+		begin_move(&p, &store, &Default::default()).unwrap();
+		std::fs::remove_file(move_marker(&store)).unwrap();
+		migrate_in(&here.path().join("data"), &store);
+		assert!(leftovers_in(&store).is_empty());
+		assert!(vcds_files(&store).iter().all(|f| f.is_file()), "the store lacks the installation's files");
+		assert_eq!(counts(&p.cache()), (0, 0, 2, 1));
+	}
+
+	#[test]
+	fn a_project_keeps_its_vcds_while_the_store_lacks_a_file_of_it() {
+		// The store holds this installation's rows, and one of its files cannot reach it:
+		// nothing is taken out of the project.
+		let here = temp();
+		let (p, _) = with_both(here.path(), "SK37X", "vcds-en");
+		let store = vcds_at(&here.path().join("vcds"));
+		begin_move(&p, &store, &Default::default()).unwrap();
+		std::fs::remove_file(move_marker(&store)).unwrap();
+		// Where the names would go, something no file can be copied over.
+		std::fs::create_dir_all(store.names()).unwrap();
+		let notes = migrate_in(&here.path().join("data"), &store).notes;
+		assert!(notes.iter().any(|n| n.contains("did not reach the store")), "{notes:?}");
+		assert_eq!(counts(&p.cache()), (1, 2, 2, 1), "the project lost rows");
+		assert!(p.names().is_file(), "the project lost its names");
+	}
+
+	#[test]
+	fn a_project_emptied_by_a_stopped_run_is_still_removed() {
+		// Review of #50: the project was removed only right after its rows went, so a kill
+		// after the drop (during the VACUUM, say) stranded an empty project for good, its
+		// measured rows never moved.
+		let here = temp();
+		let (p, _) = with_both(here.path(), "default", "vcds-en");
+		vag_data_db::drop_kind(&p.cache(), vag_data_db::ODIS).unwrap();
+		std::fs::create_dir_all(p.measurements_dir()).unwrap();
+		std::fs::write(p.measurements_dir().join("5Q0614517AQ.json"), b"{}").unwrap();
+		let store = vcds_at(&here.path().join("vcds"));
+		move_into(&p, &store, &Default::default()).unwrap();
+		// Killed here: the rows gone, the project not yet settled.
+		take_out(&p).unwrap().unwrap();
+		assert!(taken_out_marker(&p).is_file());
+		let migrated = migrate_in(&here.path().join("data"), &store);
+		assert_eq!(migrated.removed, ["default"], "{:?}", migrated.notes);
+		assert!(!p.dir.exists());
+		assert!(store.measurements_dir().join("5Q0614517AQ.json").is_file(), "its measured rows were lost");
+		// A project with ODIS rows beside them stays, and loses the marker.
+		let here = temp();
+		let (p, _) = with_both(here.path(), "SK37X", "vcds-en");
+		let store = vcds_at(&here.path().join("vcds"));
+		move_into(&p, &store, &Default::default()).unwrap();
+		take_out(&p).unwrap().unwrap();
+		assert!(migrate_in(&here.path().join("data"), &store).notes.is_empty());
+		assert!(p.dir.is_dir() && !taken_out_marker(&p).exists());
 	}
 
 	#[test]
@@ -1764,7 +2050,7 @@ mod tests {
 		let here = temp();
 		let (p, _) = with_both(here.path(), "SK37X", "vcds-en");
 		let store = vcds_at(&here.path().join("vcds"));
-		move_into(&p, &store).unwrap();
+		move_into(&p, &store, &Default::default()).unwrap();
 		assert!(migrate_in(&here.path().join("data"), &store).notes.is_empty());
 		assert_eq!((counts(&store.cache()), counts(&p.cache())), ((1, 2, 0, 0), (0, 0, 2, 1)));
 		assert!(store.names().is_file() && !p.names().exists());
@@ -1773,7 +2059,7 @@ mod tests {
 		let here = temp();
 		let (p, _) = with_both(here.path(), "SK37X", "vcds-en");
 		let store = vcds_at(&here.path().join("vcds"));
-		move_into(&p, &store).unwrap();
+		move_into(&p, &store, &Default::default()).unwrap();
 		for file in vcds_files(&p) {
 			std::fs::remove_file(file).unwrap();
 		}
@@ -1839,8 +2125,8 @@ mod tests {
 		let here = temp();
 		let (p, _) = with_both(here.path(), "SK37X", "vcds-en");
 		let store = vcds_at(&here.path().join("vcds"));
-		move_into(&p, &store).unwrap();
-		take_out(&p).unwrap();
+		move_into(&p, &store, &Default::default()).unwrap();
+		take_out(&p).unwrap().unwrap();
 		let why = vag_data_db::copy_kind(&p.cache(), &store.cache(), vag_data_db::VCDS)
 			.unwrap_err()
 			.to_string();
@@ -1853,7 +2139,7 @@ mod tests {
 		let here = temp();
 		let (older, old_root) = with_both(here.path(), "OLD", "vcds-old");
 		let store = vcds_at(&here.path().join("vcds"));
-		move_into(&older, &store).unwrap();
+		move_into(&older, &store, &Default::default()).unwrap();
 		std::fs::remove_dir_all(&older.dir).unwrap();
 		std::thread::sleep(std::time::Duration::from_millis(5));
 		let (_newer, _) = with_both(here.path(), "SK37X", "vcds-new");
@@ -1923,12 +2209,12 @@ mod tests {
 		let here = temp();
 		let (older, _) = with_both(here.path(), "OLD", "vcds-old");
 		let store = vcds_at(&here.path().join("vcds"));
-		move_into(&older, &store).unwrap();
+		move_into(&older, &store, &Default::default()).unwrap();
 		let names_before = std::fs::read(store.names()).unwrap();
 		// A project whose cache holds no VCDS source: the copy is refused.
-		take_out(&older).unwrap();
+		take_out(&older).unwrap().unwrap();
 		std::fs::write(older.names(), b"{\"000001\": \"other\"}").unwrap();
-		assert!(move_into(&older, &store).is_err());
+		assert!(move_into(&older, &store, &Default::default()).is_err());
 		assert_eq!(std::fs::read(store.names()).unwrap(), names_before, "a file landed before its rows");
 		assert_eq!(counts(&store.cache()), (1, 2, 0, 0));
 		assert!(
@@ -1944,7 +2230,7 @@ mod tests {
 	fn a_project_with_odis_alone_is_left_as_it_was() {
 		let here = temp();
 		let (p, _) = with_both(here.path(), "SK37X", "vcds-en");
-		take_out(&p).unwrap();
+		take_out(&p).unwrap().unwrap();
 		let store = vcds_at(&here.path().join("vcds"));
 		assert!(migrate_in(&here.path().join("data"), &store).notes.is_empty());
 		assert!(!store.cache().exists(), "a store was made with nothing to put in it");

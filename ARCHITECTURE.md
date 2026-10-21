@@ -61,7 +61,10 @@ command reads two caches: the car's ODIS project, when there is one, and the sto
 still wins where both describe a channel. VCDS rows an older vagcan wrote into a project's
 cache move into the store the first time either is opened (`project::migrate_in`): the
 installation read last is kept, its files and rows are copied and counted back, and only then
-do the projects lose theirs — so a run stopped anywhere is finished by the next one.
+do the projects lose theirs — so a run stopped anywhere is finished by the next one. A move in
+progress is marked beside the store (`.migrating.json`, with its record entry) and a project
+being emptied beside itself (`.vcds-taken-out`); the next run finishes or undoes each, and
+`migrated.json` records the move once.
 
 **Which sources a store holds is the `source` table in its `cache.sqlite`, and nothing
 else.** One row per folder read: kind, the directory its rows are keyed by (an ODIS
