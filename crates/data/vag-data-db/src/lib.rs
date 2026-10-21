@@ -1772,7 +1772,6 @@ pub fn registry_variants(db_path: &Path, section: &str) -> Result<Vec<String>, E
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-
 /// The section tag VCDS's freeze-frame rows are stored under (`RF.rod [FFMUX]`).
 pub const FREEZE_FRAME_SECTION: &str = "FFMUX";
 

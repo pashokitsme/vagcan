@@ -694,7 +694,9 @@ pub async fn run<L: UnitLink>(
 	// The freeze-frame layouts `setup` stored from a VCDS install, looked up per unit by the
 	// same identifiers that name its codes — and by the car's project, which its VIN says.
 	let extracted = crate::extracted::current();
-	let freeze_known = extracted.knows_freeze_frames();
+	// Only when VCDS is the run's one source (`Extracted::run_source`): a project that holds an
+	// ODIS source is read from ODIS alone, and VCDS's rows never describe its records.
+	let freeze_known = extracted.run_source() == Some(vag_data_db::VCDS) && extracted.knows_freeze_frames();
 
 	let mut backend = open().await?;
 	// One read, and only where a layout could be looked up by it: the project that picks the
