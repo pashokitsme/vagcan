@@ -155,8 +155,8 @@ impl Namer {
 				Some(format!("{} opens only inside VCDS itself: {what}", file.display())),
 			),
 		};
-		let projects = crate::project::current()
-			.map(|project| crate::registry::recorded_projects(&project))
+		let projects = crate::project::vcds()
+			.map(|store| crate::registry::recorded_projects(&store))
 			.unwrap_or_default();
 		Ok(Self {
 			root: root.to_path_buf(),

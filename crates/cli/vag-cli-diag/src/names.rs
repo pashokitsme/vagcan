@@ -43,20 +43,19 @@ pub struct NamesFile {
 	pub path: std::path::PathBuf,
 }
 
-/// The files `names` searches when none is named: the project's `names.json`
-/// (a VCDS installation's) and `names-odis.json` (an ODIS project's), whichever
-/// `setup` wrote. A project set up from ODIS alone has only the second.
-pub fn project_files(project: &crate::project::Project) -> Vec<NamesFile> {
-	vec![
-		NamesFile {
-			source: "VCDS",
-			path: project.names(),
-		},
-		NamesFile {
-			source: "ODIS",
-			path: project.odis_names(),
-		},
-	]
+/// The files `names` searches when none is named: the VCDS store's `names.json` and
+/// the project's `names-odis.json`, whichever `setup` wrote. A machine with an ODIS
+/// project alone has only the second, one with a VCDS installation alone the first.
+pub fn project_files(stores: &crate::project::Stores) -> Vec<NamesFile> {
+	let mut files = vec![NamesFile {
+		source: "VCDS",
+		path: stores.vcds.names(),
+	}];
+	files.extend(stores.project.as_ref().map(|project| NamesFile {
+		source: "ODIS",
+		path: project.odis_names(),
+	}));
+	files
 }
 
 /// Run the command (see the module docs) over every file of `files` that is
@@ -201,14 +200,18 @@ mod tests {
 			id: "X".into(),
 			dir: dir.clone(),
 		};
+		let stores = crate::project::Stores {
+			project: Some(project.clone()),
+			vcds: project.clone(),
+		};
 		assert!(
-			run("boost", 40, &project_files(&project)).is_err(),
+			run("boost", 40, &project_files(&stores)).is_err(),
 			"neither file: still the setup message"
 		);
 		std::fs::write(project.odis_names(), catalog().to_string()).unwrap();
-		run("manifold", 40, &project_files(&project)).expect("the ODIS names alone are enough");
+		run("manifold", 40, &project_files(&stores)).expect("the ODIS names alone are enough");
 		std::fs::write(project.names(), catalog().to_string()).unwrap();
-		run("manifold", 40, &project_files(&project)).expect("both files are searched");
+		run("manifold", 40, &project_files(&stores)).expect("both files are searched");
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 

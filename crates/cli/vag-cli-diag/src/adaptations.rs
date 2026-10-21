@@ -190,25 +190,26 @@ impl Project {
 	///
 	/// [`Extracted::run_source`]: vag_cli_core::extracted::Extracted::run_source
 	pub fn current() -> Result<Project> {
-		let project = vag_cli_core::project::current()?;
-		let extracted = vag_cli_core::extracted::open(&project);
+		let stores = vag_cli_core::project::stores()?;
+		let extracted = vag_cli_core::extracted::open(&stores);
 		match extracted.run_source() {
 			Some(vag_data_db::ODIS) => {
 				if let Some(source) = extracted.odis_unread_adaptations().first() {
 					return Err(
-						anyhow!("project {} describes no adaptations", project.id)
+						anyhow!("project {} describes no adaptations", stores.id())
 							.note("its ODIS project was read before adaptations were kept")
 							.help(format!("read it again: `vagcan setup {}`", home_short(source))),
 					);
 				}
 				// Read, and none found: reading it again would find none again.
-				if vag_data_db::adaptation_variants(&project.cache()).unwrap_or_default().is_empty() {
+				let odis = stores.cache_of(vag_data_db::ODIS).unwrap_or_default();
+				if vag_data_db::adaptation_variants(&odis).unwrap_or_default().is_empty() {
 					return Err(anyhow!("this ODIS project describes no adaptations"));
 				}
 				Ok(Project { extracted })
 			}
 			Some(_) => Ok(Project { extracted }),
-			None => Err(anyhow!("project {} has no ODIS project or VCDS installation", project.id).help("read one: `vagcan setup <dir>`")),
+			None => Err(anyhow!("no ODIS project or VCDS installation is read").help("read one: `vagcan setup <dir>`")),
 		}
 	}
 }
@@ -222,8 +223,8 @@ impl Data for Project {
 			vag_cli_core::registry::ensure_async(vec![unit.clone()]).await;
 		}
 		// Opened again: the read above may have written this unit's rows.
-		let extracted = match vag_cli_core::project::current() {
-			Ok(project) => vag_cli_core::extracted::open(&project),
+		let extracted = match vag_cli_core::project::stores() {
+			Ok(stores) => vag_cli_core::extracted::open(&stores),
 			Err(_) => self.extracted.clone(),
 		};
 		extracted.for_car(vin).adaptations(unit.odx_name.as_deref(), unit.odx_version.as_deref())

@@ -64,7 +64,7 @@ status = 9
 $ vagcan units --identify
 ? success
 ...
-5 asked · 4 answered · 2 on the gateway's list · 0 named
+5 asked · 4 answered · 2 on the gateway's list
 
 $ vagcan dev sim --from recording.csv --vin SIMVIN00000000001
 ? success

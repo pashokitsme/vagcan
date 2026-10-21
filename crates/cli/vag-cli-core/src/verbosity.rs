@@ -197,6 +197,12 @@ pub fn say(level: u8, text: &str) {
 	if !at(level) {
 		return;
 	}
+	if level > 0
+		&& let Some(kept) = KEPT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_mut()
+	{
+		kept.push((level, text.to_string()));
+		return;
+	}
 	if HELD.load(Ordering::Relaxed) && level > 0 && std::io::IsTerminal::is_terminal(&std::io::stderr()) {
 		return;
 	}
@@ -204,6 +210,21 @@ pub fn say(level: u8, text: &str) {
 	line.push_str(text);
 	line.push('\n');
 	let _ = write(Stream::Err, &line);
+}
+
+/// The `-v` and `-vv` lines kept back while a command's step runs ([`keep_details`]).
+static KEPT: Mutex<Option<Vec<(u8, String)>>> = Mutex::new(None);
+
+/// From now on keep every `-v` and `-vv` line instead of writing it, until
+/// [`kept_details`]: for a command that says a step's details under the step's own line,
+/// which it can only print once the step is done. Level-0 lines are written as ever.
+pub fn keep_details() {
+	*KEPT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Vec::new());
+}
+
+/// The lines kept since [`keep_details`], with their levels, and writing as before.
+pub fn kept_details() -> Vec<(u8, String)> {
+	KEPT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take().unwrap_or_default()
 }
 
 /// A question's text on stderr, with no newline: the answer is typed after it.

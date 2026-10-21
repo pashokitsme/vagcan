@@ -20,7 +20,7 @@ coding     01 02       —
 
 $ vagcan units
 ? success
-names    SIM00 label files
+names    none — `vagcan setup` names the units
 note: adapter from VAGCAN_DEVICE=[PORT]
 unit  id   part  name
 09    70E
@@ -30,7 +30,7 @@ unit  id   part  name
 
 $ vagcan units --identify
 ? success
-names    SIM00 label files
+names    none — `vagcan setup` names the units
 note: adapter from VAGCAN_DEVICE=[PORT]
 unit  id   part        component    name
 09    70E                           (no answer)
@@ -39,7 +39,7 @@ unit  id   part        component    name
 01    7E0  SIM906000A  SIM ENGINE
 02    7E1  SIM300000B  SIM GEARBOX
 
-5 asked · 4 answered · 2 on the gateway's list · 0 named
+5 asked · 4 answered · 2 on the gateway's list
 
 $ vagcan units --identify 01
 ? success

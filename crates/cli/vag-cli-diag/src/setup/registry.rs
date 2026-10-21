@@ -50,11 +50,13 @@ struct Said {
 	/// Which unit's line is next, and of how many.
 	at: usize,
 	of: usize,
+	/// At `-vv`, what the unit's list was looked up by, said under its `read [n/N]` line.
+	looked_up: Option<String>,
 }
 
 impl Progress for Said {
 	fn waiting(&mut self, what: &str) {
-		vag_cli_core::wire!("vcds registry: {what}");
+		vag_cli_core::wire!("    {what}");
 		// Cleared before the next one draws, or two lines spin at once.
 		self.spinner = None;
 		self.spinner = Some(Spinner::new(what));
@@ -64,18 +66,27 @@ impl Progress for Said {
 		(self.at, self.of) = (at, of);
 	}
 
+	fn looked_up(&mut self, _odx: &str, version: &str, project: Option<&str>, _outcome: &str) {
+		// The name and the outcome are the `read [n/N]` line's; only what it lacks is kept.
+		let by = [format!("F1A2 {version}"), project.map(|p| format!("car project {p}")).unwrap_or_default()];
+		self.looked_up = Some(vag_cli_core::marks::facts(by));
+	}
+
 	fn reporter(&self) -> Option<crate::progress::Reporter> {
 		self.spinner.as_ref().map(Spinner::reporter)
 	}
 
 	fn done(&mut self, line: &str) {
 		self.spinner = None;
-		vag_cli_core::note!("vcds registry [{}/{}] {line}", self.at + 1, self.of);
+		vag_cli_core::verbosity::say(vag_cli_core::verbosity::NOTES, &format!("    read [{}/{}] {line}", self.at + 1, self.of));
+		if let Some(by) = self.looked_up.take() {
+			vag_cli_core::verbosity::say(vag_cli_core::verbosity::WIRE, &format!("      looked up by {by}"));
+		}
 	}
 }
 
 /// Read the registry for `units` out of the install at `root` and write their
-/// channels into the project's cache.
+/// channels into the VCDS store's cache.
 ///
 /// The read runs on the blocking pool, not on the main task: it is minutes of
 /// CPU when a key has to be searched for, and made on the task inside `main`'s
@@ -84,7 +95,8 @@ impl Progress for Said {
 /// 2026-09-28, on `dev dash build`'s copy of the same shape). Every key found
 /// is saved after its table, or after the units' lists, so a run ended this way
 /// leaves the next one less to search for.
-pub(super) async fn registry_channels(root: &Path, project: &crate::project::Project, units: &BTreeSet<(String, String)>) -> Result<Step> {
+pub(super) async fn registry_channels(root: &Path, stores: &crate::project::Stores, units: &BTreeSet<(String, String)>) -> Result<Step> {
+	let project = &stores.vcds;
 	if units.is_empty() {
 		// The label step has just made this installation's source, so it is there; a
 		// `None` would be a source dropped from another terminal meanwhile, and then
@@ -95,15 +107,23 @@ pub(super) async fn registry_channels(root: &Path, project: &crate::project::Pro
 		crate::registry::record_installation(project, root)?;
 		return Ok(Step::new(vag_data_db::VCDS, NAME, State::Pending, super::NEXT_WITH_THE_CAR).because(format!("{PENDING_WHY}{removed}")));
 	}
-	vag_cli_core::note!(
-		"vcds registry: {} {} of the cars recorded here",
-		units.len(),
-		crate::render::plural(units.len(), "unit")
+	vag_cli_core::verbosity::say(
+		vag_cli_core::verbosity::NOTES,
+		&format!(
+			"    reading the registry for {} {} of the cars recorded here",
+			units.len(),
+			crate::render::plural(units.len(), "unit")
+		),
 	);
-	let (root, project, units) = (root.to_path_buf(), project.clone(), units.clone());
+	let (root, stores, units) = (root.to_path_buf(), stores.clone(), units.clone());
 	let outcome = tokio::task::spawn_blocking(move || {
-		let mut said = Said { spinner: None, at: 0, of: 0 };
-		crate::registry::read(&root, &project, &units, &mut said)
+		let mut said = Said {
+			spinner: None,
+			at: 0,
+			of: 0,
+			looked_up: None,
+		};
+		crate::registry::read(&root, &stores, &units, &mut said)
 	})
 	.await
 	.map_err(|e| anyhow::anyhow!("the registry read did not finish: {e}"))??;
@@ -112,12 +132,21 @@ pub(super) async fn registry_channels(root: &Path, project: &crate::project::Pro
 			Step::new(vag_data_db::VCDS, NAME, State::Missing, "RM.rod did not open").because(format!("the registry did not open: {why}{removed}"))
 		}
 		Read::Done(summary) => {
-			let detail = summary.detail();
-			match summary.notes.is_empty() {
-				true => Step::new(vag_data_db::VCDS, NAME, State::Wrote, detail).at(summary.cache),
-				false => Step::new(vag_data_db::VCDS, NAME, State::Partial, detail)
-					.because(summary.notes.join("\n    "))
-					.at(summary.cache),
+			// One short line at level 0; the rest of what it came to at `-v`, under it.
+			let more = summary.more();
+			let mut why: Vec<String> = Vec::new();
+			if !more.is_empty() {
+				why.push(more.join(vag_cli_core::marks::SEP));
+			}
+			why.extend(summary.notes.iter().cloned());
+			let state = match summary.notes.is_empty() {
+				true => State::Wrote,
+				false => State::Partial,
+			};
+			let step = Step::new(vag_data_db::VCDS, NAME, state, summary.headline()).at(summary.cache);
+			match why.is_empty() {
+				true => step,
+				false => step.because(why.join("\n")),
 			}
 		}
 	})
@@ -125,7 +154,7 @@ pub(super) async fn registry_channels(root: &Path, project: &crate::project::Pro
 
 /// The step when the cars' records could not be read: nothing was read. The row
 /// says what did not read — the file, or the error that names it — and its
-/// `Fix:` line, at level 0, what to do and the command that reads the
+/// `help:` line, at level 0, what to do and the command that reads the
 /// installation at `root` again; a record's parse error is at `-v`.
 pub(super) fn failed(e: &anyhow::Error, root: &Path) -> Step {
 	let again = crate::missing::shell_word(&root.display().to_string());
@@ -137,11 +166,12 @@ pub(super) fn failed(e: &anyhow::Error, root: &Path) -> Step {
 			format!("not a record this tool wrote: {}", bad.path.display()),
 		)
 		.because(bad.cause.clone())
-		.fix(format!("Fix: move {} aside, then `vagcan setup {again}`", bad.path.display())),
+		.fix(format!("help: move {} aside, then run `vagcan setup {again}`", bad.path.display())),
 		None => {
 			let cars = crate::datadir::cars_dir().map_or_else(|_| "~/.vagcan/cars".to_string(), |dir| dir.display().to_string());
-			Step::new(vag_data_db::VCDS, NAME, State::Failed, format!("the cars' records did not read: {e:#}"))
-				.fix(format!("Fix: make {cars} and the records in it readable, then `vagcan setup {again}`"))
+			Step::new(vag_data_db::VCDS, NAME, State::Failed, format!("the cars' records did not read: {e:#}")).fix(format!(
+				"help: make {cars} and the records in it readable, then run `vagcan setup {again}`"
+			))
 		}
 	}
 }
@@ -165,13 +195,17 @@ mod tests {
 			dir: dir.path().join("TEST"),
 		};
 		std::fs::create_dir_all(&project.dir).unwrap();
-		let step = registry_channels(&root, &project, &BTreeSet::new()).await.unwrap();
+		let stores = crate::project::Stores {
+			project: None,
+			vcds: project.clone(),
+		};
+		let step = registry_channels(&root, &stores, &BTreeSet::new()).await.unwrap();
 		assert_eq!(step.state, State::Pending, "{step:?}");
 		assert_eq!((step.source, step.name), ("vcds", "registry"));
 		// The row says when the channels come; `-v` says which commands read them.
 		// Neither tells the reader to run anything: the tool learns the car as a
 		// side effect of the car commands.
-		assert_eq!(step.detail, "read the first time a car command meets the car");
+		assert_eq!(step.detail, "read when a car command first meets the car");
 		let why = step.why.as_deref().expect("a reason at -v");
 		assert!(why.starts_with("no car recorded on this machine"), "{why}");
 		assert!(

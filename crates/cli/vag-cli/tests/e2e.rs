@@ -169,17 +169,39 @@ fn home(at: &Path) {
 		.unwrap();
 }
 
+/// The car whose home holds two sources, one with a path too long for 80 columns beside its
+/// row: `setup --list` puts each path under its row and keeps every row.
+const TWO_SOURCES: &str = "two-sources";
+
+/// A `~/.vagcan` with the VCDS store and one ODIS project, each source recorded and nothing
+/// more, both read at a fixed time. Made-up paths.
+fn two_sources_home(at: &Path) {
+	let store = at.join("vcds");
+	let project = at.join("data").join(PROJECT);
+	for (dir, kind, source) in [
+		(&store, vag_data_db::VCDS, "/nowhere/a-long-way-down/to-a-vcds-installation/Labels"),
+		(&project, vag_data_db::ODIS, "/nowhere/SIM00-odis"),
+	] {
+		std::fs::create_dir_all(dir).unwrap();
+		let cache = dir.join("cache.sqlite");
+		vag_data_db::record_language(&cache, kind, source, "eng").unwrap();
+		rusqlite::Connection::open(&cache)
+			.unwrap()
+			.execute("UPDATE source SET parsed_at = '2026-10-21T00:00:00.000Z'", [])
+			.unwrap();
+	}
+}
+
 /// The car whose home holds a VCDS install alone, no ODIS project: each source is tested on
 /// its own (CLAUDE.md, "ODIS and VCDS are independent sources").
 const VCDS_ONLY: &str = "vcds-only";
 
-/// A `~/.vagcan` whose made-up project was set up from a VCDS install alone: the engine's
-/// freeze-frame layout, as `setup` stores `RF.rod`'s rows, and nothing of ODIS.
+/// A `~/.vagcan` set up from a VCDS install alone: the machine's VCDS store holds the engine's
+/// freeze-frame layout, as `setup` stores `RF.rod`'s rows; no ODIS project.
 fn vcds_home(at: &Path) {
-	let project = at.join("data").join(PROJECT);
-	std::fs::create_dir_all(&project).unwrap();
-	std::fs::write(at.join("config.toml"), format!("project = \"{PROJECT}\"\n")).unwrap();
-	let cache = project.join("cache.sqlite");
+	let store = at.join("vcds");
+	std::fs::create_dir_all(&store).unwrap();
+	let cache = store.join("cache.sqlite");
 	// Record 0x70, four bytes — an engine speed, a voltage, a reserved byte. Made up.
 	let vcds = "/nowhere/sim-vcds/Labels";
 	vag_data_db::record_language(&cache, vag_data_db::VCDS, vcds, "eng").unwrap();
@@ -274,8 +296,9 @@ fn run_case(bin: &Path, profile: &Path, template: &Path, case: &Path) {
 		.env("VAGCAN_DEVICE", &port)
 		.env("VAGCAN_HOME", home.display().to_string())
 		.env("HOME", scratch.path().display().to_string())
-		// What a run may read from the person's environment, made the same everywhere.
-		.env("VAGCAN_PROJECT", PROJECT)
+		// What a run may read from the person's environment, made the same everywhere. A home
+		// with no project (VCDS alone) names none: empty is read as unset.
+		.env("VAGCAN_PROJECT", if template.join("data").join(PROJECT).is_dir() { PROJECT } else { "" })
 		.env("TZ", "UTC")
 		.env("LANG", "C")
 		.env("NO_COLOR", "1");
@@ -297,6 +320,8 @@ fn e2e() {
 	home(template.path());
 	let vcds_template = tempfile::tempdir().unwrap();
 	vcds_home(vcds_template.path());
+	let two_template = tempfile::tempdir().unwrap();
+	two_sources_home(two_template.path());
 	let root = cases_root();
 	let mut cars: Vec<PathBuf> = std::fs::read_dir(&root)
 		.unwrap()
@@ -309,9 +334,10 @@ fn e2e() {
 	let mut failed = Vec::new();
 	for car in &cars {
 		for case in case_files(car) {
-			let home = match car.file_name().is_some_and(|n| n == VCDS_ONLY) {
-				true => vcds_template.path(),
-				false => template.path(),
+			let home = match car.file_name().and_then(|n| n.to_str()) {
+				Some(VCDS_ONLY) => vcds_template.path(),
+				Some(TWO_SOURCES) => two_template.path(),
+				_ => template.path(),
 			};
 			let ran = std::panic::catch_unwind(|| run_case(&bin, &car.join("car.toml"), home, &case));
 			if ran.is_err() {

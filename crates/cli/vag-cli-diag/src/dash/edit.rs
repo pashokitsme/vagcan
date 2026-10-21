@@ -120,15 +120,16 @@ enum Made {
 
 /// `channels.json` in `dir`: the catalog, made again only when what it is made from changed.
 fn channels(vin: &str, dir: &Path, language: Option<Language>, units: &[UnitIdentity]) -> Result<Made> {
-	let project = vag_cli_core::project::current()?;
+	let stores = vag_cli_core::project::stores()?;
 	let default_language = vag_cli_core::config::language(&vag_cli_core::config::load());
-	let mut sources = vec![
-		vag_cli_core::datadir::units_record(vin)?,
-		project.cache(),
-		project.measurements_dir(),
-		project.names(),
+	let mut sources = vec![vag_cli_core::datadir::units_record(vin)?];
+	sources.extend(stores.caches());
+	sources.extend([
+		stores.measurements_dir(),
+		stores.vcds.names(),
+		stores.vcds.registry_log(),
 		vag_cli_core::glossary::path()?,
-	];
+	]);
 	// Not `config.toml` itself: `watch` writes its marks there, and the one thing in it the
 	// catalog reads — the language — is in the key below.
 	// This build of the tool: a new one may resolve differently.
@@ -137,7 +138,7 @@ fn channels(vin: &str, dir: &Path, language: Option<Language>, units: &[UnitIden
 	}
 	let key = format!(
 		"format {CATALOG_FORMAT}\nproject {}\nlanguage {}\n{}",
-		project.id,
+		stores.id(),
 		language.unwrap_or(default_language).code(),
 		fingerprint(&sources)
 	);
@@ -149,8 +150,8 @@ fn channels(vin: &str, dir: &Path, language: Option<Language>, units: &[UnitIden
 	{
 		return Ok(Made::Kept(rows.len()));
 	}
-	let store = CatalogStore::open(project.measurements_dir());
-	let extracted = vag_cli_core::extracted::open(&project).for_car(Some(vin));
+	let store = CatalogStore::open(stores.measurements_dir());
+	let extracted = vag_cli_core::extracted::open(&stores).for_car(Some(vin));
 	let rows = catalog::rows(&catalog::Sources {
 		vin,
 		language,

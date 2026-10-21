@@ -204,7 +204,12 @@ impl OdisFaults {
 		if variants.is_empty() {
 			return None;
 		}
-		let sources = vag_data_db::source_languages(&cache).unwrap_or_default();
+		// The project's sources, then the VCDS store's: the VCDS installation that names
+		// codes beside the project is the machine's.
+		let mut sources = vag_data_db::source_languages(&cache).unwrap_or_default();
+		if let Ok(store) = crate::project::vcds() {
+			sources.extend(vag_data_db::source_languages(&store.cache()).unwrap_or_default());
+		}
 		Some(OdisFaults::new(
 			cache,
 			variants,

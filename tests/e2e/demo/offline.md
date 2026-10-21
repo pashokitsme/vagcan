@@ -6,16 +6,15 @@ record, which `units --identify` wrote a moment before, and its `dash.toml`.
 ```console
 $ vagcan setup --list
 ? success
-project  SIM00
-cache    [HOME]/data/SIM00/cache.sqlite
+1 source on this machine
 
-id  kind  state  lang  version  read               faults  channels  labels  measurements  path
- 1  odis  gone   eng   -        2026-10-21 00:00Z       2         2       0             0  /nowhere/SIM00-odis
+   ID  KIND  PROJECT  LANG  READ        CHANNELS  PATH
+✗  p1  odis  SIM00    eng   2026-10-21         2  /nowhere/SIM00-odis
 
 $ vagcan units --identify
 ? success
 ...
-5 asked · 4 answered · 2 on the gateway's list · 0 named
+5 asked · 4 answered · 2 on the gateway's list
 
 $ vagcan dev dash build SIMVIN00000000001
 ? success

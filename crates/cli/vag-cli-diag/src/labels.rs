@@ -53,23 +53,17 @@ fn cache_is_current(cache: &Path, dir: &Path) -> bool {
 		);
 		return false;
 	}
-	let newer = match (std::fs::metadata(cache), std::fs::metadata(dir)) {
+	// Whether it is newer is said by the caller's one line: current, or rebuilt.
+	match (std::fs::metadata(cache), std::fs::metadata(dir)) {
 		(Ok(c), Ok(d)) => match (c.modified(), d.modified()) {
 			(Ok(c), Ok(d)) => c >= d,
 			_ => false,
 		},
 		_ => false,
-	};
-	vag_cli_core::wire!(
-		"label cache {}: built from {}, {}",
-		cache.display(),
-		dir.display(),
-		if newer { "newer than it" } else { "older than it" }
-	);
-	newer
+	}
 }
 
-/// Load a project's label rows out of its cache, with nothing to rebuild from.
+/// Load the VCDS store's label rows out of its cache, with nothing to rebuild from.
 ///
 /// **D5, and it is the consequence of D4 rather than a new rule.** The
 /// `.lbl`/`.clb` files are no longer kept — `cache.sqlite` is what survives of
@@ -85,7 +79,7 @@ pub fn load_project(project: &crate::project::Project) -> anyhow::Result<LabelDb
 	let cache = project.cache();
 	if !cache.is_file() {
 		return Err(
-			crate::missing::NoLabelData::new(format!("the project `{}` has no label cache", project.id))
+			crate::missing::NoLabelData::new("the VCDS installation has no label cache")
 				.looked_for(&cache)
 				.into_error(),
 		);
@@ -93,7 +87,8 @@ pub fn load_project(project: &crate::project::Project) -> anyhow::Result<LabelDb
 	vag_data_db::load_db(&cache).map_err(|e| anyhow::anyhow!("reading {}: {e}", cache.display()))
 }
 
-/// Whether this project has anything to look a label up in.
+/// Whether this store — the VCDS store, where label files are kept — has anything to
+/// look a label up in.
 ///
 /// Cheap and non-committal, for the callers that degrade rather than fail: a
 /// machine where `vagcan setup` has not run identifies units without names
@@ -183,7 +178,7 @@ pub fn install_unit_numbers(db: &LabelDb) {
 /// the label files give that part number. Nothing is asked of the car. A machine with
 /// no label files, or no record, keeps the numbers it had — request ids still work.
 pub fn install_recorded_units() {
-	let Some(project) = crate::project::current().ok().filter(has_project_labels) else {
+	let Some(project) = crate::project::vcds().ok().filter(has_project_labels) else {
 		return;
 	};
 	let Ok(db) = load_project(&project) else {
@@ -223,9 +218,9 @@ fn recorded_pairings(cars: &[crate::units::Recorded], by_part: impl Fn(&str) -> 
 		.collect()
 }
 
-/// The label files under `dir`, for a lookup, **without writing the project's cache**.
+/// The label files under `dir`, for a lookup, **without writing the VCDS store's cache**.
 ///
-/// The project's cache answers when it was built from these very label files and is
+/// The store's cache answers when it was built from these very label files and is
 /// current ([`cache_is_current`]); anything else — another folder, `--refresh` — is
 /// parsed in memory and forgotten. It used to be built into the project's cache, and a
 /// build replaces the project's label files with the folder's: one lookup against a
@@ -285,7 +280,7 @@ pub fn labels_cmd(dir: &str, part: Option<&str>, block: Option<u16>, field: Opti
 		return Ok(());
 	}
 
-	let db = look_into(Path::new(dir), crate::project::current().ok().as_ref(), refresh)?;
+	let db = look_into(Path::new(dir), crate::project::vcds().ok().as_ref(), refresh)?;
 	install_unit_numbers(&db);
 	let mut answers = Vec::new();
 	if let Some(part_no) = part {

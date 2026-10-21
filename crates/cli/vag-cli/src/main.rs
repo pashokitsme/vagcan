@@ -216,36 +216,24 @@ fn scope_globals(mut command: clap::Command, globals: &[clap::Arg], path: &str) 
 // than a handful of strings and flags.
 #[derive(Clone, Subcommand)]
 enum Command {
-	/// Read a car model's data from a VCDS installation or an ODIS project. Offline.
+	/// Read an ODIS project or a VCDS installation, once. Offline; it touches no car.
 	///
-	/// Everything the label files contribute — the parsed label files
-	/// themselves, the measurement names, the `.rod` section keys, the
-	/// channels — is derived from somebody else's data and cannot be shipped
-	/// with this tool. This recovers it from what you have.
+	/// Their data is somebody else's and cannot ship with this tool: this reads it from
+	/// your copy. With no path it asks which, and can download VCDS.
 	///
-	/// Two sources, and with no path given it asks which. An extracted
-	/// ODIS-Service project gives names and scalings for every unit it
-	/// describes, with no drive required. A VCDS installation gives names and
-	/// fault text, and the channels of the units this machine's cars have been
-	/// seen to carry: `vagcan watch`, `measure` or `units --identify` with the
-	/// car records them and reads their channels from the installation the
-	/// first time (`vagcan dev dash build` does the same offline, for a car
-	/// already recorded) — so keep it in place; an ODIS project can be deleted
-	/// afterwards. Both land in one project under
-	/// `~/.vagcan/data/<id>/`, and a second source is added to a project rather
-	/// than replacing what is in it; where both describe a channel, ODIS wins.
+	/// An ODIS project lands in `~/.vagcan/data/<id>/`, one per platform, named as the
+	/// project names itself; an ODIS project can be deleted afterwards. A VCDS
+	/// installation lands in `~/.vagcan/vcds/`, one per machine, for every car, with no
+	/// name asked; keep it in place: `watch`, `measure` and `units --identify` read the
+	/// channels of a car's units from it the first time they meet the car. The two are
+	/// independent sources.
 	///
-	/// An ODIS project reads in seconds; a VCDS installation can take tens of
-	/// minutes the first time, most of it searching for keys. It touches no car.
-	/// Running it again on a source already in the project replaces what that
-	/// source wrote before and leaves every other source's data where it is,
-	/// and a second VCDS installation replaces the first. A VCDS run skips the
-	/// copy and the label files when they are newer than what they read, and
-	/// `--refresh` redoes them. `--list` shows what the project was read from, and
-	/// `--drop` removes one source with everything it wrote.
+	/// Reading a source again replaces what it wrote. A second VCDS installation replaces
+	/// the first. `--refresh` redoes every step. `--list` shows every source on this
+	/// machine; `--drop` removes one with everything it wrote.
 	///
-	/// Prints one row per step and a summary line; `-v` adds what each step wrote,
-	/// why a step is short, and timings.
+	/// Prints a heading, a line per step and one `Ready:` line, on stderr; `-v` adds each
+	/// step's time, path and reason under it.
 	///
 	/// No VCDS installation: https://www.ross-tech.com/vcds/download/
 	Setup {
@@ -255,14 +243,15 @@ enum Command {
 		/// and lets you pick the folder in a dialog rather than type its path.
 		#[arg(value_name = "DIR")]
 		dir: Option<String>,
-		/// Redo every step, whatever is already in the project.
+		/// Redo every step, whatever is already read.
 		#[arg(long)]
 		refresh: bool,
-		/// List the project's sources: id, kind, language, when read, rows per kind, path.
+		/// List every source on this machine: id (`v1` the VCDS store's, `p2` a project's),
+		/// kind, project, language, when read, channels, path. `-v` adds the rest.
 		#[arg(long, conflicts_with_all = ["dir", "refresh", "drop"])]
 		list: bool,
-		/// Remove one source and every row it wrote: `odis`, `vcds`, or an id from `--list`.
-		/// Asks first.
+		/// Remove one source and every row it wrote: `vcds`, `odis` (this run's project), or
+		/// an id from `--list`. Asks first.
 		#[arg(long, value_name = "SOURCE", conflicts_with_all = ["dir", "refresh"])]
 		drop: Option<String>,
 		/// With `--drop`: do not ask. Needed without a terminal.
@@ -366,10 +355,9 @@ enum Command {
 	/// this tool cannot do.
 	///
 	/// A stored code is a record that something happened once, not a diagnosis.
-	/// `failing` in the status column is failing now. `km`, `count` and `last seen`
-	/// are the unit's own record; `last seen` is the car's clock, which can be days
-	/// off. An empty text: nothing names the code; `-v` says why, and where every
-	/// text came from.
+	/// `failing now` under a code is failing now. The times, the km and `last` are the
+	/// unit's own record; `last` is the car's clock, which can be days off. A code with
+	/// no text: nothing names it; `-v` says why, and where every text came from.
 	Faults {
 		#[command(flatten)]
 		device: DeviceArg,
@@ -973,12 +961,12 @@ async fn dispatch_dev(tool: Dev, slcan: bool) -> Result<()> {
 
 /// Where the proven measurement rows are for this run.
 ///
-/// `--data` as typed if it was given, this run's project otherwise. Never a default
+/// `--data` as typed if it was given, this run's project's otherwise (the VCDS store's with no project). Never a default
 /// relative to the working directory: that is what made these commands work in a
 /// checkout and nowhere else.
 fn data_dir(given: Option<&str>) -> Result<String> {
 	Ok(
-		datadir::or_default(given, || Ok(project::current()?.measurements_dir()))?
+		datadir::or_default(given, || Ok(project::stores()?.measurements_dir()))?
 			.to_string_lossy()
 			.into_owned(),
 	)
@@ -1076,7 +1064,7 @@ const SNIFF_OVER_USB: &str = "`dev sniff` reads CAN frames; through the dash boa
 
 /// Write or refresh the owner's glossary (see the `Glossary` subcommand docs).
 fn glossary_command() -> Result<()> {
-	let project = project::current()?;
+	let project = project::stores()?;
 	let seeded = glossary::seed(&project)?;
 	let language = config::language(&config::load());
 	vag_cli_core::out!(
@@ -1842,7 +1830,10 @@ mod tests {
 		// Said here since the shortage message is what to type
 		// (`vag_cli_core::missing::HELP`), which points at this help.
 		let help = help_of(&["setup"], true);
-		assert!(help.contains("~/.vagcan/data/<id>/"), "{help}");
+		assert!(help.contains("~/.vagcan/data/<id>/") && help.contains("~/.vagcan/vcds/"), "{help}");
+		for stale in ["one row per step", "land in one project", "ODIS wins", "rows per kind"] {
+			assert!(!help.contains(stale), "{stale}: {help}");
+		}
 		assert!(help.contains("keep it in place"), "a VCDS installation is read again later:\n{help}");
 		assert!(help.contains("ODIS project can be deleted"), "{help}");
 		assert!(help.contains(vag_cli_core::missing::VCDS_DOWNLOAD), "{help}");
@@ -1853,7 +1844,7 @@ mod tests {
 	fn faults_help_carries_the_caveats_the_listing_no_longer_prints() {
 		let help = help_of(&["faults"], true);
 		assert!(help.contains("not a diagnosis"), "{help}");
-		assert!(help.contains("`failing`"), "{help}");
+		assert!(help.contains("`failing now`"), "{help}");
 		assert!(help.contains("car's clock"), "{help}");
 		assert!(help.contains("-v"), "{help}");
 	}

@@ -221,9 +221,9 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 	// resolves names with no flag, the plain listing names what it can from them,
 	// and a machine that has not run setup simply goes without.
 	//
-	// A machine with no project set up simply identifies without names — this is
-	// the ordinary "setup has not run yet" case, not an error.
-	let label_files_dir = project::current().ok().filter(labels::has_project_labels);
+	// A machine with no VCDS installation read simply identifies without names — this
+	// is the ordinary "setup has not run yet" case, not an error.
+	let label_files_dir = project::vcds().ok().filter(labels::has_project_labels);
 	let label_files = match &label_files_dir {
 		Some(project) => match labels::load_project(project) {
 			Ok(db) => {

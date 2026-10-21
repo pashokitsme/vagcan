@@ -456,16 +456,17 @@ pub fn check_text_ids(wanted: &[Wanted], known: &std::collections::BTreeSet<Stri
 	Ok(())
 }
 
-/// Every text id the current project's label data carries: none without a label
+/// Every text id the label data of this run's stores carries — the project's and the VCDS store's: none without a label
 /// cache, and `None` — nothing can be said before the car is asked — when the
 /// project cannot be resolved or its cache will not read; [`select_wanted`] then
 /// says it once the units are known.
 fn known_text_ids() -> Option<std::collections::BTreeSet<String>> {
-	let cache = crate::project::current().ok()?.cache();
-	if !cache.is_file() {
-		return Some(Default::default());
+	let stores = crate::project::stores().ok()?;
+	let mut known = std::collections::BTreeSet::new();
+	for cache in stores.caches().into_iter().filter(|cache| cache.is_file()) {
+		known.extend(vag_data_db::text_ids(&cache).ok()?.into_iter().map(|(id, _)| id));
 	}
-	vag_data_db::text_ids(&cache).ok().map(|ids| ids.into_iter().map(|(id, _)| id).collect())
+	Some(known)
 }
 
 /// Select what `--did` asked for among the channels this car offers.

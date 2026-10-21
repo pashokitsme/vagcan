@@ -1,0 +1,52 @@
+about = "A made-up car for listings over two sources: no part number or name here belongs to a real one."
+
+[[unit]]
+request = "7E0"
+name = "engine"
+part = "SIM906000A"
+component = "SIM ENGINE"
+odx = "EV_SimEngine"
+odx_version = "001001"
+vin = "SIMVIN00000000002"
+
+[unit.did]
+F40D = "00"
+# The unit's own stamp: what a fault's standard records are checked against.
+02BD = "91 01 E2 40 00 00 69 F6 00 03"
+
+[[unit.fault]]
+code = "00 01 29"
+status = 0x09
+# Record 01 (priority 6, 3 times), record 02 (aging 16, 123456 km, 2026-07-27 00:00:03), and
+# the engine's own record 70: 1000 /min, 12.3 V, a reserved byte.
+extended = "01 06 03 02 10 01 E2 40 00 00 69 F6 00 03 70 0F A0 7B 00"
+
+[[unit]]
+request = "7E1"
+name = "gearbox"
+part = "SIM300000B"
+component = "SIM GEARBOX"
+
+[[unit]]
+request = "710"
+name = "gateway"
+part = "SIM907000C"
+component = "SIM GATEWAY"
+installed = ["713"]
+
+[[unit]]
+request = "713"
+name = "brakes"
+part = "SIM614000D"
+component = "SIM ESC"
+odx = "EV_SimBrake"
+odx_version = "001001"
+
+[unit.did]
+02BD = "91 01 E2 40 00 00 69 F6 00 03"
+
+[[unit.fault]]
+code = "04 71 20"
+status = 0x08
+# The standard records, then an own record 70 the install has no rows for.
+extended = "01 04 01 02 20 01 E2 00 00 00 69 F6 00 01 70 AA BB"

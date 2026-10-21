@@ -307,7 +307,7 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 			if !std::path::Path::new(&dir).is_dir() {
 				return Err(anyhow::anyhow!("{dir:?} is not a directory").help("point it at the VCDS install root"));
 			}
-			let iv_cache = datadir::or_default(iv_cache.as_deref(), || Ok(crate::project::current()?.rod_keys()))?;
+			let iv_cache = datadir::or_default(iv_cache.as_deref(), || Ok(crate::project::vcds()?.rod_keys()))?;
 			let device = device.requested().map(str::to_owned);
 			Ok(Outcome::FromCar { dir, ecu, iv_cache, device })
 		}
@@ -317,7 +317,7 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 			iv_cache,
 			..
 		} => {
-			let keys = datadir::or_default(iv_cache.as_deref(), || Ok(crate::project::current()?.rod_keys()))?;
+			let keys = datadir::or_default(iv_cache.as_deref(), || Ok(crate::project::vcds()?.rod_keys()))?;
 			labels::resolve_odx(&dir, &name, &keys)?;
 			Ok(Outcome::Done)
 		}
@@ -338,7 +338,7 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 					source: "",
 					path: std::path::PathBuf::from(given),
 				}],
-				None => names::project_files(&crate::project::current()?),
+				None => names::project_files(&crate::project::stores()?),
 			};
 			names::run(&text, limit, &files)?;
 			Ok(Outcome::Done)
@@ -376,7 +376,7 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 			// pointing at a path, and no amount of `vagcan setup` will create a
 			// path they invented.
 			let named = catalog.is_some();
-			let path = datadir::or_default(catalog.as_deref(), || Ok(crate::project::current()?.cache()))?;
+			let path = datadir::or_default(catalog.as_deref(), || Ok(crate::project::vcds()?.cache()))?;
 			stats(&path, named)?;
 			Ok(Outcome::Done)
 		}
@@ -407,7 +407,7 @@ fn stats(db_path: &std::path::Path, named: bool) -> Result<()> {
 		// Two callers, two different facts, and one message cannot be true of
 		// both. Without `--catalog` this is a project that was never built, and
 		// `missing` says how to build it. With `--catalog` the reader named this
-		// path themselves — `vagcan setup` writes into `~/.vagcan/data/` and will
+		// path themselves — `vagcan setup` writes into `~/.vagcan/` and will
 		// never create the file they typed, so offering it would be advice that
 		// cannot work.
 		if named {

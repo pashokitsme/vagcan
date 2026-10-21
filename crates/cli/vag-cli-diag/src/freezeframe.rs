@@ -391,11 +391,16 @@ fn number(value: f64) -> String {
 	if text == "-0" { "0".to_string() } else { text }
 }
 
+/// The fewest columns [`render`] wraps a value into, beside its key.
+const NARROWEST_VALUE: usize = 20;
+
 /// A freeze frame as `key  value unit` lines under `indent`, the keys padded to one column.
 ///
 /// The one rendering, so it goes under a code in whichever layout lists codes. A line that
-/// would run past `width` puts its value on the next line, under the key, further in —
-/// nothing is cut.
+/// would run past `width` keeps its value in the value column and wraps it there: the
+/// bytes or the reading first, a reason in parentheses after it on a line of its own —
+/// nothing is cut. With under [`NARROWEST_VALUE`] columns left for the value, it goes on
+/// the next line, under the key, further in.
 pub fn render(lines: &[Line], indent: &str, width: Option<usize>) -> String {
 	const WIDEST_KEY: usize = 32;
 	let column = lines
@@ -408,12 +413,31 @@ pub fn render(lines: &[Line], indent: &str, width: Option<usize>) -> String {
 	for line in lines {
 		let key_len = line.key.chars().count();
 		let pad = column.saturating_sub(key_len);
-		let one = format!("{indent}{}{}  {}", line.key, " ".repeat(pad), line.value);
-		if width.is_none_or(|w| one.chars().count() <= w) {
-			out.push_str(&one);
-			out.push('\n');
-		} else {
-			out.push_str(&format!("{indent}{}\n{indent}    {}\n", line.key, line.value));
+		let lead = format!("{indent}{}{}  ", line.key, " ".repeat(pad));
+		let one = format!("{lead}{}", line.value);
+		let lead_len = lead.chars().count();
+		match width {
+			Some(w) if one.chars().count() > w && w.saturating_sub(lead_len) >= NARROWEST_VALUE => {
+				let room = w - lead_len;
+				// The reason is the value's last parenthesis: it wraps on its own.
+				let (reading, reason) = match line.value.rfind(" (") {
+					Some(at) if line.value.ends_with(')') => (&line.value[..at], &line.value[at + 1..]),
+					_ => (line.value.as_str(), ""),
+				};
+				let mut pieces = vag_cli_core::table::wrap(reading, room);
+				pieces.extend(vag_cli_core::table::wrap(reason, room));
+				let under = " ".repeat(lead_len);
+				for (at, piece) in pieces.iter().enumerate() {
+					out.push_str(if at == 0 { &lead } else { &under });
+					out.push_str(piece);
+					out.push('\n');
+				}
+			}
+			Some(w) if one.chars().count() > w => out.push_str(&format!("{indent}{}\n{indent}    {}\n", line.key, line.value)),
+			_ => {
+				out.push_str(&one);
+				out.push('\n');
+			}
 		}
 	}
 	out
@@ -704,8 +728,24 @@ mod tests {
 		let lines = vec![Line::new("priority", "2"), Line::new("Voltage", "12.3 V")];
 		assert_eq!(render(&lines, "    ", Some(80)), "    priority  2\n    Voltage   12.3 V\n");
 		let long = vec![Line::new("Voltage", "0B B8 7B 01 71 AA 0B B8 7B 01 71 AA (not described, not decoded)")];
+		// Wrapped in the value column, the reason after the bytes on lines of its own.
 		assert_eq!(
 			render(&long, "    ", Some(40)),
+			"    Voltage  0B B8 7B 01 71 AA 0B B8 7B\n\
+			 \x20            01 71 AA\n\
+			 \x20            (not described, not\n\
+			 \x20            decoded)\n"
+		);
+		// The bytes fit beside the key: only the reason goes under them.
+		let record = vec![Line::new("record 70", "AA BB (no layout for this variant, not decoded)")];
+		assert_eq!(
+			render(&record, &" ".repeat(13), Some(70)),
+			"             record 70  AA BB\n\
+			 \x20                       (no layout for this variant, not decoded)\n"
+		);
+		// With too little room for a value beside its key, the value goes under the key.
+		assert_eq!(
+			render(&long, "    ", Some(24)),
 			"    Voltage\n        0B B8 7B 01 71 AA 0B B8 7B 01 71 AA (not described, not decoded)\n"
 		);
 	}

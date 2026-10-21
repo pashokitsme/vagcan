@@ -44,13 +44,29 @@ So there are four sources and they are not interchangeable:
 | identifier, shape and scaling of a connected car's units, where ODIS has none | a VCDS installation's registry `RM.rod`, via `vagcan setup` and the first `watch`, `measure` or `units --identify` with the car | yes, in minutes |
 | `(identifier, raw form, factor, offset)` | measured on a vehicle | only by driving |
 
-The first three land in a **project** — `~/.vagcan/data/<project id>/`, holding
-`cache.sqlite`, `names.json`, `odx-ids.json`, `rod-keys.json`, `registry.json` (which VCDS
-installation the channels were read from, and what came of each unit), with the raw `.rod`
-files and the fault text in a shared `~/.vagcan/rod/` because those are a property of a
-VCDS *build* rather than of any car. The last lands in that project's `measurements/`.
+An ODIS project lands in a **project** — `~/.vagcan/data/<project id>/`, holding its
+`cache.sqlite` and `names-odis.json`. A VCDS installation lands in the machine's **VCDS
+store**, `~/.vagcan/vcds/`, holding `cache.sqlite`, `names.json`, `odx-ids.json`,
+`rod-keys.json` and `registry.json` (which installation the channels were read from, and what
+came of each unit), with the raw `.rod` files and the fault text in a shared `~/.vagcan/rod/`
+because those are a property of a VCDS *build* rather than of any car. Rows measured on a car
+land in the project's `measurements/`.
 
-**Which sources a project holds is the `source` table in `cache.sqlite`, and nothing
+**Why the VCDS store is one per machine** (2026-10-21): an ODIS project describes one
+platform, a VCDS installation describes every VAG car. Filed under a project, the same
+installation needed a copy per platform, and a machine with VCDS alone needed a project named
+for nothing. So the store holds one installation, `setup` asks no name for it, and every car
+command reads two caches: the car's ODIS project, when there is one, and the store
+(`vag_cli_core::project::Stores`). Both caches have one schema and one set of readers; ODIS
+still wins where both describe a channel. VCDS rows an older vagcan wrote into a project's
+cache move into the store the first time either is opened (`project::migrate_in`): the
+installation read last is kept, its files and rows are copied and counted back, and only then
+do the projects lose theirs — so a run stopped anywhere is finished by the next one. A move in
+progress is marked beside the store (`.migrating.json`, with its record entry) and a project
+being emptied beside itself (`.vcds-taken-out`); the next run finishes or undoes each, and
+`migrated.json` records the move once.
+
+**Which sources a store holds is the `source` table in its `cache.sqlite`, and nothing
 else.** One row per folder read: kind, the directory its rows are keyed by (an ODIS
 project's folder, a VCDS installation's `Labels`), the root `setup` was pointed at, the
 language, version and time read. Every row of `fault`, `reading`, `measurement` and
@@ -64,8 +80,8 @@ migration folds rows that name one directory and removes rows that own nothing, 
 relative path an older vagcan stored is never resolved against the working directory —
 `--list` shows it as `stale`, and it counts as no source of its kind. Only `setup`'s label
 step replaces one VCDS installation with another; `dev vcds labels` never writes the
-project's cache, and a registry read writes only into a VCDS source that is still there.
-`setup` fills the project, and with a VCDS installation alone the car's channels arrive with the
+store's cache, and a registry read writes only into a VCDS source that is still there.
+`setup` fills the project or the store, and with a VCDS installation alone the car's channels arrive with the
 first `watch`, `measure` or `units --identify` after it (or `dev dash build`, offline); the
 messages a short tool prints say whether it lacks label data or scalings.
 
@@ -304,8 +320,8 @@ solver this replaced is in
 
 ## What `vagcan setup` actually does
 
-One command, two branches, everything under `~/.vagcan/data/<project id>/` and the
-shared `~/.vagcan/rod/`. Which branch runs is decided by what the source is, and the
+One command, two branches: an ODIS project into `~/.vagcan/data/<project id>/`, a VCDS
+installation into `~/.vagcan/vcds/` and the shared `~/.vagcan/rod/`. Which branch runs is decided by what the source is, and the
 source is recognised from the folder rather than declared: a `UDS_EV/` inside makes it a
 VCDS installation, an `AStringData.data.gz` beside at least one `<pool>.key` makes it an
 ODIS project. Nothing is opened to decide — being wrong in the permissive direction
@@ -374,14 +390,15 @@ adaptations (`RA.rod`), basic settings (`RG.rod`), output tests (`RS.rod`), free
 settings and output tests are names only (`0x31`/`0x2F` stay outside the allowlist). `faults`
 reads the freeze-frame rows back: a fault's `19 06` answer splits into VW's two standard records
 and the unit's own, each own record laid out by its `RF.rod` key — or, from an ODIS project
-alone, by the variant's extended-data multiplexer, which `setup` stores beside them under its own
-source; a run reads one of the two (`vag_cli_diag::freezeframe`,
+alone, by the variant's extended-data multiplexer, which `setup` stores in the same table under the
+ODIS source, in the project's cache (the `RF.rod` rows are in the VCDS store's); a run reads one
+of the two (`vag_cli_diag::freezeframe`,
 `research/odis-dtc/freeze-frames.md`).
 The same read runs from `watch`, `measure` and `units --identify` with the car, and from
 `dev dash build` offline (`vag_cli_core::registry::ensure`), for the units of the car in front of
 them that the installation has not been tried for — the first time, with a line, a spinner and a
-line per unit — and the project's `registry.json` records the installation and what came of each
-unit, so a unit VCDS has no file for is not searched for again. A project set up before that log
+line per unit — and the store's `registry.json` records the installation and what came of each
+unit, so a unit VCDS has no file for is not searched for again. A store set up before that log
 existed is read from the installation its VCDS source names, when that path is absolute and
 still holds `UDS_EV`. The firmware's build never reads: a plan that uses a unit whose channels
 have not been read is refused, and the refusal names `dev dash build` — or `setup`, when the

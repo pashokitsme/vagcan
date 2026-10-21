@@ -180,9 +180,11 @@ fn cars() -> Cars {
 		Ok(dir) => dir,
 		Err(e) => return Cars::Unknown(cause(&e)),
 	};
+	// The machine's VCDS store, read beside whichever project there is — or alone.
+	let vcds = project::vcds().ok().filter(project::holds_vcds);
 	match store(&dir) {
 		Store::Listable => {}
-		Store::Missing => return Cars::None,
+		Store::Missing => return vcds_alone(vcds.as_ref()),
 		Store::Unreadable(why) => return Cars::Unknown(why),
 	}
 	let ids = match project::list().context("listing the projects under ~/.vagcan/data/") {
@@ -190,7 +192,7 @@ fn cars() -> Cars {
 		Err(e) => return Cars::Unknown(cause(&e)),
 	};
 	if ids.is_empty() {
-		return Cars::None;
+		return vcds_alone(vcds.as_ref());
 	}
 	// `current()` is the same resolution every other command performs, so what
 	// this screen reports is what the next command will actually use. When it
@@ -199,7 +201,7 @@ fn cars() -> Cars {
 	// something naming a project that is not there. With several, a typo reads
 	// as the ambiguity — the list is right either way, and so is "say which".
 	match project::current() {
-		Ok(project) => Cars::One(summarise(&project)),
+		Ok(project) => Cars::One(summarise(&project, vcds.as_ref())),
 		Err(e) if ids.len() < 2 => Cars::Misnamed {
 			ids,
 			why: vag_cli_core::report::unlabelled(&e),
@@ -233,13 +235,35 @@ fn store(dir: &std::path::Path) -> Store {
 	}
 }
 
-/// What one project holds, in the two queries that answer it cheaply.
-fn summarise(project: &project::Project) -> CarData {
+/// With no project: the VCDS store, when it holds an installation, is what every car
+/// command reads; with neither, nothing is set up.
+fn vcds_alone(vcds: Option<&project::Project>) -> Cars {
+	match vcds {
+		Some(store) => Cars::One(CarData {
+			id: "VCDS store (every car)".to_string(),
+			from_vcds: true,
+			from_odis: false,
+			described: described(&store.cache()),
+			proven_catalogs: proven_catalogs(&store.measurements_dir()),
+		}),
+		None => Cars::None,
+	}
+}
+
+/// What one project holds, with the VCDS store beside it, in the queries that answer it
+/// cheaply.
+fn summarise(project: &project::Project, vcds: Option<&project::Project>) -> CarData {
+	let mut described = described(&project.cache());
+	if let (Described::Channels(variants, channels), Some(Described::Channels(more, also))) =
+		(&described, vcds.map(|store| self::described(&store.cache())))
+	{
+		described = Described::Channels(variants + more, channels + also);
+	}
 	CarData {
 		id: project.id.clone(),
-		from_vcds: project::has_source(project, "vcds").unwrap_or(false),
+		from_vcds: vcds.is_some(),
 		from_odis: project::has_source(project, "odis").unwrap_or(false),
-		described: described(&project.cache()),
+		described,
 		proven_catalogs: proven_catalogs(&project.measurements_dir()),
 	}
 }
