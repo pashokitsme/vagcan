@@ -14,6 +14,8 @@ F189 = { text = "0001" }
 0600 = "01 02"
 F40D = "00"
 F405 = "50"
+0610 = "05"                  # adaptations: idle speed offset, service interval
+0611 = "00 96"
 F40C = { series = [ { at_ms = 0, value = "0F A0" }, { at_ms = 1000, value = "10 00" } ], loop_ms = 2000 }
 
 [[unit.fault]]
@@ -28,6 +30,9 @@ part = "SIM300000B"
 component = "SIM GEARBOX"
 odx = "EV_SimGear"
 odx_version = "001002"
+
+[unit.did]
+0620 = "50"                  # adaptation: clutch
 
 [[unit]]
 request = "710"
