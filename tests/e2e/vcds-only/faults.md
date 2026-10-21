@@ -29,9 +29,10 @@ $ vagcan -v faults --unit 713
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
 names    none — `vagcan setup` names the codes
-Codes below are shown as numbers: no fault-name labels on this machine.
-Looked in: [HOME]/rod
-Fix: `vagcan setup <ODIS project folder | VCDS installation>` — offline; with no path it asks which and can fetch VCDS (`vagcan setup --help`)
+codes below are shown as numbers: no fault-name labels on this machine
+note: looked in [HOME]/rod
+help: run `vagcan setup <ODIS project folder | VCDS installation>` (offline)
+help: with no path, `vagcan setup` asks which and can fetch VCDS; see `vagcan setup --help`
 a stored code is a record that something happened once — not a diagnosis, and not necessarily a fault now; `failing` is failing now
 713  1 code listed, 1 confirmed
 713  047120  confirmed · 123392 km, 1×, 2 s ago, 64 km ago
