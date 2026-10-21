@@ -108,27 +108,56 @@ pub fn say_nothing_answered() {
 	}
 }
 
-/// What is said, on stderr, when a unit answered every identifier asked of it with a
-/// refusal: it is on the bus and talking, so nothing about the wiring is in question — it
-/// serves none of them.
-pub fn refused_all(unit_label: &str, asked: usize, what: &str) -> Vec<(u8, String)> {
-	vec![
-		(0, format!("unit {unit_label} refused all {asked} {what}")),
-		(
-			1,
-			"it answered each one with a negative response: the unit is there, and serves none of them".to_string(),
+/// What is said, on stderr, when a unit gave data for none of the `asked` identifiers and
+/// refused at least one: `refused` of them refused, `unanswered` timed out, the rest (when
+/// the read stopped early) not asked.
+///
+/// "Refused all" only when every one was refused: then the unit is there and talking, and
+/// serves none of them. A unit that refused some and ignored the rest is said with both
+/// counts and no claim about it.
+pub fn refused(unit_label: &str, refused: usize, unanswered: usize, asked: usize, what: &str) -> Vec<(u8, String)> {
+	if refused == asked {
+		return vec![
+			(0, format!("unit {unit_label} refused all {asked} {what}")),
+			(
+				1,
+				"it answered each one with a negative response: the unit is there, and serves none of them".to_string(),
+			),
+		];
+	}
+	let not_asked = asked.saturating_sub(refused + unanswered);
+	vec![(
+		0,
+		format!(
+			"unit {unit_label} answered none of the {asked} {what}: {}",
+			facts([
+				format!("refused {refused}"),
+				format!("{unanswered} unanswered"),
+				match not_asked {
+					0 => String::new(),
+					n => format!("{n} not asked"),
+				},
+			])
 		),
-	]
+	)]
 }
 
 /// What is said, on stderr, when a unit gave nothing back to the first requests of a read
 /// and the rest were not asked ([`crate::anomaly::Monitor::absent`]).
-pub fn absent(unit_label: &str, silences: usize) -> Vec<(u8, String)> {
+pub fn absent(unit_label: &str, why: &str) -> Vec<(u8, String)> {
 	vec![
 		(0, format!("unit {unit_label} does not answer")),
 		(0, "  (use \"vagcan units --identify\" to see which units answer)".to_string()),
-		(1, format!("its first {silences} requests went unanswered, so the rest were not asked")),
+		(1, why.to_string()),
 	]
+}
+
+/// Why [`absent`]: the first `silences` requests of a read went unanswered.
+pub fn quiet_from_the_start(silences: usize) -> String {
+	format!(
+		"its first {silences} {} went unanswered, so the rest were not asked",
+		plural(silences, "request")
+	)
 }
 
 /// Lines with their levels, said.
@@ -320,6 +349,24 @@ mod tests {
 			 \x20 part 0CW300041G · hardware 06K907425B · software 0005\n\
 			 \x20 serial CU501702277773 · coding 0C 25\n"
 		);
+	}
+
+	#[test]
+	fn refused_all_only_when_every_one_was_refused() {
+		let all = refused("02 (7E1)", 32, 0, 32, "standard parameters");
+		assert_eq!(all[0], (0, "unit 02 (7E1) refused all 32 standard parameters".to_string()));
+		assert!(all.iter().any(|(level, line)| *level == 1 && line.contains("the unit is there")));
+		// One refusal and the rest timed out: both counts, and no claim the unit is there.
+		let some = refused("713", 1, 31, 32, "standard parameters");
+		assert_eq!(
+			some,
+			[(
+				0,
+				"unit 713 answered none of the 32 standard parameters: refused 1 · 31 unanswered".to_string()
+			)]
+		);
+		let stopped = refused("713", 1, 3, 32, "standard parameters");
+		assert!(stopped[0].1.ends_with("refused 1 · 3 unanswered · 28 not asked"), "{stopped:?}");
 	}
 
 	#[test]

@@ -29,7 +29,7 @@ note: adapter from VAGCAN_DEVICE=[PORT]
 type a note + Enter to mark the capture; Ctrl-C stops
      time        id  dir   len   fr  data
 
-1.0 s · 0 frames · 0 messages · 0 incomplete · 0 markers · drops none
+[..] s · 0 frames · 0 messages · 0 incomplete · 0 markers · drops none
 warning: no traffic on the bus
   (check the ignition, OBD-II pin 6 → CAN-H and pin 14 → CAN-L, and the termination jumper OFF)
 
@@ -39,7 +39,7 @@ note: adapter from VAGCAN_DEVICE=[PORT]
 type a note + Enter to mark the capture; Ctrl-C stops
      time        id  dir   len   fr  data
 
-1.0 s · 0 frames · 0 diagnostic · 0 messages · 0 incomplete · 0 markers · drops none
+[..] s · 0 frames · 0 diagnostic · 0 messages · 0 incomplete · 0 markers · drops none
 warning: no traffic on the bus
   (check the ignition, OBD-II pin 6 → CAN-H and pin 14 → CAN-L, and the termination jumper OFF)
 

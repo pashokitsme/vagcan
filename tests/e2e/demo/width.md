@@ -105,7 +105,7 @@ IDENTIFICATION
 $ VAGCAN_COLUMNS=80 vagcan faults
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
-names    ODIS SIM00-odis (eng)
+note: code names from ODIS SIM00-odis (eng)
 warning: 70E fault list not read: transport: timeout
 2 stored codes on 2 of 4 units · 1 failing now
 
@@ -127,7 +127,7 @@ warning: 70E fault list not read: transport: timeout
 $ VAGCAN_COLUMNS=100 vagcan faults
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
-names    ODIS SIM00-odis (eng)
+note: code names from ODIS SIM00-odis (eng)
 warning: 70E fault list not read: transport: timeout
 2 stored codes on 2 of 4 units · 1 failing now
 

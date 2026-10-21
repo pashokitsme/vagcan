@@ -9,7 +9,7 @@ $ vagcan info
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
 SIMVIN00000000001 · SIM00
-4 control units · read [..]
+5 control units · read [..]
 
 ENGINE  01 · 7E0
   SIM ENGINE
@@ -19,6 +19,7 @@ ENGINE  01 · 7E0
 GEARBOX  02 · 7E1
   SIM GEARBOX
   part SIM300000B · EV_SimGear
+  (use "vagcan units" for the other units, "vagcan faults" for their fault codes)
 
 $ vagcan units
 ? success

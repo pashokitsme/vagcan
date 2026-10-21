@@ -197,7 +197,7 @@ lines after it are stdout and stderr together:
 ```console
 $ vagcan units
 ? success
-names    SIM00 label files
+note: adapter from VAGCAN_DEVICE=[PORT]
 ...
 ```
 ~~~

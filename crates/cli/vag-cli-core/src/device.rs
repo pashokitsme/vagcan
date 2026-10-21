@@ -293,9 +293,9 @@ fn choose_board<H>(mut boards: Vec<Board<H>>, name: Option<&str>, can_ask: bool,
 	};
 	let board = boards.into_iter().nth(at).context("the menu answered a row it did not show")?;
 	crate::say!(
-		"adapter  {}  BLE{}",
+		"note: adapter {} over BLE{}",
 		board.name,
-		board.rssi.map(|r| format!("  {r} dBm")).unwrap_or_default()
+		board.rssi.map(|r| format!(", {r} dBm")).unwrap_or_default()
 	);
 	crate::note!("BLE id {}", board.id);
 	Ok(board)
@@ -514,11 +514,11 @@ fn choose_usb(listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) -> 
 				true => "dash board, a plain adapter by --slcan",
 				false => only.description.as_str(),
 			};
-			crate::say!("adapter  {}  {how}", only.path);
+			crate::say!("note: adapter {} ({how})", only.path);
 			return Ok(Found::Picked(Usb::Dash(only.path.clone())));
 		}
 		[only] => {
-			crate::say!("adapter  {}  {}", only.path, only.description);
+			crate::say!("note: adapter {} ({})", only.path, only.description);
 			return Ok(Found::Picked(Usb::Adapter(only.path.clone())));
 		}
 		[] => {}
@@ -552,7 +552,7 @@ fn choose_usb(listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) -> 
 			for board in &silent {
 				crate::note!("not using {}  {}", board.path, board.description);
 			}
-			crate::say!("adapter  {}  {}", only.path, only.description);
+			crate::say!("note: adapter {} ({})", only.path, only.description);
 			Ok(Found::Picked(Usb::Adapter(only.path.clone())))
 		}
 		(_, _) => Err(anyhow!("several serial devices found").help(format!("say which one:\n{}", device_lines(found.iter())))),

@@ -51,13 +51,10 @@ fn address_unit<L: UnitLink>(link: L, unit: UnitAddress) -> AsyncUdsClient<L::Ch
 	))
 }
 
-/// The ODX file a unit names for itself (F19E), trimmed of VW's padding; `None` when it
-/// does not answer.
+/// The ODX file a unit names for itself (F19E), within the identification probe's short
+/// deadline ([`vag_cli_core::units::PROBE`]); `None` when it does not answer.
 async fn read_odx<T: vag_uds_transport::AsyncIsoTpTransport>(uds: &mut AsyncUdsClient<T>) -> Option<String> {
-	const ODX_FILE_NAME: u16 = 0xF19E;
-	let data = uds.read_data_by_identifier(ODX_FILE_NAME).await.ok()?;
-	let name = String::from_utf8_lossy(&data).trim_end_matches(['\0', ' ']).to_string();
-	(!name.is_empty()).then_some(name)
+	vag_cli_core::units::probe_text(uds, 0xF19E).await
 }
 
 /// Identify the car (see the `Info` subcommand docs): the VIN, and the engine's and the
@@ -85,17 +82,13 @@ pub async fn info<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>) -> Result<
 		render::say_nothing_answered();
 		return Ok(());
 	}
-	// The units the gateway lists, and the powertrain, which it never does: it lives on the
-	// other id block.
+	// Counted by the rule `units --identify` asks by ([`walk::to_identify`]): what the
+	// gateway lists, the gateway itself and the powertrain, which it never lists — so the two
+	// commands give one number for one car.
 	let count = match &listed {
 		Ok(ids) => {
-			let mut all = ids.clone();
-			for (unit, said) in [(engine_unit, &engine), (gearbox_unit, &gearbox)] {
-				if !said.is_empty() && !all.contains(&unit.request) {
-					all.push(unit.request);
-				}
-			}
-			format!("{} control {}", all.len(), render::plural(all.len(), "unit"))
+			let all = car_units(ids);
+			format!("{all} control {}", render::plural(all, "unit"))
 		}
 		Err(e) => {
 			note!("the gateway gave no list of control units: {e}");
@@ -122,8 +115,17 @@ pub async fn info<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>) -> Result<
 	];
 	let vin = engine.vin.as_deref().or(gearbox.vin.as_deref());
 	out!("{}", render::render_info(vin, project.as_deref(), &meta, &units));
-	note!("  (use \"vagcan units\" for the other units, \"vagcan faults\" for their fault codes)");
+	say!("  (use \"vagcan units\" for the other units, \"vagcan faults\" for their fault codes)");
 	Ok(())
+}
+
+/// How many units `units --identify` asks of a car whose gateway listed `listed`: the walk's
+/// list ([`vag_cli_core::units::to_identify`]), each once, those with a diagnostic address.
+fn car_units(listed: &[u16]) -> usize {
+	let mut asked = vag_cli_core::units::to_identify(listed, &[plan::ENGINE]);
+	asked.sort_unstable();
+	asked.dedup();
+	asked.into_iter().filter(|id| UnitAddress::from_request(*id).is_some()).count()
 }
 
 /// Which link a command may be opened on. The command decides, once its arguments are
@@ -237,11 +239,17 @@ pub async fn sensors<L: UnitLink>(open: impl AsyncFnOnce(Reach) -> Result<L>, un
 	}
 
 	if lines.is_empty() {
-		// It answered, every time, with a no: the wiring is not in question.
+		// It said no to some or all: the counts, and only "refused all" when that is so.
 		if stats.refused > 0 {
-			render::say_all(&render::refused_all(&both_names(unit), PIDS.len(), "standard parameters"));
+			render::say_all(&render::refused(
+				&both_names(unit),
+				stats.refused,
+				stats.failed,
+				PIDS.len(),
+				"standard parameters",
+			));
 		} else if monitor.absent() {
-			render::say_all(&render::absent(&both_names(unit), monitor.silences()));
+			render::say_all(&render::absent(&both_names(unit), &render::quiet_from_the_start(monitor.silences())));
 		} else {
 			render::say_nothing_answered();
 		}
@@ -551,14 +559,38 @@ pub async fn identification<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, 
 	}
 	let mut uds = address_unit(backend, unit);
 
+	// First the one identifier every unit answers, within the identification walk's short
+	// deadline: a unit that does not is absent, and is not asked the block (review of #55:
+	// three timeouts at F100–F102 called a slow unit absent, and F187 was never asked).
+	const PART_NUMBER: u16 = 0xF187;
+	let mut monitor = anomaly::Monitor::new(unit.request);
+	let witness = match uds.read_data_by_identifier_within(PART_NUMBER, vag_cli_core::units::PROBE).await {
+		// The baseline the monitor judges the block against, and the witness it re-reads.
+		Ok(_) => {
+			monitor.seed(PART_NUMBER);
+			Some(PART_NUMBER)
+		}
+		Err(e @ vag_uds_client::uds::UdsError::NegativeResponse { .. }) => {
+			monitor.saw(PART_NUMBER, anomaly::Answer::of(&Err(e)));
+			None
+		}
+		Err(_) => {
+			render::say_all(&render::absent(
+				&both_names(unit),
+				&format!(
+					"it did not answer F187 within {} ms, so its block was not asked",
+					vag_cli_core::units::PROBE.as_millis()
+				),
+			));
+			return Ok(());
+		}
+	};
+
 	let mut found = Vec::new();
 	// The read is bounded and the block is standardised, but the rule "stop
-	// when something changes" is not about how big the read was. No witness:
-	// there is nothing established as known-good before this runs, so the guard
-	// watches only for the unit going quiet after it had been answering.
-	let mut monitor = anomaly::Monitor::new(unit.request);
+	// when something changes" is not about how big the read was.
 	let mut guard = scan::Guard {
-		witness: None,
+		witness,
 		monitor: &mut monitor,
 	};
 	note!("reading {} of unit {}", props::IDENT_RANGE, unit.label());
@@ -578,12 +610,14 @@ pub async fn identification<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, 
 
 	if found.is_empty() {
 		if monitor.absent() {
-			render::say_all(&render::absent(&both_names(unit), monitor.silences()));
+			render::say_all(&render::absent(&both_names(unit), &render::quiet_from_the_start(monitor.silences())));
 		} else if stats.refused > 0 {
-			render::say_all(&render::refused_all(
-				&unit.label(),
+			render::say_all(&render::refused(
+				&both_names(unit),
+				stats.refused,
+				stats.failed,
 				stats.asked,
-				"identifiers of its identification block",
+				"identifiers of its identification block asked",
 			));
 		} else {
 			render::say_nothing_answered();

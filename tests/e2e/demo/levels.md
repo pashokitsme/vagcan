@@ -7,7 +7,7 @@ $ vagcan -v info
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
 SIMVIN00000000001 · SIM00
-4 control units · read [..]
+5 control units · read [..]
 
 ENGINE  01 · 7E0
   SIM ENGINE
@@ -57,7 +57,7 @@ note: adapter from VAGCAN_DEVICE=[PORT]
 →  7E1  22 F1 9E
 ←  7E9  62 F1 9E 45 56 5F 53 69 6D 47 65 61 72  [..] ms
 SIMVIN00000000001 · SIM00
-4 control units · read [..]
+5 control units · read [..]
 
 ENGINE  01 · 7E0
   SIM ENGINE

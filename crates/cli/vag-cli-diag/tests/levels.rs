@@ -281,7 +281,7 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	let (head, rest) = info[0].stdout.split_once("\n").unwrap();
 	assert_eq!(head, VIN);
 	let (meta, rest) = rest.split_once("\n").unwrap();
-	assert!(meta.starts_with("4 control units · read 20"), "{meta}");
+	assert!(meta.starts_with("5 control units · read 20"), "the units `--identify` asks: {meta}");
 	assert_eq!(
 		rest,
 		"\n\
@@ -294,7 +294,10 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 		 \x20 GEAR SELF\n\
 		 \x20 part PART-GEAR · software 0001\n"
 	);
-	assert!(info[0].stderr.is_empty(), "{:?}", info[0].stderr);
+	assert_eq!(
+		info[0].stderr, "  (use \"vagcan units\" for the other units, \"vagcan faults\" for their fault codes)\n",
+		"the hint at every level, right after the card"
+	);
 
 	// Through the bus, as every car command runs: -vv is the wire, and only -vv.
 	let on_bus = || async { Ok(vag_cli_core::bus::Bus::start(car(), vag_cli_core::bus::Budget::default())) };

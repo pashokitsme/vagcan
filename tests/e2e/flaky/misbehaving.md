@@ -8,7 +8,7 @@ $ vagcan info
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
 SIMVIN00000000003 · SIM00
-3 control units · read [..]
+5 control units · read [..]
 
 ENGINE  01 · 7E0
   SIM ENGINE
@@ -16,6 +16,7 @@ ENGINE  01 · 7E0
 
 GEARBOX  02 · 7E1
   no answer
+  (use "vagcan units" for the other units, "vagcan faults" for their fault codes)
 
 $ vagcan units --identify 01
 ? success
@@ -48,7 +49,7 @@ note: adapter from VAGCAN_DEVICE=[PORT]
 $ vagcan faults
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
-names    ODIS SIM00-odis (eng)
+note: code names from ODIS SIM00-odis (eng)
 warning: 7E1 fault list not read: transport: timeout
 warning: 70E fault list not read: transport: timeout
 warning: 713 fault list not read: transport: timeout
