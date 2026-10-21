@@ -86,20 +86,43 @@ fn run_at(level: u8, home: &Path, root: &Path, state: Cars) -> Captured {
 	captured
 }
 
-/// A `-v` line with its seconds — `vcds copy  0.0 s  <path>`, `timing  <stage>  0.01s` —
-/// made the same in every run: `N s`.
+/// A line with its seconds — `(0.0 s; <path>)`, `in 3.1s:`, `stage: 0.01s` — made the
+/// same in every run: `N s`.
 fn without_seconds(line: &str) -> String {
-	let seconds = |field: &str| {
-		field
-			.strip_suffix(" s")
-			.or_else(|| field.strip_suffix('s'))
-			.is_some_and(|n| !n.is_empty() && n.parse::<f64>().is_ok())
-	};
-	line
-		.split("  ")
-		.map(|field| if seconds(field) { "N s" } else { field })
-		.collect::<Vec<_>>()
-		.join("  ")
+	let chars: Vec<char> = line.chars().collect();
+	let mut out = String::with_capacity(line.len());
+	let mut at = 0;
+	while at < chars.len() {
+		// A number with a point in it, then `s` or ` s` and no letter after.
+		let start = at;
+		let mut end = at;
+		while end < chars.len() && chars[end].is_ascii_digit() {
+			end += 1;
+		}
+		let digits = end > start && (start == 0 || !chars[start - 1].is_ascii_alphanumeric());
+		if digits && end < chars.len() && chars[end] == '.' {
+			let mut frac = end + 1;
+			while frac < chars.len() && chars[frac].is_ascii_digit() {
+				frac += 1;
+			}
+			let unit = match (chars.get(frac), chars.get(frac + 1)) {
+				(Some('s'), next) => Some((frac + 1, next)),
+				(Some(' '), Some('s')) => Some((frac + 2, chars.get(frac + 2))),
+				_ => None,
+			};
+			if frac > end + 1
+				&& let Some((after, next)) = unit
+				&& !next.is_some_and(|c| c.is_ascii_alphanumeric())
+			{
+				out.push_str("N s");
+				at = after;
+				continue;
+			}
+		}
+		out.push(chars[at]);
+		at += 1;
+	}
+	out
 }
 
 /// The three levels of one scenario, split-checked; what level 0 wrote comes back.
@@ -118,36 +141,36 @@ fn child(scenario: &str) {
 	match scenario {
 		"no-car" => {
 			let [quiet, verbose, wire] = levels("setup, no car recorded", Cars::None);
-			assert_eq!(
-				quiet.stdout,
-				"source  step      state    detail\n\
-				 vcds    copy      wrote    3 files, 3 copied (30 B), 0 current\n\
-				 vcds    labels    wrote    1 label file\n\
-				 vcds    names     missing  no text table\n\
-				 vcds    keys      wrote    every section opened by its file name, nothing to cache\n\
-				 vcds    registry  pending  read the first time a car command meets the car\n\
-				 \n\
-				 default: new project · 5 steps · 1 gap · fault text · no scalings\n",
-				"level 0, stdout"
+			// On stderr: what is read, a line per step, one `Ready:` line and its hint. A
+			// VCDS installation asks no name and lands in the machine's store.
+			assert_eq!(quiet.stdout, "", "level 0, stdout");
+			let (heading, rest) = quiet.stderr.split_once('\n').unwrap();
+			assert!(
+				heading.starts_with("Read the VCDS installation at ") && heading.ends_with("/vcds"),
+				"{heading}"
 			);
-			// With no terminal the name was taken unasked, which is said, with where
-			// it went. Nothing else is said: no list of projects for a question that never
-			// came, and no warning of a long first read — the keys come from the file
-			// names, seconds (#40).
-			let project = vag_cli_core::datadir::projects_dir().unwrap().join("default");
 			assert_eq!(
-				quiet.stderr,
-				format!("project  default (no terminal: default taken)  {}\n", project.display()),
+				rest,
+				"  copied 2 .rod files and the fault text (30 B)\n\
+				 \x20 parsed 1 label file\n\
+				 \x20 skipped the measurement names: no text table\n\
+				 \x20 saved no .rod keys: every section opens by its file name\n\
+				 \x20 skipped the channels: read when a car command first meets the car\n\
+				 Ready with 1 gap: fault text and no scalings for every car.\n\
+				 \x20 (use \"vagcan faults\" with the car connected)\n",
 				"level 0, stderr"
 			);
+			assert!(
+				!vag_cli_core::datadir::projects_dir().unwrap().exists(),
+				"a VCDS installation made a project"
+			);
+			assert!(vag_cli_core::datadir::vcds_dir().unwrap().join("cache.sqlite").is_file());
 			for said in [
-				"vcds copy  N s  ",
-				"vcds labels  N s  ",
-				"vcds names  N s  none of [\"TTTEXT.ROD\", \"TTText-RUS.rod\"] is under ",
-				"vcds keys  N s  ",
-				"vcds registry  N s  no car recorded on this machine",
-				"next: vagcan devices, vagcan info, vagcan faults (stored faults, named)",
-				"scalings: none yet",
+				"    N s, ",
+				"    none of [\"TTTEXT.ROD\", \"TTText-RUS.rod\"] is under ",
+				"    no car recorded on this machine",
+				"  (scalings: none yet",
+				"  (took N s)",
 			] {
 				assert!(
 					verbose.stderr.lines().any(|l| l.starts_with(said)),
@@ -155,75 +178,50 @@ fn child(scenario: &str) {
 					verbose.stderr
 				);
 			}
-			// The project once came three times at -v, in three formats, one a paragraph on
-			// what a project is; and a step's time and its path were two lines.
-			let projects: Vec<&str> = verbose.stderr.lines().filter(|l| l.starts_with("project")).collect();
-			assert_eq!(projects.len(), 1, "{projects:?}");
-			assert!(!verbose.stderr.contains("kind of car"), "{}", verbose.stderr);
-			assert!(!verbose.stderr.contains("timing  vcds"), "{}", verbose.stderr);
-			for step in ["copy", "labels", "names", "keys", "registry"] {
-				let key = format!("vcds {step}  ");
-				assert_eq!(
-					verbose.stderr.lines().filter(|l| l.starts_with(&key)).count(),
-					1,
-					"one line for {step}:\n{}",
-					verbose.stderr
-				);
-			}
-			assert!(wire.stderr.contains("vcds copy: "), "-vv names each file copied:\n{}", wire.stderr);
-			assert!(wire.stderr.contains(" → "), "{}", wire.stderr);
+			assert!(
+				wire.stderr.lines().any(|l| l.starts_with("    copying ") && l.contains("EV_ECM.rod to ")),
+				"-vv names each file copied:\n{}",
+				wire.stderr
+			);
 		}
 		"one-car" => {
 			let [quiet, verbose, _] = levels("setup, one car recorded", Cars::One);
 			assert!(
-				quiet.stdout.contains("vcds    registry  missing  RM.rod did not open\n"),
+				quiet.stderr.contains("\n  skipped the channels: RM.rod did not open\n"),
 				"{}",
-				quiet.stdout
+				quiet.stderr
 			);
 			assert!(
-				quiet
-					.stdout
-					.ends_with("default: new project · 5 steps · 2 gaps · fault text · no scalings\n"),
-				"{}",
-				quiet.stdout
-			);
-			assert!(
-				verbose
-					.stderr
-					.contains("vcds registry  N s  the registry did not open: there is no RM.rod in this installation"),
-				"{}",
-				verbose.stderr
-			);
-		}
-		"unreadable" => {
-			let [quiet, verbose, _] = levels("setup, a record that does not read", Cars::Unreadable);
-			assert!(
-				quiet.stdout.contains("vcds    registry  failed   not a record this tool wrote: "),
-				"{}",
-				quiet.stdout
-			);
-			// What to do is said at every level, last: the file the row names, and the
-			// command that reads the installation again.
-			let record = vag_cli_core::datadir::cars_dir()
-				.unwrap()
-				.join("TESTVIN0000000001")
-				.join(vag_cli_core::datadir::UNITS_FILE);
-			assert!(
-				quiet.stdout.contains(&format!("not a record this tool wrote: {}\n", record.display())),
-				"{}",
-				quiet.stdout
-			);
-			let last = quiet.stderr.lines().last().unwrap_or_default();
-			assert!(
-				last.starts_with(&format!("Fix: move {} aside, then `vagcan setup ", record.display())),
+				quiet.stderr.contains("\nReady with 2 gaps: fault text and no scalings for every car.\n"),
 				"{}",
 				quiet.stderr
 			);
 			assert!(
 				verbose
 					.stderr
-					.lines()
-					.any(|l| l.starts_with("vcds registry  N s  ") && l.contains("line 1 column")),
+					.contains("\n    the registry did not open: there is no RM.rod in this installation"),
+				"{}",
+				verbose.stderr
+			);
+		}
+		"unreadable" => {
+			let [quiet, verbose, _] = levels("setup, a record that does not read", Cars::Unreadable);
+			// What to do is said at every level, right under the line that failed: the
+			// file the line names, and the command that reads the installation again.
+			let record = vag_cli_core::datadir::cars_dir()
+				.unwrap()
+				.join("TESTVIN0000000001")
+				.join(vag_cli_core::datadir::UNITS_FILE);
+			let failed = format!("  failed to read the channels: not a record this tool wrote: {}", record.display());
+			let lines: Vec<&str> = quiet.stderr.lines().collect();
+			let at = lines.iter().position(|l| *l == failed).unwrap_or_else(|| panic!("{}", quiet.stderr));
+			assert!(
+				lines[at + 1].starts_with(&format!("help: move {} aside, then run `vagcan setup ", record.display())),
+				"{}",
+				quiet.stderr
+			);
+			assert!(
+				verbose.stderr.lines().any(|l| l.starts_with("    ") && l.contains("line 1 column")),
 				"the cause at -v:\n{}",
 				verbose.stderr
 			);

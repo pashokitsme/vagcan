@@ -3537,32 +3537,32 @@ pub fn resolve(inputs: Inputs) -> anyhow::Result<Resolved> {
 		units,
 		read_attempted,
 	} = inputs;
-	let project = crate::project::current()?;
-	let store = CatalogStore::open(project.measurements_dir());
-	let extracted = crate::extracted::open(&project).for_car(Some(vin.as_str()));
+	let stores = crate::project::stores()?;
+	let store = CatalogStore::open(stores.measurements_dir());
+	let extracted = crate::extracted::open(&stores).for_car(Some(vin.as_str()));
 	let referenced = referenced_units(&parsed);
 	let (used, unused): (Vec<UnitIdentity>, Vec<UnitIdentity>) = units.iter().cloned().partition(|u| referenced.contains(&u.request));
 	let (used_note, unused_note) = {
 		let described = crate::registry::described_by(&extracted);
-		let used = refuse_unread(&vin, read_attempted, crate::registry::unread(&project, &used, &described)?)?;
+		let used = refuse_unread(&vin, read_attempted, crate::registry::unread(&stores.vcds, &used, &described)?)?;
 		(
 			used,
-			unread_note(&vin, read_attempted, crate::registry::unread(&project, &unused, &described)?),
+			unread_note(&vin, read_attempted, crate::registry::unread(&stores.vcds, &unused, &described)?),
 		)
 	};
 	let language = crate::config::language(&crate::config::load());
 	let mut built = build(&parsed, &store, &extracted, &units, language)?;
 	built.notes.extend(used_note);
 	built.notes.extend(unused_note);
-	let inputs = vec![
-		input_path,
-		record,
-		project.cache(),
-		project.measurements_dir(),
-		project.names(),
+	let mut inputs = vec![input_path, record];
+	inputs.extend(stores.caches());
+	inputs.extend([
+		stores.measurements_dir(),
+		stores.vcds.names(),
+		stores.vcds.registry_log(),
 		crate::config::path()?,
 		crate::glossary::path()?,
-	];
+	]);
 	Ok(Resolved {
 		built,
 		dir,

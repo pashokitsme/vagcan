@@ -48,7 +48,8 @@ use crate::config::Language;
 /// does not read yet.
 #[derive(Debug, Clone)]
 pub struct Extracted {
-	cache: PathBuf,
+	/// Where each kind of source's rows are: an ODIS project's cache, the VCDS store's.
+	caches: Caches,
 	/// Which project this came out of, for a sentence that has to name it.
 	///
 	/// Carried rather than re-resolved because "is there a project, and which"
@@ -102,6 +103,22 @@ pub enum FreezeLayout {
 	None,
 }
 
+/// The cache each kind of source is read from — one file for both in a test's fixture.
+#[derive(Debug, Clone, Default)]
+struct Caches {
+	odis: PathBuf,
+	vcds: PathBuf,
+}
+
+impl Caches {
+	fn of(&self, kind: &str) -> &Path {
+		match kind {
+			vag_data_db::VCDS => &self.vcds,
+			_ => &self.odis,
+		}
+	}
+}
+
 /// One channel a unit offers, with everything known about how to name it.
 ///
 /// Three separate facts, and collapsing any two of them loses something a
@@ -134,9 +151,9 @@ pub struct Resolved {
 /// is not an error — `--catalogs <dir>` names proven rows directly, and a
 /// machine where `vagcan setup` has not run has none of either.
 pub fn current() -> Extracted {
-	match crate::project::current() {
-		Ok(project) => open(&project),
-		Err(_) => Extracted::none(),
+	match crate::project::stores_or_vcds() {
+		Some(stores) => open(&stores),
+		None => Extracted::none(),
 	}
 }
 
@@ -145,12 +162,17 @@ pub fn current() -> Extracted {
 /// Having none is an ordinary state rather than an error: a VCDS installation
 /// brings rows only for the units `setup` read its registry for, and a project
 /// set up before that has none.
-pub fn open(project: &crate::project::Project) -> Extracted {
-	let cache = project.cache();
-	let variants = variants_by_source(&cache);
+pub fn open(stores: &crate::project::Stores) -> Extracted {
+	let caches = Caches {
+		// No project: a path that is no file, which every query answers with nothing.
+		odis: stores.cache_of(vag_data_db::ODIS).unwrap_or_default(),
+		vcds: stores.vcds.cache(),
+	};
+	let variants = variants_by_source(&caches);
+	let store = &stores.vcds;
 	Extracted {
-		cache,
-		project: Some(project.id.clone()),
+		caches,
+		project: Some(stores.id().to_string()),
 		variants,
 		// **Only when a VCDS installation has actually contributed.** The join
 		// through a text id is right and stays; what was wrong is trusting
@@ -163,14 +185,14 @@ pub fn open(project: &crate::project::Project) -> Extracted {
 		//
 		// A file cannot say who wrote it, so the project's own source log is
 		// asked instead (`crate::project::has_source`).
-		names: match crate::project::has_source(project, vag_data_db::VCDS) {
-			Ok(true) => read_names(&project.names()),
+		names: match crate::project::has_source(store, vag_data_db::VCDS) {
+			Ok(true) => read_names(&store.names()),
 			Ok(false) => BTreeMap::new(),
 			// A cache that did not answer says nothing either way: the file is taken
 			// as what it promises, as before the sources were asked, and that is said.
 			Err(e) => {
-				crate::project::say_unreadable(project, &e, "names.json is read as VCDS wording");
-				read_names(&project.names())
+				crate::project::say_unreadable(store, &e, "names.json is read as VCDS wording");
+				read_names(&store.names())
 			}
 		},
 		// Read for every project, whatever its sources: this file is the
@@ -188,11 +210,11 @@ pub fn open(project: &crate::project::Project) -> Extracted {
 /// A cache that will not open holds none. One an older vagcan wrote, or a file that is not a
 /// database, is also said, once, on stderr: every channel the project would give is
 /// missing, and the line says what to run.
-fn variants_by_source(cache: &std::path::Path) -> Vec<(&'static str, Vec<String>)> {
+fn variants_by_source(caches: &Caches) -> Vec<(&'static str, Vec<String>)> {
 	let mut said = false;
 	[vag_data_db::ODIS, vag_data_db::VCDS]
 		.into_iter()
-		.map(|kind| match vag_data_db::reading_variants_of(cache, kind) {
+		.map(|kind| match vag_data_db::reading_variants_of(caches.of(kind), kind) {
 			Ok(variants) => (kind, variants),
 			Err(why) => {
 				if matches!(why, vag_data_db::Error::OlderCache { .. } | vag_data_db::Error::NotACache { .. }) && !std::mem::replace(&mut said, true) {
@@ -225,7 +247,7 @@ impl Extracted {
 	/// there is nothing extracted to go under them.
 	pub fn none() -> Extracted {
 		Extracted {
-			cache: PathBuf::new(),
+			caches: Caches::default(),
 			project: None,
 			variants: Vec::new(),
 			names: BTreeMap::new(),
@@ -243,9 +265,13 @@ impl Extracted {
 	/// a test that went through it would pass or fail on what they wrote.
 	#[cfg(any(test, feature = "test-util"))]
 	pub fn synthetic(cache: PathBuf, names: BTreeMap<String, String>) -> Extracted {
+		let caches = Caches {
+			odis: cache.clone(),
+			vcds: cache,
+		};
 		Extracted {
-			variants: variants_by_source(&cache),
-			cache,
+			variants: variants_by_source(&caches),
+			caches,
 			project: Some("TEST".to_string()),
 			names,
 			mine: BTreeMap::new(),
@@ -270,9 +296,12 @@ impl Extracted {
 	/// such lookup, and that unit joins by the rank rule. So does every unit with no log, or
 	/// with the installation gone for a car whose VIN would say its project.
 	pub fn for_car(mut self, vin: Option<&str>) -> Extracted {
-		let home = self.project.clone().zip(self.cache.parent().map(Path::to_path_buf));
-		let join = home
-			.and_then(|(id, dir)| crate::registry::car_join(&crate::project::Project { id, dir }, vin))
+		// The VCDS store's log: the registry read is that store's.
+		let join = self
+			.project
+			.as_ref()
+			.and(self.caches.vcds.parent())
+			.and_then(|dir| crate::registry::car_join(&crate::project::vcds_at(dir), vin))
 			.unwrap_or_default();
 		self.car_projects = join.project.into_iter().collect();
 		self.car_stems = join
@@ -352,7 +381,7 @@ impl Extracted {
 	/// it would print the wrong fields as fact, so it comes back as [`FreezeLayout::Another`]
 	/// and the bytes stay raw.
 	pub fn freeze_frames(&self, kind: &str, odx_name: Option<&str>, version: Option<&str>) -> FreezeLayout {
-		let Ok(names) = vag_data_db::freeze_frame_variants(&self.cache, kind) else {
+		let Ok(names) = vag_data_db::freeze_frame_variants(self.caches.of(kind), kind) else {
 			return FreezeLayout::None;
 		};
 		let Some(variant) = self.variants_of(kind, &names, odx_name, version).into_iter().next().cloned() else {
@@ -362,7 +391,7 @@ impl Extracted {
 		if !rank.is_some_and(OdxMatch::is_vcds_lookup) {
 			return FreezeLayout::Another { variant };
 		}
-		match vag_data_db::freeze_frame_fields(&self.cache, kind, &variant) {
+		match vag_data_db::freeze_frame_fields(self.caches.of(kind), kind, &variant) {
 			Ok(fields) if !fields.is_empty() => FreezeLayout::Unit { variant, fields },
 			_ => FreezeLayout::None,
 		}
@@ -371,7 +400,7 @@ impl Extracted {
 	/// Whether the cache holds freeze-frame rows of one kind of source for any unit at all —
 	/// so whether a unit's identity is worth reading to look its own up.
 	pub fn knows_freeze_frames(&self, kind: &str) -> bool {
-		vag_data_db::freeze_frame_variants(&self.cache, kind).is_ok_and(|v| !v.is_empty())
+		vag_data_db::freeze_frame_variants(self.caches.of(kind), kind).is_ok_and(|v| !v.is_empty())
 	}
 
 	/// Whether this project knows any channels at all.
@@ -400,14 +429,14 @@ impl Extracted {
 				self
 					.variants_of(kind, names, odx_name, version)
 					.into_iter()
-					.any(|name| vag_data_db::levels_predate_bounds(&self.cache, name).unwrap_or(false))
+					.any(|name| vag_data_db::levels_predate_bounds(self.caches.of(kind), name).unwrap_or(false))
 			})
 	}
 
 	/// The ODIS projects this cache was read from, as `setup` recorded them —
 	/// what to point `setup` at to read them again.
 	pub fn odis_sources(&self) -> Vec<String> {
-		vag_data_db::sources_of(&self.cache)
+		vag_data_db::sources_of(&self.caches.odis)
 			.unwrap_or_default()
 			.into_iter()
 			.filter(|(kind, _)| kind == vag_data_db::ODIS)
@@ -477,7 +506,7 @@ impl Extracted {
 			// field it picked out with ODIS alone.
 			let claimed: std::collections::BTreeSet<String> = out.iter().filter_map(|(_, id)| id.clone()).collect();
 			for name in self.variants_of(kind, names, odx_name, version) {
-				let Ok(readings) = vag_data_db::readings_of_kind(&self.cache, kind, name) else {
+				let Ok(readings) = vag_data_db::readings_of_kind(self.caches.of(kind), kind, name) else {
 					continue;
 				};
 				for reading in readings {
@@ -507,14 +536,13 @@ impl Extracted {
 	/// sources and a run never mixes them (CLAUDE.md). The default only: `[source] use` and
 	/// `--source`, which pick the other, are not built yet.
 	pub fn run_source(&self) -> Option<&'static str> {
-		let kinds: Vec<String> = vag_data_db::sources_of(&self.cache)
-			.unwrap_or_default()
-			.into_iter()
-			.map(|(kind, _)| kind)
-			.collect();
-		[vag_data_db::ODIS, vag_data_db::VCDS]
-			.into_iter()
-			.find(|kind| kinds.iter().any(|k| k == kind))
+		// Each kind asked of its own store: the project's cache, the VCDS store's.
+		[vag_data_db::ODIS, vag_data_db::VCDS].into_iter().find(|kind| {
+			vag_data_db::sources_of(self.caches.of(kind))
+				.unwrap_or_default()
+				.iter()
+				.any(|(k, _)| k == kind)
+		})
 	}
 
 	/// The adaptation channels this project knows for a unit, given what it said (`F19E`,
@@ -533,7 +561,7 @@ impl Extracted {
 	/// sweep is bounded to the identifiers its variant describes, so that unit is refused.
 	pub fn adaptations(&self, odx_name: Option<&str>, version: Option<&str>) -> Result<Vec<crate::adaptation::Adaptation>, Unsettled> {
 		use crate::adaptation::Adaptation;
-		if self.cache.as_os_str().is_empty() {
+		if self.caches.odis.as_os_str().is_empty() && self.caches.vcds.as_os_str().is_empty() {
 			return Ok(Vec::new());
 		}
 		// One source's rows, every best-ranked variant's, the alphabetically first variant
@@ -548,16 +576,16 @@ impl Extracted {
 		let mut out = Vec::new();
 		match self.run_source() {
 			Some(vag_data_db::ODIS) => {
-				let variants = vag_data_db::adaptation_variants(&self.cache).unwrap_or_default();
+				let variants = vag_data_db::adaptation_variants(&self.caches.odis).unwrap_or_default();
 				for variant in self.settled_variants(vag_data_db::ODIS, &variants, odx_name, version)? {
-					let rows = vag_data_db::odis_adaptations_of(&self.cache, variant).unwrap_or_default();
+					let rows = vag_data_db::odis_adaptations_of(&self.caches.odis, variant).unwrap_or_default();
 					gather(rows.iter().map(|r| Adaptation::from_odis(r, variant)).collect(), &mut out);
 				}
 			}
 			Some(vag_data_db::VCDS) => {
-				let variants = vag_data_db::registry_variants(&self.cache, ADAPTATION_SECTION).unwrap_or_default();
+				let variants = vag_data_db::registry_variants(&self.caches.vcds, ADAPTATION_SECTION).unwrap_or_default();
 				for variant in self.settled_variants(vag_data_db::VCDS, &variants, odx_name, version)? {
-					let rows = vag_data_db::registry_entries(&self.cache, variant, ADAPTATION_SECTION).unwrap_or_default();
+					let rows = vag_data_db::registry_entries(&self.caches.vcds, variant, ADAPTATION_SECTION).unwrap_or_default();
 					gather(rows.iter().filter_map(|r| Adaptation::from_vcds(r, variant)).collect(), &mut out);
 				}
 			}
@@ -609,7 +637,7 @@ impl Extracted {
 	/// before they were kept, which `vagcan setup` must read again to have them. A source
 	/// whose read found none is not among them.
 	pub fn odis_unread_adaptations(&self) -> Vec<String> {
-		vag_data_db::odis_sources_without_adaptations(&self.cache).unwrap_or_default()
+		vag_data_db::odis_sources_without_adaptations(&self.caches.odis).unwrap_or_default()
 	}
 }
 
@@ -807,9 +835,13 @@ mod tests {
 		for (name, readings) in variants {
 			vag_data_db::put_readings(&cache, "/nowhere/SK37X", name, readings).expect("the fixture writes");
 		}
+		let caches = Caches {
+			odis: cache.clone(),
+			vcds: cache,
+		};
 		Extracted {
-			variants: variants_by_source(&cache),
-			cache,
+			variants: variants_by_source(&caches),
+			caches,
 			project: Some("SK37X".to_string()),
 			names: names.iter().map(|(id, text)| (id.to_string(), text.to_string())).collect(),
 			// Never the owner's real one: a test must not read `~/.vagcan`.
@@ -817,6 +849,14 @@ mod tests {
 			language: Language::default(),
 			car_projects: Vec::new(),
 			car_stems: BTreeMap::new(),
+		}
+	}
+
+	/// One directory as both stores: the fixtures put both kinds of row in one cache.
+	fn one_dir(project: &crate::project::Project) -> crate::project::Stores {
+		crate::project::Stores {
+			project: Some(project.clone()),
+			vcds: project.clone(),
 		}
 	}
 
@@ -995,6 +1035,48 @@ mod tests {
 		);
 		// A unit only VCDS knows reads from VCDS alone.
 		assert_eq!(named("EV_Brake1UDS", "036010"), [(0x1822, "vcds".to_string())]);
+	}
+
+	#[test]
+	fn across_the_project_and_the_vcds_store_odis_still_wins_its_field() {
+		// The same rule with the two sources in two caches: the ODIS project's, and the
+		// machine's VCDS store. And with no project at all, the store alone answers.
+		let here = tempfile::tempdir().unwrap();
+		let project = crate::project::Project {
+			id: "SK37X".into(),
+			dir: here.path().join("data").join("SK37X"),
+		};
+		let store = crate::project::vcds_at(&here.path().join("vcds"));
+		std::fs::create_dir_all(&project.dir).unwrap();
+		std::fs::create_dir_all(&store.dir).unwrap();
+		vag_data_db::put_readings(
+			&project.cache(),
+			"/nowhere/SK37X",
+			"EV_TCMDQ200021_001",
+			&[reading(0x380A, "odis", 0, 16, false)],
+		)
+		.unwrap();
+		let gearbox = [reading(0x380A, "vcds", 0, 16, true), reading(0x380B, "vcds", 0, 16, false)];
+		vag_data_db::record_language(&store.cache(), vag_data_db::VCDS, "/nowhere/vcds-en", "eng").unwrap();
+		vag_data_db::put_all_vcds_readings(&store.cache(), "/nowhere/vcds-en", [("EV_TCMDQ200021", &gearbox[..])]).unwrap();
+		let named = |x: &Extracted| -> Vec<(u16, String)> {
+			x.for_unit(Some("EV_TCMDQ200021"), Some("001017"))
+				.into_iter()
+				.map(|def| {
+					let ReadId::Uds(did) = def.address;
+					(did, def.name.to_string())
+				})
+				.collect()
+		};
+		let both = open(&crate::project::Stores {
+			project: Some(project.clone()),
+			vcds: store.clone(),
+		});
+		assert_eq!(named(&both), [(0x380A, "odis".to_string()), (0x380B, "vcds".to_string())]);
+		assert_eq!(both.project(), Some("SK37X"));
+		let vcds_alone = open(&crate::project::Stores { project: None, vcds: store });
+		assert_eq!(named(&vcds_alone), [(0x380A, "vcds".to_string()), (0x380B, "vcds".to_string())]);
+		assert!(vcds_alone.odis_sources().is_empty());
 	}
 
 	/// Two recorded cars of two projects carry one unit at one version: the registry read
@@ -1242,7 +1324,7 @@ mod tests {
 		// No source log at all: the cautious answer, and the one that matters
 		// here — a project that cannot say where its data came from is not
 		// assumed to hold VCDS wording.
-		assert!(open(&project).names.is_empty(), "it trusted a file nothing vouched for");
+		assert!(open(&one_dir(&project)).names.is_empty(), "it trusted a file nothing vouched for");
 
 		// A log naming only ODIS runs: same answer, and this is the owner's
 		// actual machine.
@@ -1256,7 +1338,7 @@ mod tests {
 			},
 		)
 		.unwrap();
-		assert!(open(&project).names.is_empty(), "{:?}", open(&project).names);
+		assert!(open(&one_dir(&project)).names.is_empty(), "{:?}", open(&one_dir(&project)).names);
 
 		// Once an installation has contributed, the file is what it promises
 		// and the join through the text id does its job.
@@ -1271,7 +1353,7 @@ mod tests {
 		)
 		.unwrap();
 		assert_eq!(
-			open(&project).names.get("MAS14374").map(String::as_str),
+			open(&one_dir(&project)).names.get("MAS14374").map(String::as_str),
 			Some("Total_CarWakeup_Events_Counter")
 		);
 	}
@@ -1289,7 +1371,7 @@ mod tests {
 		std::fs::write(project.cache(), b"this is not an SQLite file, and it is longer than a header").unwrap();
 		std::fs::write(project.names(), r#"{"MAS14374": "Total_CarWakeup_Events_Counter"}"#).unwrap();
 		assert_eq!(
-			open(&project).names.get("MAS14374").map(String::as_str),
+			open(&one_dir(&project)).names.get("MAS14374").map(String::as_str),
 			Some("Total_CarWakeup_Events_Counter")
 		);
 	}
@@ -1560,7 +1642,10 @@ mod tests {
 		// and a VCDS-only project still does.
 		let here = tempfile::tempdir().unwrap();
 		let x = Extracted {
-			cache: here.path().join("nothing.sqlite"),
+			caches: Caches {
+				odis: here.path().join("nothing.sqlite"),
+				vcds: here.path().join("nothing.sqlite"),
+			},
 			project: None,
 			variants: Vec::new(),
 			names: BTreeMap::new(),

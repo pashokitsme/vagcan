@@ -16,7 +16,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 |---|---|
 | `vagcan` | Shows where you stand: adapter, car data, what to type next |
 | `vagcan setup` | Reads an ODIS project or a VCDS installation, offline, in seconds |
-| `vagcan setup --list` | The project's sources: id, kind, language, when read, rows per kind, path |
+| `vagcan setup --list` | The sources on this machine: the VCDS installation, then each ODIS project's |
 | `vagcan setup --drop <SOURCE>` | Removes one source and everything it wrote. `SOURCE` is `odis`, `vcds` or an id from `--list` |
 | `vagcan devices` | Lists USB-CAN adapters and dash boards on USB |
 | `vagcan info` | VIN, and the engine's and gearbox's part numbers and software versions |
@@ -108,6 +108,8 @@ Updated 2026-10-21.
 - [x] A project's sources listed and removed: `setup --list`, `setup --drop` (2026-10-20)
 - [x] `measure view` draws the speed in km/h, on old sessions too; it was 3.6 times low (2026-10-21)
 - [x] A virtual car, `dev sim`, and e2e cases of the commands against it: `just e2e` (2026-10-21)
+- [x] One VCDS installation per machine, for every car, in `~/.vagcan/vcds/`; projects are ODIS's alone; an older layout moves on its own (2026-10-21)
+- [x] `setup` and `faults` print in the shape of established tools: steps as lines under a heading, faults as a block per unit (2026-10-21)
 - [ ] Adaptation channels and their values, read only: `vagcan adaptations <unit>`, `--all` (built 2026-10-21, waiting for the car)
 - [ ] Freeze frames under each stored code in `vagcan faults`, from an ODIS project or a VCDS install alone (built 2026-10-21, checked offline on one recorded answer; waits for the car)
 - [ ] Page the dash with buttons on its pins
@@ -255,6 +257,7 @@ For cars no ODIS project covers.
 - About 40 % of its unit files are locked to VCDS itself; ODIS covers those.
 - It reads in about 3 s cold. The keys of VCDS's encrypted files come from their file names.
 - **A Russian-only VCDS gives fault text, but no measurement names.** `watch` then shows its channels by reading id. Read an English VCDS instead: `vagcan setup` with no path, then pick "Download VCDS". A second VCDS installation replaces the first.
+- **One installation serves every car.** It is saved once, in `~/.vagcan/vcds/`, and `setup` asks no name for it.
 
 With VCDS alone, the channels come the first time `vagcan watch`, `vagcan measure` or
 `vagcan units --identify` runs with the car: it records which control units the car has and
@@ -273,18 +276,38 @@ vagcan watch           # with the car: records its units, reads their channels o
 
 The first menu entry of `vagcan setup` reads both. Where both describe a channel, ODIS wins; VCDS fills in what ODIS lacks.
 
-The result is saved as a **project** in `~/.vagcan/data/<project id>/`, one per platform. Data about one specific car is saved in `~/.vagcan/cars/<VIN>/`.
+- An ODIS project is saved as a **project** in `~/.vagcan/data/<project id>/`, one per platform. `setup` asks what to call it when its folder name will not do.
+- A VCDS installation is saved in `~/.vagcan/vcds/`, one per machine, for every car.
+- Every car command reads both: the car's ODIS project, when there is one, and the VCDS installation.
+- Data about one specific car is saved in `~/.vagcan/cars/<VIN>/`.
+
+What `setup` prints, on stderr:
+
+```
+Read the VCDS installation at ~/vcds-en
+  copied 16577 files, all up to date
+  parsed 3035 label files
+  read 192469 measurement names, 42640 with an IDE or MAS id
+  saved no .rod keys: every section opens by its file name
+  read 6085 channels for 15 of 15 units
+Ready: fault text and scalings for every car.
+  (use "vagcan faults" with the car connected)
+```
+
+`-v` adds each step's time and path under it.
 
 ### Listing and removing sources
 
 | Command | What it does |
 |---|---|
-| `vagcan setup --list` | One row per source: id, kind, state, language, version, when read, rows per kind, path |
-| `vagcan setup --drop odis` | Removes the project's ODIS source and its rows. Asks first |
-| `vagcan setup --drop 3` | The same, by id from `--list`. Needed when two sources share a kind |
+| `vagcan setup --list` | One row per source, the VCDS installation first: id, store (`vcds` or the project), kind, state, language, when read, channels, path. `-v` adds each cache, the version and the other counts |
+| `vagcan setup --drop vcds` | Removes the machine's VCDS installation, its rows and its log. Asks first |
+| `vagcan setup --drop odis` | Removes the current project's ODIS source and its rows. Asks first |
+| `vagcan setup --drop 3` | The same, by id from `--list`. An id the VCDS store and the project both have is refused: say `vcds` or `odis` |
 | `vagcan setup --drop 3 --yes` | Does not ask. Required without a terminal |
 
-- The list of sources is the `source` table in `cache.sqlite`. Nothing else records it.
+- The list of sources is the `source` table in each `cache.sqlite`. Nothing else records it.
+- A VCDS installation an older vagcan read into a project moves to `~/.vagcan/vcds/` the first time a command runs. If two projects held one, the one read last is kept, and a note names the other.
 - After a drop, every command uses what the other sources wrote.
 - `stale` in `--list`: a relative path written by an older vagcan. Nothing resolves it; drop it by id.
 - `gone`: the folder is not on this machine any more. Its rows still work.
@@ -406,14 +429,16 @@ Everything is in `~/.vagcan/`. Nothing is written to the checkout.
 ~/.vagcan/
   config.toml           settings: current project, name language, fault text language, favourites
   names.csv             your own channel names (vagcan dev glossary)
-  rod/                  VCDS .rod files and fault text, shared by all projects
-  data/<project id>/    one directory per platform, e.g. SK37X
-    cache.sqlite          channels, scalings, fault text, label rows, and which sources were read (vagcan setup --list)
-    names.json            measurement names, from VCDS
-    odx-ids.json          which VW channel id each VCDS name is for
-    names-odis.json       measurement names, from ODIS
+  rod/                  VCDS .rod files and fault text
+  vcds/                 the VCDS installation, one per machine, for every car
+    cache.sqlite          label rows, channels and scalings from VCDS, and its source (vagcan setup --list)
+    names.json            measurement names
+    odx-ids.json          which VW channel id each name is for
     rod-keys.json         recovered .rod section keys
-    registry.json         which VCDS installation the channels were read from, and what came of each unit
+    registry.json         which installation the channels were read from, and what came of each unit
+  data/<project id>/    one ODIS project per platform, e.g. SK37X
+    cache.sqlite          channels, scalings, fault text, and its source (vagcan setup --list)
+    names-odis.json       measurement names, from ODIS
     measurements/         scalings measured on a car, one file per part number
   cars/<VIN>/           data about one car
     car.json              mass, tyre, measured road load
@@ -425,6 +450,6 @@ Everything is in `~/.vagcan/`. Nothing is written to the checkout.
     editor/               what vagcan dev dash edit serves; its next run rebuilds it
 ```
 
-- **Safe to delete:** `rod/` and everything in `data/<project id>/` except `measurements/`. `vagcan setup` rebuilds them.
+- **Safe to delete:** `rod/`, `vcds/`, and everything in `data/<project id>/` except `measurements/`. `vagcan setup` rebuilds them.
 - **Another location:** `VAGCAN_HOME=/absolute/path` is used instead of `~/.vagcan`.
 - **Tests never use `~/.vagcan`.** A test build's is a temporary directory.

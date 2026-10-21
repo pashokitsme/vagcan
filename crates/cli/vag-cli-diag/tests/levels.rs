@@ -366,13 +366,16 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 		gearbox[1].stderr
 	);
 
-	// `faults` keeps its keys per project: one, set up from nothing yet, so no code has a name.
-	// Its cache holds the engine's freeze-frame layout, as `setup` stores a VCDS install's
+	// `faults` reads its keys from the VCDS store: none set up yet, so no code has a name.
+	// The store holds the engine's freeze-frame layout, as `setup` stores a VCDS install's
 	// (`RF.rod [FFMUX]`): record 0x70, four bytes. Invented rows, no install's.
 	let project = home.path().join(".vagcan/data/TESTPROJECT");
 	std::fs::create_dir_all(&project).unwrap();
 	let cache = project.join("cache.sqlite");
-	vag_data_db::record_language(&cache, vag_data_db::VCDS, "/x/vcds-test", "eng").unwrap();
+	let store = home.path().join(".vagcan/vcds");
+	std::fs::create_dir_all(&store).unwrap();
+	let vcds_cache = store.join("cache.sqlite");
+	vag_data_db::record_language(&vcds_cache, vag_data_db::VCDS, "/x/vcds-test", "eng").unwrap();
 	let rows = [
 		freeze_row(0, 16, 0, Some((0.25, 0.0)), "/min", "Engine speed"),
 		freeze_row(16, 8, 0, Some((0.1, 0.0)), "V", "Voltage"),
@@ -380,25 +383,31 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	];
 	// The brake's rows are another variant's: a name VCDS would not open for this car.
 	let brake = [freeze_row(0, 16, 0, Some((1.0, 0.0)), "", "Pressure")];
-	vag_data_db::put_all_vcds_registry_rows(&cache, "/x/vcds-test", [("EV_TestEngine", &rows[..]), ("EV_TestBrake_XX99", &brake[..])]).unwrap();
+	vag_data_db::put_all_vcds_registry_rows(
+		&vcds_cache,
+		"/x/vcds-test",
+		[("EV_TestEngine", &rows[..]), ("EV_TestBrake_XX99", &brake[..])],
+	)
+	.unwrap();
 	let faults = levels!("faults", faults::run(open, None, false, false, false, false, None).await);
 	assert_eq!(
 		faults[0].stdout,
-		"unit  id   name         code    dtc  status         km  count  last seen            src  text\n\
-		 01    7E0  ENGINE SELF  000129       failing    123456      3  2026-07-27 00:00:03\n\
-		 --    713  ESC SELF     047120       confirmed  123456      3  2026-07-27 00:00:03\n\
+		"2 stored codes on 2 of 4 units · 1 failing now\n\
 		 \n\
-		 7E0  000129\n\
-		 \x20   priority       6\n\
-		 \x20   aging counter  16\n\
-		 \x20   Engine speed   1000 /min\n\
-		 \x20   Voltage        12.3 V\n\
-		 713  047120\n\
-		 \x20   priority       6\n\
-		 \x20   aging counter  16\n\
-		 \x20   record 70      AA BB (no layout for this variant, not decoded)\n\
+		 7E0  ENGINE SELF  PART-ENGINE\n\
+		 \x20 ✗ 000129\n\
+		 \x20            failing · 3 times · 123456 km · last 2026-07-27 00:00\n\
+		 \x20            priority       6\n\
+		 \x20            aging counter  16\n\
+		 \x20            Engine speed   1000 /min\n\
+		 \x20            Voltage        12.3 V\n\
 		 \n\
-		 2 stored · 1 failing now · 4 units read\n"
+		 713  ESC SELF  PART-ESC\n\
+		 \x20 · 047120\n\
+		 \x20            stored · 3 times · 123456 km · last 2026-07-27 00:00\n\
+		 \x20            priority       6\n\
+		 \x20            aging counter  16\n\
+		 \x20            record 70      AA BB (no layout for this variant, not decoded)\n"
 	);
 	assert!(
 		faults[1].stderr.contains("7E0  freeze frames described by VCDS's EV_TestEngine"),
@@ -418,12 +427,12 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	// The same car with an ODIS project alone: the VCDS install dropped, the project's own
 	// multiplexer rows written as `setup` writes them. Each unit's records come from ODIS and
 	// nothing else — the ESC's too, which the VCDS rows above did not describe.
-	let vcds = vag_data_db::sources(&cache)
+	let vcds = vag_data_db::sources(&vcds_cache)
 		.unwrap()
 		.into_iter()
 		.find(|s| s.kind == vag_data_db::VCDS)
 		.unwrap();
-	vag_data_db::drop_source(&cache, vcds.id).unwrap();
+	vag_data_db::drop_source(&vcds_cache, vcds.id).unwrap();
 	let engine_records = [odis_record(
 		112,
 		4,
@@ -442,15 +451,17 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	let odis_only = levels!("faults, ODIS alone", faults::run(open, None, false, false, false, false, None).await);
 	assert!(
 		odis_only[0].stdout.contains(
-			"7E0  000129\n\
-			 \x20   priority            6\n\
-			 \x20   aging counter       16\n\
-			 \x20   Sim engine speed    1000 1/min\n\
-			 \x20   Sim supply voltage  12.3 V\n\
-			 713  047120\n\
-			 \x20   priority        6\n\
-			 \x20   aging counter   16\n\
-			 \x20   Brake pressure  43707 bar\n"
+			"\x20            priority            6\n\
+			 \x20            aging counter       16\n\
+			 \x20            Sim engine speed    1000 1/min\n\
+			 \x20            Sim supply voltage  12.3 V\n\
+			 \n\
+			 713  ESC SELF  PART-ESC\n\
+			 \x20 · 047120\n\
+			 \x20            stored · 3 times · 123456 km · last 2026-07-27 00:00\n\
+			 \x20            priority        6\n\
+			 \x20            aging counter   16\n\
+			 \x20            Brake pressure  43707 bar\n"
 		),
 		"{}",
 		odis_only[0].stdout
@@ -463,17 +474,19 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 
 	// Both sources: the run's is ODIS. VCDS has rows for the ESC's own variant and ODIS
 	// none, so the ESC's record 70 stays bytes — VCDS's rows never fill what ODIS lacks.
-	vag_data_db::record_language(&cache, vag_data_db::VCDS, "/x/vcds-test", "eng").unwrap();
+	vag_data_db::record_language(&vcds_cache, vag_data_db::VCDS, "/x/vcds-test", "eng").unwrap();
 	let brake_vcds = [freeze_row(0, 16, 0, Some((1.0, 0.0)), "bar", "Pressure")];
-	vag_data_db::put_all_vcds_registry_rows(&cache, "/x/vcds-test", [("EV_TestBrake", &brake_vcds[..])]).unwrap();
+	vag_data_db::put_all_vcds_registry_rows(&vcds_cache, "/x/vcds-test", [("EV_TestBrake", &brake_vcds[..])]).unwrap();
 	vag_data_db::put_all_odis_freeze_frames(&cache, "/x/TESTPROJECT", [("EV_TestEngine_001", &engine_records[..])]).unwrap();
 	let both = levels!("faults, both sources", faults::run(open, None, false, false, false, false, None).await);
 	assert!(
 		both[0].stdout.contains(
-			"713  047120\n\
-			 \x20   priority       6\n\
-			 \x20   aging counter  16\n\
-			 \x20   record 70      AA BB (no layout for this variant, not decoded)\n"
+			"713  ESC SELF  PART-ESC\n\
+			 \x20 · 047120\n\
+			 \x20            stored · 3 times · 123456 km · last 2026-07-27 00:00\n\
+			 \x20            priority       6\n\
+			 \x20            aging counter  16\n\
+			 \x20            record 70      AA BB (no layout for this variant, not decoded)\n"
 		),
 		"{}",
 		both[0].stdout
@@ -486,17 +499,28 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	assert!(!both[0].stdout.contains("Pressure"), "VCDS's row read on an ODIS run: {}", both[0].stdout);
 	// A unit whose fault list did not come back is said at level 0, and not counted as
 	// read: 70E is on the gateway's list and never answers (review of PR #38).
-	assert!(faults[0].stderr.contains("70E  fault list not read: "), "{:?}", faults[0].stderr);
+	assert!(faults[0].stderr.contains("warning: 70E fault list not read: "), "{:?}", faults[0].stderr);
 	// The caveat that used to head the listing is a -v note now.
 	assert!(!faults[0].stderr.contains("not a diagnosis"), "{:?}", faults[0].stderr);
 	assert!(faults[1].stderr.contains("not a diagnosis"), "{:?}", faults[1].stderr);
 
 	let all = levels!("faults --all", faults::run(open, Some("01"), true, true, false, false, None).await);
 	assert!(all[0].stdout.contains("000107"), "an unconfirmed code with --all: {}", all[0].stdout);
-	assert!(all[0].stdout.ends_with("2 listed · 1 failing now · 1 unit read\n"), "{}", all[0].stdout);
 	assert!(
-		all[0].stdout.contains("id   code    record  bytes"),
-		"--details is data: {}",
+		all[0].stdout.starts_with("2 listed codes on 1 of 1 unit · 1 failing now\n"),
+		"{}",
+		all[0].stdout
+	);
+	assert!(
+		all[0].stdout.contains("  ○ 000107\n             not confirmed\n"),
+		"an unconfirmed code's state: {}",
+		all[0].stdout
+	);
+	assert!(
+		all[0]
+			.stdout
+			.contains("\n             record 01  06 03 02 10 01 E2 40 00 00 69 F6 00 03 70 0F A0 7B 00\n"),
+		"--details is data, under its code: {}",
 		all[0].stdout
 	);
 
@@ -506,12 +530,14 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	);
 	assert_eq!(
 		supported[0].stdout,
-		"unit  id   name         code    number\n\
-		 01    7E0  ENGINE SELF  000129     297\n\
-		 01    7E0  ENGINE SELF  000107     263\n\
-		 --    713  ESC SELF     047120  291104\n\
+		"3 codes supported on 2 of 2 units\n\
 		 \n\
-		 3 codes supported · 2 units read\n"
+		 7E0  ENGINE SELF\n\
+		 \x20 000129  297\n\
+		 \x20 000107  263\n\
+		 \n\
+		 713  ESC SELF\n\
+		 \x20 047120  291104\n"
 	);
 
 	// The device listing, as `vagcan devices` prints it.

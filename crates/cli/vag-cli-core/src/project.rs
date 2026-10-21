@@ -1,36 +1,39 @@
-//! `~/.vagcan/data/<id>/` — one platform's data, whatever it was learned from.
+//! `~/.vagcan/data/<id>/` — one ODIS project's data — and `~/.vagcan/vcds/`, the
+//! machine's one VCDS installation.
 //!
-//! There are two sources — a VCDS installation and an extracted ODIS-Service
-//! project — and they describe the same car from different directions, so the
-//! split that matters is not *which parser produced this* but *which car is
-//! this about*. A project is that: a directory holding everything known about
-//! one car, into which a second source is **added** rather than swapped
-//! (design §5).
+//! There are two sources, and they are kept by what they describe. An extracted
+//! ODIS-Service project describes one **platform** (`SK37X`: every Octavia III, Karoq
+//! and Kodiaq), so it is a project, and a machine may hold several. A VCDS installation
+//! describes **every** VAG car, so there is one per machine, read for whichever car is
+//! connected ([`vcds`]). A command reads both ([`stores`]): the car's ODIS project when
+//! there is one, and the VCDS store. Where both describe a channel, ODIS wins.
 //!
 //! ```text
 //! ~/.vagcan/
-//!   rod/                    shared across every project — the raw VCDS files
-//!                           read at run time (.rod, the fault text). A property
-//!                           of a VCDS *build*, not of a car, so one copy serves
-//!                           every project parsed from it.
+//!   rod/                    shared — the raw VCDS files read at run time (.rod, the
+//!                           fault text). A property of a VCDS *build*, not of a car.
+//!   vcds/                   the VCDS installation `setup` read last
+//!     cache.sqlite          its label files and registry rows, and its source row
+//!     names.json            text id -> name
+//!     odx-ids.json          text id -> the IDE/MAS id that text names
+//!     rod-keys.json         recovered .rod section keys
+//!     registry.json         which installation the channels came from, per unit
 //!   data/
 //!     SK37X/
-//!       cache.sqlite        the label/ODIS rows, queryable, and the sources they
-//!                           came from (its `source` table)
-//!       names.json          text id -> name
-//!       odx-ids.json        text id -> the IDE/MAS id that text names
-//!       rod-keys.json       recovered .rod section keys — per project, because a
-//!                           key is a property of one file's *bytes* and two VCDS
-//!                           builds ship a same-named .rod with different content
+//!       cache.sqlite        the ODIS rows, queryable, and its source row
+//!       names-odis.json     text id -> name, pooled from the ODIS project
 //!       measurements/       proven-on-car rows, one file per part number
 //!   config.toml             which project a bare command means
 //! ```
 //!
-//! **A project is a platform, not a car** (spec §4.1). `SK37X` is VW's own
-//! project id and it covers every Octavia III, Karoq and Kodiaq — which is why
-//! the proven rows live here: a proven scaling is a property of a *part number*,
-//! true of every car carrying that part. `cars/<VIN>/` goes on holding what is
-//! true of one car and no other.
+//! The two caches have one schema and are read by one set of code paths: the VCDS store
+//! is a [`Project`] whose directory is `vcds/`. VCDS rows an older vagcan wrote into a
+//! project's cache are moved into the store the first time either is opened
+//! ([`migrate_in`]).
+//!
+//! **A project is a platform, not a car** (spec §4.1) — which is why the proven rows
+//! live in one: a proven scaling is a property of a *part number*, true of every car
+//! carrying that part. `cars/<VIN>/` goes on holding what is true of one car and no other.
 //!
 //! **`measurements/` is the one directory here that nothing can recreate.** Every
 //! other file is extracted from somebody else's — a re-parse reproduces it. Those
@@ -38,8 +41,8 @@
 //! that is why nothing in this module ever deletes a project.
 //!
 //! **Nothing here invents a name for a car.** An ODIS project names itself and
-//! [`vag_data_labels::odis::Project::id`] reads it; a VCDS-only project is named by the
-//! person. This module's whole contribution to naming is [`folder_name`], which
+//! [`vag_data_labels::odis::Project::id`] reads it, or the person does. This module's
+//! whole contribution to naming is [`folder_name`], which
 //! refuses one that would not be a single child of `data/` — the same rule
 //! `datadir::car_folder` applies to a VIN off the bus, and for the same reason:
 //! `--project ../../etc` is a path, not a name.
@@ -69,11 +72,116 @@ pub fn select(id: &str) {
 	let _ = SELECTED.set(id.to_owned());
 }
 
-/// One car's store on disk.
+/// One store on disk: an ODIS project under `data/`, or the machine's VCDS store
+/// ([`vcds`]). Both have the same files under the same names; which of them a store
+/// actually holds follows from the source read into it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Project {
 	pub id: String,
 	pub dir: PathBuf,
+}
+
+/// What a command reads: the ODIS project this run is about, when there is one, and the
+/// machine's VCDS store, which is there whether or not `setup` has read anything into it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stores {
+	pub project: Option<Project>,
+	pub vcds: Project,
+}
+
+impl Stores {
+	/// The cache a source of `kind` is kept in: an ODIS project's, or the VCDS store's.
+	/// `None` for ODIS with no project.
+	pub fn cache_of(&self, kind: &str) -> Option<PathBuf> {
+		match kind {
+			vag_data_db::VCDS => Some(self.vcds.cache()),
+			_ => self.project.as_ref().map(Project::cache),
+		}
+	}
+
+	/// Both caches, the project's first — what a reader asking every source walks.
+	pub fn caches(&self) -> Vec<PathBuf> {
+		self
+			.project
+			.iter()
+			.map(Project::cache)
+			.chain(std::iter::once(self.vcds.cache()))
+			.collect()
+	}
+
+	/// Where the rows proven on a car are read from: the project's `measurements/`, or
+	/// with no project the VCDS store's — the place a VCDS-only project kept them. Nothing
+	/// writes either today; a directory that is not there holds no row.
+	pub fn measurements_dir(&self) -> PathBuf {
+		self.project.as_ref().unwrap_or(&self.vcds).measurements_dir()
+	}
+
+	/// The project's id when there is one, else the VCDS store's: what a sentence about
+	/// this run's data names.
+	pub fn id(&self) -> &str {
+		self.project.as_ref().map_or(self.vcds.id.as_str(), |p| p.id.as_str())
+	}
+}
+
+/// What [`Project::id`] of the VCDS store is, in a sentence.
+pub const VCDS_STORE: &str = "VCDS";
+
+/// The machine's VCDS store — `~/.vagcan/vcds/` — whether or not anything is in it.
+///
+/// Opening it is when VCDS rows an older vagcan left in a project's cache move into it,
+/// once per process ([`migrate_in`]).
+pub fn vcds() -> Result<Project> {
+	let store = vcds_at(&crate::datadir::vcds_dir()?);
+	migrate_once();
+	Ok(store)
+}
+
+/// The VCDS store kept in `dir`.
+pub fn vcds_at(dir: &Path) -> Project {
+	Project {
+		id: VCDS_STORE.to_string(),
+		dir: dir.to_path_buf(),
+	}
+}
+
+/// Whether the VCDS store holds an installation: a source of its kind in its cache. A cache
+/// that will not answer is said once and counted as none.
+pub fn holds_vcds(store: &Project) -> bool {
+	match has_source(store, vag_data_db::VCDS) {
+		Ok(held) => held,
+		Err(e) => {
+			say_unreadable(store, &e, "it is read as holding no VCDS installation");
+			false
+		}
+	}
+}
+
+/// What this run reads: [`selected`]'s project, and the VCDS store.
+///
+/// An error where [`selected`] has one — a project named that is not there, several and
+/// none chosen — and where there is nothing at all: no project and no VCDS installation,
+/// which is the [`crate::missing::NoLabelData`] a car command offers `setup` for.
+pub fn stores() -> Result<Stores> {
+	let project = selected()?;
+	let vcds = vcds()?;
+	if project.is_none() && !holds_vcds(&vcds) {
+		return Err(
+			crate::missing::NoLabelData::new("nothing has been set up")
+				.looked_in(&crate::datadir::vagcan_dir()?)
+				.into_error(),
+		);
+	}
+	Ok(Stores { project, vcds })
+}
+
+/// [`stores`], or the VCDS store alone where no project resolves — for the readers that
+/// degrade rather than fail: a project named wrongly is said once by the command that
+/// needs one, and the VCDS rows are worth reading meanwhile.
+pub fn stores_or_vcds() -> Option<Stores> {
+	match stores() {
+		Ok(stores) => Some(stores),
+		Err(_) => vcds().ok().map(|vcds| Stores { project: None, vcds }),
+	}
 }
 
 impl Project {
@@ -230,9 +338,25 @@ fn list_in(projects: &Path) -> Vec<String> {
 /// does.
 pub fn current() -> Result<Project> {
 	let projects = crate::datadir::projects_dir()?;
+	match selected()? {
+		Some(project) => Ok(project),
+		None => Err(
+			crate::missing::NoLabelData::new("no project has been set up")
+				.looked_in(&projects)
+				.into_error(),
+		),
+	}
+}
+
+/// [`current`]'s project, or `None` where no project is set up at all — a machine with
+/// a VCDS installation alone, or with nothing. An error for everything else
+/// [`current`] refuses: a project named that is not there, several and none chosen.
+pub fn selected() -> Result<Option<Project>> {
+	migrate_once();
+	let projects = crate::datadir::projects_dir()?;
 	let env = std::env::var(PROJECT_ENV).ok();
 	let configured = configured()?;
-	current_in(
+	selected_in(
 		&projects,
 		SELECTED.get().map(String::as_str),
 		env.as_deref(),
@@ -261,7 +385,20 @@ fn covering() -> Option<String> {
 }
 
 /// The rule behind [`current`], with every input passed in.
+#[cfg(test)]
 fn current_in(projects: &Path, flag: Option<&str>, env: Option<&str>, covering: Option<&str>, configured: Option<&str>) -> Result<Project> {
+	match selected_in(projects, flag, env, covering, configured)? {
+		Some(project) => Ok(project),
+		None => Err(
+			crate::missing::NoLabelData::new("no project has been set up")
+				.looked_in(projects)
+				.into_error(),
+		),
+	}
+}
+
+/// The rule behind [`selected`], with every input passed in.
+fn selected_in(projects: &Path, flag: Option<&str>, env: Option<&str>, covering: Option<&str>, configured: Option<&str>) -> Result<Option<Project>> {
 	for (given, whose) in [
 		(flag, "--project"),
 		(env, PROJECT_ENV),
@@ -276,27 +413,19 @@ fn current_in(projects: &Path, flag: Option<&str>, env: Option<&str>, covering: 
 		if !dir.is_dir() {
 			return Err(anyhow::anyhow!("{whose} names the project {id:?}, and there is no {}", dir.display()).note(which_there_are(projects)));
 		}
-		return Ok(Project { id: name, dir });
+		return Ok(Some(Project { id: name, dir }));
 	}
 	match list_in(projects).as_slice() {
-		// "Run `vagcan setup` first", for a store that is now per car rather
-		// than one directory. The words are `missing`'s, not this module's:
-		// this is the same shortage `vcds names` and `faults` report, met one
-		// step earlier, and a reader who sees it here and then there must not
-		// be given two accounts of it.
-		// The `NoLabelData` itself, not its text: `vag_cli_diag::rescue`
-		// recognises the shortage by downcasting to it, and a rendered string
-		// would leave it matching on prose.
-		[] => Err(
-			crate::missing::NoLabelData::new("no project has been set up")
-				.looked_in(projects)
-				.into_error(),
-		),
+		// No project: a machine with a VCDS installation alone, or with nothing. Which
+		// of the two is the caller's to say — [`current`] and [`stores`] say it in
+		// `missing`'s words, as `NoLabelData` itself: `vag_cli_diag::rescue` recognises
+		// the shortage by downcasting to it.
+		[] => Ok(None),
 		// One project is not a choice, so it is not asked about.
-		[only] => Ok(Project {
+		[only] => Ok(Some(Project {
 			id: only.clone(),
 			dir: projects.join(only),
-		}),
+		})),
 		_ => Err(
 			anyhow::anyhow!("more than one project is set up, and nothing says which")
 				.note(which_there_are(projects))
@@ -508,6 +637,432 @@ fn adopt_legacy(project: &Project) {
 	}
 }
 
+/// The files a VCDS installation's read leaves beside its rows, which move with them.
+fn vcds_files(store: &Project) -> [PathBuf; 4] {
+	[store.names(), store.odx_ids(), store.rod_keys(), store.registry_log()]
+}
+
+/// The lock every migration of the store holds from its first look to its last write.
+fn migration_lock(store: &Project) -> PathBuf {
+	store.dir.join(".migrate.lock")
+}
+
+/// What a migration left a record of, beside the store: `migrated.json`, one entry per
+/// migration that moved or dropped anything — when, from which projects, which
+/// installation was kept and which were replaced. Notes on stderr are lost to a kill or a
+/// build script; this is not. `setup --list -v` shows it.
+pub fn migration_record(store: &Project) -> PathBuf {
+	store.dir.join("migrated.json")
+}
+
+/// What one migration did: the lines to say, and the projects it emptied and removed.
+#[derive(Debug, Default)]
+pub struct Migrated {
+	/// One line each, in the words of a step: `moved the installation's data from … to …`.
+	/// A line that starts `warning:` is one as it stands.
+	pub notes: Vec<String>,
+	/// The projects that held a VCDS installation alone and are gone with it.
+	pub removed: Vec<String>,
+}
+
+/// Whether the notes of this process's migration are kept for its command to say, rather
+/// than said when it happens ([`hold_migration_notes`]).
+static HOLD_NOTES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static HELD_NOTES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Keep this process's migration notes for [`take_migration_notes`] instead of saying them
+/// when they happen: `setup` says them as steps under its heading.
+pub fn hold_migration_notes() {
+	HOLD_NOTES.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The notes [`hold_migration_notes`] kept, once.
+pub fn take_migration_notes() -> Vec<String> {
+	std::mem::take(&mut *HELD_NOTES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+}
+
+/// [`migrate_in`] over this machine's own `data/` and VCDS store, once per process; its
+/// notes said on stderr, or kept for the command ([`hold_migration_notes`]). A project it
+/// removed is no longer what `config.toml` names.
+fn migrate_once() {
+	static DONE: std::sync::Once = std::sync::Once::new();
+	DONE.call_once(|| {
+		let (Ok(projects), Ok(store)) = (crate::datadir::projects_dir(), crate::datadir::vcds_dir()) else {
+			return;
+		};
+		let migrated = migrate_in(&projects, &vcds_at(&store));
+		if let Ok(Some(named)) = configured()
+			&& migrated.removed.contains(&named)
+		{
+			let _ = crate::config::clear_project();
+		}
+		if HOLD_NOTES.load(std::sync::atomic::Ordering::Relaxed) {
+			HELD_NOTES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).extend(migrated.notes);
+			return;
+		}
+		for note in migrated.notes {
+			match note.starts_with("warning:") {
+				true => crate::say!("{note}"),
+				false => crate::say!("note: {note}"),
+			}
+		}
+	});
+}
+
+/// One project's VCDS installation, as [`migrate_in`] weighs it.
+struct Held {
+	project: Project,
+	/// When it was read: the newest of its VCDS rows that a path resolves. `None` is older
+	/// than any stamp.
+	parsed_at: Option<String>,
+	/// Where it was read from, to name it.
+	path: String,
+}
+
+/// The newest VCDS installation a store's or a project's cache holds: its stamp and its
+/// path. `None` when it holds none; an error when its sources do not read.
+fn newest_vcds(store: &Project) -> Result<Option<(Option<String>, String)>> {
+	let rows = sources(store)?;
+	let vcds: Vec<&vag_data_db::Source> = rows.iter().filter(|s| s.kind == vag_data_db::VCDS).collect();
+	let newest = vcds
+		.iter()
+		.filter(|s| !s.is_stale())
+		.max_by(|a, b| a.meta.parsed_at.cmp(&b.meta.parsed_at))
+		.or(vcds.first())
+		.copied();
+	Ok(newest.map(|s| (s.meta.parsed_at.clone(), s.path().to_string())))
+}
+
+/// Whether anything is there to migrate: a project's cache holding VCDS rows, or a
+/// project holding a VCDS file the store lacks. Asked without the lock, to keep every open
+/// after the first free of it; [`migrate_in`] asks again under it.
+fn anything_to_migrate(projects: &Path) -> bool {
+	list_in(projects).into_iter().any(|id| {
+		let project = Project { dir: projects.join(&id), id };
+		let holds_vcds = project.cache().is_file() && newest_vcds(&project).map_or(true, |held| held.is_some());
+		holds_vcds || vcds_files(&project).iter().any(|file| file.is_file())
+	})
+}
+
+/// Move the VCDS installation an older vagcan read into a project into the machine's
+/// VCDS store, with its files, and take every project's VCDS rows out of its cache. What
+/// it did, as notes; nothing when no project holds VCDS rows, which is every open after
+/// the first.
+///
+/// **One at a time.** The whole of it runs under one lock between processes
+/// ([`vag_data_db::exclusive`] on [`migration_lock`]): two commands started together — two
+/// firmware builds, `watch` beside `faults` — once both decided to move, and the second
+/// copied the first's emptied project over the full store.
+///
+/// **Which installation stays** is the one read last, by `parsed_at` — the store's own
+/// included — since a second VCDS installation read replaces the first. Every other is
+/// named, the store's own among them. Every project keeps its ODIS rows; a project that
+/// held VCDS alone is removed once empty, its `measurements/` moved into the store.
+///
+/// **Crash-safe in its order**: the winner's files are staged in the store, its rows
+/// copied in one transaction counted before it commits ([`vag_data_db::copy_kind`]), and
+/// only then are the files renamed into place; then the projects' files go, and last their
+/// rows ([`vag_data_db::drop_kind`]), each only while the store holds an installation read
+/// no earlier than the project's. Stopped anywhere, the next open finishes it.
+pub fn migrate_in(projects: &Path, store: &Project) -> Migrated {
+	let mut out = Migrated::default();
+	if !anything_to_migrate(projects) {
+		return out;
+	}
+	let _lock = match vag_data_db::exclusive(&migration_lock(store), std::time::Duration::from_secs(120)) {
+		Ok(lock) => lock,
+		Err(e) => {
+			out.notes.push(format!(
+				"warning: the VCDS store is busy ({e}); the VCDS rows in the projects stay there until the next run"
+			));
+			return out;
+		}
+	};
+	let mut held: Vec<Held> = Vec::new();
+	let mut bare: Vec<Project> = Vec::new();
+	for id in list_in(projects) {
+		let project = Project { dir: projects.join(&id), id };
+		if !project.cache().is_file() {
+			bare.push(project);
+			continue;
+		}
+		match newest_vcds(&project) {
+			Ok(Some((parsed_at, path))) => held.push(Held { project, parsed_at, path }),
+			Ok(None) => bare.push(project),
+			Err(e) => out.notes.push(format!(
+				"warning: the sources of {} did not read ({e:#}); its VCDS rows, if any, stay there",
+				project.id
+			)),
+		}
+	}
+	// Newest first; a tie goes to the project first in name order.
+	held.sort_by(|a, b| b.parsed_at.cmp(&a.parsed_at).then(a.project.id.cmp(&b.project.id)));
+	let in_store = match store.cache().is_file() {
+		false => None,
+		true => match newest_vcds(store) {
+			Ok(found) => found,
+			Err(e) => {
+				out.notes.push(format!(
+					"warning: the VCDS store {} did not read ({e:#}); the VCDS rows in the projects stay there",
+					crate::datadir::tilde(&store.cache())
+				));
+				return out;
+			}
+		},
+	};
+	let mut record = serde_json::Map::new();
+	if let Some(winner) = held.first() {
+		let moves = in_store.as_ref().is_none_or(|(stamp, _)| winner.parsed_at > *stamp);
+		if moves {
+			if let Err(e) = move_into(&winner.project, store) {
+				out.notes.push(format!(
+					"warning: the VCDS installation in {} did not move to {} ({e:#}); it stays there until the next run",
+					crate::datadir::tilde(&winner.project.dir),
+					crate::datadir::tilde(&store.dir)
+				));
+				return out;
+			}
+			out.notes.push(format!(
+				"moved the installation's data from {} to {}",
+				crate::datadir::tilde(&winner.project.dir),
+				crate::datadir::tilde(&store.dir)
+			));
+			record.insert(
+				"moved".into(),
+				serde_json::json!({ "from": winner.project.dir, "installation": winner.path, "read": winner.parsed_at }),
+			);
+		}
+		// Every installation not kept, the store's own among them when this one replaced it.
+		let mut replaced: Vec<serde_json::Value> = Vec::new();
+		if moves && let Some((stamp, path)) = &in_store {
+			out.notes.push(format!(
+				"replaced the installation {} the store held, read {}",
+				crate::datadir::tilde(Path::new(path)),
+				stamp.as_deref().unwrap_or("at an unknown time")
+			));
+			replaced.push(serde_json::json!({ "from": store.dir, "installation": path, "read": stamp }));
+		}
+		for h in held.iter().skip(usize::from(moves)) {
+			// The store's own, stamped alike: the copy a stopped run already made.
+			if in_store.as_ref().is_some_and(|(stamp, _)| *stamp == h.parsed_at) && !moves {
+				continue;
+			}
+			out.notes.push(format!(
+				"dropped the installation {} from {}, read {}: the one read last is kept",
+				crate::datadir::tilde(Path::new(&h.path)),
+				h.project.id,
+				h.parsed_at.as_deref().unwrap_or("at an unknown time")
+			));
+			replaced.push(serde_json::json!({ "from": h.project.dir, "installation": h.path, "read": h.parsed_at }));
+		}
+		if !replaced.is_empty() {
+			record.insert("replaced".into(), serde_json::Value::Array(replaced));
+		}
+	}
+	// Under the same lock, and only while the store holds an installation read no earlier
+	// than the project's: what is taken out is in the store.
+	let kept = match store.cache().is_file() {
+		true => newest_vcds(store).ok().flatten(),
+		false => None,
+	};
+	for h in &held {
+		if kept.as_ref().is_none_or(|(stamp, _)| *stamp < h.parsed_at) {
+			out.notes.push(format!(
+				"warning: the VCDS rows in {} stay there: the store holds no installation read since",
+				crate::datadir::tilde(&h.project.cache())
+			));
+			continue;
+		}
+		match take_out(&h.project) {
+			Ok(()) => {
+				if let Some(note) = remove_if_empty(&h.project, store, &mut out.removed) {
+					out.notes.push(note);
+				}
+			}
+			Err(e) => out.notes.push(format!(
+				"warning: the VCDS rows in {} were not removed ({e:#}); the next run removes them",
+				crate::datadir::tilde(&h.project.cache())
+			)),
+		}
+	}
+	// The files a project kept with no VCDS rows — `--drop vcds` keeps the keys and the
+	// names — go to the store where it lacks them, and out of the project.
+	for project in &bare {
+		if let Some(note) = adopt_files(project, store) {
+			out.notes.push(note);
+		}
+	}
+	if !record.is_empty() {
+		record.insert("at".into(), serde_json::Value::String(chrono::Utc::now().to_rfc3339()));
+		if let Err(e) = append_record(store, serde_json::Value::Object(record)) {
+			out.notes.push(format!("warning: the record of this migration was not written ({e:#})"));
+		}
+	}
+	out
+}
+
+/// Add one entry to [`migration_record`].
+fn append_record(store: &Project, entry: serde_json::Value) -> Result<()> {
+	let path = migration_record(store);
+	let mut entries: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+		.ok()
+		.and_then(|text| serde_json::from_str(&text).ok())
+		.unwrap_or_default();
+	entries.push(entry);
+	crate::datadir::replace_file(&path, serde_json::to_string_pretty(&entries)?.as_bytes())
+}
+
+/// The winner's half of [`migrate_in`]: its files staged in the store, its rows copied,
+/// and only then the files renamed into place. A file it lacks is removed from the store,
+/// where it would describe the installation replaced. A copy that fails leaves the store's
+/// files and rows as they were.
+fn move_into(project: &Project, store: &Project) -> Result<()> {
+	std::fs::create_dir_all(&store.dir).with_context(|| format!("creating {}", store.dir.display()))?;
+	let staged: Vec<(PathBuf, PathBuf, PathBuf)> = vcds_files(project)
+		.into_iter()
+		.zip(vcds_files(store))
+		.map(|(from, to)| {
+			let name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+			let staging = store.dir.join(format!(".{name}.migrating"));
+			(from, staging, to)
+		})
+		.collect();
+	let unstage = || {
+		for (_, staging, _) in &staged {
+			let _ = std::fs::remove_file(staging);
+		}
+	};
+	for (from, staging, _) in staged.iter().filter(|(from, _, _)| from.is_file()) {
+		if let Err(e) = crate::datadir::copy_file(from, staging) {
+			unstage();
+			return Err(e);
+		}
+	}
+	if let Err(e) = vag_data_db::copy_kind(&project.cache(), &store.cache(), vag_data_db::VCDS) {
+		unstage();
+		anyhow::bail!(
+			"copying the VCDS rows of {} to {}: {e}",
+			project.cache().display(),
+			store.cache().display()
+		);
+	}
+	for (from, staging, to) in &staged {
+		match from.is_file() {
+			true => std::fs::rename(staging, to).with_context(|| format!("replacing {}", to.display()))?,
+			false => match std::fs::remove_file(to) {
+				Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+					return Err(e).with_context(|| format!("removing {}", to.display()));
+				}
+				_ => {}
+			},
+		}
+	}
+	Ok(())
+}
+
+/// The projects' half of [`migrate_in`]: a project's VCDS files, then its VCDS rows. In
+/// that order, so a stop between the two leaves rows to find, and the next run finishes it.
+fn take_out(project: &Project) -> Result<()> {
+	for file in vcds_files(project) {
+		match std::fs::remove_file(&file) {
+			Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+				return Err(e).with_context(|| format!("removing {}", file.display()));
+			}
+			_ => {}
+		}
+	}
+	vag_data_db::drop_kind(&project.cache(), vag_data_db::VCDS)
+		.map_err(|e| anyhow::anyhow!("removing the VCDS rows of {}: {e}", project.cache().display()))?;
+	Ok(())
+}
+
+/// A project emptied by the migration — it held a VCDS installation and nothing else — is
+/// no project: its `measurements/` move into the store's, and its directory goes. `None`,
+/// and nothing touched, while it holds a source or a file the migration does not know.
+fn remove_if_empty(project: &Project, store: &Project, removed: &mut Vec<String>) -> Option<String> {
+	if !sources(project).is_ok_and(|rows| rows.is_empty()) {
+		return None;
+	}
+	let known = |name: &str| name == "cache.sqlite" || name.starts_with("cache.sqlite-") || name == "measurements" || name == "names-odis.json";
+	let entries: Vec<std::fs::DirEntry> = std::fs::read_dir(&project.dir).ok()?.flatten().collect();
+	if !entries.iter().all(|e| known(&e.file_name().to_string_lossy())) {
+		return None;
+	}
+	let measurements = project.measurements_dir();
+	let mut moved = 0usize;
+	if let Ok(files) = std::fs::read_dir(&measurements) {
+		let into = store.measurements_dir();
+		if std::fs::create_dir_all(&into).is_err() {
+			return None;
+		}
+		for file in files.flatten() {
+			let to = into.join(file.file_name());
+			if to.exists() || crate::datadir::copy_file(&file.path(), &to).is_err() {
+				// Kept where it is rather than lost: the project stays.
+				return Some(format!(
+					"warning: {} stays: {} was not moved",
+					crate::datadir::tilde(&project.dir),
+					crate::datadir::tilde(&file.path())
+				));
+			}
+			moved += 1;
+		}
+	}
+	std::fs::remove_dir_all(&project.dir).ok()?;
+	removed.push(project.id.clone());
+	Some(match moved {
+		0 => format!("removed the project {}, which held the VCDS installation alone", project.id),
+		n => format!(
+			"removed the project {}, which held the VCDS installation alone; its {n} measured {} moved to {}",
+			project.id,
+			if n == 1 { "row file" } else { "row files" },
+			crate::datadir::tilde(&store.measurements_dir())
+		),
+	})
+}
+
+/// A project's VCDS files with no VCDS rows beside them: each moved into the store where
+/// it lacks one — the keys merged, the store's own winning — and removed from the project.
+fn adopt_files(project: &Project, store: &Project) -> Option<String> {
+	let mut moved = Vec::new();
+	for (from, to) in vcds_files(project).into_iter().zip(vcds_files(store)) {
+		if !from.is_file() {
+			continue;
+		}
+		let name = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+		let taken = match (to.is_file(), name == "rod-keys.json") {
+			(false, _) => std::fs::create_dir_all(&store.dir).is_ok() && crate::datadir::copy_file(&from, &to).is_ok(),
+			(true, true) => merge_keys(&from, &to).is_ok(),
+			(true, false) => true,
+		};
+		if taken && std::fs::remove_file(&from).is_ok() {
+			moved.push(name);
+		}
+	}
+	(!moved.is_empty()).then(|| {
+		format!(
+			"moved {} from {} to {}",
+			moved.join(crate::marks::SEP),
+			crate::datadir::tilde(&project.dir),
+			crate::datadir::tilde(&store.dir)
+		)
+	})
+}
+
+/// Fold the keys in `from` into `to`: what `to` holds already wins.
+fn merge_keys(from: &Path, to: &Path) -> Result<()> {
+	let read = |path: &Path| -> serde_json::Map<String, serde_json::Value> {
+		std::fs::read_to_string(path)
+			.ok()
+			.and_then(|text| serde_json::from_str(&text).ok())
+			.unwrap_or_default()
+	};
+	let mut keys = read(to);
+	for (key, value) in read(from) {
+		keys.entry(key).or_insert(value);
+	}
+	crate::datadir::replace_file(to, serde_json::to_string_pretty(&keys)?.as_bytes())
+}
 /// What `config.toml` says this machine's project is, if it says.
 pub fn configured() -> Result<Option<String>> {
 	Ok(crate::config::project(&crate::config::load()))
@@ -946,6 +1501,473 @@ mod tests {
 		// And one under a relative path is given as it is, for the caller to refuse.
 		vag_data_db::record_language(&p.cache(), vag_data_db::ODIS, "vendor/odis", "deu").unwrap();
 		assert_eq!(sources_of_kind(&p, "odis"), vec!["vendor/odis".to_string()]);
+	}
+
+	/// A project cache at today's schema holding both sources, as the reference machine's
+	/// was: an ODIS project's channels and faults, and a VCDS installation's label files,
+	/// registry channels (one with states) and the files its read leaves beside the cache.
+	/// The VCDS root is `<here>/<install>`.
+	fn with_both(here: &Path, id: &str, install: &str) -> (Project, PathBuf) {
+		use vag_data_labels::{Level, Scaling};
+		let p = open_or_create_in(&here.join("data"), id).unwrap();
+		let root = here.join(install);
+		let labels = root.join("Labels");
+		std::fs::create_dir_all(&labels).unwrap();
+		std::fs::write(labels.join("index.lbl"), b"001,1,Engine Speed,(G28),Range: 0...6500 RPM\n002,2,Coolant,,").unwrap();
+		let root = root.canonicalize().unwrap();
+		let labels = root.join("Labels");
+		let odis = here.join("Downloads").join(id);
+		std::fs::create_dir_all(&odis).unwrap();
+		let odis = odis.canonicalize().unwrap().display().to_string();
+		let reading = |did: u16, scaling: Scaling| vag_data_labels::odis::Reading {
+			did,
+			name: format!("r{did}"),
+			unit: None,
+			bit_offset: 0,
+			bit_length: 8,
+			signed: false,
+			big_endian: true,
+			scaling,
+			text_id: Some(format!("IDE{did:05}")),
+		};
+		let linear = Scaling::Linear(vag_data_labels::measure::LinearScale { factor: 1.0, offset: 0.0 });
+		let states = Scaling::Enum {
+			levels: vec![Level::point(0, "off"), Level::point(1, "on")],
+		};
+		let odis_rows = [reading(1, linear.clone()), reading(2, states.clone())];
+		vag_data_db::put_all_readings(&p.cache(), &odis, [("EV_ECM", &odis_rows[..])]).unwrap();
+		// Schema 5: the project's adaptation channels and its `adaptations_at`, ODIS's alone.
+		vag_data_db::put_all_adaptations(&p.cache(), &odis, [("EV_ECM", &odis_rows[..1])]).unwrap();
+		let fault = vag_data_labels::odis::Fault {
+			dop: "DTCDOP_VAGUDS".into(),
+			code: 297,
+			display_code: Some("B1168F2".into()),
+			text: Some("brake".into()),
+			text_id: None,
+			short_name: None,
+			level: 1,
+			temporary: false,
+		};
+		vag_data_db::put_all_faults(&p.cache(), &odis, [("EV_ECM", std::slice::from_ref(&fault))]).unwrap();
+		// #53: ODIS's freeze-frame multiplexer is `registry_row` rows under the ODIS source.
+		let odis_frame = vag_data_labels::odis::EnvironmentRecord {
+			range: Some((0x70, 0x70)),
+			name: None,
+			length: Some(1),
+			fields: vec![vag_data_labels::odis::EnvironmentField {
+				name: Some("odis speed".into()),
+				text_id: None,
+				unit: None,
+				bit_offset: Some(0),
+				bit_length: Some(8),
+				signed: false,
+				big_endian: true,
+				scaling: Some(linear.clone()),
+				constant: false,
+			}],
+		};
+		vag_data_db::put_all_odis_freeze_frames(&p.cache(), &odis, [("EV_ECM", std::slice::from_ref(&odis_frame))]).unwrap();
+		record_source(
+			&p,
+			SourceEntry {
+				kind: vag_data_db::ODIS,
+				path: odis.clone(),
+				version: None,
+				detail: None,
+			},
+		)
+		.unwrap();
+		vag_data_db::build_db(&labels, &p.cache()).unwrap();
+		record_source(
+			&p,
+			SourceEntry {
+				kind: vag_data_db::VCDS,
+				path: root.display().to_string(),
+				version: Some("Codes.dat".into()),
+				detail: None,
+			},
+		)
+		.unwrap();
+		let vcds_rows = [reading(3, linear), reading(4, states)];
+		vag_data_db::put_all_vcds_readings(&p.cache(), &labels.to_string_lossy(), [("EV_ECM_001", &vcds_rows[..])])
+			.unwrap()
+			.unwrap();
+		// VCDS's own freeze-frame row (`RF.rod [FFMUX]`), in the same table as ODIS's.
+		let vcds_frame = vag_data_labels::registries::Described {
+			section: vag_data_db::FREEZE_FRAME_SECTION,
+			entry: vag_data_labels::registries::Entry {
+				row: 1,
+				key: 0x70,
+				identifier: None,
+				ordinal: None,
+				lead: Some(104),
+				case: None,
+				value: vag_data_labels::registries::Value {
+					kind: Some(0),
+					big_endian: true,
+					bit_offset: Some(0),
+					bit_length: Some(8),
+					..Default::default()
+				},
+				raw: String::new(),
+			},
+			name: Some("vcds speed".into()),
+			text_id: None,
+			unit: None,
+			levels: Vec::new(),
+		};
+		vag_data_db::put_all_vcds_registry_rows(&p.cache(), &labels.to_string_lossy(), [("EV_ECM_001", std::slice::from_ref(&vcds_frame))]).unwrap();
+		for (file, text) in [
+			(p.names(), format!(r#"{{"000001": "{install}"}}"#)),
+			(p.odx_ids(), r#"{"000001": "IDE00003"}"#.to_string()),
+			(p.rod_keys(), "{}".to_string()),
+			(
+				p.registry_log(),
+				format!(r#"{{"installation": "{}", "read_version": 3, "units": []}}"#, root.display()),
+			),
+		] {
+			std::fs::write(file, text).unwrap();
+		}
+		(p, root)
+	}
+
+	/// Rows per kind of table in a cache: label files, VCDS channels, ODIS channels, faults.
+	fn counts(cache: &Path) -> (u64, u64, u64, u64) {
+		let (by_source, _) = vag_data_db::source_rows(cache).unwrap();
+		let sources = vag_data_db::sources(cache).unwrap();
+		let of = |kind: &str| -> vag_data_db::Rows {
+			let mut rows = vag_data_db::Rows::default();
+			for s in sources.iter().filter(|s| s.kind == kind) {
+				let held = by_source.get(&s.id).copied().unwrap_or_default();
+				rows.label_files += held.label_files;
+				rows.readings += held.readings;
+				rows.faults += held.faults;
+			}
+			rows
+		};
+		let (vcds, odis) = (of(vag_data_db::VCDS), of(vag_data_db::ODIS));
+		(vcds.label_files, vcds.readings, odis.readings, odis.faults)
+	}
+
+	#[test]
+	fn a_project_holding_both_sources_gives_its_vcds_half_to_the_machine_store() {
+		// The reference machine: SK37X with ODIS (2) and VCDS (3) in one v3 cache.
+		let here = temp();
+		let (p, root) = with_both(here.path(), "SK37X", "vcds-en");
+		let store = vcds_at(&here.path().join("vcds"));
+		let before = counts(&p.cache());
+		assert_eq!(before, (1, 2, 2, 1));
+		let source = sources(&p).unwrap().into_iter().find(|s| s.kind == vag_data_db::VCDS).unwrap();
+
+		let notes = migrate_in(&here.path().join("data"), &store).notes;
+		assert_eq!(notes.len(), 1, "{notes:?}");
+		assert!(notes[0].starts_with("moved the installation's data from "), "{notes:?}");
+		let _ = &root;
+
+		// The store holds the installation, its rows and its files, as the project held them.
+		let moved = sources(&store).unwrap();
+		assert_eq!(moved.len(), 1, "{moved:?}");
+		assert_eq!(
+			(moved[0].kind.as_str(), &moved[0].dir, &moved[0].meta),
+			(vag_data_db::VCDS, &source.dir, &source.meta)
+		);
+		assert_eq!(counts(&store.cache()), (1, 2, 0, 0));
+		assert_eq!(vag_data_db::load_db(&store.cache()).unwrap().len(), 1, "the label file reads back whole");
+		let channels = vag_data_db::readings_of_kind(&store.cache(), vag_data_db::VCDS, "EV_ECM_001").unwrap();
+		assert_eq!(channels.len(), 2);
+		assert!(
+			channels
+				.iter()
+				.any(|r| matches!(&r.scaling, vag_data_labels::Scaling::Enum { levels } if levels.len() == 2)),
+			"the states came along"
+		);
+		assert!(std::fs::read_to_string(store.names()).unwrap().contains("vcds-en"));
+		for file in vcds_files(&store) {
+			assert!(file.is_file(), "{file:?} did not move");
+		}
+		// The project keeps its ODIS rows, its adaptations among them, and nothing of VCDS.
+		assert_eq!(counts(&p.cache()), (0, 0, 2, 1));
+		assert_eq!(vag_data_db::adaptation_variants(&p.cache()).unwrap(), ["EV_ECM"]);
+		assert!(vag_data_db::adaptation_variants(&store.cache()).unwrap().is_empty());
+		assert!(
+			vag_data_db::odis_sources_without_adaptations(&p.cache()).unwrap().is_empty(),
+			"adaptations_at stayed"
+		);
+		// `registry_row` holds both kinds since #53: ODIS's freeze-frame rows stay in the
+		// project, VCDS's go to the store, and neither side gets the other's.
+		let frames = |cache: &Path, kind: &str| vag_data_db::freeze_frame_variants(cache, kind).unwrap();
+		assert_eq!(frames(&p.cache(), vag_data_db::ODIS), ["EV_ECM"]);
+		assert!(frames(&p.cache(), vag_data_db::VCDS).is_empty());
+		assert_eq!(frames(&store.cache(), vag_data_db::VCDS), ["EV_ECM_001"]);
+		assert!(frames(&store.cache(), vag_data_db::ODIS).is_empty());
+		assert!(vag_data_db::registry_row_counts(&store.cache(), vag_data_db::ODIS).unwrap().is_empty());
+		assert!(vag_data_db::registry_row_counts(&p.cache(), vag_data_db::VCDS).unwrap().is_empty());
+		assert!(!has_source(&p, vag_data_db::VCDS).unwrap() && has_source(&p, vag_data_db::ODIS).unwrap());
+		for file in vcds_files(&p) {
+			assert!(!file.exists(), "{file:?} stayed in the project");
+		}
+		// Once: the next open finds nothing to move, and says nothing.
+		assert!(migrate_in(&here.path().join("data"), &store).notes.is_empty());
+		assert_eq!(counts(&store.cache()), (1, 2, 0, 0));
+	}
+
+	#[test]
+	fn of_two_projects_with_vcds_the_installation_read_last_is_kept_and_the_other_named_once() {
+		let here = temp();
+		let (older, old_root) = with_both(here.path(), "AU21X", "vcds-ru");
+		std::thread::sleep(std::time::Duration::from_millis(5));
+		let (newer, new_root) = with_both(here.path(), "SK37X", "vcds-en");
+		let store = vcds_at(&here.path().join("vcds"));
+
+		let notes = migrate_in(&here.path().join("data"), &store).notes;
+		assert_eq!(notes.len(), 2, "{notes:?}");
+		assert!(notes[0].starts_with("moved the installation's data from "), "{notes:?}");
+		assert!(
+			notes[1].contains(&crate::datadir::tilde(&old_root)) && notes[1].contains("AU21X"),
+			"{notes:?}"
+		);
+		let kept = sources(&store).unwrap();
+		assert_eq!(kept.len(), 1);
+		assert_eq!(kept[0].path(), new_root.display().to_string());
+		assert!(
+			std::fs::read_to_string(store.names()).unwrap().contains("vcds-en"),
+			"the files are the kept one's"
+		);
+		for p in [&older, &newer] {
+			assert_eq!(counts(&p.cache()), (0, 0, 2, 1), "{}", p.id);
+			assert!(!p.names().exists());
+		}
+	}
+
+	#[test]
+	fn an_installation_read_into_the_store_after_a_project_keeps_its_place() {
+		// A project whose VCDS was read before the store's: the store's stays, and the
+		// project's rows go with one note.
+		let here = temp();
+		let (p, old_root) = with_both(here.path(), "SK37X", "vcds-old");
+		std::thread::sleep(std::time::Duration::from_millis(5));
+		let (other, _) = with_both(here.path(), "SCRATCH", "vcds-new");
+		let store = vcds_at(&here.path().join("vcds"));
+		move_into(&other, &store).unwrap();
+		std::fs::remove_dir_all(&other.dir).unwrap();
+		let notes = migrate_in(&here.path().join("data"), &store).notes;
+		assert_eq!(notes.len(), 1, "{notes:?}");
+		assert!(notes[0].contains(&crate::datadir::tilde(&old_root)), "{notes:?}");
+		assert!(sources(&store).unwrap()[0].path().ends_with("vcds-new"));
+		assert_eq!(counts(&p.cache()), (0, 0, 2, 1));
+	}
+
+	#[test]
+	fn a_migration_stopped_anywhere_is_finished_by_the_next_open() {
+		// After the store's commit, before the project lost anything: the store has it,
+		// stamped alike, so only the project's half is done — silently.
+		let here = temp();
+		let (p, _) = with_both(here.path(), "SK37X", "vcds-en");
+		let store = vcds_at(&here.path().join("vcds"));
+		move_into(&p, &store).unwrap();
+		assert!(migrate_in(&here.path().join("data"), &store).notes.is_empty());
+		assert_eq!((counts(&store.cache()), counts(&p.cache())), ((1, 2, 0, 0), (0, 0, 2, 1)));
+		assert!(store.names().is_file() && !p.names().exists());
+
+		// After the project's files went, before its rows: the same.
+		let here = temp();
+		let (p, _) = with_both(here.path(), "SK37X", "vcds-en");
+		let store = vcds_at(&here.path().join("vcds"));
+		move_into(&p, &store).unwrap();
+		for file in vcds_files(&p) {
+			std::fs::remove_file(file).unwrap();
+		}
+		assert!(migrate_in(&here.path().join("data"), &store).notes.is_empty());
+		assert_eq!((counts(&store.cache()), counts(&p.cache())), ((1, 2, 0, 0), (0, 0, 2, 1)));
+		assert!(store.registry_log().is_file(), "the store keeps what was copied");
+
+		// After the files were copied and before the rows committed: the store holds no
+		// rows, so the copy is made again, and only then does the project lose anything.
+		let here = temp();
+		let (p, _) = with_both(here.path(), "SK37X", "vcds-en");
+		let store = vcds_at(&here.path().join("vcds"));
+		std::fs::create_dir_all(&store.dir).unwrap();
+		std::fs::copy(p.names(), store.names()).unwrap();
+		let notes = migrate_in(&here.path().join("data"), &store).notes;
+		assert_eq!(notes.len(), 1, "{notes:?}");
+		assert_eq!((counts(&store.cache()), counts(&p.cache())), ((1, 2, 0, 0), (0, 0, 2, 1)));
+
+		// A store that will not take the rows: nothing leaves the project.
+		let here = temp();
+		let (p, _) = with_both(here.path(), "SK37X", "vcds-en");
+		let store = vcds_at(&here.path().join("vcds"));
+		std::fs::create_dir_all(&store.dir).unwrap();
+		std::fs::write(store.cache(), b"this is not an SQLite file, and it is longer than a header").unwrap();
+		let notes = migrate_in(&here.path().join("data"), &store).notes;
+		assert_eq!(notes.len(), 1, "{notes:?}");
+		assert!(notes[0].contains("stay"), "{notes:?}");
+		assert_eq!(counts(&p.cache()), (1, 2, 2, 1), "the project lost rows the store does not hold");
+		assert!(p.names().is_file());
+	}
+
+	#[test]
+	fn migrations_run_at_once_take_turns_and_lose_no_row() {
+		// Review of #50: two processes opening the store together both decided to move;
+		// one emptied the project, and the other then copied that empty project over the
+		// full store. Here several migrations at once, many times over: every time the
+		// store holds the installation whole and the project none of it.
+		const THREADS: usize = 6;
+		const ROUNDS: usize = 25;
+		let mut intact = 0;
+		for _ in 0..ROUNDS {
+			let here = temp();
+			let (p, _) = with_both(here.path(), "SK37X", "vcds-en");
+			let data = here.path().join("data");
+			let store = vcds_at(&here.path().join("vcds"));
+			let moved: usize = std::thread::scope(|scope| {
+				let runs: Vec<_> = (0..THREADS)
+					.map(|_| scope.spawn(|| migrate_in(&data, &store).notes.iter().filter(|n| n.starts_with("moved")).count()))
+					.collect();
+				runs.into_iter().map(|run| run.join().unwrap()).sum()
+			});
+			assert_eq!(moved, 1, "the installation moved once, not once per migration");
+			assert_eq!(counts(&store.cache()), (1, 2, 0, 0), "the store lost rows");
+			assert_eq!(counts(&p.cache()), (0, 0, 2, 1), "the project kept VCDS rows or lost ODIS ones");
+			assert_eq!(sources(&store).unwrap().len(), 1);
+			intact += 1;
+		}
+		assert_eq!(intact, ROUNDS);
+	}
+
+	#[test]
+	fn a_copy_from_a_cache_with_no_vcds_source_is_refused_and_the_store_kept() {
+		let here = temp();
+		let (p, _) = with_both(here.path(), "SK37X", "vcds-en");
+		let store = vcds_at(&here.path().join("vcds"));
+		move_into(&p, &store).unwrap();
+		take_out(&p).unwrap();
+		let why = vag_data_db::copy_kind(&p.cache(), &store.cache(), vag_data_db::VCDS)
+			.unwrap_err()
+			.to_string();
+		assert!(why.contains("holds no vcds source"), "{why}");
+		assert_eq!(counts(&store.cache()), (1, 2, 0, 0), "the refused copy took the store's rows");
+	}
+
+	#[test]
+	fn a_store_installation_a_project_replaces_is_named_and_recorded() {
+		let here = temp();
+		let (older, old_root) = with_both(here.path(), "OLD", "vcds-old");
+		let store = vcds_at(&here.path().join("vcds"));
+		move_into(&older, &store).unwrap();
+		std::fs::remove_dir_all(&older.dir).unwrap();
+		std::thread::sleep(std::time::Duration::from_millis(5));
+		let (_newer, _) = with_both(here.path(), "SK37X", "vcds-new");
+		let notes = migrate_in(&here.path().join("data"), &store).notes;
+		assert!(notes[0].starts_with("moved the installation's data from "), "{notes:?}");
+		assert!(
+			notes
+				.iter()
+				.any(|n| n.starts_with("replaced the installation ") && n.contains(&crate::datadir::tilde(&old_root))),
+			"the store's own was dropped unnamed: {notes:?}"
+		);
+		let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(migration_record(&store)).unwrap()).unwrap();
+		let entry = &record[0];
+		assert!(
+			entry["at"].is_string() && entry["moved"]["from"].as_str().unwrap().ends_with("SK37X"),
+			"{record}"
+		);
+		assert!(entry["replaced"][0]["installation"].as_str().unwrap().ends_with("vcds-old"), "{record}");
+	}
+
+	#[test]
+	fn a_project_that_held_vcds_alone_goes_and_its_measured_rows_move_with_it() {
+		let here = temp();
+		let (p, _) = with_both(here.path(), "default", "vcds-en");
+		// VCDS alone: its ODIS half dropped, as a VCDS-only project was.
+		vag_data_db::drop_kind(&p.cache(), vag_data_db::ODIS).unwrap();
+		std::fs::create_dir_all(p.measurements_dir()).unwrap();
+		std::fs::write(p.measurements_dir().join("5Q0614517AQ.json"), b"{}").unwrap();
+		let store = vcds_at(&here.path().join("vcds"));
+		let migrated = migrate_in(&here.path().join("data"), &store);
+		assert_eq!(migrated.removed, ["default"], "{:?}", migrated.notes);
+		assert!(!p.dir.exists(), "the empty project stayed");
+		assert!(store.measurements_dir().join("5Q0614517AQ.json").is_file(), "its measured rows were lost");
+		assert!(
+			migrated.notes.iter().any(|n| n.starts_with("removed the project default")),
+			"{:?}",
+			migrated.notes
+		);
+		assert_eq!(list_in(&here.path().join("data")), Vec::<String>::new());
+	}
+
+	#[test]
+	fn the_files_a_dropped_installation_left_in_a_project_go_to_the_store() {
+		// `--drop vcds` kept the keys and the names in the project: with no VCDS rows to
+		// migrate they stayed there for good, and the next setup searched the keys again.
+		let here = temp();
+		let (p, _) = with_both(here.path(), "SK37X", "vcds-en");
+		vag_data_db::drop_kind(&p.cache(), vag_data_db::VCDS).unwrap();
+		std::fs::remove_file(p.registry_log()).unwrap();
+		std::fs::write(p.rod_keys(), r#"{"RD.rod:ABC": "1"}"#).unwrap();
+		let store = vcds_at(&here.path().join("vcds"));
+		std::fs::create_dir_all(&store.dir).unwrap();
+		std::fs::write(store.rod_keys(), r#"{"MUX.rod:DEF": "2"}"#).unwrap();
+		let notes = migrate_in(&here.path().join("data"), &store).notes;
+		assert!(notes.iter().any(|n| n.starts_with("moved ")), "{notes:?}");
+		let keys: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(store.rod_keys()).unwrap()).unwrap();
+		assert!(keys["RD.rod:ABC"].is_string() && keys["MUX.rod:DEF"].is_string(), "merged: {keys}");
+		assert!(store.names().is_file() && store.odx_ids().is_file());
+		for file in vcds_files(&p) {
+			assert!(!file.exists(), "{file:?} stayed in the project");
+		}
+		assert!(p.dir.is_dir(), "the project holds ODIS rows and stays");
+	}
+
+	#[test]
+	fn a_copy_that_fails_leaves_the_stores_files_and_rows_as_they_were() {
+		let here = temp();
+		let (older, _) = with_both(here.path(), "OLD", "vcds-old");
+		let store = vcds_at(&here.path().join("vcds"));
+		move_into(&older, &store).unwrap();
+		let names_before = std::fs::read(store.names()).unwrap();
+		// A project whose cache holds no VCDS source: the copy is refused.
+		take_out(&older).unwrap();
+		std::fs::write(older.names(), b"{\"000001\": \"other\"}").unwrap();
+		assert!(move_into(&older, &store).is_err());
+		assert_eq!(std::fs::read(store.names()).unwrap(), names_before, "a file landed before its rows");
+		assert_eq!(counts(&store.cache()), (1, 2, 0, 0));
+		assert!(
+			std::fs::read_dir(&store.dir)
+				.unwrap()
+				.flatten()
+				.all(|e| !e.file_name().to_string_lossy().ends_with(".migrating")),
+			"a staged file was left"
+		);
+	}
+
+	#[test]
+	fn a_project_with_odis_alone_is_left_as_it_was() {
+		let here = temp();
+		let (p, _) = with_both(here.path(), "SK37X", "vcds-en");
+		take_out(&p).unwrap();
+		let store = vcds_at(&here.path().join("vcds"));
+		assert!(migrate_in(&here.path().join("data"), &store).notes.is_empty());
+		assert!(!store.cache().exists(), "a store was made with nothing to put in it");
+		assert_eq!(counts(&p.cache()), (0, 0, 2, 1));
+	}
+
+	#[test]
+	fn with_no_project_a_vcds_store_is_what_the_run_reads() {
+		// `selected` is `None` with no project, and that is no error: the VCDS store
+		// stands alone. `current` still refuses, for the commands that need a project.
+		let here = temp();
+		assert_eq!(selected_in(here.path(), None, None, None, None).unwrap(), None);
+		assert!(current_in(here.path(), None, None, None, None).is_err());
+		// A project named that is not there is still an error, store or none.
+		assert!(selected_in(here.path(), Some("SK37X"), None, None, None).is_err());
+		let stores = Stores {
+			project: None,
+			vcds: vcds_at(&here.path().join("vcds")),
+		};
+		assert_eq!(stores.cache_of(vag_data_db::ODIS), None);
+		assert_eq!(stores.cache_of(vag_data_db::VCDS), Some(here.path().join("vcds").join("cache.sqlite")));
+		assert_eq!(stores.caches(), vec![here.path().join("vcds").join("cache.sqlite")]);
+		assert_eq!(stores.id(), VCDS_STORE);
 	}
 
 	// The two tests that used to sit here — that remembering a project leaves

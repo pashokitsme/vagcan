@@ -39,6 +39,8 @@ pub enum Error {
 	NoSuchSource {
 		id: i64,
 	},
+	/// A copy between caches that did not hold ([`copy_kind`]): the sentence says why.
+	Copy(String),
 }
 
 impl std::fmt::Display for Error {
@@ -56,6 +58,7 @@ impl std::fmt::Display for Error {
 				"{cache} is not a database — `vagcan setup --refresh` replaces it with a cache built from the folders it reads"
 			),
 			Error::NoSuchSource { id } => write!(f, "no source {id} in this cache — `vagcan setup --list` lists them"),
+			Error::Copy(why) => write!(f, "{why}"),
 		}
 	}
 }
@@ -2408,6 +2411,196 @@ pub fn row_counts(db_path: &Path) -> Result<Vec<(&'static str, i64)>, Error> {
 
 pub fn load_db(db_path: &Path) -> Result<LabelDb, Error> {
 	Ok(LabelDb::new(load_files(db_path)?))
+}
+
+/// An exclusive lock between processes, held while this lives: an SQLite file at `path`
+/// with an `EXCLUSIVE` transaction open on it, rolled back on drop. One per migration of a
+/// store, so two processes opening the store at once take turns rather than both deciding
+/// on what neither has finished.
+pub struct Exclusive(Connection);
+
+impl Drop for Exclusive {
+	fn drop(&mut self) {
+		let _ = self.0.execute_batch("ROLLBACK");
+	}
+}
+
+/// Take [`Exclusive`] at `path`, waiting up to `wait` for another holder to let go.
+pub fn exclusive(path: &Path, wait: std::time::Duration) -> Result<Exclusive, Error> {
+	if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+		std::fs::create_dir_all(parent)?;
+	}
+	let conn = Connection::open(path)?;
+	conn.busy_timeout(wait)?;
+	conn.execute_batch("BEGIN EXCLUSIVE")?;
+	Ok(Exclusive(conn))
+}
+
+/// Copy every row the sources of `kind` in `from` own into `to`, which then holds those
+/// sources and nothing else: what `to` held before is replaced. Ids are kept, so every
+/// link between the rows holds as it was. Returns how many rows were copied, every table
+/// counted.
+///
+/// For a cache that holds one kind of source alone — the machine's VCDS store — filled
+/// from a cache that holds several. A `to` holding a source of another kind is refused,
+/// and nothing is written: replacing it would lose rows nothing copies back.
+///
+/// The rows a source owns are found as [`drop_source`] finds them: every table that names
+/// a source, what hangs off those rows through the schema's own foreign keys, and for a
+/// VCDS source the label rows a migration could give no owner ([`VCDS_ONLY`]).
+///
+/// One transaction on `to`, checked before it commits: every table of `to` is counted
+/// against what `from` holds of `kind`, and a count that differs rolls it back and is an
+/// error. A `from` holding no source of `kind` is refused and `to` left as it was. `from`
+/// is only read.
+pub fn copy_kind(from: &Path, to: &Path, kind: &str) -> Result<u64, Error> {
+	// `from` brought to this shape first, in its own transaction: the copy reads columns
+	// by this schema's names.
+	drop(open_existing(from)?);
+	if let Some(parent) = to.parent().filter(|p| !p.as_os_str().is_empty()) {
+		std::fs::create_dir_all(parent)?;
+	}
+	let conn = Connection::open(to)?;
+	conn.busy_timeout(std::time::Duration::from_secs(5))?;
+	create_schema(&conn, to)?;
+	conn.execute("ATTACH DATABASE ?1 AS src", params![from.to_string_lossy()])?;
+	let copied = copy_attached(&conn, kind);
+	let detached = conn.execute("DETACH DATABASE src", []);
+	let copied = copied?;
+	detached?;
+	Ok(copied)
+}
+
+/// The copy behind [`copy_kind`], with `from` attached as `src`.
+fn copy_attached(conn: &Connection, kind: &str) -> Result<u64, Error> {
+	let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+	let foreign: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM main.source WHERE kind <> ?1)", params![kind], |row| {
+		row.get(0)
+	})?;
+	if foreign {
+		return Err(Error::Copy(format!("the cache to copy {kind} rows into holds a source of another kind")));
+	}
+	// Nothing to copy is never a copy: replacing the store with nothing would lose what it
+	// holds to a cache another process emptied a moment ago.
+	let held_here: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM src.source WHERE kind = ?1)", params![kind], |row| {
+		row.get(0)
+	})?;
+	if !held_here {
+		return Err(Error::Copy(format!("the cache to copy from holds no {kind} source")));
+	}
+	let order = tables_parents_first();
+	// Children first, so no row is left naming one that went.
+	for table in order.iter().rev() {
+		tx.execute(&format!("DELETE FROM main.{table}"), [])?;
+	}
+	let mut copied = 0u64;
+	for table in &order {
+		let columns = quoted_columns(table);
+		let n = tx.execute(
+			&format!(
+				"INSERT INTO main.{table} ({columns}) SELECT {columns} FROM src.{table} WHERE {}",
+				owned_by_kind(table, kind)
+			),
+			params![kind],
+		)?;
+		copied += n as u64;
+	}
+	// Counted inside the transaction, table by table, against what `src` holds: a count
+	// that differs rolls the whole copy back, and the store is as it was.
+	for table in &order {
+		let held: i64 = tx.query_row(&format!("SELECT COUNT(*) FROM main.{table}"), [], |row| row.get(0))?;
+		let wanted: i64 = tx.query_row(
+			&format!("SELECT COUNT(*) FROM src.{table} WHERE {}", owned_by_kind(table, kind)),
+			params![kind],
+			|row| row.get(0),
+		)?;
+		if held != wanted {
+			return Err(Error::Copy(format!(
+				"the copy of the {kind} rows of `{table}` holds {held} rows, and the cache it came from {wanted}"
+			)));
+		}
+	}
+	tx.commit()?;
+	Ok(copied)
+}
+
+/// Every table of [`SCHEMA`], each after every table it names in a foreign key.
+fn tables_parents_first() -> Vec<String> {
+	let mut left: Vec<String> = schema_shape().iter().map(|(table, _)| table.clone()).collect();
+	let mut out: Vec<String> = Vec::with_capacity(left.len());
+	while !left.is_empty() {
+		let ready = left
+			.iter()
+			.position(|table| {
+				schema_links()
+					.iter()
+					.filter(|(child, _, parent)| child == table && parent != table)
+					.all(|(_, _, parent)| out.contains(parent))
+			})
+			.expect("the schema's foreign keys form no cycle");
+		out.push(left.remove(ready));
+	}
+	out
+}
+
+/// A table's columns, quoted and comma-joined, as [`SCHEMA`] makes them.
+fn quoted_columns(table: &str) -> String {
+	schema_shape()
+		.iter()
+		.find(|(t, _)| t == table)
+		.map(|(_, columns)| columns.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", "))
+		.unwrap_or_default()
+}
+
+/// The SQL condition, over `?1` for the kind, that picks the rows of `table` in the
+/// attached `src` that a source of that kind owns: the source rows themselves; a row
+/// naming one; a row hanging off one of those, however deep; and for VCDS, the label rows
+/// a migration could give no owner. The names are the schema's own.
+fn owned_by_kind(table: &str, kind: &str) -> String {
+	if table == "source" {
+		return "kind = ?1".to_string();
+	}
+	let mut parts = Vec::new();
+	for (_, column, parent) in schema_links().iter().filter(|(child, _, parent)| child == table && parent != table) {
+		match parent.as_str() {
+			"source" => parts.push(format!("{column} IN (SELECT id FROM src.source WHERE kind = ?1)")),
+			parent => parts.push(format!("{column} IN (SELECT id FROM src.{parent} WHERE {})", owned_by_kind(parent, kind))),
+		}
+	}
+	if kind == VCDS && VCDS_ONLY.contains(&table) {
+		parts.push("source_id IS NULL".to_string());
+	}
+	match parts.is_empty() {
+		true => "0".to_string(),
+		false => parts.join(" OR "),
+	}
+}
+
+/// Delete every source of `kind` and every row they own, in one transaction, and say how
+/// many rows went. For VCDS, the label rows that belong to no source go too: with no VCDS
+/// source left, nothing could claim them ([`drop_source`]).
+pub fn drop_kind(db_path: &Path, kind: &str) -> Result<Rows, Error> {
+	let mut conn = open_existing(db_path)?;
+	conn.busy_timeout(std::time::Duration::from_secs(5))?;
+	let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+	let ids: Vec<i64> = {
+		let mut stmt = tx.prepare("SELECT id FROM source WHERE kind = ?1 ORDER BY id")?;
+		stmt.query_map(params![kind], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?
+	};
+	let mut gone = Rows::default();
+	for id in ids {
+		let rows = remove_source(&tx, id, kind == VCDS)?;
+		gone.label_files += rows.label_files;
+		gone.measurements += rows.measurements;
+		gone.readings += rows.readings;
+		gone.faults += rows.faults;
+	}
+	tx.commit()?;
+	// The file gives back the pages the rows held: a project's cache lost most of itself.
+	if gone.total() > 0 {
+		conn.execute_batch("VACUUM")?;
+	}
+	Ok(gone)
 }
 
 #[cfg(test)]

@@ -173,13 +173,12 @@ fn home(at: &Path) {
 /// its own (CLAUDE.md, "ODIS and VCDS are independent sources").
 const VCDS_ONLY: &str = "vcds-only";
 
-/// A `~/.vagcan` whose made-up project was set up from a VCDS install alone: the engine's
-/// freeze-frame layout, as `setup` stores `RF.rod`'s rows, and nothing of ODIS.
+/// A `~/.vagcan` set up from a VCDS install alone: the machine's VCDS store holds the engine's
+/// freeze-frame layout, as `setup` stores `RF.rod`'s rows; no ODIS project.
 fn vcds_home(at: &Path) {
-	let project = at.join("data").join(PROJECT);
-	std::fs::create_dir_all(&project).unwrap();
-	std::fs::write(at.join("config.toml"), format!("project = \"{PROJECT}\"\n")).unwrap();
-	let cache = project.join("cache.sqlite");
+	let store = at.join("vcds");
+	std::fs::create_dir_all(&store).unwrap();
+	let cache = store.join("cache.sqlite");
 	// Record 0x70, four bytes — an engine speed, a voltage, a reserved byte. Made up.
 	let vcds = "/nowhere/sim-vcds/Labels";
 	vag_data_db::record_language(&cache, vag_data_db::VCDS, vcds, "eng").unwrap();
@@ -274,8 +273,9 @@ fn run_case(bin: &Path, profile: &Path, template: &Path, case: &Path) {
 		.env("VAGCAN_DEVICE", &port)
 		.env("VAGCAN_HOME", home.display().to_string())
 		.env("HOME", scratch.path().display().to_string())
-		// What a run may read from the person's environment, made the same everywhere.
-		.env("VAGCAN_PROJECT", PROJECT)
+		// What a run may read from the person's environment, made the same everywhere. A home
+		// with no project (VCDS alone) names none: empty is read as unset.
+		.env("VAGCAN_PROJECT", if template.join("data").join(PROJECT).is_dir() { PROJECT } else { "" })
 		.env("TZ", "UTC")
 		.env("LANG", "C")
 		.env("NO_COLOR", "1");

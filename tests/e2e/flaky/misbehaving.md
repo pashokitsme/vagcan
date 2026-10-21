@@ -32,7 +32,7 @@ F1A2  ODX file version           001001
 
 $ vagcan units --identify
 ? success
-names    SIM00 label files
+names    none — `vagcan setup` names the units
 note: adapter from VAGCAN_DEVICE=[PORT]
 unit  id   part        component    name
 09    70E                           (no answer)
@@ -41,15 +41,15 @@ unit  id   part        component    name
 01    7E0  SIM906000A  SIM ENGINE
 02    7E1                           (no answer)
 
-5 asked · 3 answered · 2 on the gateway's list · 0 named
+5 asked · 3 answered · 2 on the gateway's list
 
 $ vagcan faults
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
 names    ODIS SIM00-odis (eng)
-7E1  fault list not read: transport: timeout
-70E  fault list not read: transport: timeout
-713  fault list not read: transport: timeout
-0 stored · 0 failing now · 2 units read
+warning: 7E1 fault list not read: transport: timeout
+warning: 70E fault list not read: transport: timeout
+warning: 713 fault list not read: transport: timeout
+no stored codes on the 2 units read
 
 ```

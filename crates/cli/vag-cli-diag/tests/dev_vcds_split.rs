@@ -287,9 +287,9 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 	assert_eq!(tttext[0].stderr, "1 record · 1 with an IDE or MAS id · 1 malformed, left out\n");
 	assert!(tttext[1].stderr.contains("000005 read as"), "{}", tttext[1].stderr);
 
-	// stats: the project's cache, built as `setup` builds it — `labels` reads a cache and
+	// stats: the VCDS store's cache, built as `setup` builds it — `labels` reads a cache and
 	// never writes one (#37).
-	vag_cli_diag::labels::load_cached(&vcds_dir, &home.join(".vagcan/data/TEST/cache.sqlite"), false).unwrap();
+	vag_cli_diag::labels::load_cached(&vcds_dir, &home.join(".vagcan/vcds/cache.sqlite"), false).unwrap();
 	let stats = levels("stats", || Tool::Stats { catalog: None });
 	assert_eq!(
 		stats[0].stdout,

@@ -80,7 +80,7 @@ impl Asker for Console {
 		// Before raw mode, not after: switching a terminal that is not there is
 		// an errno, and this is the sentence that actually helps.
 		if !super::can_ask() {
-			bail!(menu_needs_a_terminal(&self.instead));
+			return Err(menu_needs_a_terminal(&self.instead));
 		}
 		// No progress line may tick over the menu (`crate::progress::hold`).
 		let _held = crate::progress::hold();
@@ -286,11 +286,9 @@ fn nothing_to_choose(question: &str) -> String {
 /// Both were called `no_terminal` and read as one function; they are two, and
 /// the wording each ends in is the difference. The predicate they share is
 /// [`can_ask`](crate::ui::can_ask).
-fn menu_needs_a_terminal(instead: &str) -> String {
-	format!(
-		"there is no terminal to choose at — stdin is redirected, so nobody would see the \
-         menu.\nSay which one on the command line instead:\n    {instead}"
-	)
+fn menu_needs_a_terminal(instead: &str) -> anyhow::Error {
+	use crate::report::Advice as _;
+	anyhow::anyhow!("no terminal to choose at: stdin is redirected").help(format!("name it on the command line: `{instead}`"))
 }
 
 /// One scripted answer, in the order the questions come.
@@ -521,7 +519,7 @@ mod tests {
 	#[test]
 	fn with_no_terminal_the_refusal_names_the_command_that_needs_no_menu() {
 		// A prompt on a redirected stdin is a hang nobody can diagnose.
-		let why = menu_needs_a_terminal("vagcan setup /path/to/VCDS");
+		let why = crate::report::render(&menu_needs_a_terminal("vagcan setup /path/to/VCDS"), 0, crate::report::Colour::Never);
 		assert!(why.contains("no terminal"), "{why}");
 		assert!(why.contains("vagcan setup /path/to/VCDS"), "{why}");
 	}

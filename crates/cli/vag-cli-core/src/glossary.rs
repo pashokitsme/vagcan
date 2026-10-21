@@ -168,12 +168,12 @@ fn read_csv(text: &str) -> Vec<Vec<String>> {
 /// called today. It is not read back — [`parse`] takes only the columns the
 /// header names as languages — and it is there because translating a list of
 /// bare ids is not something anybody can do.
-pub fn seed(project: &crate::project::Project) -> anyhow::Result<Seeded> {
-	seed_into(project, path()?)
+pub fn seed(stores: &crate::project::Stores) -> anyhow::Result<Seeded> {
+	seed_into(stores, path()?)
 }
 
 /// [`seed`], into a file named by the caller — a test's, never the owner's.
-fn seed_into(project: &crate::project::Project, path: PathBuf) -> anyhow::Result<Seeded> {
+fn seed_into(stores: &crate::project::Stores, path: PathBuf) -> anyhow::Result<Seeded> {
 	// A file that is there and does not read is somebody's work in a form this
 	// cannot parse — saved as Windows-1251, say. Treating it as empty would
 	// write the project's ids over every translation in it.
@@ -215,9 +215,12 @@ fn seed_into(project: &crate::project::Project, path: PathBuf) -> anyhow::Result
 
 	// Every text id a channel of this project carries, whether or not it is
 	// written yet.
-	for (id, name) in vag_data_db::text_ids(&project.cache()).unwrap_or_default() {
-		rows.entry(id.clone()).or_default();
-		current.insert(id, name);
+	// The project's first, so where both carry an id the ODIS wording is today's.
+	for cache in stores.caches() {
+		for (id, name) in vag_data_db::text_ids(&cache).unwrap_or_default() {
+			rows.entry(id.clone()).or_default();
+			current.entry(id).or_insert(name);
+		}
 	}
 	// VCDS's wording, for rows that are here already — never a row of its own.
 	// `names.json` is keyed by the text table's six-digit record ids, and no
@@ -226,7 +229,7 @@ fn seed_into(project: &crate::project::Project, path: PathBuf) -> anyhow::Result
 	// quarter of the table that cost 14,738 such rows; read exactly, it would be
 	// every record — 195,910, enum states, units and countries among them — in
 	// a file a person is meant to go through by hand.
-	let vcds = crate::extracted::open(project).names();
+	let vcds = crate::extracted::open(stores).names();
 	for id in rows.keys() {
 		if let Some(name) = vcds.get(id) {
 			current.entry(id.clone()).or_insert_with(|| name.clone());
@@ -338,7 +341,14 @@ mod tests {
 		// A translated row keyed by a record id, and a blank one.
 		std::fs::write(&glossary, "text_id,en,ru,current\n000017,My flap reading,,\n000081,,,Status\n").unwrap();
 
-		let seeded = seed_into(&project, glossary.clone()).unwrap();
+		let seeded = seed_into(
+			&crate::project::Stores {
+				project: None,
+				vcds: project.clone(),
+			},
+			glossary.clone(),
+		)
+		.unwrap();
 		let text = std::fs::read_to_string(&glossary).unwrap();
 		assert!(text.contains("000017,My flap reading,,Invented flap position"), "{text}");
 		assert!(!text.contains("910231"), "a record id no channel carries became a row: {text}");
@@ -362,10 +372,14 @@ mod tests {
 	}
 
 	/// A project with nothing in it, for seeding a glossary that is not the owner's.
-	fn empty_project(dir: &std::path::Path) -> crate::project::Project {
-		crate::project::Project {
+	fn empty_project(dir: &std::path::Path) -> crate::project::Stores {
+		let project = crate::project::Project {
 			id: "TEST".to_string(),
 			dir: dir.to_path_buf(),
+		};
+		crate::project::Stores {
+			project: Some(project.clone()),
+			vcds: project,
 		}
 	}
 

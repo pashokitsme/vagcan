@@ -199,6 +199,13 @@ pub fn set_project(id: &str) -> Result<()> {
 	save(&document)
 }
 
+/// Forget which project a bare command means: the one named is gone.
+pub fn clear_project() -> Result<()> {
+	let mut document = load();
+	document.remove("project");
+	save(&document)
+}
+
 /// Which language channel names are shown in.
 ///
 /// An unreadable or unknown value is the default rather than an error, and the

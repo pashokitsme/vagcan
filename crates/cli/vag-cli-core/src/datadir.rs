@@ -27,16 +27,20 @@ pub const CAR_FILE: &str = "car.json";
 ///   rod/                              raw VCDS files read at run time, shared
 ///                                     across every project: the .rod files and
 ///                                     this build's fault text
-///   data/
-///     SK37X/                          one directory per *platform* — `crate::project`
-///       cache.sqlite                    the label and ODIS rows, queryable, and the
-///                                       sources they came from (`source` table)
-///       names.json                     text id -> name, from a VCDS installation
-///       names-odis.json                 text id -> name, from an ODIS project
-///       odx-ids.json                    text id -> the IDE/MAS id that text names
-///       rod-keys.json                   recovered .rod section keys
-///       registry.json                   which VCDS installation the channels were read
+///   vcds/                             the machine's one VCDS installation, read for
+///                                     every car — [`vcds_dir`]
+///     cache.sqlite                      its label files and registry rows, and its
+///                                       `source` row; the schema a project's cache has
+///     names.json                        text id -> name
+///     odx-ids.json                      text id -> the IDE/MAS id that text names
+///     rod-keys.json                     recovered .rod section keys
+///     registry.json                     which installation the channels were read
 ///                                       from, and what came of each unit — `crate::registry`
+///   data/
+///     SK37X/                          one ODIS project per *platform* — `crate::project`
+///       cache.sqlite                    its channels and fault text, queryable, and its
+///                                       `source` row
+///       names-odis.json                 text id -> name, from the ODIS project
 ///       measurements/                   proven-on-car rows, one file per part number
 ///   config.toml                       settings, and the marks `watch` keeps:
 ///                                     which project a bare command means, which
@@ -195,6 +199,16 @@ pub fn projects_dir() -> anyhow::Result<PathBuf> {
 	Ok(vagcan_dir()?.join("data"))
 }
 
+/// The machine's VCDS installation, as `setup` read it — `~/.vagcan/vcds/`.
+///
+/// **One per machine, not one per project.** A VCDS installation describes every VAG car,
+/// so its rows serve whichever car is connected; filed under a platform, a second car of
+/// another platform needed a second copy of the same installation. A project is an ODIS
+/// project's, and nothing else. `crate::project::vcds` opens it.
+pub fn vcds_dir() -> anyhow::Result<PathBuf> {
+	Ok(vagcan_dir()?.join("vcds"))
+}
+
 /// The raw VCDS files every project reads at run time, kept once.
 ///
 /// A `.rod` file is a property of a VCDS **build**, not of a car — the same
@@ -203,6 +217,18 @@ pub fn projects_dir() -> anyhow::Result<PathBuf> {
 /// `crate::project::rod_pool` is what creates it.
 pub fn rod_pool_dir() -> anyhow::Result<PathBuf> {
 	Ok(vagcan_dir()?.join("rod"))
+}
+
+/// A path as a person reads it: under the home directory, `~/…`; anywhere else as it is.
+pub fn tilde(path: &Path) -> String {
+	match std::env::var_os("HOME").map(PathBuf::from) {
+		Some(home) if !home.as_os_str().is_empty() => match path.strip_prefix(&home) {
+			Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+			Ok(rest) => format!("~/{}", rest.display()),
+			Err(_) => path.display().to_string(),
+		},
+		_ => path.display().to_string(),
+	}
 }
 
 /// A path the user gave, or this tool's own default for it.
@@ -459,7 +485,12 @@ mod tests {
 		// no repository root at all.
 		let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
 		let home = vagcan_dir().unwrap();
-		for path in [projects_dir().unwrap(), rod_pool_dir().unwrap(), crate::config::path().unwrap()] {
+		for path in [
+			projects_dir().unwrap(),
+			rod_pool_dir().unwrap(),
+			vcds_dir().unwrap(),
+			crate::config::path().unwrap(),
+		] {
 			assert!(!path.starts_with(&repo), "{path:?} is inside the checkout");
 			assert!(path.starts_with(&home), "{path:?} is outside ~/.vagcan");
 		}

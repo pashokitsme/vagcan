@@ -82,7 +82,7 @@ use vag_cli_core::project::allowed;
 /// identifier for a VCDS-only car is not built, and nothing here pretends
 /// otherwise. It is a placeholder, and it is only ever *offered* — see
 /// [`project_id`], which prefers a project that already exists.
-const DEFAULT_ID: &str = "default";
+pub(crate) const DEFAULT_ID: &str = "default";
 
 /// The most a project name may be. A directory name, not a sentence.
 const MAX_ID: usize = 64;
@@ -144,8 +144,8 @@ impl Look {
 	/// How to recognise one, in the words its own refusals use.
 	fn expected(self) -> &'static str {
 		match self {
-			Look::Vcds => "A VCDS installation root is the folder holding `Labels/` and `UDS_EV/`.",
-			Look::Odis => "An extracted ODIS project is the folder holding `AStringData.data.gz` and the `<pool>.key` files.",
+			Look::Vcds => "a VCDS installation is the folder holding `Labels/` and `UDS_EV/`",
+			Look::Odis => "an extracted ODIS project is the folder holding `AStringData.data.gz` and the `<pool>.key` files",
 		}
 	}
 
@@ -651,64 +651,68 @@ fn children(dir: &Path) -> Vec<PathBuf> {
 	paths
 }
 
-/// Why this directory is not the one, and which one probably is.
+/// Why this directory is not the one, and which one probably is — cargo's shape: one
+/// short line of what is wrong, a blank line, then `help:` lines, each one action.
 ///
-/// Three things, in the order somebody reads them: what is wrong with what they
-/// gave, what they most likely meant, and what the right thing looks like. The
-/// last one is unconditional — a refusal that only guesses leaves anybody it
-/// guessed wrong about with nothing.
+/// The `help:` that says what the right thing looks like is unconditional: a refusal
+/// that only guesses leaves anybody it guessed wrong about with nothing.
 fn refused(dir: &Path, want: Look) -> String {
 	let shown = dir.display();
-	// Being *the other kind* is a complete answer on its own, and a hint after
-	// it would only point back at the folder already named.
+	// Being *the other kind* is a complete answer on its own, and a hint after it
+	// would only point back at the folder already named.
 	if let Some(other) = identify(dir) {
 		return format!(
-			"{shown} is {}, not {}.\n    Go back and pick that instead, or point at {} here.\n    {}",
+			"{shown} is {}, not {}\n\nhelp: go back and pick {} instead, or give {} here\nhelp: {}",
 			other.named(),
 			want.named(),
+			other.named(),
 			want.named(),
 			want.expected()
 		);
 	}
-	let mut out = match (dir.exists(), dir.is_dir()) {
-		(false, _) => nothing_at(dir),
-		(true, false) => format!("{shown} is not a directory — it is a file. If that is an archive, unpack it and point at the folder it unpacks to."),
-		(true, true) => format!("{shown} is not {}.", want.named()),
-	};
-	out.push_str(&hint(dir, Some(want)));
-	out.push_str(&format!("\n    {}", want.expected()));
-	out
+	let mut helps = hint(dir, Some(want));
+	helps.push(format!("help: {}", want.expected()));
+	format!(
+		"{}\n\n{}",
+		what_is_there(dir, &format!("{shown} is not {}", want.named())),
+		helps.join("\n")
+	)
 }
 
-/// The "did you mean" half of a refusal, or nothing when there is no guess.
-fn hint(dir: &Path, want: Option<Look>) -> String {
-	match nearby(dir, want) {
-		Some(Near::Above(path, look)) if want.is_none_or(|w| w == look) => {
-			format!(
-				"\n    It is inside {}, which is one. Point at that instead:\n        {}",
-				path.display(),
-				path.display()
-			)
-		}
-		Some(Near::Above(path, look)) => format!(
-			"\n    It is inside {}, and that is {} rather than what you picked.",
-			path.display(),
-			look.named()
-		),
-		Some(Near::Inside(path, look)) if want.is_none_or(|w| w == look) => {
-			format!("\n    It does hold one. Did you mean:\n        {}", path.display())
-		}
-		Some(Near::Inside(path, look)) => format!("\n    It holds {}, which is {}.", path.display(), look.named()),
-		None => String::new(),
+/// What is at a path that is not the source wanted, as the first line of a refusal:
+/// nothing, a file, or a folder that is neither (`otherwise`).
+fn what_is_there(dir: &Path, otherwise: &str) -> String {
+	match (dir.exists(), dir.is_dir()) {
+		(false, _) => format!("{} is not a directory", dir.display()),
+		(true, false) => format!("{} is a file, not a folder", dir.display()),
+		(true, true) => otherwise.to_string(),
 	}
 }
 
-/// A path with nothing at it, and the path they probably meant when one
-/// component of it is a typo.
-fn nothing_at(dir: &Path) -> String {
-	let mut out = format!("{} is not a directory — there is nothing at that path.", dir.display());
-	if let Some(meant) = misspelt(dir) {
-		out.push_str(&format!("\n    Did you mean {}?", meant.display()));
+/// The "did you mean" `help:` lines of a refusal: a typo one edit away, an archive to
+/// unpack, the source above or inside the folder. None when there is no guess.
+fn hint(dir: &Path, want: Option<Look>) -> Vec<String> {
+	let mut out = Vec::new();
+	if !dir.exists()
+		&& let Some(meant) = misspelt(dir)
+	{
+		out.push(format!("help: did you mean `{}`?", meant.display()));
+	}
+	if dir.is_file() {
+		out.push("help: an archive is unpacked first: give the folder it unpacks to".to_string());
+	}
+	match nearby(dir, want) {
+		Some(Near::Above(path, look)) if want.is_none_or(|w| w == look) => {
+			out.push(format!("help: it is inside {}, which is one: give `{}`", path.display(), path.display()))
+		}
+		Some(Near::Above(path, look)) => out.push(format!(
+			"help: it is inside {}, which is {} rather than what was picked",
+			path.display(),
+			look.named()
+		)),
+		Some(Near::Inside(path, look)) if want.is_none_or(|w| w == look) => out.push(format!("help: it holds one: give `{}`", path.display())),
+		Some(Near::Inside(path, look)) => out.push(format!("help: it holds {}, which is {}", path.display(), look.named())),
+		None => {}
 	}
 	out
 }
@@ -765,49 +769,18 @@ fn edit_distance(a: &str, b: &str) -> usize {
 
 /// A path given on the command line that is neither of the two.
 ///
-/// Names both shapes, because nothing was picked and so nothing says which one
-/// they were after — and names where a VCDS installation comes from, because
-/// "you have neither" is the likeliest reason to be here at all.
+/// Names both shapes, because nothing was picked and so nothing says which one they
+/// were after, and the way in that needs no folder at all.
 fn unrecognised(dir: &Path) -> anyhow::Error {
 	use vag_cli_core::report::Advice as _;
-	let shown = dir.display();
-	let (head, first) = match (dir.exists(), dir.is_dir()) {
-		(false, _) => (
-			format!("{shown} is not a directory: there is nothing at that path"),
-			misspelt(dir).map(|meant| format!("did you mean {}?", meant.display())),
-		),
-		(true, false) => (
-			format!("{shown} is not a directory: it is a file"),
-			Some("if that is an archive, unpack it and point at the folder it unpacks to".to_string()),
-		),
-		(true, true) => (format!("{shown} is neither an ODIS project nor a VCDS installation"), None),
-	};
+	let head = what_is_there(dir, &format!("{} is neither an ODIS project nor a VCDS installation", dir.display()));
 	let mut err = anyhow::anyhow!("{head}");
-	let near = hint(dir, None);
-	if !near.is_empty() {
-		err = err.note(clause(&near.split_whitespace().collect::<Vec<_>>().join(" ")));
-	}
-	// The ODIS shape first, the order the menu offers them in.
-	err = err.note(clause(Look::Odis.expected())).note(clause(Look::Vcds.expected()));
-	if let Some(first) = first {
-		err = err.help(first);
+	for help in hint(dir, None) {
+		err = err.help(help.trim_start_matches("help: ").to_string());
 	}
 	err
-		.help("run `vagcan setup` with no path: it asks which, and offers to download an installation")
-		.help(format!(
-			"or download Ross-Tech's installation from {}, then run `vagcan setup <folder>`",
-			crate::missing::VCDS_DOWNLOAD
-		))
-}
-
-/// A sentence written for a prompt, as a `note:` line: lower case first, no full stop.
-fn clause(sentence: &str) -> String {
-	let trimmed = sentence.trim().trim_end_matches('.');
-	let mut chars = trimmed.chars();
-	match chars.next() {
-		Some(first) => first.to_lowercase().chain(chars).collect(),
-		None => String::new(),
-	}
+		.help("give a VCDS installation (holds `Labels/` and `UDS_EV/`) or an extracted ODIS project")
+		.help("run `vagcan setup` with no path to pick one or download VCDS")
 }
 
 /// A path as a person hands one over.
@@ -989,6 +962,8 @@ pub enum Landing {
 	/// A project that has read this very source before: it is read again, and
 	/// what it wrote then is replaced.
 	Rereads,
+	/// The VCDS store holds another installation, which this one replaces.
+	Replaces,
 }
 
 /// Which [`Landing`] project `id` is, given the projects on disk and those of
@@ -1521,7 +1496,7 @@ mod tests {
 		let mut io = Scripted::new(script([row(Look::Vcds), typed(&archive), again(&install)]));
 		choose(&mut io, &mut no_dialog(), None).unwrap();
 		let said = io.all_said();
-		assert!(said.contains("is not a directory"), "USAGE.md documents this phrase: {said}");
+		assert!(said.contains("is a file, not a folder"), "{said}");
 		assert!(said.contains("unpack"), "an archive is a case, not a mystery: {said}");
 	}
 
@@ -1549,12 +1524,14 @@ mod tests {
 		let mut io = Scripted::new(vec![]);
 		let why = choose(&mut io, &mut no_dialog(), Some("/definitely/not/here")).unwrap_err();
 		let why = vag_cli_core::report::render(&why, 0, vag_cli_core::report::Colour::Never);
-		assert!(why.starts_with("error: /definitely/not/here is not a directory"), "{why}");
-		assert!(why.contains("is not a directory"), "{why}");
+		assert!(why.starts_with("error: /definitely/not/here is not a directory\n\nhelp: "), "{why}");
 		assert!(why.contains("Labels/"), "{why}");
-		assert!(why.contains("AStringData.data.gz"), "the other kind is named too: {why}");
-		assert!(why.contains(crate::missing::VCDS_DOWNLOAD), "{why}");
-		assert!(why.contains("offers to download"), "the other way in is named: {why}");
+		assert!(why.contains("an extracted ODIS project"), "the other kind is named too: {why}");
+		assert!(
+			why.ends_with("\nhelp: run `vagcan setup` with no path to pick one or download VCDS\n"),
+			"{why}"
+		);
+		assert!(why.lines().all(|l| l.chars().count() <= 100), "short lines: {why}");
 	}
 
 	#[test]
@@ -1567,7 +1544,7 @@ mod tests {
 		let mut io = Scripted::new(vec![]);
 		let why = choose(&mut io, &mut no_dialog(), Some(&typed.display().to_string())).unwrap_err();
 		let why = vag_cli_core::report::render(&why, 0, vag_cli_core::report::Colour::Never);
-		assert!(why.contains(&format!("help: did you mean {}?", meant.display())), "{why}");
+		assert!(why.contains(&format!("help: did you mean `{}`?", meant.display())), "{why}");
 	}
 
 	#[test]

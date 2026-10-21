@@ -98,21 +98,26 @@ vagcan faults --unit 01           # one unit
 vagcan faults --unit 01,02,713    # several
 ```
 
-**Run `vagcan setup` once, and faults come out named.** Without it the `dtc` and
-`text` columns are empty; with it each code carries its SAE code and the text VCDS or
-ODIS itself would print. The output is one table and a summary line on stdout:
+**Run `vagcan setup` once, and faults come out named.** Without it a code is its bare
+number; with it each code carries its SAE code and the text VCDS or ODIS itself would print.
+On stdout: a summary line, then a block per unit that has codes.
 
 ```
-unit  id   name         code    dtc      status     km      count  last seen            src   text
-16    70C  Lenks.Modul  047120  B145501  confirmed  214592    254  2026-09-28 14:20:59  odis  Unterbrechung des Signalpfades "Init"
+2 stored codes on 2 of 18 units · 1 failing now
 
-1 stored · 0 failing now · 18 units read
+70C  Lenks.Modul  5Q0953521KM
+  ✗ B145501  Unterbrechung des Signalpfades "Init"
+             failing · 254 times · 214592 km · last 2026-09-28 14:20
+
+713  ESC  5Q0614517AQ
+  · B1168F2  Steering Angle Sensor: Not Initialized (VCDS text)
+             stored · 3 times · 210101 km
 ```
 
-`status` is one word (`failing` = failing now); `last seen` is the car's own clock.
-`src` is whose words the text is: `odis`, `vcds`, or `odis?` — an ODIS variant the car's
-identifiers did not settle, a guess; report such a text as one. On a narrow terminal the
-text moves to its own indented line under the row.
+`✗` is failing now, `·` stored. `last` is the car's own clock. A mark after the text says
+when its words are not the source's settled ones: `(VCDS text)` or `(ODIS text)` borrowed
+from the other source, `(variant not settled)` — an ODIS variant the car's identifiers did
+not settle, a guess; report such a text as one. Long text wraps under itself.
 On the reference car 11 of 15 confirmed codes name with VCDS alone, 15 of 15 with ODIS.
 
 A code stays a number when the chain cannot reach it, and `vagcan -v faults` says why,
@@ -122,8 +127,8 @@ the one thing this path refuses to do, and it has held at zero wrong answers acr
 every check (`.archive/research/labels/fault-naming-hop.md`).
 
 The first run against an installation recovers the encryption keys of the `.rod`
-catalogues, which costs about 95 s of every core per unit file. They are cached — the
-project's own cache is `~/.vagcan/data/<project>/rod-keys.json` — so only the first run pays.
+catalogues, which costs about 95 s of every core per unit file. They are cached — in the
+machine's VCDS store, `~/.vagcan/vcds/rod-keys.json` — so only the first run pays.
 
 Only codes the unit has **confirmed** are shown. `--all` adds the hundreds of tests
 that have merely never run since the memory was last cleared; they are not faults and

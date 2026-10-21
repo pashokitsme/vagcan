@@ -209,7 +209,7 @@ impl Chooser for Console {
 		// Before raw mode, not after: switching a terminal that is not there is
 		// an errno, and this is the sentence that actually helps.
 		if !super::can_ask() {
-			bail!(list_needs_a_terminal(level.what, &self.instead));
+			return Err(list_needs_a_terminal(level.what, &self.instead));
 		}
 		// No progress line may tick over the list (`crate::progress::hold`).
 		let _held = crate::progress::hold();
@@ -272,7 +272,7 @@ impl Chooser for Console {
 	fn confirm(&mut self, question: &str) -> Result<bool> {
 		// Asked outside raw mode, so the answer echoes and a backspace works.
 		if !super::can_ask() {
-			bail!(list_needs_a_terminal("file to delete", &self.instead));
+			return Err(list_needs_a_terminal("file to delete", &self.instead));
 		}
 		// No progress line may tick over the question (`crate::progress::hold`).
 		let _held = crate::progress::hold();
@@ -845,11 +845,9 @@ fn nothing_here(dir: &Path, level: &Level<'_>) -> String {
 /// question, so there is nothing to name, where a listing is always a listing
 /// *of* something. Both were called `no_terminal` and read as one function; they
 /// are two. The predicate they share is [`can_ask`](crate::ui::can_ask).
-fn list_needs_a_terminal(what: &str, instead: &str) -> String {
-	format!(
-		"there is no terminal to choose a {what} at — stdin is redirected, so nobody would \
-         see the list.\nName it on the command line instead:\n    {instead}"
-	)
+fn list_needs_a_terminal(what: &str, instead: &str) -> anyhow::Error {
+	use crate::report::Advice as _;
+	anyhow::anyhow!("no terminal to choose a {what} at: stdin is redirected").help(format!("name it on the command line: `{instead}`"))
 }
 
 #[cfg(test)]
@@ -1248,7 +1246,11 @@ mod tests {
 	#[test]
 	fn with_no_terminal_the_refusal_names_the_argument_to_pass_instead() {
 		// A prompt on a redirected stdin is a hang nobody can diagnose.
-		let why = list_needs_a_terminal("session", "vagcan measure view PATH");
+		let why = crate::report::render(
+			&list_needs_a_terminal("session", "vagcan measure view PATH"),
+			0,
+			crate::report::Colour::Never,
+		);
 		assert!(why.contains("no terminal"), "{why}");
 		assert!(why.contains("vagcan measure view PATH"), "{why}");
 	}

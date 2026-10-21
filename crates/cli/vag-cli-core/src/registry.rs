@@ -515,6 +515,43 @@ pub struct Summary {
 impl Summary {
 	/// The sentence a report gives for the read: what was written, for how many
 	/// units, and what the listed rows that brought nothing were.
+	/// The read in a few words, for a line of its own: `6085 channels of 15 units`.
+	pub fn headline(&self) -> String {
+		format!(
+			"{} channel{} of {} unit{}",
+			self.written,
+			plural(self.written),
+			self.read,
+			plural(self.read)
+		)
+	}
+
+	/// What [`Self::headline`] leaves out, a phrase each: rows that are not channels, rows
+	/// that did not read, the other registries' rows, the keys found.
+	pub fn more(&self) -> Vec<String> {
+		let mut more = Vec::new();
+		if self.read < self.asked {
+			more.push(format!("{} of {} unit{} asked", self.read, self.asked, plural(self.asked)));
+		}
+		if self.not_channels > 0 {
+			more.push(format!("{} listed row{} not channels", self.not_channels, plural(self.not_channels)));
+		}
+		if self.unread > 0 {
+			more.push(format!("{} listed row{} did not read", self.unread, plural(self.unread)));
+		}
+		if self.other_rows > 0 {
+			more.push(format!("{} rows of VCDS's other registries", self.other_rows));
+		}
+		if self.keys_found > 0 {
+			let kept = match self.keys_unsaved {
+				None => "cached",
+				Some(_) => "not saved",
+			};
+			more.push(format!("{} key{} found, {kept}", self.keys_found, plural(self.keys_found)));
+		}
+		more
+	}
+
 	pub fn detail(&self) -> String {
 		let mut detail = format!(
 			"{} channel{} for {} of {} unit{}",
@@ -602,13 +639,15 @@ fn forget_log(project: &Project) {
 }
 
 /// Read the registry for `units` — `(F19E, F1A2)` each — out of the
-/// installation at `root`, write their channels into the project's cache, and
-/// log what came of every unit.
+/// installation at `root`, write their channels into the VCDS store's cache, and
+/// log what came of every unit there. The ODIS project, when there is one, says which
+/// units are no gap when the installation has nothing for them.
 ///
 /// Every key found is saved after the table it opened, and a unit's as that
 /// unit is done, so a run that is interrupted leaves the next one less to search
 /// for.
-pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, progress: &mut impl Progress) -> Result<Read> {
+pub fn read(root: &Path, stores: &crate::project::Stores, units: &BTreeSet<(String, String)>, progress: &mut impl Progress) -> Result<Read> {
+	let project = &stores.vcds;
 	let _reading = Reading::start();
 	let path = project.rod_keys();
 	let cache = IvCache::load(&path);
@@ -725,7 +764,7 @@ pub fn read(root: &Path, project: &Project, units: &BTreeSet<(String, String)>, 
 
 	// A unit the project's ODIS rows describe is not a gap when this
 	// installation has nothing for it: its channels are there already.
-	let extracted = crate::extracted::open(project);
+	let extracted = crate::extracted::open(stores);
 	let mut variants: BTreeMap<String, Vec<vag_data_labels::odis::Reading>> = BTreeMap::new();
 	let (mut read, mut not_channels, mut unread, mut dropped, mut lossy) = (0usize, 0usize, 0usize, 0usize, 0usize);
 	// Every unit's list is found at once, on rayon's pool: each is a walk of the
@@ -1362,7 +1401,7 @@ fn units_of_this_car(n: usize) -> String {
 /// list was read, has no entry. Empty when there is no project or no log, or
 /// the log does not read: the summary is not the place to say so.
 pub fn causes(identities: &[UnitIdentity]) -> BTreeMap<u16, String> {
-	let Ok(project) = crate::project::current() else {
+	let Ok(project) = crate::project::vcds() else {
 		return BTreeMap::new();
 	};
 	let Ok(Some(log)) = Log::load(&project) else {
@@ -1444,13 +1483,14 @@ pub async fn ensure_async(identities: Vec<UnitIdentity>) {
 }
 
 fn try_ensure(identities: &[UnitIdentity]) -> Result<()> {
-	// No project is a machine `setup` has not run on; the commands say so
-	// themselves, in `missing`'s words, when they find no channels.
-	let Ok(project) = crate::project::current() else {
+	// No VCDS store is a machine `setup` has not run on; the commands say so
+	// themselves, in `missing`'s words, when they find no channels. A project named
+	// wrongly costs nothing here: the VCDS rows are the store's.
+	let Some(stores) = crate::project::stores_or_vcds() else {
 		return Ok(());
 	};
-	let extracted = crate::extracted::open(&project);
-	let (wanted, root, outdated) = match unread(&project, identities, described_by(&extracted))? {
+	let extracted = crate::extracted::open(&stores);
+	let (wanted, root, outdated) = match unread(&stores.vcds, identities, described_by(&extracted))? {
 		Unread::Nothing => return Ok(()),
 		Unread::Unreadable { units, why } => {
 			crate::say!("{}", unreadable(units.len(), &why));
@@ -1484,7 +1524,7 @@ fn try_ensure(identities: &[UnitIdentity]) -> Result<()> {
 		spinner: None,
 		said: Vec::new(),
 	};
-	let outcome = read(&root, &project, &units, &mut progress)?;
+	let outcome = read(&root, &stores, &units, &mut progress)?;
 	let said = std::mem::take(&mut progress.said);
 	drop(progress);
 	match outcome {
@@ -1611,6 +1651,14 @@ mod tests {
 		Project {
 			id: "TEST".into(),
 			dir: dir.join("TEST"),
+		}
+	}
+
+	/// A VCDS store with no ODIS project beside it, as a read is handed one.
+	fn alone(store: &Project) -> crate::project::Stores {
+		crate::project::Stores {
+			project: None,
+			vcds: store.clone(),
 		}
 	}
 
@@ -2160,7 +2208,7 @@ mod tests {
 		}
 		// The installation is one of the project's sources, as setup's label step leaves it.
 		vag_data_db::record_language(&project.cache(), vag_data_db::VCDS, &source_of(&root), "eng").unwrap();
-		let outcome = read(&root, &project, &units, &mut Nothing).unwrap();
+		let outcome = read(&root, &alone(&project), &units, &mut Nothing).unwrap();
 		let Read::NoRegistry { why, removed } = outcome else {
 			panic!("{outcome:?}");
 		};
@@ -2195,7 +2243,7 @@ mod tests {
 			fn waiting(&mut self, _: &str) {}
 			fn done(&mut self, _: &str) {}
 		}
-		let outcome = read(&root, &project, &units, &mut Nothing).unwrap();
+		let outcome = read(&root, &alone(&project), &units, &mut Nothing).unwrap();
 		let Read::NoRegistry { why, .. } = outcome else {
 			panic!("{outcome:?}");
 		};

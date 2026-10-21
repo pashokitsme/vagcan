@@ -27,6 +27,9 @@ pub const FAIL: &str = "✗";
 /// Before a fault code stored and not failing now (`faults`).
 pub const STORED: &str = "·";
 
+/// Before a fault code the unit lists and has not confirmed (`faults --all`).
+pub const UNCONFIRMED: &str = "○";
+
 /// Where text was cut to fit: `table`'s cells, the menu's and the picker's lines, a PDU's bytes
 /// in `dev sniff` and in a property dump, a column's values in `dev recording discover`.
 pub const ELLIPSIS: char = '…';
