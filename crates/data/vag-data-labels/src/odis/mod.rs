@@ -658,14 +658,23 @@ impl Project {
 
 		// A case keyed by the key's text is turned into the number through the key's own
 		// text table — never matched by position or guessed.
-		let key_levels = match (&mux.key_dop, mux.cases.iter().any(|c| c.text.is_some())) {
-			(Some(target), true) => match store.object(&own, &variant.pool, target)? {
-				Some(loaders::Object::Dop(dop)) => match dop.compu.as_ref().map(|c| c.scaling()) {
-					Some(Ok(crate::catalog::Scaling::Enum { levels })) => levels,
-					_ => Vec::new(),
-				},
-				_ => Vec::new(),
+		// The key is the record number: the answer's one byte at the multiplexer's start. A
+		// key anywhere else, or of another width, is a multiplexer this reading does not fit.
+		let key = match &mux.key_dop {
+			Some(target) => match store.object(&own, &variant.pool, target)? {
+				Some(loaders::Object::Dop(dop)) => Some(dop),
+				_ => None,
 			},
+			None => None,
+		};
+		let key_bits = key.as_ref().and_then(|dop| dop.coded.as_ref()).and_then(|c| c.bits);
+		if key_bits != Some(8) {
+			return Err(Error::Format(format!(
+				"{mux_id}: its key is {key_bits:?} bits wide, not the record number's one byte"
+			)));
+		}
+		let key_levels = match key.as_ref().and_then(|dop| dop.compu.as_ref()).map(|c| c.scaling()) {
+			Some(Ok(crate::catalog::Scaling::Enum { levels })) => levels,
 			_ => Vec::new(),
 		};
 		let range_of = |case: &loaders::extended::Case| match (&case.range, &case.text) {
@@ -679,15 +688,20 @@ impl Project {
 		};
 
 		let mut out = Vec::new();
-		for case in &mux.cases {
-			let range = range_of(case)?;
+		// Each record number has one case: two that start on the same number (or two default
+		// cases) would be stored as one record, the fields of both under it.
+		let ranges = mux.cases.iter().map(&range_of).collect::<Result<Vec<_>, _>>()?;
+		if let Some(start) = repeated_start(&ranges) {
+			return Err(Error::Format(format!("{mux_id}: two cases for record {start:?}")));
+		}
+		for (case, range) in mux.cases.iter().zip(ranges) {
 			let mut fields = Vec::new();
 			let mut declared = None;
 			if let Some(target) = &case.structure {
 				match store.object(&own, &variant.pool, target)? {
 					Some(loaders::Object::Structure(structure)) => {
 						declared = (structure.bytes > 0).then_some(u32::from(structure.bytes));
-						store.environment_fields(&own, &variant.pool, &structure, 0, &mut fields)?;
+						store.environment_fields(&own, &variant.pool, &structure, 0, 0, &mut fields)?;
 					}
 					_ => {
 						return Err(Error::Missing(format!(
@@ -993,9 +1007,6 @@ impl<'a> Store<'a> {
 		Ok(None)
 	}
 
-	/// The layer that declares the fault-code properties, and its pool —
-	/// [`Store::measurement_layer`] for the fault chain, and the same rule:
-	/// the variant's own layer if it names any, else the first parent that does.
 	/// The extended-data multiplexer a variant resolves to: `(ObjectID, pool)` of the first
 	/// layer — its own, then each parent nearest first — whose property index names
 	/// [`loaders::extended::EXTENDED_DATA_MULTIPLEXER`].
@@ -1023,15 +1034,24 @@ impl<'a> Store<'a> {
 
 	/// The fields of one case structure, flattened: a field whose data object property is a
 	/// structure itself (the time stamp) is its fields, at its own byte position plus
-	/// theirs. `base` is that position, in bytes from the multiplexer's start.
+	/// theirs. `base` is that position, in bytes from the multiplexer's start; `depth` how
+	/// many structures deep this one is, refused past [`MAX_STRUCTURE_DEPTH`] — a structure
+	/// that names itself would otherwise recurse until the stack ran out, inside `setup`'s walk.
 	fn environment_fields(
 		&mut self,
 		layer: &loaders::identity::LayerData,
 		home: &str,
 		structure: &loaders::measurement::Structure,
 		base: u32,
+		depth: usize,
 		out: &mut Vec<EnvironmentField>,
 	) -> Result<(), Error> {
+		if depth > MAX_STRUCTURE_DEPTH {
+			return Err(Error::Format(format!(
+				"structures nested more than {MAX_STRUCTURE_DEPTH} deep at {:?}: a structure that contains itself",
+				structure.short_name
+			)));
+		}
 		for field in &structure.fields {
 			let byte = base.saturating_add(field.byte_position.unwrap_or(0));
 			let bit_offset = Some(byte.saturating_mul(8).saturating_add(u32::from(field.bit_position)));
@@ -1054,7 +1074,7 @@ impl<'a> Store<'a> {
 			// record: a multiplexed measurement value sits inside some records.
 			match self.object(layer, home, &target) {
 				Ok(Some(loaders::Object::Structure(inner))) => {
-					self.environment_fields(layer, home, &inner, byte, out)?;
+					self.environment_fields(layer, home, &inner, byte, depth + 1, out)?;
 					continue;
 				}
 				Ok(Some(loaders::Object::Dop(dop))) => {
@@ -1063,7 +1083,10 @@ impl<'a> Store<'a> {
 						item.signed = coded.base.is_signed();
 						item.big_endian = coded.high_low_byte_order;
 					}
-					item.scaling = dop.compu.as_ref().and_then(|c| c.scaling().ok());
+					// A scaling only for an integer: a string, a float or a byte field is its
+					// bytes, not a number its compu method was never meant for.
+					let integer = dop.coded.as_ref().is_some_and(|c| c.base.is_integer());
+					item.scaling = dop.compu.as_ref().filter(|_| integer).and_then(|c| c.scaling().ok());
 					item.unit = match dop.unit.clone() {
 						Some(target) => match self.object(layer, home, &target) {
 							Ok(Some(loaders::Object::Unit(unit))) => unit.display_name.or(unit.long_name),
@@ -1080,6 +1103,9 @@ impl<'a> Store<'a> {
 		Ok(())
 	}
 
+	/// The layer that declares the fault-code properties, and its pool —
+	/// [`Store::measurement_layer`] for the fault chain, and the same rule:
+	/// the variant's own layer if it names any, else the first parent that does.
 	fn fault_layer(&mut self, variant: &Variant, own: loaders::identity::LayerData) -> Result<Option<(loaders::identity::LayerData, String)>, Error> {
 		if !own.dtc_properties.is_empty() {
 			return Ok(Some((own, variant.pool.clone())));
@@ -1276,12 +1302,17 @@ impl<'a> Store<'a> {
 	}
 }
 
-/// Find the row a DID's name keys.
-///
-/// Some pools spell a row key with spaces where the identifier list spells it
-/// with underscores. That is a defect in VW's own files — their kernel
-/// complains about it too — so the swap is tried rather than the channel
-/// dropped.
+/// The first record number two cases start on — `None` inside for two default cases — or
+/// `None` when every case starts on its own.
+fn repeated_start(ranges: &[Option<(i32, i32)>]) -> Option<Option<i32>> {
+	let starts: Vec<Option<i32>> = ranges.iter().map(|r| r.map(|(lower, _)| lower)).collect();
+	starts.iter().enumerate().find(|(at, s)| starts[..*at].contains(s)).map(|(_, s)| *s)
+}
+
+/// How many structures deep a case's fields may sit: the time stamp inside record `0x02` is
+/// one level down. A deeper nesting than this is taken for a structure that names itself.
+const MAX_STRUCTURE_DEPTH: usize = 8;
+
 /// A record's length from its fields, in bytes after the record number: where its last
 /// field ends, when that is known.
 ///
@@ -1300,6 +1331,12 @@ fn known_extent(fields: &[EnvironmentField]) -> Option<u32> {
 	(!unbounded_after).then(|| end.div_ceil(8))
 }
 
+/// Find the row a DID's name keys.
+///
+/// Some pools spell a row key with spaces where the identifier list spells it
+/// with underscores. That is a defect in VW's own files — their kernel
+/// complains about it too — so the swap is tried rather than the channel
+/// dropped.
 fn row_for(rows: &[(Option<String>, loaders::Ref)], name: &str) -> Option<loaders::Ref> {
 	let spaced = name.replace('_', " ");
 	rows
@@ -2057,6 +2094,8 @@ mod tests {
 		b.put("DOP_Byte", code::DB_DOP_SIMPLE_BASE, byte_dop);
 		let volt_dop = dop(&mut b, "DOP_Volt_inner", 8, linear(0.0, 1.0, 10.0), None);
 		b.put("DOP_Volt", code::DB_DOP_SIMPLE_BASE, volt_dop);
+		let key_dop = dop(&mut b, "DOP_UINTHEX1Byte_inner", 8, identical(), None);
+		b.put("DOP_UINTHEX1Byte", code::DB_DOP_SIMPLE_BASE, key_dop);
 		let structure = |b: &mut Build, bytes: u16, fields: &[(&str, u32, &str)]| {
 			let mut o = Obj::default().u32(0).u32(0).u32(0).u32(0).u32(0).u32(0).u16(bytes);
 			o = o.some(code::MCD_DB_PARAMETERS).u16(fields.len() as u16);
@@ -2071,6 +2110,9 @@ mod tests {
 		b.put("STRUC_Info", code::MCD_DB_PARAMETER_STRUCTURE, info);
 		let own = structure(&mut b, 0, &[("Engine speed", 0, "DOP_Rpm"), ("Voltage", 2, "DOP_Volt")]);
 		b.put("STRUC_Own", code::MCD_DB_PARAMETER_STRUCTURE, own);
+		// A structure whose one field is itself: no case names it; the depth test reads it.
+		let looped = structure(&mut b, 0, &[("Again", 0, "STRUC_Loop")]);
+		b.put("STRUC_Loop", code::MCD_DB_PARAMETER_STRUCTURE, looped);
 		let key_dop = b.a("DOP_UINTHEX1Byte");
 		let mut mux = Obj::default()
 			.u32(1) // the cases start one byte in, after the record number
@@ -2280,6 +2322,29 @@ mod tests {
 			let volts = &records[1].fields[1];
 			assert_eq!((volts.bit_offset, volts.bit_length), (Some(16), Some(8)));
 		}
+	}
+
+	#[test]
+	fn two_cases_on_one_record_number_are_found() {
+		assert_eq!(repeated_start(&[Some((1, 1)), Some((2, 2)), None]), None);
+		assert_eq!(repeated_start(&[Some((112, 112)), Some((112, 113))]), Some(Some(112)));
+		assert_eq!(repeated_start(&[None, Some((1, 1)), None]), Some(None));
+	}
+
+	#[test]
+	fn a_structure_that_contains_itself_is_refused_not_followed_down() {
+		let dir = tempfile::tempdir().expect("a temporary directory");
+		let (project, pool_id) = miniature_project(dir.path(), false);
+		let variants = project.variants().expect("the project data parses");
+		let ev = variants.iter().find(|v| v.name == "EV_Test").expect("the ECU variant is listed");
+		let mut store = Store::new(&project);
+		let own = store.layer_data(ev).expect("the layer reads").expect("the layer is there");
+		let Some(loaders::Object::Structure(looped)) = store.named(&pool_id, "STRUC_Loop").expect("the fixture reads") else {
+			panic!("the fixture has the structure");
+		};
+		let mut fields = Vec::new();
+		let refused = store.environment_fields(&own, &pool_id, &looped, 0, 0, &mut fields);
+		assert!(matches!(&refused, Err(Error::Format(m)) if m.contains("contains itself")), "{refused:?}");
 	}
 
 	#[test]

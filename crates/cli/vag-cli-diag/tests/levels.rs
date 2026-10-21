@@ -401,16 +401,14 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 		 2 stored · 1 failing now · 4 units read\n"
 	);
 	assert!(
-		faults[1]
-			.stderr
-			.contains("7E0  freeze frames described by the VCDS rows of EV_TestEngine"),
+		faults[1].stderr.contains("7E0  freeze frames described by VCDS's EV_TestEngine"),
 		"where the layout came from is a -v note: {:?}",
 		faults[1].stderr
 	);
 	assert!(
 		faults[1]
 			.stderr
-			.contains("713  freeze frames: no layout for this variant (the VCDS rows of EV_TestBrake_XX99 is another"),
+			.contains("713  freeze frames: no layout for this variant (VCDS's EV_TestBrake_XX99 is another variant)"),
 		"another variant's rows are named, not used: {:?}",
 		faults[1].stderr
 	);
@@ -430,8 +428,8 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 		112,
 		4,
 		vec![
-			odis_field("Engine Speed", 0, 16, Some(0.25), Some("1/min")),
-			odis_field("Supply voltage", 16, 8, Some(0.1), Some("V")),
+			odis_field("Sim engine speed", 0, 16, Some(0.25), Some("1/min")),
+			odis_field("Sim supply voltage", 16, 8, Some(0.1), Some("V")),
 		],
 	)];
 	let brake_records = [odis_record(112, 2, vec![odis_field("Brake pressure", 0, 16, Some(1.0), Some("bar"))])];
@@ -445,10 +443,10 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	assert!(
 		odis_only[0].stdout.contains(
 			"7E0  000129\n\
-			 \x20   priority        6\n\
-			 \x20   aging counter   16\n\
-			 \x20   Engine Speed    1000 1/min\n\
-			 \x20   Supply voltage  12.3 V\n\
+			 \x20   priority            6\n\
+			 \x20   aging counter       16\n\
+			 \x20   Sim engine speed    1000 1/min\n\
+			 \x20   Sim supply voltage  12.3 V\n\
 			 713  047120\n\
 			 \x20   priority        6\n\
 			 \x20   aging counter   16\n\
@@ -458,12 +456,34 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 		odis_only[0].stdout
 	);
 	assert!(
-		odis_only[1]
-			.stderr
-			.contains("7E0  freeze frames described by the ODIS project's EV_TestEngine_001"),
+		odis_only[1].stderr.contains("7E0  freeze frames described by ODIS's EV_TestEngine_001"),
 		"{:?}",
 		odis_only[1].stderr
 	);
+
+	// Both sources: the run's is ODIS. VCDS has rows for the ESC's own variant and ODIS
+	// none, so the ESC's record 70 stays bytes — VCDS's rows never fill what ODIS lacks.
+	vag_data_db::record_language(&cache, vag_data_db::VCDS, "/x/vcds-test", "eng").unwrap();
+	let brake_vcds = [freeze_row(0, 16, 0, Some((1.0, 0.0)), "bar", "Pressure")];
+	vag_data_db::put_all_vcds_registry_rows(&cache, "/x/vcds-test", [("EV_TestBrake", &brake_vcds[..])]).unwrap();
+	vag_data_db::put_all_odis_freeze_frames(&cache, "/x/TESTPROJECT", [("EV_TestEngine_001", &engine_records[..])]).unwrap();
+	let both = levels!("faults, both sources", faults::run(open, None, false, false, false, false, None).await);
+	assert!(
+		both[0].stdout.contains(
+			"713  047120\n\
+			 \x20   priority       6\n\
+			 \x20   aging counter  16\n\
+			 \x20   record 70      AA BB (no layout for this variant, not decoded)\n"
+		),
+		"{}",
+		both[0].stdout
+	);
+	assert!(
+		both[0].stdout.contains("Sim engine speed    1000 1/min"),
+		"the engine's from ODIS: {}",
+		both[0].stdout
+	);
+	assert!(!both[0].stdout.contains("Pressure"), "VCDS's row read on an ODIS run: {}", both[0].stdout);
 	// A unit whose fault list did not come back is said at level 0, and not counted as
 	// read: 70E is on the gateway's list and never answers (review of PR #38).
 	assert!(faults[0].stderr.contains("70E  fault list not read: "), "{:?}", faults[0].stderr);

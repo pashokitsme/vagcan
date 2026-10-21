@@ -137,18 +137,11 @@ fn home(at: &Path) {
 			fields,
 		};
 		let records = [
-			record(
-				1,
-				2,
-				vec![field("DTC Priority", 0, 8, 1.0, None), field("Occurence Counter", 8, 8, 1.0, None)],
-			),
+			record(1, 2, vec![field("Sim priority", 0, 8, 1.0, None), field("Sim count", 8, 8, 1.0, None)]),
 			record(
 				2,
 				10,
-				vec![
-					field("Central-Aging-Counter", 0, 8, 1.0, None),
-					field("km-Mileage", 8, 24, 1.0, Some("km")),
-				],
+				vec![field("Sim aging", 0, 8, 1.0, None), field("Sim mileage", 8, 24, 1.0, Some("km"))],
 			),
 			record(
 				0x70,

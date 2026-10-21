@@ -80,6 +80,14 @@ pub fn multiplexer(stream: &mut Stream<'_>) -> Result<Multiplexer, Error> {
 		Some(other) => return Err(unexpected(other, SWITCH_KEY)),
 		None => (0, 0, None),
 	};
+	// The key is the record number, the answer's first byte after the status: anything else
+	// is a multiplexer this reading does not describe. Its width is the caller's to check,
+	// through the key's data object property.
+	if key_byte != 0 || key_bit != 0 {
+		return Err(Error::Format(format!(
+			"an extended-data multiplexer keyed at byte {key_byte}, bit {key_bit}, not at the record number"
+		)));
+	}
 	let mut cases = Vec::new();
 	match inline(stream)? {
 		Some(code::DB_CASES) => {
@@ -318,6 +326,16 @@ mod tests {
 			super::super::load(type_code, &mut stream).unwrap(),
 			super::super::Outcome::Unsupported(code::MCD_DB_PARAMETER_MULTIPLEXER)
 		);
+	}
+
+	#[test]
+	fn a_key_anywhere_but_the_record_numbers_byte_is_refused() {
+		let mut b = Bytes::default();
+		b.u32(1);
+		b.some(SWITCH_KEY).u8(0).u32(2).a(Some("DOP_UINTHEX1Byte")).a(Some("0.0.0@POOL.sd"));
+		let (body, strings) = b.done(code::MCD_DB_PARAMETER_MULTIPLEXER);
+		let (_, mut stream) = Stream::open(&body, &strings).unwrap();
+		assert!(matches!(multiplexer(&mut stream), Err(Error::Format(m)) if m.contains("byte 2")));
 	}
 
 	#[test]

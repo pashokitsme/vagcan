@@ -891,7 +891,7 @@ pub async fn run<L: UnitLink>(
 				}
 				Some((source, crate::extracted::FreezeLayout::Another { variant })) => {
 					note!(
-						"{request:03X}  freeze frames: no layout for this variant ({} {variant} is another variant's)",
+						"{request:03X}  freeze frames: no layout for this variant ({} {variant} is another variant)",
 						source.name()
 					);
 					None

@@ -67,11 +67,12 @@ impl Source {
 		}
 	}
 
-	/// How a line names it: `the ODIS project`, `the VCDS rows`.
+	/// The possessive a line names a variant's rows with: `ODIS's EV_SimEngine_001`,
+	/// `VCDS's EV_SimEngine_001` — "described by ODIS's …", "(VCDS's … is another variant)".
 	pub fn name(self) -> &'static str {
 		match self {
-			Source::Odis => "the ODIS project's",
-			Source::Vcds => "the VCDS rows of",
+			Source::Odis => "ODIS's",
+			Source::Vcds => "VCDS's",
 		}
 	}
 }
@@ -240,14 +241,29 @@ pub fn split<'a>(answer: &'a DtcExtendedData, layout: Option<&Layout>, now: Opti
 			.iter()
 			.any(|r| r.number == *n && r.extent == Extent::Whole && Some(r.data.len()) == standard_length(*n))
 	});
+	// A source that lays a standard record out otherwise than the standard (an ODIS variant's
+	// twelve-byte `0x02`) has no stamp check to catch a misaligned split, and a default case of
+	// fixed length reads on through any bytes. The records after it are then read only when
+	// they end exactly where the answer does, every one whole.
+	let redefined = [STANDARD_DTC_INFORMATION, STANDARD_FREEZE_FRAME]
+		.iter()
+		.any(|n| layout.own(*n).is_some() && layout.length_of(*n) != standard_length(*n));
+	let standard = |n: u8| matches!(n, STANDARD_DTC_INFORMATION | STANDARD_FREEZE_FRAME);
+	let tail_whole = records.iter().filter(|r| !standard(r.number)).all(|r| r.extent == Extent::Whole);
 	let why = match (short, standard_whole && context.is_none(), now) {
 		(true, _, _) => Some("the answer does not split on this variant's layout"),
 		(_, true, None) => Some("the unit gave no stamp to check its standard records by"),
 		(_, true, Some(_)) => Some("its standard records fail the unit's own stamp"),
+		_ if redefined && !tail_whole => Some("the answer does not end where this variant's layout says"),
 		_ => None,
 	};
 	if why.is_some() {
-		let records = standard_only();
+		// Split again on the standard records alone — as this layout gives their lengths
+		// where it redefines them — and leave everything after them as bytes.
+		let records = match redefined {
+			true => split_records(answer, |n| if standard(n) { layout.length_of(n) } else { None }),
+			false => standard_only(),
+		};
 		let context = FaultContext::from_records(&records, now);
 		return Frame {
 			records,
@@ -579,13 +595,13 @@ mod tests {
 	/// camera variant has it), and an own record 0x70. Invented.
 	fn odis_layout() -> Layout {
 		let mut fields = vec![
-			field(1, 102, IDENTITY, (0, 8), Some((1.0, 0.0)), "", "DTC Priority"),
-			field(1, 102, IDENTITY, (8, 8), Some((1.0, 0.0)), "", "Occurence Counter"),
-			field(2, 112, RESERVED, (0, 8), None, "", "Reserved 1"),
-			field(2, 112, IDENTITY, (8, 8), Some((1.0, 0.0)), "", "Central-Aging-Counter"),
-			field(2, 112, IDENTITY, (16, 24), Some((1.0, 0.0)), "km", "km-Mileage"),
-			field(112, 103, LINEAR, (0, 16), Some((0.25, 0.0)), "1/min", "Engine Speed"),
-			field(112, 103, LINEAR, (16, 8), Some((0.1, 0.0)), "V", "Supply voltage"),
+			field(1, 102, IDENTITY, (0, 8), Some((1.0, 0.0)), "", "Sim priority"),
+			field(1, 102, IDENTITY, (8, 8), Some((1.0, 0.0)), "", "Sim count"),
+			field(2, 112, RESERVED, (0, 8), None, "", "Sim reserved"),
+			field(2, 112, IDENTITY, (8, 8), Some((1.0, 0.0)), "", "Sim aging"),
+			field(2, 112, IDENTITY, (16, 24), Some((1.0, 0.0)), "km", "Sim mileage"),
+			field(112, 103, LINEAR, (0, 16), Some((0.25, 0.0)), "1/min", "Sim engine speed"),
+			field(112, 103, LINEAR, (16, 8), Some((0.1, 0.0)), "V", "Sim supply voltage"),
 		];
 		for f in &mut fields {
 			f.record_upper = None;
@@ -610,26 +626,59 @@ mod tests {
 					"record 01",
 					"02 05 (standard record, not checked against the unit's own stamp, not decoded)"
 				),
-				("Central-Aging-Counter", "180"),
-				("km-Mileage", "4096 km"),
-				("Engine Speed", "750 1/min"),
-				("Supply voltage", "12.3 V"),
+				("Sim aging", "180"),
+				("Sim mileage", "4096 km"),
+				("Sim engine speed", "750 1/min"),
+				("Sim supply voltage", "12.3 V"),
 			]
 		);
+	}
+
+	#[test]
+	fn a_redefined_record_02_decodes_the_rest_only_where_it_ends_with_the_answer() {
+		// The camera case: the layout's record 0x02 is twelve bytes, the unit's answer is the
+		// standard ten. Split on the layout, 0x02 swallows the next record's number, a stray
+		// byte reads as a default record of two bytes, and nothing comes up short — but the
+		// split does not end on a whole record, so nothing after 0x02 is decoded.
+		let mut fields = odis_layout().records.into_values().flat_map(|r| r.fields).collect::<Vec<_>>();
+		fields.push(field(DEFAULT_RECORD, 102, IDENTITY, (0, 16), Some((1.0, 0.0)), "", "Sim value"));
+		let layout = Layout::new(fields, Source::Odis);
+		let answer = answer(&[0x70, 0x0B, 0xB8, 0x01, 0x02, 0x71, 0xCC]);
+		let frame = split(&answer, Some(&layout), Some(&now()));
+		let lines = lines(&frame, Some(&layout), "");
+		assert!(lines.iter().all(|l| l.key != "Sim value"), "a stray byte decoded: {lines:?}");
+		let tail = lines.last().unwrap();
+		assert!(
+			tail
+				.value
+				.ends_with("(the answer does not end where this variant's layout says, not decoded)"),
+			"{lines:?}"
+		);
+		// The same layout over an answer that does end with a whole record is read.
+		let exact = DtcExtendedData {
+			record: 0x01,
+			data: vec![0x02, 0x05, 0x02, 0, 0xB4, 0x00, 0x10, 0x00, 0, 0, 0, 0, 0, 0, 0, 0x75, 0x01, 0x02],
+		};
+		let frame = split(&exact, Some(&layout), Some(&now()));
+		assert!(lines_of(&frame, &layout).contains(&("Sim value".to_string(), "258".to_string())));
+	}
+
+	fn lines_of(frame: &Frame<'_>, layout: &Layout) -> Vec<(String, String)> {
+		lines(frame, Some(layout), "").into_iter().map(|l| (l.key, l.value)).collect()
 	}
 
 	#[test]
 	fn an_odis_layout_of_the_standard_shape_reads_like_the_standard() {
 		let mut fields = odis_layout().records.into_values().flat_map(|r| r.fields).collect::<Vec<_>>();
 		fields.retain(|f| f.record != 2);
-		fields.push(field(2, 110, IDENTITY, (0, 8), Some((1.0, 0.0)), "", "Central-Aging-Counter"));
+		fields.push(field(2, 110, IDENTITY, (0, 8), Some((1.0, 0.0)), "", "Sim aging"));
 		let layout = Layout::new(fields, Source::Odis);
 		let answer = answer(&[0x70, 0x0B, 0xB8, 0x7B]);
 		let frame = split(&answer, Some(&layout), Some(&now()));
 		assert!(frame.context.is_some());
 		assert_eq!(
 			keyed(&lines(&frame, Some(&layout), ""))[2..],
-			[("Engine Speed", "750 1/min"), ("Supply voltage", "12.3 V")]
+			[("Sim engine speed", "750 1/min"), ("Sim supply voltage", "12.3 V")]
 		);
 	}
 

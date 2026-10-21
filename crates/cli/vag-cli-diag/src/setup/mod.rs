@@ -1038,7 +1038,7 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 		"faults",
 		State::Wrote,
 		format!(
-			"{codes} {}, {with_faults} {}{}; {frames} freeze-frame {}{}",
+			"{codes} {}, {with_faults} {}{}{SEP}{frames} freeze-frame {}{}",
 			plural(codes, "code"),
 			plural(with_faults, "variant"),
 			fault_skipped.note(),

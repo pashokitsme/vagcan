@@ -1690,11 +1690,15 @@ pub fn put_all_vcds_registry_rows<'a>(
 	Ok(Some(written))
 }
 
-/// How many registry rows each section holds, by section tag, in tag order.
-pub fn registry_row_counts(db_path: &Path) -> Result<Vec<(String, u64)>, Error> {
+/// How many registry rows one kind of source wrote in each section, by section tag, in tag
+/// order: an ODIS project's freeze-frame rows share the table with a VCDS install's.
+pub fn registry_row_counts(db_path: &Path, kind: &str) -> Result<Vec<(String, u64)>, Error> {
 	let conn = open_existing(db_path)?;
-	let mut stmt = conn.prepare("SELECT section, COUNT(*) FROM registry_row GROUP BY section ORDER BY section")?;
-	let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?.max(0) as u64)))?;
+	let mut stmt = conn.prepare(
+		"SELECT section, COUNT(*) FROM registry_row WHERE source_id IN (SELECT id FROM source WHERE kind = ?1) \
+         GROUP BY section ORDER BY section",
+	)?;
+	let rows = stmt.query_map([kind], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?.max(0) as u64)))?;
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
@@ -2385,10 +2389,18 @@ pub fn row_counts(db_path: &Path) -> Result<Vec<(&'static str, i64)>, Error> {
 	];
 	let conn = open_existing(db_path)?;
 	let mut out = Vec::with_capacity(TABLES.len());
+	// The registry tables hold an ODIS project's freeze-frame rows too: these are a VCDS
+	// install's counts, so only a VCDS source's rows are counted there.
+	let vcds_rows = "SELECT id FROM registry_row WHERE source_id IN (SELECT id FROM source WHERE kind = 'vcds')";
 	for table in TABLES {
 		// The names are the constant above, never anything a caller supplied,
 		// so the format! cannot carry an injection.
-		let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))?;
+		let query = match table {
+			"registry_row" => format!("SELECT COUNT(*) FROM registry_row WHERE id IN ({vcds_rows})"),
+			"registry_level" => format!("SELECT COUNT(*) FROM registry_level WHERE registry_row_id IN ({vcds_rows})"),
+			_ => format!("SELECT COUNT(*) FROM {table}"),
+		};
+		let n: i64 = conn.query_row(&query, [], |row| row.get(0))?;
 		out.push((table, n));
 	}
 	Ok(out)
@@ -3362,7 +3374,7 @@ mod tests {
 			)]
 		);
 		assert_eq!(
-			registry_row_counts(&ws.db_path).unwrap(),
+			registry_row_counts(&ws.db_path, VCDS).unwrap(),
 			vec![("ADP".to_string(), 2), ("GES".to_string(), 1)]
 		);
 		// Read back as the columns were established to mean, states and all.
@@ -3387,10 +3399,10 @@ mod tests {
 		assert_eq!(registry_variants(&ws.db_path, "GES").unwrap(), ["EV_UnitA"]);
 		// An ODIS write beside it touches none of them.
 		put_readings(&ws.db_path, "/x/SK37X", "EV_ECM", &[]).unwrap();
-		assert_eq!(registry_row_counts(&ws.db_path).unwrap().len(), 2);
+		assert_eq!(registry_row_counts(&ws.db_path, VCDS).unwrap().len(), 2);
 		// Another install's read replaces every VCDS row, its states included.
 		put_all_vcds_registry_rows(&ws.db_path, "/y/vcds-ru", [("EV_UnitB", &b[..])]).unwrap();
-		assert_eq!(registry_row_counts(&ws.db_path).unwrap(), vec![("ADP".to_string(), 1)]);
+		assert_eq!(registry_row_counts(&ws.db_path, VCDS).unwrap(), vec![("ADP".to_string(), 1)]);
 		assert!(registry_rows_of(&ws.db_path, "EV_UnitA", "ADP").unwrap().is_empty());
 		let conn = Connection::open(&ws.db_path).unwrap();
 		let levels: i64 = conn.query_row("SELECT COUNT(*) FROM registry_level", [], |r| r.get(0)).unwrap();
@@ -3620,13 +3632,13 @@ mod tests {
 		assert!(!columns(&conn, "registry_row").unwrap().is_empty());
 		assert!(!columns(&conn, "registry_level").unwrap().is_empty());
 		drop(conn);
-		assert_eq!(registry_row_counts(&ws.db_path).unwrap(), vec![]);
+		assert_eq!(registry_row_counts(&ws.db_path, VCDS).unwrap(), vec![]);
 		assert_eq!(remove_if_older(&ws.db_path).unwrap(), None, "and --refresh has nothing to remove");
 		// The tables take rows.
 		let a = [described("ADP", 0x1075, 1)];
 		record_language(&ws.db_path, VCDS, "/x/vcds-en", "eng").unwrap();
 		put_all_vcds_registry_rows(&ws.db_path, "/x/vcds-en", [("EV_UnitA", &a[..])]).unwrap();
-		assert_eq!(registry_row_counts(&ws.db_path).unwrap(), vec![("ADP".to_string(), 1)]);
+		assert_eq!(registry_row_counts(&ws.db_path, VCDS).unwrap(), vec![("ADP".to_string(), 1)]);
 	}
 
 	#[test]
@@ -4070,6 +4082,27 @@ mod tests {
 		put_all_readings(&ws.db_path, "/x/SK37X", [("EV_Brake1", &[banded(0x1000)][..])]).unwrap();
 		put_all_faults(&ws.db_path, "/x/SK37X", [("EV_Brake1", &[fault(297, "Fehler")][..])]).unwrap();
 		put_all_adaptations(&ws.db_path, "/x/SK37X", [("EV_Brake1", &[banded(0x0550)][..])]).unwrap();
+		// Its freeze-frame rows too, one a text table with its states in `registry_level`.
+		let state = vag_data_labels::odis::EnvironmentField {
+			name: Some("Sim state".into()),
+			text_id: None,
+			unit: None,
+			bit_offset: Some(0),
+			bit_length: Some(8),
+			signed: false,
+			big_endian: true,
+			scaling: Some(Scaling::Enum {
+				levels: vec![Level::point(0, "off"), Level::point(1, "on")],
+			}),
+			constant: false,
+		};
+		let frame = vag_data_labels::odis::EnvironmentRecord {
+			range: Some((112, 112)),
+			name: None,
+			length: Some(1),
+			fields: vec![state],
+		};
+		put_all_odis_freeze_frames(&ws.db_path, "/x/SK37X", [("EV_Brake1", std::slice::from_ref(&frame))]).unwrap();
 		let all = sources(&ws.db_path).unwrap();
 		let (vcds, odis) = (all[0].id, all[1].id);
 		let pristine = std::fs::read(&ws.db_path).unwrap();
@@ -4099,9 +4132,13 @@ mod tests {
 			.query_row("SELECT COUNT(*) FROM reading_level", [], |row| row.get(0))
 			.unwrap();
 		assert_eq!(levels, 0, "the dropped channel's levels stayed");
+		assert!(
+			freeze_frame_variants(&ws.db_path, ODIS).unwrap().is_empty(),
+			"its freeze frames went with it"
+		);
 		assert_no_orphans(&ws.db_path, "ODIS dropped");
 		assert_eq!(
-			registry_row_counts(&ws.db_path).unwrap(),
+			registry_row_counts(&ws.db_path, VCDS).unwrap(),
 			vec![("ADP".to_string(), 1)],
 			"the VCDS registry rows stay with their source"
 		);
@@ -4117,7 +4154,13 @@ mod tests {
 		assert_eq!(faults_of(&ws.db_path, "EV_Brake1").unwrap().len(), 1);
 		assert_eq!(readings_of_kind(&ws.db_path, ODIS, "EV_Brake1").unwrap().len(), 1);
 		assert_eq!(odis_adaptations_of(&ws.db_path, "EV_Brake1").unwrap(), [banded(0x0550)]);
-		assert!(registry_row_counts(&ws.db_path).unwrap().is_empty(), "the registry rows went with it");
+		assert!(
+			registry_row_counts(&ws.db_path, VCDS).unwrap().is_empty(),
+			"the registry rows went with it"
+		);
+		let frames = freeze_frame_fields(&ws.db_path, ODIS, "EV_Brake1").unwrap();
+		assert_eq!(frames.len(), 1, "the ODIS freeze frames stay with their source");
+		assert_eq!(frames[0].levels.len(), 2, "and their states with them");
 		assert_no_orphans(&ws.db_path, "VCDS dropped");
 
 		// An id that is not there is said as one.
