@@ -29,7 +29,10 @@
 //! `measure` prints a line per cycle, `watch` has `--for SECONDS` — and that
 //! sentence is the useful half of the failure.
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use anyhow::Result;
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::{cursor, event, execute, terminal};
 
 /// One thing switched on for as long as a command draws, and switched back off
@@ -75,6 +78,11 @@ impl Crossterm {
 
 impl Terminal for Crossterm {
 	fn on(&mut self, switch: Switch) -> Result<()> {
+		// Once a Ctrl-C is ending the process, the terminal has been or is being given back
+		// from the handler's thread: a screen that starts now would outlive it.
+		if crate::interrupt::ending() {
+			return Err(crate::interrupt::Interrupted.into());
+		}
 		let mut out = std::io::stdout();
 		match switch {
 			Switch::Raw => terminal::enable_raw_mode()?,
@@ -82,10 +90,23 @@ impl Terminal for Crossterm {
 			Switch::Alternate => execute!(out, terminal::EnterAlternateScreen)?,
 			Switch::Mouse => execute!(out, event::EnableMouseCapture)?,
 		}
+		ON.fetch_or(bit(switch, self.cursor_on_stderr), Ordering::SeqCst);
+		// One that raced in — on before the flag, listed after the give-back read the list —
+		// is undone here. Listed first and checked second, so one of the two always sees it.
+		if crate::interrupt::ending() {
+			let _ = self.off(switch);
+			return Err(crate::interrupt::Interrupted.into());
+		}
 		Ok(())
 	}
 
 	fn off(&mut self, switch: Switch) -> Result<()> {
+		// Taken off the list first, and switched off only by whoever took it: a Ctrl-C's
+		// [`give_back`] on its own thread and this guard's `Drop` may both get here.
+		let bit = bit(switch, self.cursor_on_stderr);
+		if ON.fetch_and(!bit, Ordering::SeqCst) & bit == 0 {
+			return Ok(());
+		}
 		let mut out = std::io::stdout();
 		match switch {
 			Switch::Raw => terminal::disable_raw_mode()?,
@@ -95,6 +116,58 @@ impl Terminal for Crossterm {
 		}
 		Ok(())
 	}
+}
+
+/// What is switched on on the real terminal right now, one bit per switch (the cursor
+/// once per stream), for [`give_back`]: a Ctrl-C ends the process from another thread,
+/// and no guard's `Drop` runs then.
+static ON: AtomicU8 = AtomicU8::new(0);
+
+fn bit(switch: Switch, cursor_on_stderr: bool) -> u8 {
+	match switch {
+		Switch::Raw => 1,
+		Switch::Cursor if cursor_on_stderr => 2,
+		Switch::Cursor => 4,
+		Switch::Alternate => 8,
+		Switch::Mouse => 16,
+	}
+}
+
+/// Raw mode alone switched off, if it is on: line mode back without writing a byte, so a
+/// terminal that has stopped taking bytes cannot hold it up. What the handler does first
+/// on its way to the exit, before [`give_back`] writes its escapes.
+pub fn give_back_raw() {
+	let _ = Crossterm { cursor_on_stderr: false }.off(Switch::Raw);
+}
+
+/// Everything still switched on, switched off, in the order a guard would: for a
+/// Ctrl-C, which ends the process from its own thread while a menu or a screen may be
+/// up ([`crate::interrupt`]). The cursor comes back on a full screen too, which
+/// ratatui hid and would have shown again on its own way out.
+pub fn give_back() {
+	let had_screen = ON.load(Ordering::SeqCst) & bit(Switch::Alternate, false) != 0;
+	for (switch, cursor_on_stderr) in [
+		(Switch::Mouse, false),
+		(Switch::Alternate, false),
+		(Switch::Cursor, false),
+		(Switch::Cursor, true),
+		(Switch::Raw, false),
+	] {
+		let _ = Crossterm { cursor_on_stderr }.off(switch);
+	}
+	if had_screen {
+		let _ = execute!(std::io::stdout(), cursor::Show);
+	}
+}
+
+/// Whether a key is Ctrl-C. Raw mode turns the terminal's own interrupt off, so in a
+/// menu or a full screen the keystroke that ends every other command arrives as `c`
+/// with Control held; every raw-mode loop asks this first, or there is no Ctrl-C there.
+/// A menu hands it to [`crate::interrupt::raise`] at once; a full screen quits the way
+/// its own quit key does, so what it was recording is closed properly, and raises it
+/// after — the run ends with 130 either way.
+pub fn interrupts(key: &KeyEvent) -> bool {
+	key.kind != KeyEventKind::Release && key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'C'))
 }
 
 /// What a command needs the terminal to be while it draws.
@@ -209,6 +282,31 @@ impl<T: Terminal> Drop for Guard<T> {
 mod tests {
 	use super::*;
 	use std::sync::{Arc, Mutex};
+
+	#[test]
+	fn ctrl_c_is_an_interrupt_and_nothing_else_is() {
+		use crossterm::event::KeyEventState;
+		let key = |code, modifiers, kind| KeyEvent {
+			code,
+			modifiers,
+			kind,
+			state: KeyEventState::NONE,
+		};
+		let ctrl = KeyModifiers::CONTROL;
+		// What a terminal in raw mode sends for Ctrl-C (0x03), and with Shift held or
+		// Caps Lock on; a held key repeats.
+		assert!(interrupts(&key(KeyCode::Char('c'), ctrl, KeyEventKind::Press)));
+		assert!(interrupts(&key(KeyCode::Char('C'), ctrl | KeyModifiers::SHIFT, KeyEventKind::Press)));
+		assert!(interrupts(&key(KeyCode::Char('c'), ctrl, KeyEventKind::Repeat)));
+		// The release Windows sends after each press is not a second Ctrl-C.
+		assert!(!interrupts(&key(KeyCode::Char('c'), ctrl, KeyEventKind::Release)));
+		// `c` alone is a command's own key: `watch` opens its channel list on it,
+		// `measure` cancels a run.
+		assert!(!interrupts(&key(KeyCode::Char('c'), KeyModifiers::NONE, KeyEventKind::Press)));
+		assert!(!interrupts(&key(KeyCode::Char('c'), KeyModifiers::ALT, KeyEventKind::Press)));
+		assert!(!interrupts(&key(KeyCode::Char('d'), ctrl, KeyEventKind::Press)));
+		assert!(!interrupts(&key(KeyCode::Esc, ctrl, KeyEventKind::Press)));
+	}
 
 	#[test]
 	fn the_cursor_is_switched_on_the_stream_that_draws() {

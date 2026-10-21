@@ -318,6 +318,9 @@ pub struct App {
 	/// Readings taken in over the whole run, for the closing line.
 	readings: u64,
 	status: String,
+	/// The view was left with Ctrl-C: once the screen is down and the recording closed,
+	/// the run ends as an interrupted one does, with 130.
+	interrupted: bool,
 }
 
 impl App {
@@ -357,6 +360,7 @@ impl App {
 			arrivals: std::collections::VecDeque::new(),
 			readings: 0,
 			status: String::new(),
+			interrupted: false,
 		}
 	}
 
@@ -1072,6 +1076,12 @@ fn drain_keys(app: &mut App) -> io::Result<bool> {
 	while event::poll(Duration::from_millis(0))? {
 		match event::read()? {
 			Event::Key(k) if k.kind == KeyEventKind::Press => {
+				// Ctrl-C quits as `q` does, and the run then ends with 130; on its own it is
+				// `c`, the channel list.
+				if term::interrupts(&k) {
+					app.interrupted = true;
+					return Ok(false);
+				}
 				if !on_key(app, k.code) {
 					return Ok(false);
 				}
@@ -2000,6 +2010,12 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, vin: Option<&st
 					continue;
 				}
 				Event::Key(k) if k.kind == KeyEventKind::Press => {
+					// Ctrl-C quits as `q` does, on either screen, and the run then ends
+					// with 130.
+					if term::interrupts(&k) {
+						app.interrupted = true;
+						break Ok(());
+					}
 					// Playback keys only mean something on the live screen;
 					// on the selection screen they are ordinary input.
 					if app.screen == Screen::Live {
@@ -2051,6 +2067,9 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, vin: Option<&st
 		recording.columns.len(),
 		moved.len()
 	);
+	if app.interrupted {
+		return Err(vag_cli_core::interrupt::raise());
+	}
 	result
 }
 
@@ -2651,6 +2670,9 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 		w.flush()?;
 	}
 	vag_cli_core::outln!("{}", closing_line(app.readings, bus.secs() - watching_since));
+	if app.interrupted {
+		return Err(vag_cli_core::interrupt::raise());
+	}
 	result
 }
 

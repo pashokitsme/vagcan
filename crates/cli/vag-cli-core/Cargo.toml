@@ -45,8 +45,9 @@ ratatui = "0.29"
 crossterm = "0.28"
 dirs = "6"
 # The bus scheduler's shell (`bus.rs`): one task owns the link, handles talk to
-# it over channels, and it keeps time with tokio's clock.
-tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+# it over channels, and it keeps time with tokio's clock. `signal`: Ctrl-C is heard on a
+# thread of its own (`interrupt.rs`).
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "signal"] }
 
 [dev-dependencies]
 # `link::pipe_pair`: the remote bus's tests talk to a scripted board through it.

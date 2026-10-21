@@ -891,6 +891,9 @@ pub async fn run<L: UnitLink>(
 	// Off the screen before anything else is written, and for good: a spinner left
 	// ticking draws over the summary and over the question below it.
 	drop(progress);
+	// Every read is done: the link closes now, before the question below and the key
+	// search after it, and a `--slcan` board is out of adapter mode by then.
+	drop(backend);
 
 	let width = vag_cli_core::table::terminal_width();
 	if supported {

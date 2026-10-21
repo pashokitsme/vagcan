@@ -133,11 +133,14 @@ fn replay(
 	let title = Path::new(log)
 		.file_name()
 		.map_or_else(|| log.to_string(), |n| n.to_string_lossy().into_owned());
-	let events = view::show(replay, &notes, &title, speed)?;
+	let shown = view::show(replay, &notes, &title, speed)?;
 	// The screen is gone; what happened stays in the shell.
 	say_all(&said);
-	for line in events {
+	for line in shown.events {
 		vag_cli_core::outln!("{line}");
+	}
+	if shown.interrupted {
+		return Err(vag_cli_core::interrupt::raise());
 	}
 	Ok(())
 }
