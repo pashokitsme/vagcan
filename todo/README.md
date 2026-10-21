@@ -102,7 +102,7 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 | Input backends: `[[button]]`s on GPIO 3–5 (one action each, no long press), the lever and `dashsim` in any mix, one command path; BOOT and RESET are technical, not inputs (owner, 2026-09-27) | `dash/19` |
 | Knock retard alarm −6.0/−4.5, from the research (owner, 2026-09-26) | `dash/04` |
 | An alarm is a channel's minimum and maximum with an "off" value each, not a rule of its own; `[[alarm]]` removed; priority by `alarm_priority`, then the file's order; no bus-budget refusal — the build only says what is read (owner, 2026-10-19) | `dash/04` |
-| A proven row outranks ODIS, and ODIS outranks VCDS, field by field (owner, 2026-09-28) | `label-lookup/02` (archived) |
+| ~~A proven row outranks ODIS, and ODIS outranks VCDS, field by field (owner, 2026-09-28)~~ — superseded 2026-10-21: ODIS and VCDS are independent, one source per run, never mixed (`CLAUDE.md`) | `label-lookup/02` (archived) |
 | `calibrate` removed entirely — «паразитный, никто этим заморачиваться не будет» (owner, 2026-09-28) | `label-lookup/02` (archived) |
 | `dev survey` removed entirely, with `faults --from`, `--diff` and the blind sweep: nobody runs a command just to feed the tool — the commands that meet the car record its units (owner, «б», 2026-09-28) | `label-lookup/03` (archived) |
 | `measure` times a run from the gearbox's speed, the board's stopwatch channel, and finds its roles by text id (owner, 2026-09-28) | PR #17 |

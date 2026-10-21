@@ -167,9 +167,9 @@ Goal, tech stack, architecture and development workflow are **the sections below
 this file** — `todo/GOAL.md` was folded into it and no longer exists. The task
 breakdown is in **[`todo/README.md`](todo/README.md)**; read it before working.
 
-TL;DR: read the whole car over CAN, with channels, scalings and fault text from a VW
-ODIS-Service project (a VCDS installation is the fallback, drives on the car override
-both), on **tokio / edition 2024**, macOS M4, TDD with hardware checkpoints. The live
+TL;DR: read the whole car over CAN, with channels, scalings and fault text from either a VW
+ODIS-Service project or a VCDS installation — two independent sources (below), on
+**tokio / edition 2024**, macOS M4, TDD with hardware checkpoints. The live
 transport is a generic slcan USB-CAN adapter (`vag-uds-can`), or the dash board: over its
 USB cable or BLE through its own scheduler, or as a plain adapter (`--slcan`, or its
 `slcan` image). The dash (ESP32-C3 + OLED) reads the car since 2026-09-13. The HEX clone
@@ -310,6 +310,21 @@ the tool does and what to type. No lecturing, no reasoning the reader did not as
 hedging. Formatting matters: tables for commands, one idea per bullet, fenced blocks for
 anything typed. `CLAUDE.md`, `todo/` and `research/` are for agents and keep their own
 style.
+
+## ODIS and VCDS are independent sources (MANDATORY)
+
+An ODIS project and a VCDS installation are **not companions**: each is a complete source on
+its own, and each has to work alone (owner, 2026-10-21: «vcds и odis – не компаньоны. они
+независимы друг от друга и должны уметь работать самостоятельно»). This replaces the
+2026-09-28 rule "ODIS outranks VCDS, field by field".
+
+- **One source per run.** With both installed, a run uses one of them for everything it names —
+  channels, scalings, fault text, freeze frames, adaptations: ODIS by default when there is
+  one, otherwise VCDS; chosen by `[source] use = "odis" | "vcds"` in `config.toml` or
+  `--source` (owner's pick, 2026-10-21).
+- **Never mixed.** No field, text or record of one source fills a gap in the other. What the
+  chosen source does not describe is shown raw, or as its number, and says so.
+- **Each path is tested alone:** ODIS-only and VCDS-only, on their own fixtures.
 
 ## Command output (MANDATORY)
 
