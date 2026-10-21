@@ -1,0 +1,7 @@
+{"ts_us":0,"dir":"Rx","payload":{"Marker":{"note":"capture start unix_us=1792540800000000"}}}
+{"ts_us":1000,"dir":"Rx","payload":{"CanFrame":{"id":{"Standard":2016},"data":[3,34,244,13,0,0,0,0]}}}
+{"ts_us":9000,"dir":"Rx","payload":{"CanFrame":{"id":{"Standard":2024},"data":[4,98,244,13,0,170,170,170]}}}
+{"ts_us":501000,"dir":"Rx","payload":{"CanFrame":{"id":{"Standard":2016},"data":[3,34,244,13,0,0,0,0]}}}
+{"ts_us":509000,"dir":"Rx","payload":{"CanFrame":{"id":{"Standard":2024},"data":[4,98,244,13,30,170,170,170]}}}
+{"ts_us":601000,"dir":"Rx","payload":{"CanFrame":{"id":{"Standard":2016},"data":[3,25,2,12,0,0,0,0]}}}
+{"ts_us":609000,"dir":"Rx","payload":{"CanFrame":{"id":{"Standard":2024},"data":[7,89,2,255,0,1,41,9]}}}

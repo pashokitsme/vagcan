@@ -12,6 +12,14 @@ rust-version.workspace = true
 name = "vagcan"
 path = "src/main.rs"
 
+# The e2e cases (`tests/e2e/`) run the vagcan a person installs, which `just e2e` builds and
+# names; `cargo test` alone would hand them a test build. So the workspace's tests leave
+# this one out, and `just e2e` asks for it by name.
+[[test]]
+name = "e2e"
+path = "tests/e2e.rs"
+test = false
+
 [features]
 default = ["measure"]
 # The stopwatch is a third of what used to be one crate and is not diagnostics.
@@ -51,6 +59,10 @@ vag-cli-core = { path = "../vag-cli-core", features = ["test-root"] }
 # `tests/no_real_home.rs`: a canary cache of the shape an upgrade rewrites. The version
 # `vag-data-db` locks, so nothing new is fetched.
 rusqlite = { version = "0.31", features = ["bundled"] }
+# `tests/e2e.rs`: the e2e cases under `tests/e2e/`, literate terminal sessions run against a
+# virtual car (`vag-uds-sim`) with a made-up project's rows (`vag-data-db`, `vag-data-labels`).
+trycmd = "0.15"
+vag-uds-sim = { path = "../../uds/vag-uds-sim" }
 
 [target.'cfg(unix)'.dev-dependencies]
 # `tests/ctrl_c.rs`: the binary run in a pseudo-terminal, as a person runs it. Already in the

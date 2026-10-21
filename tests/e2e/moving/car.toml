@@ -1,0 +1,26 @@
+about = """
+A made-up car rolling at 30 km/h: the engine's road speed (OBD-II PID 0D, at F40D) reads
+1E. What changes a unit's session, and the one sweep, are refused on it.
+"""
+
+[[unit]]
+request = "7E0"
+name = "engine"
+part = "SIM906000A"
+component = "SIM ENGINE"
+odx = "EV_SimEngine"
+odx_version = "001001"
+vin = "SIMVIN00000000002"
+
+[unit.did]
+F40D = "1E"
+
+[[unit.fault]]
+code = "00 01 29"
+status = 0x09
+
+[[unit]]
+request = "710"
+name = "gateway"
+part = "SIM907000C"
+component = "SIM GATEWAY"

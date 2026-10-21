@@ -18,7 +18,7 @@ mod overview;
 
 use vag_cli_core::device::{ADAPTER_BAUD, DeviceArg, NotThroughTheBoard, Target};
 use vag_cli_core::{config, datadir, device, glossary, interrupt, plan, project};
-use vag_cli_diag::{car, dash, faults, labels, recording, rescue, setup, sniff, vcds, watch};
+use vag_cli_diag::{car, dash, faults, labels, recording, rescue, setup, sim, sniff, vcds, watch};
 #[cfg(feature = "measure")]
 use vag_cli_measure as measure;
 
@@ -132,6 +132,7 @@ const GLOBALS_APPLY: &[(&str, &[&str])] = &[
 			"measure",
 			"measure setup",
 			"dev glossary",
+			"dev sim",
 			"dev recording dash",
 			"dev dash build",
 			"dev dash edit",
@@ -523,6 +524,29 @@ enum Dev {
 		active: bool,
 	},
 
+	/// Be a car: a virtual one on a pseudo-terminal, for trying commands with no car.
+	///
+	/// Opens a pseudo-terminal and serves the slcan protocol on it, as a USB-CAN adapter
+	/// does, with the control units a profile describes behind it (docs/virtual-car.md).
+	/// Prints the port's path on stdout; give it to any car command as `--device <path>`,
+	/// or set VAGCAN_DEVICE. Runs until Ctrl-C. It opens no device and touches no bus.
+	///
+	/// With `--from` it writes a profile instead, on stdout: from a `watch --out` recording,
+	/// a `dev sniff --out` capture or a car's `units.json`, what the car was seen to say.
+	Sim {
+		/// The car to be: a profile (TOML).
+		#[arg(value_name = "PROFILE", required_unless_present = "from", conflicts_with = "from")]
+		profile: Option<String>,
+		/// Write a profile from these files instead of serving one: a recording, a capture or
+		/// a units.json, merged in order, an earlier file winning where two say the same.
+		#[arg(long, value_name = "FILE", num_args = 1..)]
+		from: Vec<String>,
+		/// The car a recording belongs to, whose recorded units its columns are found
+		/// through; and the VIN the engine answers.
+		#[arg(long, value_name = "VIN", requires = "from")]
+		vin: Option<String>,
+	},
+
 	/// Write your own names for channels. Offline.
 	///
 	/// The wording ODIS and VCDS carry is written for a diagnostic engineer:
@@ -858,6 +882,12 @@ async fn dispatch_dev(tool: Dev, slcan: bool) -> Result<()> {
 				active,
 			)
 			.await
+		}
+		Dev::Sim { profile: Some(profile), .. } => sim::serve(&profile, slcan).await,
+		Dev::Sim { from, vin, .. } => {
+			let toml = sim::profile_from(&from, vin.as_deref(), || data_dir(None))?;
+			vag_cli_core::out!("{toml}");
+			Ok(())
 		}
 		Dev::Glossary => glossary_command(),
 		Dev::Recording { tool } => recording::run(tool),

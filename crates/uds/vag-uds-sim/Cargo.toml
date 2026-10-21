@@ -1,0 +1,27 @@
+[package]
+name = "vag-uds-sim"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+# A virtual car on a pseudo-terminal: the far side of the slcan cable. `vagcan dev sim`
+# serves one, and the e2e goldens (`just e2e`) run the real `vagcan` against it. Host only:
+# it is a test instrument, never on the board and never on a bus.
+
+[dependencies]
+# The addressing rule (request id -> answer id) and the gateway's installation-list
+# identifier: the client's own, so the sim answers where the client listens by
+# construction rather than by a copy of the rule.
+vag-uds-client = { path = "../vag-uds-client" }
+vag-uds-transport = { path = "../vag-uds-transport" }
+# `--from <capture>`: a `dev sniff --out` capture's records.
+vag-uds-capture = { path = "../vag-uds-capture" }
+serde.workspace = true
+# The profile is a file a person writes by hand.
+toml = "1"
+# The pseudo-terminal: openpty, termios, poll. Nothing else here is platform code.
+libc = "0.2"
+
+[dev-dependencies]
+# The client's own slcan codec and version probe: the sim is checked to speak what it reads.
+vag-uds-can = { path = "../vag-uds-can" }

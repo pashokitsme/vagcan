@@ -32,6 +32,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 | Command | What it does |
 |---|---|
 | `dev sniff` | Records the bus. Listen-only by default. Reports dropped frames if the adapter can tell |
+| `dev sim` | A virtual car on a pseudo-terminal: every car command runs against it as through a USB-CAN adapter. `--from` writes its profile from a recording, a capture or a `units.json`. See [docs/virtual-car.md](docs/virtual-car.md) |
 | `dev glossary` | Your own names for channels, in `~/.vagcan/names.csv` |
 | `dev recording` | Works on recorded drives: `discover` finds gear and mode channels, `dash` plays one on the dash panel |
 | `dev vcds` | Works on VCDS files: label lookup, name search, `.rod` decryption, log analysis |
@@ -105,6 +106,7 @@ Updated 2026-10-21.
 - [x] Dash counts the car's stored fault codes once after start and shows the number with a warning triangle
 - [x] A project's sources listed and removed: `setup --list`, `setup --drop` (2026-10-20)
 - [x] `measure view` draws the speed in km/h, on old sessions too; it was 3.6 times low (2026-10-21)
+- [x] A virtual car, `dev sim`, and e2e cases of the commands against it: `just e2e` (2026-10-21)
 - [ ] Page the dash with buttons on its pins
 - [ ] Dash status strip: the page's title, the battery voltage, the link icons and the fault badge across the top (built 2026-10-19, waiting for the car)
 - [ ] Alarms as keys of a channel: a maximum, a minimum and an off value for each, any number of them, an explicit priority; `[[alarm]]` removed (built 2026-10-19, waiting for the car)
