@@ -13,6 +13,7 @@ Caused by:
 
 $ vagcan sensors --unit 713
 ? success
+note: adapter from VAGCAN_DEVICE=[PORT]
 no answer from the car
 check: ignition on · OBD-II pin 6 CAN-H, pin 14 CAN-L, pin 5 GND · adapter termination off · `vagcan devices`
 

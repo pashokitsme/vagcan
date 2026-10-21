@@ -635,15 +635,110 @@ impl SlcanBackend<tokio_serial::SerialStream> {
 		// macOS sets a port's speed with an ioctl a pseudo-terminal does not have (ENOTTY),
 		// so a pseudo-terminal — `vagcan dev sim`, the virtual car — fails the open above.
 		// Speed 0 is serialport's "leave the speed alone" there, and a pseudo-terminal has
-		// no line speed to set. Only on macOS: elsewhere speed 0 is B0, which hangs up.
-		// A port that fails for any other reason fails again here, and its first error is
-		// the one reported.
+		// no line speed to set. Retried only for exactly that: ENOTTY on a pseudo-terminal.
+		// A real adapter whose open failed any other way keeps its error — opened at its old
+		// speed it would read garbled commands. Only on macOS: elsewhere speed 0 is B0,
+		// which hangs up, and the speed sets on a pseudo-terminal anyway.
 		#[cfg(target_os = "macos")]
-		let opened = opened.or_else(|first| tokio_serial::new(path, 0).open_native_async().map_err(|_| first));
+		let opened = match opened {
+			Err(first) if pty::retry_with_speed_left_alone(&first.description, || pty::is_pseudo_terminal(path)) => {
+				tokio_serial::new(path, 0).open_native_async().map_err(|_| first)
+			}
+			opened => opened,
+		};
 		let stream = opened.map_err(|e| CanError::Io(e.to_string()))?;
 		let mut backend = SlcanBackend::new(stream).closing_on_drop();
 		backend.open_channel_mode(bitrate, mode).await?;
 		Ok(backend)
+	}
+}
+
+/// Whether a failed open is a pseudo-terminal refusing a line speed, on macOS.
+#[cfg(all(feature = "slcan", target_os = "macos"))]
+mod pty {
+	use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+
+	/// ENOTTY as serialport describes it: nix's own wording, or the C library's.
+	fn is_enotty(description: &str) -> bool {
+		["Not a typewriter", "Inappropriate ioctl for device"]
+			.iter()
+			.any(|text| description.contains(text))
+	}
+
+	/// Retry the open leaving the speed alone only when it failed with ENOTTY and the port is
+	/// a pseudo-terminal. `is_pty` is asked only after the error matched.
+	pub(super) fn retry_with_speed_left_alone(first_error: &str, is_pty: impl FnOnce() -> bool) -> bool {
+		is_enotty(first_error) && is_pty()
+	}
+
+	/// Whether `path` is a pseudo-terminal's terminal side: a character device sharing its
+	/// major number with one this process opens to compare against. No number is assumed.
+	pub(super) fn is_pseudo_terminal(path: &str) -> bool {
+		let Ok(meta) = std::fs::metadata(path) else { return false };
+		if !meta.file_type().is_char_device() {
+			return false;
+		}
+		let (mut master, mut slave): (libc::c_int, libc::c_int) = (-1, -1);
+		// SAFETY: openpty writes two descriptors; name, termios and size are left out.
+		let opened = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) };
+		if opened != 0 {
+			return false;
+		}
+		let mut probe = std::mem::MaybeUninit::<libc::stat>::uninit();
+		// SAFETY: fstat fills the struct on success, checked before it is read; both
+		// descriptors were opened above and are closed here.
+		let probe = unsafe {
+			let stated = libc::fstat(slave, probe.as_mut_ptr());
+			libc::close(slave);
+			libc::close(master);
+			(stated == 0).then(|| probe.assume_init())
+		};
+		probe.is_some_and(|probe| libc::major(probe.st_rdev) == libc::major(meta.rdev() as libc::dev_t))
+	}
+
+	#[cfg(test)]
+	mod tests {
+		use super::*;
+
+		#[test]
+		fn only_enotty_on_a_pseudo_terminal_is_retried() {
+			for enotty in ["Not a typewriter", "Inappropriate ioctl for device"] {
+				assert!(retry_with_speed_left_alone(enotty, || true), "{enotty}");
+				assert!(!retry_with_speed_left_alone(enotty, || false), "{enotty} on a real port");
+			}
+			for other in [
+				"Input/output error",
+				"Device not configured",
+				"Resource busy",
+				"No such file or directory",
+			] {
+				assert!(!retry_with_speed_left_alone(other, || panic!("not asked for {other}")), "{other}");
+			}
+		}
+
+		#[test]
+		fn a_pseudo_terminal_is_told_from_other_devices() {
+			let (mut master, mut slave): (libc::c_int, libc::c_int) = (-1, -1);
+			// SAFETY: as in `is_pseudo_terminal`.
+			assert_eq!(
+				unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) },
+				0
+			);
+			let mut name = [0 as libc::c_char; 256];
+			// SAFETY: the buffer is as long as said.
+			assert_eq!(unsafe { libc::ttyname_r(slave, name.as_mut_ptr(), name.len()) }, 0);
+			// SAFETY: ttyname_r wrote a NUL-terminated string.
+			let path = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_string_lossy().into_owned();
+			assert!(is_pseudo_terminal(&path), "{path}");
+			// SAFETY: both were opened above.
+			unsafe {
+				libc::close(slave);
+				libc::close(master);
+			}
+			assert!(!is_pseudo_terminal("/dev/null"), "a character device that is no terminal");
+			assert!(!is_pseudo_terminal("Cargo.toml"), "a file");
+			assert!(!is_pseudo_terminal("/dev/no-such-port"), "nothing");
+		}
 	}
 }
 

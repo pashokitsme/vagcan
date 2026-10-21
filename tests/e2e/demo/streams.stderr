@@ -1,4 +1,5 @@
 names    SIM00 label files
+note: adapter from VAGCAN_DEVICE=[PORT]
 units  recorded in [HOME]/cars/SIMVIN00000000001/units.json
 710  SIM907000C: not in the label files
 713  SIM614000D: not in the label files

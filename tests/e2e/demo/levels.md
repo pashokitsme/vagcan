@@ -5,6 +5,7 @@
 ```console
 $ vagcan -v info
 ? success
+note: adapter from VAGCAN_DEVICE=[PORT]
 vin  SIMVIN00000000001
 
            engine 01   gearbox 02
@@ -18,6 +19,7 @@ next: `vagcan units` (the other units) · `faults` · `sensors` · `watch`
 
 $ vagcan -vv info
 ? success
+note: adapter from VAGCAN_DEVICE=[PORT]
 →  7E0  22 F1 90
 ←  7E8  62 F1 90 53 49 4D 56 49 4E 30 30 30 30 30 30 30 30 30 30 31  [..] ms
 →  7E0  22 F1 87
@@ -59,6 +61,7 @@ next: `vagcan units` (the other units) · `faults` · `sensors` · `watch`
 
 $ vagcan -v units --identify 01
 ? success
+note: adapter from VAGCAN_DEVICE=[PORT]
 reading F100-F1FF of unit 01
 unit  01
 

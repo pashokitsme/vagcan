@@ -7,10 +7,11 @@ and the summary's shape are what is held.
 ```console
 $ vagcan watch --for 1 --did 01:F405,F40C
 ? success
+note: adapter from VAGCAN_DEVICE=[PORT]
 units    4: 710 713 7E0 7E1
 nothing to show for 710 713 7E1
 t_s,Coolant temperature_t_s,Coolant temperature,Engine speed_t_s,Engine speed
 ...
-[..] rows · [..] readings · 1.0 s · [..]/s
+[..] rows · [..] readings · [..] s · [..]/s
 
 ```

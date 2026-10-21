@@ -7,6 +7,7 @@ and 70E never answers.
 ```console
 $ vagcan faults
 ? success
+note: adapter from VAGCAN_DEVICE=[PORT]
 names    ODIS SIM00-odis (eng)
 70E  fault list not read: transport: timeout
 unit  id   name        code    dtc      status         km  count  last seen            src   text
@@ -17,6 +18,7 @@ unit  id   name        code    dtc      status         km  count  last seen     
 
 $ vagcan -v faults --unit 01
 ? success
+note: adapter from VAGCAN_DEVICE=[PORT]
 names    ODIS SIM00-odis (eng)
 2 fault texts for 2 variants from /nowhere/SIM00-odis (en)
 a stored code is a record that something happened once — not a diagnosis, and not necessarily a fault now; `failing` is failing now

@@ -15,18 +15,27 @@ vagcan dev sim car.toml
 | Stream | What it says |
 |---|---|
 | stdout | the port's path, one line: `/dev/ttys012` |
-| stderr | `Serving car.toml on /dev/ttys012 (5 units), until Ctrl-C` and how to use it |
+| stderr | what it serves, and how to use it |
+
+```
+Serve car.toml on /dev/ttys012
+  started 5 units: 7E0 7E1 710 713 70E
+Ready until Ctrl-C.
+  (use "vagcan info --device /dev/ttys012" in another terminal)
+```
 
 In another terminal:
 
 ```
-export VAGCAN_DEVICE=/dev/ttys012
-vagcan info
-vagcan faults
-vagcan watch
+vagcan info --device /dev/ttys012
+vagcan faults --device /dev/ttys012
+vagcan watch --device /dev/ttys012
 ```
 
-or `vagcan info --device /dev/ttys012`. `--device` wins over `VAGCAN_DEVICE`.
+`VAGCAN_DEVICE=/dev/ttys012` stands for `--device` when neither `--device` nor `--ble` is
+given; the e2e cases use it. A command that takes it says so on stderr:
+`note: adapter from VAGCAN_DEVICE=/dev/ttys012`. A value that is not a serial device is
+refused, so a port a closed sim left behind is never opened.
 
 | Flag | What the sim adds on stderr |
 |---|---|
@@ -198,12 +207,15 @@ beside it. Use one where it matters that data is on stdout alone.
 
 | In a case | Matches |
 |---|---|
-| `[..]` | anything on the rest of a line |
+| `[..]` | any run of characters within one line |
 | `...` on a line of its own | any lines |
 | `[PORT]` | the sim's port |
 | `[HOME]` | the run's `~/.vagcan` |
 | `[VERSION]` | the binary's version |
 | `<name>.in/` | the case's working directory: files a command reads |
+
+`just e2e-bless` keeps an elision whose neighbours did not change; one next to a changed line can
+come back as the literal text. Read the diff and put it back before committing.
 
 What moves between runs is elided where it stands, never filtered away: `-vv`'s response
 times are `[..] ms`, `watch`'s rows are `...`.

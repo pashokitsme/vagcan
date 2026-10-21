@@ -21,6 +21,11 @@ tokio-serial = { version = "5.4", optional = true }
 # that the host link never reaches.
 embassy-time = "0.4"
 
+# macOS: telling a pseudo-terminal (the virtual car, `vagcan dev sim`) from a real port, the one
+# case `SlcanBackend::open_mode` retries an open for.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { version = "0.2", optional = true }
+
 [dev-dependencies]
 # `test-util` gives the time-abstraction tests a paused clock.
 tokio = { workspace = true, features = ["rt", "macros", "time", "io-util", "test-util"] }
@@ -45,4 +50,4 @@ default = ["std"]
 std = ["dep:tokio", "thiserror/std", "vag-uds-transport/std"]
 # Enables `SlcanBackend::open()` over a real serial port (LAWICEL USB-CAN
 # adapter). Off by default so the workspace builds with no serial dependency.
-slcan = ["std", "dep:tokio-serial"]
+slcan = ["std", "dep:tokio-serial", "dep:libc"]

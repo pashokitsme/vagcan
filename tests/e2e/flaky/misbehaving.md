@@ -6,6 +6,7 @@ and `F191` never comes. The gearbox is absent. The brakes answer one request, th
 ```console
 $ vagcan info
 ? success
+note: adapter from VAGCAN_DEVICE=[PORT]
 vin  SIMVIN00000000003
 
            engine 01   gearbox 02
@@ -18,6 +19,7 @@ coding     —           —
 
 $ vagcan units --identify 01
 ? success
+note: adapter from VAGCAN_DEVICE=[PORT]
 unit  01
 
 did   name                       value
@@ -31,6 +33,7 @@ F1A2  ODX file version           001001
 $ vagcan units --identify
 ? success
 names    SIM00 label files
+note: adapter from VAGCAN_DEVICE=[PORT]
 unit  id   part        component    name
 09    70E                           (no answer)
 --    710  SIM907000C  SIM GATEWAY
@@ -42,6 +45,7 @@ unit  id   part        component    name
 
 $ vagcan faults
 ? success
+note: adapter from VAGCAN_DEVICE=[PORT]
 names    ODIS SIM00-odis (eng)
 7E1  fault list not read: transport: timeout
 70E  fault list not read: transport: timeout

@@ -15,18 +15,20 @@ use vag_uds_sim::profile::{DidSpec, DidTable, Hex, Id, Point, Profile, UnitSpec}
 
 use crate::watch::replay;
 
-/// The environment variable a car command takes its `--device` from.
-pub const DEVICE_ENV: &str = vag_cli_core::device::DEVICE_ENV;
-
 /// `n` and its noun: `1 unit`, `3 units`.
 fn count(n: usize, noun: &str) -> String {
 	format!("{n} {}", vag_cli_core::table::plural(n, noun))
 }
 
-/// A cargo-style status line on stderr at `level`: the verb right-aligned in twelve
-/// columns, then the clause (CLAUDE.md, "Command output").
-fn status(level: u8, verb: &str, clause: &str) {
-	vag_cli_core::verbosity::say(level, &format!("{verb:>12} {clause}"));
+/// A line of a multi-step report on stderr at `level` (CLAUDE.md, "Command output"): the
+/// heading and the result line flush left, each step indented under them.
+fn say(level: u8, line: &str) {
+	vag_cli_core::verbosity::say(level, line);
+}
+
+/// A step of the report, past tense, indented under its heading.
+fn step(level: u8, line: &str) {
+	say(level, &format!("  {line}"));
 }
 
 /// Serve the car `profile_path` describes until interrupted. The port's path is the one
@@ -51,16 +53,20 @@ pub async fn serve(profile_path: &str, slcan: bool) -> Result<()> {
 		.and_then(|p| p.resolve())
 		.map_err(|e| anyhow::anyhow!("{profile_path}: {e}\n\nhelp: correct the profile (docs/virtual-car.md)"))?;
 	let units = car.units.len();
+	let unit_ids = car
+		.units
+		.iter()
+		.map(|u| format!("{:03X}", u.address.request))
+		.collect::<Vec<_>>()
+		.join(" ");
 	let sim = vag_uds_sim::Sim::start(car, log).context("opening a pseudo-terminal")?;
 	let port = sim.path().display().to_string();
 	vag_cli_core::outln!("{port}");
-	status(
-		0,
-		"Serving",
-		&format!("{} on {port} ({}), until Ctrl-C", file_name(profile_path), count(units, "unit")),
-	);
-	status(0, "Use", &format!("{DEVICE_ENV}={port} vagcan info, or vagcan info --device {port}"));
-	status(1, "Note", "`vagcan devices` does not list it: it lists USB devices");
+	say(0, &format!("Serve {} on {port}", file_name(profile_path)));
+	step(0, &format!("started {}: {unit_ids}", count(units, "unit")));
+	step(1, "opened a pseudo-terminal, which `vagcan devices` does not list: it lists USB devices");
+	say(0, "Ready until Ctrl-C.");
+	step(0, &format!("(use \"vagcan info --device {port}\" in another terminal)"));
 	tokio::task::spawn_blocking(move || sim.wait())
 		.await
 		.context("the sim's thread")?
@@ -89,15 +95,15 @@ fn log(notice: vag_uds_sim::pty::Notice) {
 				None => "with no bitrate set: no unit answers".to_string(),
 			};
 			let mode = if listen_only { ", listen-only" } else { "" };
-			status(NOTES, "Opened", &format!("channel, {rate}{mode}"));
+			step(NOTES, &format!("opened the channel, {rate}{mode}"));
 		}
-		Notice::Adapter(Note::Closed) => status(NOTES, "Closed", "channel"),
-		Notice::Adapter(Note::Refused(line)) => status(NOTES, "Refused", &format!("{line:?}")),
+		Notice::Adapter(Note::Closed) => step(NOTES, "closed the channel"),
+		Notice::Adapter(Note::Refused(line)) => step(NOTES, &format!("refused the line {line:?}")),
 		Notice::Bus(Event::Request { unit, pdu }) => vag_cli_core::verbosity::say(WIRE, &format!("→  {unit:03X}  {}", hex(&pdu))),
 		Notice::Bus(Event::Answer { id, pdu, .. }) => vag_cli_core::verbosity::say(WIRE, &format!("←  {id:03X}  {}", hex(&pdu))),
-		Notice::Bus(Event::Silent { unit, why }) => status(WIRE, "Silent", &format!("{unit:03X}: {why:?}")),
-		Notice::Bus(Event::Protocol { unit, what }) => status(NOTES, "Warning", &format!("{unit:03X}: {what}")),
-		Notice::Dropped(bytes) => status(NOTES, "Dropped", &format!("{bytes} bytes the tester did not read within a second")),
+		Notice::Bus(Event::Silent { unit, why }) => step(WIRE, &format!("{unit:03X} said nothing: {why:?}")),
+		Notice::Bus(Event::Protocol { unit, what }) => step(NOTES, &format!("{unit:03X}: {what}")),
+		Notice::Dropped(bytes) => step(NOTES, &format!("dropped {bytes} bytes the tester did not read within a second")),
 	}
 }
 
@@ -139,6 +145,13 @@ pub fn profile_from(files: &[String], vin: Option<&str>, catalogs: impl Fn() -> 
 		)),
 		..Profile::default()
 	};
+	say(
+		0,
+		&format!(
+			"Write a profile from {}",
+			files.iter().map(|f| file_name(f)).collect::<Vec<_>>().join(", ")
+		),
+	);
 	let mut vin = vin.map(str::to_string);
 	for path in files {
 		let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
@@ -146,11 +159,10 @@ pub fn profile_from(files: &[String], vin: Option<&str>, catalogs: impl Fn() -> 
 			Source::Capture => {
 				let records = vag_uds_capture::read_records(text.as_bytes()).with_context(|| format!("reading the capture {path}"))?;
 				let (from, taken) = vag_uds_sim::capture::profile(&records, "");
-				status(
+				step(
 					0,
-					"Read",
 					&format!(
-						"{}: a capture of {}, {}, {} ({} changing), {}",
+						"read {}: a capture of {}, {}, {} ({} changing), {}",
 						file_name(path),
 						count(taken.frames, "frame"),
 						count(taken.units, "unit"),
@@ -160,11 +172,10 @@ pub fn profile_from(files: &[String], vin: Option<&str>, catalogs: impl Fn() -> 
 					),
 				);
 				if taken.multi_reads > 0 {
-					status(
+					step(
 						1,
-						"Skipped",
 						&format!(
-							"{} answers to reads of several identifiers: they do not say where one ends",
+							"left out {} answers to reads of several identifiers: they do not say where one ends",
 							taken.multi_reads
 						),
 					);
@@ -177,10 +188,9 @@ pub fn profile_from(files: &[String], vin: Option<&str>, catalogs: impl Fn() -> 
 					vin = record.get("vin").and_then(|v| v.as_str()).map(str::to_string);
 				}
 				let units = vag_cli_core::units::read_record(Path::new(path))?.unwrap_or_default();
-				status(
+				step(
 					0,
-					"Read",
-					&format!("{}: {}, as each said what it is", file_name(path), count(units.len(), "unit")),
+					&format!("read {}: {}, as each said what it is", file_name(path), count(units.len(), "unit")),
 				);
 				identities(&units)
 			}
@@ -207,7 +217,8 @@ pub fn profile_from(files: &[String], vin: Option<&str>, catalogs: impl Fn() -> 
 		.resolve()
 		.map_err(|e| anyhow::anyhow!("the profile these files make does not run: {e}"))?;
 	let units = profile.units.len();
-	status(0, "Finished", &format!("profile of {}", count(units, "unit")));
+	say(0, &format!("Ready: a profile of {}, on stdout.", count(units, "unit")));
+	step(0, "(use \"vagcan dev sim <profile.toml>\" to serve it)");
 	Ok(profile.to_toml())
 }
 
@@ -306,11 +317,10 @@ fn recording(path: &str, csv: &str, vin: &str, catalogs: &str) -> Result<Profile
 		0 => String::new(),
 		n => format!(", {n} columns no channel matched"),
 	};
-	status(
+	step(
 		0,
-		"Read",
 		&format!(
-			"{}: a recording of {:.0} s, {}, {}{unmatched}",
+			"read {}: a recording of {:.0} s, {}, {}{unmatched}",
 			file_name(path),
 			recording.duration(),
 			count(recording.columns.len(), "column"),

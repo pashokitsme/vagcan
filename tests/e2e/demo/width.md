@@ -7,6 +7,7 @@ terminal of that width would: these are the layouts at 80 and 100 columns.
 $ VAGCAN_COLUMNS=80 vagcan units --identify
 ? success
 names    SIM00 label files
+note: adapter from VAGCAN_DEVICE=[PORT]
 unit  id   part        component    name
 09    70E                           (no answer)
 --    710  SIM907000C  SIM GATEWAY
@@ -19,6 +20,7 @@ unit  id   part        component    name
 $ VAGCAN_COLUMNS=100 vagcan units --identify
 ? success
 names    SIM00 label files
+note: adapter from VAGCAN_DEVICE=[PORT]
 unit  id   part        component    name
 09    70E                           (no answer)
 --    710  SIM907000C  SIM GATEWAY
@@ -30,6 +32,7 @@ unit  id   part        component    name
 
 $ VAGCAN_COLUMNS=80 vagcan faults
 ? success
+note: adapter from VAGCAN_DEVICE=[PORT]
 names    ODIS SIM00-odis (eng)
 70E  fault list not read: transport: timeout
 unit  id   name        code    dtc
@@ -44,6 +47,7 @@ unit  id   name        code    dtc
 
 $ VAGCAN_COLUMNS=100 vagcan faults
 ? success
+note: adapter from VAGCAN_DEVICE=[PORT]
 names    ODIS SIM00-odis (eng)
 70E  fault list not read: transport: timeout
 unit  id   name        code    dtc      status         km  count  last seen            src

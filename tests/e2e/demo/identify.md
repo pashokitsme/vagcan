@@ -7,6 +7,7 @@ answers.
 ```console
 $ vagcan info
 ? success
+note: adapter from VAGCAN_DEVICE=[PORT]
 vin  SIMVIN00000000001
 
            engine 01   gearbox 02
@@ -20,6 +21,7 @@ coding     01 02       —
 $ vagcan units
 ? success
 names    SIM00 label files
+note: adapter from VAGCAN_DEVICE=[PORT]
 unit  id   part  name
 09    70E
 --    713
@@ -29,6 +31,7 @@ unit  id   part  name
 $ vagcan units --identify
 ? success
 names    SIM00 label files
+note: adapter from VAGCAN_DEVICE=[PORT]
 unit  id   part        component    name
 09    70E                           (no answer)
 --    710  SIM907000C  SIM GATEWAY
@@ -40,6 +43,7 @@ unit  id   part        component    name
 
 $ vagcan units --identify 01
 ? success
+note: adapter from VAGCAN_DEVICE=[PORT]
 unit  01
 
 did   name                       value

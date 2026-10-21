@@ -9,8 +9,10 @@ is on stdout; what was read is on stderr.
 ```console
 $ vagcan dev sim --from units.json
 ? success
-        Read units.json: 3 units, as each said what it is
-    Finished profile of 3 units
+Write a profile from units.json
+  read units.json: 3 units, as each said what it is
+Ready: a profile of 3 units, on stdout.
+  (use "vagcan dev sim <profile.toml>" to serve it)
 about = "Written by `vagcan dev sim --from` from units.json."
 
 [[unit]]
@@ -38,8 +40,10 @@ vin = "SIMVIN00000000004"
 
 $ vagcan dev sim --from capture.jsonl
 ? success
-        Read capture.jsonl: a capture of 6 frames, 1 unit, 1 identifier (1 changing), 1 fault
-    Finished profile of 1 unit
+Write a profile from capture.jsonl
+  read capture.jsonl: a capture of 6 frames, 1 unit, 1 identifier (1 changing), 1 fault
+Ready: a profile of 1 unit, on stdout.
+  (use "vagcan dev sim <profile.toml>" to serve it)
 about = "Written by `vagcan dev sim --from` from capture.jsonl."
 
 [[unit]]
@@ -60,11 +64,14 @@ status = 9
 $ vagcan units --identify
 ? success
 ...
+5 asked · 4 answered · 2 on the gateway's list · 0 named
 
 $ vagcan dev sim --from recording.csv --vin SIMVIN00000000001
 ? success
-        Read recording.csv: a recording of 1 s, 2 columns, 2 identifiers
-    Finished profile of 1 unit
+Write a profile from recording.csv
+  read recording.csv: a recording of 1 s, 2 columns, 2 identifiers
+Ready: a profile of 1 unit, on stdout.
+  (use "vagcan dev sim <profile.toml>" to serve it)
 about = "Written by `vagcan dev sim --from` from recording.csv."
 
 [[unit]]
@@ -89,6 +96,7 @@ value = "12 C0"
 
 $ vagcan dev sim --from recording.csv
 ? failed
+Write a profile from recording.csv
 Error: recording.csv is a recording, and a recording does not say which car
 
 help: name it with --vin <VIN>, or give the car's units.json first

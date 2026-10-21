@@ -77,7 +77,7 @@ pub struct DeviceArg {
 	/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
 	/// cable), `ble` for an adapter over Bluetooth, or `ble:<name>` for one adapter by
 	/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
-	/// when asked. `VAGCAN_DEVICE` stands for it when it is not given.
+	/// when asked. With neither flag, `VAGCAN_DEVICE` names a serial path.
 	#[arg(long, value_name = "PATH|ble|ble:NAME")]
 	pub device: Option<String>,
 	/// Same as `--device ble`: the dash board over Bluetooth.
@@ -85,33 +85,47 @@ pub struct DeviceArg {
 	pub ble: bool,
 }
 
-/// The environment variable that stands for `--device` when neither it nor `--ble` is
-/// given: a shell that always reads through one adapter, and `vagcan dev sim`'s port for
-/// the e2e cases (`tests/e2e/`), which run every command against a virtual car.
+/// The environment variable that names the serial adapter when neither `--device` nor
+/// `--ble` is given: `vagcan dev sim`'s port for the e2e cases (`tests/e2e/`), which run every
+/// command against a virtual car, and a shell that always reads through one adapter. A serial
+/// path only; it is said on stderr whenever it is used.
 pub const DEVICE_ENV: &str = "VAGCAN_DEVICE";
 
 impl DeviceArg {
-	/// What was asked for, as [`resolve`] takes it: `--ble` is `ble`, then `--device`, then
-	/// [`DEVICE_ENV`].
+	/// What the flags ask for, as [`resolve`] takes it: `--ble` is `ble`. [`DEVICE_ENV`] is
+	/// not read here: [`resolve`] and [`resolve_cable_for`] fall back to it, once.
 	pub fn requested(&self) -> Option<&str> {
-		self.requested_with(device_from_env())
-	}
-
-	/// [`Self::requested`] with the environment's value handed in.
-	pub fn requested_with<'a>(&'a self, env: Option<&'a str>) -> Option<&'a str> {
-		match self.ble {
-			true => Some("ble"),
-			false => self.device.as_deref().or(env),
-		}
+		if self.ble { Some("ble") } else { self.device.as_deref() }
 	}
 }
 
-/// [`DEVICE_ENV`], read once: empty is unset.
-fn device_from_env() -> Option<&'static str> {
-	static ENV: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-	ENV
-		.get_or_init(|| std::env::var(DEVICE_ENV).ok().filter(|v| !v.trim().is_empty()))
-		.as_deref()
+/// `requested`, or [`DEVICE_ENV`] when nothing was: the fallback every resolution takes.
+fn requested_or_env(requested: Option<&str>) -> Result<Option<String>> {
+	if let Some(requested) = requested {
+		return Ok(Some(requested.to_string()));
+	}
+	let from_env = env_device(std::env::var_os(DEVICE_ENV), |path| {
+		use std::os::unix::fs::FileTypeExt as _;
+		std::fs::metadata(path).is_ok_and(|m| m.file_type().is_char_device())
+	})?;
+	if let Some(path) = &from_env {
+		crate::say!("note: adapter from {DEVICE_ENV}={path}");
+	}
+	Ok(from_env)
+}
+
+/// [`DEVICE_ENV`]'s value as an adapter: unset or empty is none; anything that is not a
+/// character device is refused, so a stale path — a pseudo-terminal a closed `dev sim` left,
+/// now a terminal tab's — is never opened and written slcan to.
+fn env_device(value: Option<std::ffi::OsString>, is_char_device: impl Fn(&std::path::Path) -> bool) -> Result<Option<String>> {
+	let Some(value) = value.filter(|v| !v.is_empty()) else {
+		return Ok(None);
+	};
+	let path = value.to_string_lossy().into_owned();
+	if !is_char_device(std::path::Path::new(&path)) {
+		bail!("{DEVICE_ENV}={path} is not a serial device\n\nhelp: unset {DEVICE_ENV}, or name the adapter with `--device <path>`");
+	}
+	Ok(Some(path))
 }
 
 /// Why no board was heard, as far as this side can tell.
@@ -165,8 +179,9 @@ pub fn ble_request(requested: &str) -> Option<Option<&str>> {
 pub async fn resolve(requested: Option<&str>, slcan: bool) -> Result<Target> {
 	// Never shown: with nobody at the keyboard the choice refuses before the menu is asked.
 	let mut console = crate::ui::Console::new("--device ble:<name>");
+	let requested = requested_or_env(requested)?;
 	resolve_with(
-		requested,
+		requested.as_deref(),
 		slcan,
 		list_adapters().map_err(Into::into),
 		probe,
@@ -355,7 +370,8 @@ pub struct NotThroughTheBoard<'a> {
 /// USB-CAN adapter": `why.over_ble` under it read as an answer to a request nobody made, and
 /// the BLE hint other commands get is left off, since BLE is refused here.
 pub fn resolve_cable_for(requested: Option<&str>, slcan: bool, why: &NotThroughTheBoard) -> Result<String> {
-	resolve_cable_for_with(requested, slcan, why, list_adapters().map_err(Into::into), probe)
+	let requested = requested_or_env(requested)?;
+	resolve_cable_for_with(requested.as_deref(), slcan, why, list_adapters().map_err(Into::into), probe)
 }
 
 /// [`resolve_cable_for`] with the listing and the board probe handed in.
@@ -698,15 +714,25 @@ mod tests {
 	}
 
 	#[test]
-	fn the_environment_stands_for_device_only_when_neither_flag_is_given() {
+	fn the_environment_names_a_serial_device_or_is_refused() {
+		let os = |s: &str| Some(std::ffi::OsString::from(s));
+		let char_device = |p: &std::path::Path| p == std::path::Path::new("/dev/ttys9");
+		assert_eq!(env_device(None, char_device).unwrap(), None);
+		assert_eq!(env_device(os(""), char_device).unwrap(), None);
+		assert_eq!(env_device(os("/dev/ttys9"), char_device).unwrap().as_deref(), Some("/dev/ttys9"));
+		let stale = env_device(os("/dev/ttys404"), char_device).unwrap_err().to_string();
+		assert!(stale.starts_with("VAGCAN_DEVICE=/dev/ttys404 is not a serial device"), "{stale}");
+	}
+
+	#[test]
+	fn the_flags_alone_are_what_was_requested() {
 		let arg = |device: Option<&str>, ble: bool| DeviceArg {
 			device: device.map(str::to_string),
 			ble,
 		};
-		assert_eq!(arg(None, false).requested_with(Some("/dev/ttys9")), Some("/dev/ttys9"));
-		assert_eq!(arg(Some("/dev/x"), false).requested_with(Some("/dev/ttys9")), Some("/dev/x"));
-		assert_eq!(arg(None, true).requested_with(Some("/dev/ttys9")), Some("ble"));
-		assert_eq!(arg(None, false).requested_with(None), None);
+		assert_eq!(arg(Some("/dev/x"), false).requested(), Some("/dev/x"));
+		assert_eq!(arg(None, true).requested(), Some("ble"));
+		assert_eq!(arg(None, false).requested(), None, "the environment is resolution's, not the flags'");
 	}
 
 	#[test]

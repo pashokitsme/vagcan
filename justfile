@@ -128,7 +128,9 @@ test:
 e2e *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    target="${CARGO_TARGET_DIR:-$PWD/target}"
+    target="${CARGO_TARGET_DIR:-target}"
+    # Absolute: the test runs from its crate's directory, where a relative path means another.
+    case "$target" in /*) ;; *) target="$PWD/$target" ;; esac
     cargo build -p vag-cli --bin vagcan
     mkdir -p "$target/e2e"
     cp "$target/debug/vagcan" "$target/e2e/vagcan"
