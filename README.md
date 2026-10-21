@@ -87,7 +87,7 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 
 ## Roadmap
 
-Updated 2026-10-21 (one source per run).
+Updated 2026-10-21 (one source per run; the cleanup pass after it).
 
 **Done**
 - [x] Read the car: identity, units, faults, OBD-II sensors, live values, acceleration timing with html-report
@@ -108,6 +108,7 @@ Updated 2026-10-21 (one source per run).
 - [x] 0–60 and 0–100 km/h stopwatch on the dash (works on the car, 2026-09-30; not yet compared with `vagcan measure`)
 - [x] Dash counts the car's stored fault codes once after start and shows the number with a warning triangle
 - [x] A project's sources listed and removed: `setup --list`, `setup --drop` (2026-10-20)
+- [x] Units with no label file of their own, such as the body control module, read from a VCDS install through its `ReDir.rod` (2026-10-20)
 - [x] `measure view` draws the speed in km/h, on old sessions too; it was 3.6 times low (2026-10-21)
 - [x] A virtual car, `dev sim`, and e2e cases of the commands against it: `just e2e` (2026-10-21)
 - [x] One VCDS installation per machine, for every car, in `~/.vagcan/vcds/`; projects are ODIS's alone; an older layout moves on its own (2026-10-21)

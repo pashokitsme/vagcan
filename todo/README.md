@@ -4,62 +4,62 @@ The short roadmap is in [`README.md`](../README.md#roadmap) and is kept current 
 This file is the detail behind it: state, decisions, open items, and what is dead. Older
 dated status sections moved verbatim to
 [`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-09-14,
-2026-09-15, 2026-09-22, 2026-09-26, 2026-09-27, 2026-09-28, 2026-09-30 and 2026-10-19.
+2026-09-15, 2026-09-22, 2026-09-26, 2026-09-27, 2026-09-28, 2026-09-30, 2026-10-19 and 2026-10-21.
 
-## Where things stand (2026-10-19)
+## Where things stand (2026-10-21)
 
-**Milestone: a status strip on every page, and the pages laid out by the owner in a browser
-editor — PR #24 merged 2026-10-19** (`e855a3b`). Since the 2026-09-30 status (moved to
-[`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-10-19):
-PR #22 (cleanup), the justfile and CI on its recipes (`648d637`, `fc13720`), PR #23 (`70d26e6`:
-the stopwatch's speed shown rounded down; `zero_at_rest` for the ESC's acceleration), PR #24.
-`cargo test --workspace` 2,120 passed on PR #24's branch; firmware static RAM unchanged by
-#24 (140,996 B with BLE, 131,536 B without). Merged after it: #29 (`f8b7536`, the first-run
-path), #26 (`409ace9`, thresholds on the channel), #27 (`210048d`, the settings record names
-its plan), #28 (`31eb581`, the icons in the strip), #30 (`b06d00e`, the plan's joins),
-2026-10-19; #31 (`451e3b5`, `vagcan dev dash edit`), #32 (`a4c7600`, the pre-project data layout
-dropped), #33 (`1069daf`, the bus-time estimate), #34 (`0ad5502`, `vag-dash-core`), 2026-10-20.
+**Milestone: one source per run — PR #56 merged 2026-10-21** (`f58678c`). An ODIS project and a
+VCDS installation are independent sources; a run reads one of them for everything it names
+(`CLAUDE.md`, "ODIS and VCDS are independent sources"). The 2026-10-19 status moved to
+[`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-10-21.
+Merged since it, 2026-10-19 to 2026-10-21: #31 (`451e3b5`, `vagcan dev dash edit`), #32 (`a4c7600`,
+the pre-project data layout dropped), #33 (`1069daf`, the bus-time estimate), #34 (`0ad5502`,
+`vag-dash-core`), #35 (`14b87c9`), #36 (`85990ff`, English fault text by default) and #37–#56
+below. `just check` green on `f58678c` on 2026-10-21 (2,568 tests passed across its recipes, 0 failed; firmware stack 17,164 B over its floor with BLE, 20,560 B without).
 
-- **The strip** (PR #24): the battery voltage at the left, the page's `title` in the middle,
-  no rule; `[strip] volts = "<channel>"`, a page's `volts = false`; the voltage hides on a page
-  that shows its channel; with a title, a chart's header drops its label. The link icons and
-  the fault badge are at the strip's right end since PR #28, and the page under the strip keeps
-  its width. Watts beside the voltage are [`dash/23`](dash/23-power-consumption.md), not started.
-- **The owner's layout** (2026-10-19), from [`research/dash/layout-editor/`](../research/dash/layout-editor/README.md)
-  (the real renderer in WebAssembly, every channel `dash::build` resolves — 6,583 on the car;
-  since 2026-10-19 the command `vagcan dev dash edit <VIN>`):
-  DRIVE, TEMPERATURES, an RPM chart, IGNITION TIMING ANGLE (the knock-retard cylinders),
-  MISFIRE, BRAKES; English labels; three new channels (ambient air `F446`, brake booster
-  `2005`, brake pressure `3803` on the gearbox) and the strip's `01:IDE00018`. In
-  `~/.vagcan/dash/XW8AD4NE9JH008917/dash.toml`, the file before it beside it
-  (`.before-layout-2026-10-19`); master's `dev dash build` takes it: 23 channels, 4 units,
-  6 pages.
-- **Thresholds on the channel** — PR #26 (`409ace9`, merged 2026-10-19): `alarm_max`/`alarm_min`
-  with `alarm_max_off`/`alarm_min_off` and `drift_*` keys on `[[channel]]`, an explicit `alarm_priority`; `[[alarm]]` refused with
-  its rewrite; `MAX_ALARMS` gone, and no count or budget refuses a plan: the build estimates bus
-  time, below (the review of 2026-10-19 showed a reads-a-second budget is the wrong unit). The
-  owner's file is on the new keys, with oil 115/110 and the gearbox's control module
-  120/110 ([`research/dash/alarm-thresholds.md`](../research/dash/alarm-thresholds.md), 2026-10-19:
-  the Škoda manual's 80–110 °C oil; SSP 390's 139 °C torque cut on the 0AM, inferred for the 0CW).
-- **Bus time** — PR #33 (`1069daf`, merged 2026-10-20;
-  [`dash/24`](../.archive/tasks/done/dash/24-bus-time-check.md)): the build runs the board's
-  planner over the plan offline, each page on the glass with cruise off and on and a stopwatch
-  run, at 34 ms an exchange (the car's 10 Hz BLE `watch` of 2026-09-26, an upper bound), and
-  prints each page's estimated share and the reads it would thin. **It refuses nothing**
-  (2026-10-20): at 34 ms it called every page of the owner's plan short, and that plan runs on
-  the car — the constant is radio and host time, not CAN time. The board now counts its own
-  exchanges (`exch=…/s exch_ms=…` in `state`, a `bus:` console line every 10 s); a drive with it
-  gives the car's number, and a strict check can follow that measurement.
-- **`sensors --unit <unit>` guarded** (2026-10-21, Next item 6 dropped): off the emissions
+- **One source per run** (PR #56): `--source`, then `VAGCAN_SOURCE`, then `[source] use` in
+  `config.toml`, else ODIS when the project has one, else VCDS (`vag_cli_core::source`). The
+  owner picked VCDS on 2026-10-21 — English fault text — so `~/.vagcan/config.toml`
+  has `[source] use = "vcds"` (the file before it beside it, `.before-source-vcds-2026-10-21`).
+  Master's `dev dash build XW8AD4NE9JH008917` on it: plan `46df4dd19f9cc72c`, 6 pages, 23 channels
+  on 4 units, 12 alarms (the ODIS plan was `296f9269b1da6778`). The dash's `language` is `"en"`
+  since 2026-10-21 (`dash.toml.before-english-2026-10-21`).
+- **One VCDS installation per machine** (PR #50, `5022b3c`): `~/.vagcan/vcds/`, read for every car;
+  `data/<project>/` holds an ODIS project alone, and its `measurements/`. The reference machine
+  migrated itself on 2026-10-21 (the whole tree before it in `~/.vagcan-backup-before-vcds-store-2026-10-21`,
+  the `.rod` files left out); `data/SK37X/measurements/` holds the three proven part files.
+- **What a VCDS installation gives** (2026-10-20): units with no label file of their own, the BCM
+  among them, through `ReDir.rod` and `chassis.clb` (PR #39, `adaa60c`; a car joins the stem its
+  own lookup stored, PR #43, `8639bce`); the `.rod` section keys from the file name, so a cold
+  `setup` takes about 3 s, was 845 s measured (PR #40, `091b0b6`); the adaptation, basic-setting,
+  output-test, freeze-frame, XPL and MUX registries in the cache (PR #42, `10ac072`;
+  `registry.json`'s `READ_VERSION` 3). `setup --list` and `--drop` over the cache's `source` table,
+  `sources.json` gone (PR #37, `6526c0a`).
+- **Built, not on the car yet:** freeze frames under each stored code in `faults`, from either
+  source alone (PRs #47, `8fba00e`, and #53, `bedd5d6`; `research/odis-dtc/freeze-frames.md`);
+  `vagcan adaptations <unit>` and `--all`, read only and guarded as a sweep (PR #51, `5b78481`).
+- **`sensors --unit <unit>` guarded** (2026-10-21, PR #44, Next item 6 dropped): off the emissions
   block (`7E0`–`7E7`) its read is a sweep and is guarded as `units --identify <unit>` is — one
   named unit, the fixed `obd::PIDS` list, refused on a moving car with "no answer" counted as
   moving, stopped by `anomaly::Monitor`, never through the dash board but as `--slcan`. Plain
   `sensors` (the engine) and the rest of the block are not a sweep: J1979 legislates those
   identifiers there, and the moving-car check is one of them; the monitor stops them too
   (`car::sensors`). No `--while-driving`. Not on the car yet.
-- **The board in the car** runs a `dash` built before PR #23 (the commit was not recorded);
-  neither #23 nor #24 is on it. Its glass is wired SDIN `GPIO8`, CS `GPIO20`, RES `GPIO21`
-  (`365c21e`), the standard since 2026-10-03.
+- **Output in the shapes of established tools** (PRs #38, #50, #52, #55): `CLAUDE.md` "Command
+  output" has the rule and an example of every shape; errors are cargo's `error:`/`help:`/`note:`;
+  the ` · ` separator and the marks live in `vag_cli_core::marks`. Ctrl-C ends every command
+  (PR #48, `1fffcc8`; `research/tools/sigint.py`), and no timer panics on exit (PR #54, `73a2f1b`).
+- **A virtual car** (PR #49, `9b78620`): `vag-uds-sim` on a pseudo-terminal, `vagcan dev sim`,
+  and trycmd cases of the commands against it under `tests/e2e/` (`just e2e`,
+  [`docs/virtual-car.md`](../docs/virtual-car.md)). No case reads the reference car's data.
+- **`vagcan-measure` removed** (PR #46, `a308d3d`): `vagcan measure` is the one way in.
+- **The dash** (PR #41, `f004549`, 2026-10-20): a refused or blank `F187`, or one late answer, no
+  longer strikes a unit off for the boot. That is what left the ESC's acceleration at `––` on the
+  owner's board from 2026-10-20 on (the plan's ESC channel unchanged across plans).
+- **The board in the car** runs `dash` without BLE built on 2026-10-19 at 21:21 UTC from the master
+  of that moment — `451e3b5` (#31) by the session's log; the image does not record its commit.
+  The firmware changes since (`git log 451e3b5..f58678c -- crates/dash crates/uds`: #33's exchange
+  count, #34's core, #41's fix, the English pages, the VCDS plan) are not on it.
 - **The housing** ([`dash/15`](dash/15-enclosure.md), CAD in `~/CAD/projects/vagcan/`): round 3
   printed by the owner; then a 0.4 mm rim in the wall in front of the socket, the ESP's clip
   0.5 mm further off and the face's teeth 0.7 mm (CAD `9554fc9`, `44c19c7`, 2026-10-03), not
@@ -70,11 +70,13 @@ dropped), #33 (`1069daf`, the bus-time estimate), #34 (`0ad5502`, `vag-dash-core
   ([`dash/18`](dash/18-setpoints-and-drift.md), [`dash/20`](dash/20-fault-count.md),
   [`dash/19`](dash/19-stalk-and-stopwatch.md)) until the owner says they are closed.
 
-**Not verified on hardware:** the strip and PR #23 on the glass; the pin buttons; `+`/`−` never
-opening the stopwatch; a 0–100 against `vagcan measure`; the run saved before `GO`; the retard
-alarm and the blink on a drive; the cable through the board on the car; the moving-car guard;
-the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch temperatures
-(`02:102A`–`102C`) answer — outside the August survey's pages.
+**Not verified on hardware** (2026-10-21): everything since the board's `451e3b5` image on the glass
+(the ESC fix, the English pages, the VCDS plan); the strip and PR #23 on the glass; the pin
+buttons; `+`/`−` never opening the stopwatch; a 0–100 against `vagcan measure`; the run saved
+before `GO`; the retard alarm and the blink on a drive; `adaptations`, freeze frames and the
+`sensors --unit` guard; Ctrl-C on a real adapter; the cable through the board on the car; the
+moving-car guard; the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch
+temperatures (`02:102A`–`102C`) answer — outside the August survey's pages.
 
 ## Decisions (owner)
 
@@ -103,11 +105,11 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 | Knock retard alarm −6.0/−4.5, from the research (owner, 2026-09-26) | `dash/04` |
 | An alarm is a channel's minimum and maximum with an "off" value each, not a rule of its own; `[[alarm]]` removed; priority by `alarm_priority`, then the file's order; no bus-budget refusal — the build only says what is read (owner, 2026-10-19) | `dash/04` |
 | ~~A proven row outranks ODIS, and ODIS outranks VCDS, field by field (owner, 2026-09-28)~~ — superseded 2026-10-21: ODIS and VCDS are independent, one source per run, never mixed (`CLAUDE.md`) | `label-lookup/02` (archived) |
-| One source per run, picked by `--source`, then `VAGCAN_SOURCE`, then `[source] use` in `config.toml`, else ODIS when the project has one, else VCDS; a source asked for and not set up is an error; built 2026-10-21. Unit names and numbering (`units`, `info`, `sensors`, `faults --unit NN`, still from VCDS's label files on every run): decided 2026-10-21: follows the rule; ODIS unit names to come, on a branch of their own | `vag_cli_core::source` |
+| One source per run, picked by `--source`, then `VAGCAN_SOURCE`, then `[source] use` in `config.toml`, else ODIS when the project has one, else VCDS; a source asked for and not set up is an error; built 2026-10-21. Unit names and numbering (`units`, `info`, `sensors`, `faults --unit NN`, still from VCDS's label files on every run): decided 2026-10-21: follows the rule; ODIS unit names to come, on a branch of their own (Next item 2) | `vag_cli_core::source` |
 | `calibrate` removed entirely — «паразитный, никто этим заморачиваться не будет» (owner, 2026-09-28) | `label-lookup/02` (archived) |
 | `dev survey` removed entirely, with `faults --from`, `--diff` and the blind sweep: nobody runs a command just to feed the tool — the commands that meet the car record its units (owner, «б», 2026-09-28) | `label-lookup/03` (archived) |
 | `measure` times a run from the gearbox's speed, the board's stopwatch channel, and finds its roles by text id (owner, 2026-09-28) | PR #17 |
-| A Russian-only VCDS installation takes names and units from an English one on the same machine (owner, 2026-09-28) — not built | `label-lookup/04` |
+| A Russian-only VCDS installation takes names and units from an English one on the same machine (owner, 2026-09-28) — not built; since #50 a machine keeps one installation, so this needs a second one beside it, the owner's call (2026-10-21) | `label-lookup/04` |
 | The glass's pins follow how the board is wired: SDIN `GPIO8` (the blue LED's pin; the LED no longer blinks on its own), CS `GPIO20`, RES `GPIO21` (owner, 2026-09-30) | `README.md` "OLED wiring", `dash/22` |
 | Scan clock `B3 F1`; burn-in shift set aside, burn-in will not come quickly (owner, 2026-09-30) | `dash/22` |
 | `oledtest`'s clock sweep and the `oledpins` multimeter probe removed from PR #21 before the merge (owner, 2026-09-30); `oledtest`'s test picture stays | `dash/22` |
@@ -115,82 +117,79 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 | An alarm is a channel's threshold — a max and/or a min, each with the value it goes off at — and no cap on how many; what limits them is bus time, measured, not a count ([`dash/24`](../.archive/tasks/done/dash/24-bus-time-check.md)); priority explicit, `alarm_priority` (owner, 2026-10-19) | PR #26 |
 | Oil alarm 115/110, the gearbox's control module 120/110, as researched (owner, 2026-10-19) | `research/dash/alarm-thresholds.md` |
 | The enclosure off the README roadmap (owner, 2026-10-19); the CAD work goes on in `~/CAD` | `dash/15` |
+| One VCDS installation per machine, read for every car, in `~/.vagcan/vcds/`; a project is an ODIS project alone (owner, «делай», 2026-10-21) | PR #50 |
+| Every command's output in the shape of `rustc`/`cargo`/`git`/`gh`, picked from mockups: lists as `gh pr list`, one object as `gh pr view`, `faults` grouped by unit, `setup` as `git` reports, errors as cargo's, ` · ` from one constant (owner, 2026-10-21) | `CLAUDE.md` "Command output" |
+| Adaptations are their own command, `vagcan adaptations [<unit>]`: a picker without a unit, `--all` for every unit (owner, 2026-10-21) | PR #51 |
+| e2e cases are input → output, as `cargo` and `rustc` test themselves (trycmd); no case reads one owner's car, and the board's protocol is not emulated (owner, 2026-10-21) | PR #49 |
+| `vagcan-measure` removed; `vagcan measure` is the one way in (owner, «убери», 2026-10-20) | PR #46 |
 
 ## Next, in order
 
 **Without the car**
 
-1. **Flash the board with `master`** — the thresholds (#26), the plan's id in the settings
-   record (#27), the icons in the strip (#28), the board's exchange count (#33), the one core
-   (#34), PR #23, PR #24 and the owner's new pages are not on the board in the car.
-2. **The housing** — [`dash/15`](dash/15-enclosure.md): print the 2026-10-03 changes (the
+1. **Flash the board with `master`** (the owner; the board is not on USB from here) —
+   `cd ~/Source/repos/vcds/.worktrees/flash && just fw-flash dash --no-default-features`. It takes
+   the VCDS plan `46df4dd19f9cc72c` with the English pages, #41's fix for the ESC's acceleration,
+   #33's exchange count and #34's core; none is on the board's `451e3b5` image.
+2. **Unit names from the run's source** (decided 2026-10-21, not started): `units`, `info`,
+   `sensors` and `faults --unit NN` still name and number units from VCDS's label files on every
+   run. On an ODIS run they take ODIS's names; where the run's source has none, the request id,
+   never the other source's name. A branch of its own.
+3. **The housing** — [`dash/15`](dash/15-enclosure.md): print the 2026-10-03 changes (the
    socket's rim, the ESP's clip, the face's teeth).
-3. **Runs in flash** — [`dash/21`](dash/21-runs-in-flash.md): how many runs, and when LIMIT
+4. **Runs in flash** — [`dash/21`](dash/21-runs-in-flash.md): how many runs, and when LIMIT
    writes; the owner set both aside on 2026-09-27.
-4. **`measure`'s cross-check speeds** — [`measure/02`](measure/02-cross-check-tracks.md): every
+5. **`measure`'s cross-check speeds** — [`measure/02`](measure/02-cross-check-tracks.md): every
    unit's cross-check speed lands in one track. Two fixes on file: a track per unit, or one unit's
    cross-check and the rest not polled; the second changes what is read on the car, so it is the
    owner's call. Then [`measure/01`](measure/01-pedal-at-rest.md) (the pedal at rest; the owner's
-   call). `measure/03`, `measure view`'s speed drawn 3.6 times low, is fixed (2026-10-21,
-   [`.archive/tasks/done/measure/03`](../.archive/tasks/done/measure/03-speed-series-unit.md)).
-5. **The VCDS follow-ups** — [`label-lookup/04`](label-lookup/04-vcds-follow-ups.md): three for
-   the owner to decide (the gateway's reads, a plain list's first row, a witness), then the
-   platform file's choice and the Russian fallback.
+   call).
+6. **The VCDS follow-ups** — [`label-lookup/04`](label-lookup/04-vcds-follow-ups.md): three for
+   the owner to decide (the gateway's reads, a plain list's first row, a witness), and the Russian
+   fallback, which since #50 needs a second installation beside the machine's one (2026-10-21).
 7. **Which way up the glass hangs** — [`dash/22`](dash/22-oled.md): `turned`, with the housing.
-7a. **The review's architecture** (2026-10-19):
-   [`dash/24`](../.archive/tasks/done/dash/24-bus-time-check.md), the bus-time estimate, merged
-   as PR #33 (its constant waits for the board's `exch=` on the car). `dash/25` (one core for
-   the board and the replay: `vag-dash-core` owns the value store, the frame, the framebuffer
-   and the board's pure modules, their host tests its own; the renderer's `PANEL` is the glass)
-   merged as PR #34 (2026-10-20), archived in
-   [`.archive/tasks/done/dash/`](../.archive/tasks/done/dash/25-one-core-for-board-and-replay.md).
-   `dash/27` (the board indexes the plan's joins, one way to say the pages changed, an alarm on a
-   chart-only channel, one rate cap of 50 Hz) and `dash/26` ("the car stands" as one fact of
-   the plan) merged as PR #30 (2026-10-19), archived in
-   [`.archive/tasks/done/dash/`](../.archive/tasks/done/dash/27-plan-joins-and-signals.md); the plan
-   id moves for every plan with it.
 
 **With the car**
 
-8. **The strip, the new pages and PR #23 on the glass** — after 1: the voltage, the titles,
-    the stopwatch's rounding and the acceleration's zero at rest.
-8a. **`vagcan adaptations` on the car** (built 2026-10-21): a unit's adaptation channels and
-    values, read with `0x22` — ODIS's `ReadDataByIdentCalibData` rows (`adaptation_channel`,
-    schema 5; an ODIS project read before needs `vagcan setup <dir>` again), or in a run of VCDS
-    its `RA.rod` rows, never mixed. Check against VCDS's own adaptation screen on two units (the BCM's
-    2,426 fields, the brake unit's 45), parked; then `--all`. Guarded as a sweep: one unit (or
-    `--all`, each unit on its own), refused moving, stopped on silence, the part number re-read
-    as a witness, cable only.
-9. **The ESC's acceleration** — [`dash/17`](dash/17-bench-ble-usb.md) §4: a dash on the glass
-    the whole drive (2026-09-30); `zero_at_rest` (PR #23) does not touch that. The board's
-    console on the car (USB plugged in before OBD power) says whether `713` is polled and what
-    `1822` answers; then `vagcan watch --did 713:1822` parked.
-9a. **Where "the car stands" comes from** — [`dash/26`](../.archive/tasks/done/dash/26-car-standing.md)
+8. **The board after 1, on the glass** — the ESC's acceleration back (no `––` the whole drive),
+   the English pages, the strip, the stopwatch's rounding and the acceleration's zero at rest; then
+   `dashcfg` → `state` after a drive: `exch=…/s`, the car's own exchange rate, which the bus-time
+   estimate's 34 ms waits for ([`dash/24`](../.archive/tasks/done/dash/24-bus-time-check.md)).
+9. **`vagcan adaptations` on the car** (built 2026-10-21): a unit's adaptation channels and
+   values, read with `0x22` — ODIS's `ReadDataByIdentCalibData` rows (`adaptation_channel`,
+   schema 5; an ODIS project read before needs `vagcan setup <dir>` again), or in a run of VCDS
+   its `RA.rod` rows, never mixed. Check against VCDS's own adaptation screen on two units (the BCM's
+   2,426 fields, the brake unit's 45), parked; then `--all`. Guarded as a sweep: one unit (or
+   `--all`, each unit on its own), refused moving, stopped on silence, the part number re-read
+   as a witness, cable only.
+10. **Freeze frames on the car** — the reading is built (2026-10-21, either source alone,
+    `research/odis-dtc/freeze-frames.md`): `vagcan faults -v` beside a VCDS auto-scan, one
+    code's frame field by field, once with `--source odis` and once with `--source vcds`.
+11. **The ESC's acceleration** — [`dash/17`](dash/17-bench-ble-usb.md) §4: if 8 still shows a
+    dash, the board's console on the car (USB plugged in before OBD power) says whether `713` is
+    polled and what `1822` answers; then `vagcan watch --did 713:1822` parked.
+12. **Where "the car stands" comes from** — [`dash/26`](../.archive/tasks/done/dash/26-car-standing.md)
     (built: one fact of the plan, today the stopwatch's speed at 0):
     `vagcan watch --did 70A:25E0,01:414B` stopping and moving off (the parking aid's standstill
     state, the engine's stop counter), against the gearbox's speed at 0 — whether either is worth
     a `[standstill]` source.
-10. **The gearbox's clutch temperatures** — `vagcan watch --did 02:102A,102B,102C` at idle,
+13. **The gearbox's clutch temperatures** — `vagcan watch --did 02:102A,102B,102C` at idle,
     then after a few launches: whether they answer (outside the August survey's pages) and move;
     if so, on a page with 250/200 ([`research/dash/alarm-thresholds.md`](../research/dash/alarm-thresholds.md)).
-11. **The rest of `dash/19` on the car** — [`dash/19`](dash/19-stalk-and-stopwatch.md) "On the car"
+14. **The rest of `dash/19` on the car** — [`dash/19`](dash/19-stalk-and-stopwatch.md) "On the car"
     items 4–6: `+` and `−` never open the stopwatch or turn the page back; a 0–100 beside
     `vagcan measure --ble` started first; the run saved before `GO` surviving a power cycle.
     Pin buttons on the bench first.
-12. **Alarms on a drive** — `dash/04`: the retard at −6.0 and the blink, the misfire window; a
+15. **Alarms on a drive** — `dash/04`: the retard at −6.0 and the blink, the misfire window; a
     `watch --out` recording with `200A`–`200D` for the replay.
-13. **The rest of `dash/17` §4** — through the board over the cable (USB before OBD power), the
+16. **The rest of `dash/17` §4** — through the board over the cable (USB before OBD power), the
     moving-car guard (`bleuds`), the CANable on car traffic, the ESC's wheel speeds; §2 item 8.
-14. **Freeze frames on the car** — the reading is built (2026-10-21, either source alone,
-    `research/odis-dtc/freeze-frames.md`): `vagcan faults -v` beside a VCDS auto-scan, one
-    code's frame field by field, once with the ODIS project alone and once with the VCDS
-    install alone.
-15. **Questions only the car answers** — `dash/06`.
-16. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
+17. **Questions only the car answers** — `dash/06`.
+18. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.
-17. **`watch` and `measure` across all fifteen units** — measured against the file, not
+19. **`watch` and `measure` across all fifteen units** — measured against the file, not
     the car.
-18. **Consumption** — `vagcan watch --did 710:2A09,2A1C`, engine off and running, for the signs
+20. **Consumption** — `vagcan watch --did 710:2A09,2A1C`, engine off and running, for the signs
     and the factors [`dash/23`](dash/23-power-consumption.md) needs before watts go in the strip.
 
 ## Task files
@@ -216,8 +215,9 @@ the CANable on car traffic; `dash/17` §2 item 8; whether the gearbox's clutch t
 Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, moved there on
 2026-09-15 — its car check is `dash/17` §4; `label-lookup/02` and `03`, merged as PRs #15 and
 #18, moved there on 2026-09-28; `dash/26` and `dash/27`, merged as PR #30, moved there on
-2026-10-19 — `dash/26`'s car check is Next item 9a; `measure/03`, moved there on
-2026-10-21); superseded designs in
+2026-10-19 — `dash/26`'s car check is Next item 12; `dash/24`, the bus-time estimate, and
+`dash/25`, one core for the board and the replay, merged as PRs #33 and #34 on 2026-10-20;
+`measure/03`, moved there on 2026-10-21); superseded designs in
 `.archive/specs/`.
 
 ## Command names in older documents
@@ -225,8 +225,8 @@ Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, move
 `research/` and `.archive/` keep commands as they were typed on the day. Today:
 
 ```
-setup devices info units faults sensors watch measure dev
-dev: sniff glossary recording dash vcds
+setup devices info units adaptations faults sensors watch measure dev
+dev: sniff sim glossary recording dash vcds
 ```
 
 | older spelling | today |
@@ -239,9 +239,11 @@ dev: sniff glossary recording dash vcds
 | `vagcan dash build` | `vagcan dev dash build` |
 | `vagcan scan` | gone — one unit's sweep over any range; today `units --identify <unit>` reads that unit's identification block, `F100`–`F1FF`, and nothing else |
 | `vagcan properties` | gone — it is `units --identify <unit>`, and now carries the moving-car guard |
+| `vagcan-measure …` | `vagcan measure …` (the binary removed 2026-10-20, PR #46) |
 
-Every command the skills under `.claude/skills/` name was run against `--help` on
-2026-10-19 and resolves; `vagcan dev survey` and `faults --from` do not parse.
+Every command and flag the skills under `.claude/skills/` name was run against `--help` on
+2026-10-21 by `research/tools/skill-commands.py` and resolves; `vagcan dev survey` and
+`faults --from` do not parse.
 
 ## Dead and archived (kept as negative results — do not retry)
 
@@ -258,6 +260,14 @@ Every command the skills under `.claude/skills/` name was run against `--help` o
   now says so up front instead of spinning. The only route that would change this is
   lifting the mask out of a running VCDS process, which is a Windows-debugger job and
   not an offline one (`.archive/research/labels/tttext2.md` §3.3a, §3.5).
+  **Corrected 2026-10-20 (PR #40), re-checked 2026-10-21:** the conclusion stands, two of its
+  reasons and its costs do not. The "runtime product" is the file name, so every classic file
+  opens with no search at all (the unmasked half's ~39 h is gone; a cold `setup` takes ~3 s).
+  The mask is not a global of VCDS's: it is the interface's answer to cable command `0x45`, a
+  challenge built from the file's `[CMP]` number and a name hash, and VCDS holds no copy — still
+  not derivable offline. One recovered key now gives a shifted file's whole mask, so it costs one
+  search per file, not one per section. A file is shifted exactly when its `[CMP]` number has 8
+  digits (6,204 of 16,576 in the English 26.3). `.archive/research/labels/tttext2.md` §3.3b.
 
 - **HEX-clone live UDS** — the session KDF is VMProtect-sealed and dead. The `vag-hex`
   crate and the vendored FTDI D2XX driver are **deleted**; the research writeups moved to
@@ -293,6 +303,10 @@ Every command the skills under `.claude/skills/` name was run against `--help` o
   (`.archive/research/labels/tttext2.md` §12, 2026-08-06): its `[CMP]` section is exempt from the shifted-IV regime, so its
   anchor byte cannot be narrowed and all 60 legal values need the full space
   (`.archive/research/labels/tttext2.md` §4.2). Two of the 60 anchors were run, both misses; the rest are not started.
+  Re-checked 2026-10-21 under PR #40's name keys (`vagcan dev vcds rod --no-crack -v` on the
+  English 26.3's copy): `[CMP]` opens by the name, its number has 8 digits, and `[TXT]` is
+  masked, "no crib". `[CMP]` is exempt from the mask, so its key does not give `[TXT]`'s; the
+  ~21 h stands.
 - **A per-car cache of learned unit pairings.** Which CAN request id answers a unit number
   is in no label file — the two numberings are unrelated — so it is learned per car by
   `units --identify` and lost when the process exits. `~/.vagcan/cars/<VIN>/` is
