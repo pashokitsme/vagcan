@@ -409,6 +409,24 @@ impl Project {
 	/// reaches a refused type, is **skipped**. One unreadable channel must not
 	/// cost a control unit all its others.
 	pub fn readings(&self, variant: &Variant) -> Result<Vec<Reading>, Error> {
+		self.read_through(variant, loaders::identity::RDBI_MEASUREMENT)
+	}
+
+	/// The adaptation channels of one variant: what its
+	/// [`loaders::identity::RDBI_ADAPTATION`] service reads, by DID, with each
+	/// field's layout and scaling.
+	///
+	/// The same chain as [`Project::readings`], started at the other service: its
+	/// positive response is the measurement response's shape, `62 <DID> <data>`, a
+	/// table key and a table struct. Only the read service is looked up; nothing
+	/// here can describe a write. An empty list means the variant, and every
+	/// parent it names, declares no adaptation read.
+	pub fn adaptations(&self, variant: &Variant) -> Result<Vec<Reading>, Error> {
+		self.read_through(variant, loaders::identity::RDBI_ADAPTATION)
+	}
+
+	/// The channels one `ReadDataByIdentifier` service of a variant reads.
+	fn read_through(&self, variant: &Variant, service: &str) -> Result<Vec<Reading>, Error> {
 		let mut store = Store::new(self);
 		let Some(own) = store.layer_data(variant)? else {
 			return Ok(Vec::new());
@@ -417,13 +435,13 @@ impl Project {
 		// the variant — see [`Store::measurement_layer`]. Everything below then
 		// runs against that layer and its pool, because that is where the
 		// service's own objects are indexed.
-		let Some((layer, home)) = store.measurement_layer(variant, own)? else {
+		let Some((layer, home)) = store.measurement_layer(variant, own, service)? else {
 			return Ok(Vec::new());
 		};
 		let Some(service_ref) = layer
 			.services
 			.iter()
-			.find(|(name, _)| name.as_deref() == Some(loaders::identity::RDBI_MEASUREMENT))
+			.find(|(name, _)| name.as_deref() == Some(service))
 			.map(|(_, target)| target.clone())
 		else {
 			return Ok(Vec::new());
@@ -812,17 +830,16 @@ impl<'a> Store<'a> {
 	/// The variant has no service either way, so without the parent there is
 	/// nothing to say, and saying nothing is how a broken parse became "this unit
 	/// has no measurements".
+	///
+	/// `service` is the short name looked for: the measurement service, or the
+	/// adaptation read, which inherit by the same rule.
 	fn measurement_layer(
 		&mut self,
 		variant: &Variant,
 		own: loaders::identity::LayerData,
+		service: &str,
 	) -> Result<Option<(loaders::identity::LayerData, String)>, Error> {
-		let declares = |layer: &loaders::identity::LayerData| {
-			layer
-				.services
-				.iter()
-				.any(|(name, _)| name.as_deref() == Some(loaders::identity::RDBI_MEASUREMENT))
-		};
+		let declares = |layer: &loaders::identity::LayerData| layer.services.iter().any(|(name, _)| name.as_deref() == Some(service));
 		if declares(&own) {
 			return Ok(Some((own, variant.pool.clone())));
 		}
@@ -1471,6 +1488,12 @@ mod tests {
 	/// `EV_DCUDriveSideEWMAXCONT_006` looks like on disk. Both must yield the
 	/// same channels; that is the whole assertion.
 	fn miniature_project(dir: &std::path::Path, inherit: bool) -> (Project, String) {
+		miniature_project_serving(dir, inherit, loaders::identity::RDBI_MEASUREMENT)
+	}
+
+	/// The same project, its one `ReadDataByIdentifier` service under the short name
+	/// `service`.
+	fn miniature_project_serving(dir: &std::path::Path, inherit: bool, service: &str) -> (Project, String) {
 		let pool_id = "0.0.0@BV_Test.bv";
 		let mut b = Build::default();
 		let pool_hash = b.a(pool_id);
@@ -1509,7 +1532,7 @@ mod tests {
 		b.put("#RtGen_DB_PROJECT_DATA", code::DB_PROJECT_DATA, pd);
 
 		// The variant's layer data: one service, no inherited indexes.
-		let rdbi = b.a(loaders::identity::RDBI_MEASUREMENT);
+		let rdbi = b.a(service);
 		let svc = b.a("SVC_Measu");
 		// One layer, built twice with different contents when the fixture is
 		// exercising inheritance: the service sits on whichever layer is
@@ -1904,6 +1927,33 @@ mod tests {
 		// wrong pool is the way this half-works: the service is found and its
 		// tables are not, and the result is a shorter list nobody notices.
 		assert_eq!(inherited_rows, readings(&a));
+	}
+
+	#[test]
+	fn the_adaptation_read_is_its_own_service_and_reads_through_the_same_chain() {
+		// Each list comes from its own service and from nothing else: a unit's
+		// adaptations are not its measurements, and a variant that serves one has
+		// none of the other.
+		let rows = |service: &str, inherit: bool| {
+			let dir = tempfile::tempdir().expect("a temporary directory");
+			let (project, _) = miniature_project_serving(dir.path(), inherit, service);
+			let variants = project.variants().expect("the project data parses");
+			let variant = variants.iter().find(|v| v.name == "EV_Test").expect("the ECU variant is listed");
+			let mut adaptations = project.adaptations(variant).expect("the chain walks");
+			let mut readings = project.readings(variant).expect("the chain walks");
+			adaptations.sort_by_key(|r| r.did);
+			readings.sort_by_key(|r| r.did);
+			(adaptations, readings)
+		};
+		let (adaptations, readings) = rows(loaders::identity::RDBI_ADAPTATION, false);
+		assert!(readings.is_empty(), "{readings:#?}");
+		let (none, measured) = rows(loaders::identity::RDBI_MEASUREMENT, false);
+		assert!(none.is_empty(), "{none:#?}");
+		// The same rows, layout and scaling, as the measurement service gives.
+		assert_eq!(adaptations, measured);
+		assert_eq!(adaptations.len(), 2);
+		// And inherited from a base variant by the same rule.
+		assert_eq!(rows(loaders::identity::RDBI_ADAPTATION, true).0, adaptations);
 	}
 
 	#[test]

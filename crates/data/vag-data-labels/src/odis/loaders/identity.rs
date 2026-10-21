@@ -147,6 +147,17 @@ pub struct LayerData {
 /// has no measurements.
 pub const RDBI_MEASUREMENT: &str = "DiagnServi_ReadDataByIdentMeasuValue";
 
+/// The short name of the service that reads adaptation values.
+///
+/// VW's generated name for the `ReadDataByIdentifier` service over a unit's
+/// calibration (adaptation) data — a `0x22`, and the read half only. Its write
+/// counterpart (`…WriteDataByIdentCalibData`, `0x2E`) is never looked up. Its
+/// response has the measurement service's shape, so the measurement chain reads it
+/// unchanged ([`crate::odis::Project::adaptations`]): on the reference car's units
+/// 620 of the 621 DIDs it lists are in VCDS's adaptation lists
+/// (`research/vcds-registry/README.md` §9.1).
+pub const RDBI_ADAPTATION: &str = "DiagnServi_ReadDataByIdentCalibData";
+
 /// Read a `DB_PROJECT_DATA`.
 ///
 /// It opens with a list of location references whose access keys are stepped

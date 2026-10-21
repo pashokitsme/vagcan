@@ -65,7 +65,7 @@ impl Section {
 	];
 
 	/// The section tag, in the unit's file and in the registry alike.
-	pub fn tag(self) -> &'static str {
+	pub const fn tag(self) -> &'static str {
 		match self {
 			Section::Adaptation => "ADP",
 			Section::BasicSetting => "GES",
