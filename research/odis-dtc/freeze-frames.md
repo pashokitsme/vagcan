@@ -192,6 +192,9 @@ structure (the 5-byte time stamp) is its fields at its offset. A record's length
 size, else where its last field ends, a field of unknown width allowed only where a known one
 follows it.
 
+**Which source.** A run reads the one `Extracted::run_source` names — ODIS when the project
+holds an ODIS source, else VCDS — and that source's rows alone (CLAUDE.md, 2026-10-21).
+
 **Census, all of the reference project's variants.** 717 variants: 524 resolve to an
 extended-data multiplexer, 193 to none, 0 errors. They reach 154 of the 171 multiplexer
 objects (the other 17 are overridden on every variant that inherits them). Of the 154:

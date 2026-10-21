@@ -76,17 +76,15 @@ impl Source {
 	}
 }
 
-/// The source a run reads freeze frames from, given which the cache holds: the one there is.
-///
-/// **With both, the choice is not made here yet**: it is the owner's to settle (CLAUDE.md,
-/// "ODIS and VCDS are independent sources", and the question asked 2026-10-21). Until then a
-/// run with both keeps reading VCDS's, as it did before the ODIS path existed, so that the
-/// pending decision changes nothing on a machine by itself.
-pub fn source_of_run(odis: bool, vcds: bool) -> Option<Source> {
-	match (odis, vcds) {
-		(_, true) => Some(Source::Vcds),
-		(true, false) => Some(Source::Odis),
-		(false, false) => None,
+impl Source {
+	/// The source a cache kind names (`vag_data_db::ODIS`, `VCDS`), `None` for any other —
+	/// how [`crate::extracted::Extracted::run_source`]'s answer becomes one of these.
+	pub fn of_kind(kind: &str) -> Option<Source> {
+		match kind {
+			vag_data_db::ODIS => Some(Source::Odis),
+			vag_data_db::VCDS => Some(Source::Vcds),
+			_ => None,
+		}
 	}
 }
 
@@ -636,12 +634,11 @@ mod tests {
 	}
 
 	#[test]
-	fn a_run_reads_one_source_of_the_two() {
-		assert_eq!(source_of_run(true, false), Some(Source::Odis));
-		assert_eq!(source_of_run(false, true), Some(Source::Vcds));
-		assert_eq!(source_of_run(false, false), None);
-		// Both: not decided here (see `source_of_run`); one of them, never both.
-		assert!(source_of_run(true, true).is_some());
+	fn a_source_is_named_by_its_cache_kind_and_nothing_else() {
+		for source in [Source::Odis, Source::Vcds] {
+			assert_eq!(Source::of_kind(source.kind()), Some(source));
+		}
+		assert_eq!(Source::of_kind("other"), None);
 	}
 
 	#[test]

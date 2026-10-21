@@ -691,14 +691,15 @@ pub async fn run<L: UnitLink>(
 	let requested = only.map(|spec| unit_list("--unit", spec)).transpose()?;
 	let keys = crate::datadir::or_default(iv_cache, || Ok(crate::project::current()?.rod_keys()))?;
 	let mut namers = Namers::open(&keys, iv_cache.is_some())?;
-	// The freeze-frame layouts `setup` stored from a VCDS install, looked up per unit by the
+	// The freeze-frame layouts `setup` stored from the run's source, looked up per unit by the
 	// same identifiers that name its codes — and by the car's project, which its VIN says.
 	let extracted = crate::extracted::current();
-	// One source of freeze-frame layouts for the whole run (`crate::freezeframe::Source`).
-	let freeze_source = crate::freezeframe::source_of_run(
-		extracted.knows_freeze_frames(vag_data_db::ODIS),
-		extracted.knows_freeze_frames(vag_data_db::VCDS),
-	);
+	// The run's one source (`Extracted::run_source`: ODIS when the project holds one, else
+	// VCDS), and the freeze-frame layouts of that source alone.
+	let freeze_source = extracted
+		.run_source()
+		.and_then(crate::freezeframe::Source::of_kind)
+		.filter(|source| extracted.knows_freeze_frames(source.kind()));
 	let freeze_known = freeze_source.is_some();
 
 	let mut backend = open().await?;
