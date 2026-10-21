@@ -41,7 +41,16 @@ unit  id   name        code    dtc
       failing    123456      3  2026-07-27 00:00  odis
       Made-up sensor A: signal too high
 --    713  SIM ESC     047120
-      confirmed
+      confirmed  123392      1  2026-07-27 00:00
+
+7E0  000129  P000129
+    priority       6
+    aging counter  16
+    record 70      0F A0 7B 00 (no layout for this variant, not decoded)
+713  047120
+    priority       4
+    aging counter  32
+    record 70      AA BB (no layout for this variant, not decoded)
 
 2 stored · 1 failing now · 4 units read
 
@@ -53,7 +62,16 @@ names    ODIS SIM00-odis (eng)
 unit  id   name        code    dtc      status         km  count  last seen            src
 01    7E0  SIM ENGINE  000129  P000129  failing    123456      3  2026-07-27 00:00:03  odis
       Made-up sensor A: signal too high
---    713  SIM ESC     047120           confirmed
+--    713  SIM ESC     047120           confirmed  123392      1  2026-07-27 00:00:01
+
+7E0  000129  P000129
+    priority       6
+    aging counter  16
+    record 70      0F A0 7B 00 (no layout for this variant, not decoded)
+713  047120
+    priority       4
+    aging counter  32
+    record 70      AA BB (no layout for this variant, not decoded)
 
 2 stored · 1 failing now · 4 units read
 
