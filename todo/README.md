@@ -56,10 +56,12 @@ below. `just check` green on `f58678c` on 2026-10-21 (2,568 tests passed across 
 - **The dash** (PR #41, `f004549`, 2026-10-20): a refused or blank `F187`, or one late answer, no
   longer strikes a unit off for the boot. That is what left the ESC's acceleration at `––` on the
   owner's board from 2026-10-20 on (the plan's ESC channel unchanged across plans).
-- **The board in the car** runs `dash` without BLE built on 2026-10-19 at 21:21 UTC from the master
-  of that moment — `451e3b5` (#31) by the session's log; the image does not record its commit.
-  The firmware changes since (`git log 451e3b5..f58678c -- crates/dash crates/uds`: #33's exchange
-  count, #34's core, #41's fix, the English pages, the VCDS plan) are not on it.
+- **The board in the car** runs `dash` without BLE from `f58678c` (`master`, PR #56), flashed by
+  the owner on 2026-10-21 at 20:13 UTC from `.worktrees/flash` (detached at `f58678c`, clean):
+  the VCDS plan (`channels from the VCDS installation` in the build), 6 pages, the English
+  labels, #41's fix, #33's exchange count, #34's core. Before it, from 2026-10-19 21:21 UTC, an
+  image of `451e3b5` (#31), dated from the session's log. Its glass is wired SDIN `GPIO8`, CS
+  `GPIO20`, RES `GPIO21` (`365c21e`), the standard since 2026-10-03.
 - **The housing** ([`dash/15`](dash/15-enclosure.md), CAD in `~/CAD/projects/vagcan/`): round 3
   printed by the owner; then a 0.4 mm rim in the wall in front of the socket, the ESP's clip
   0.5 mm further off and the face's teeth 0.7 mm (CAD `9554fc9`, `44c19c7`, 2026-10-03), not
@@ -70,8 +72,8 @@ below. `just check` green on `f58678c` on 2026-10-21 (2,568 tests passed across 
   ([`dash/18`](dash/18-setpoints-and-drift.md), [`dash/20`](dash/20-fault-count.md),
   [`dash/19`](dash/19-stalk-and-stopwatch.md)) until the owner says they are closed.
 
-**Not verified on hardware** (2026-10-21): everything since the board's `451e3b5` image on the glass
-(the ESC fix, the English pages, the VCDS plan); the strip and PR #23 on the glass; the pin
+**Not verified on hardware** (2026-10-21): the `f58678c` image on a drive (the ESC fix, the English
+pages, the VCDS plan, `exch=`); the strip and PR #23 on the glass; the pin
 buttons; `+`/`−` never opening the stopwatch; a 0–100 against `vagcan measure`; the run saved
 before `GO`; the retard alarm and the blink on a drive; `adaptations`, freeze frames and the
 `sensors --unit` guard; Ctrl-C on a real adapter; the cable through the board on the car; the
@@ -127,10 +129,7 @@ temperatures (`02:102A`–`102C`) answer — outside the August survey's pages.
 
 **Without the car**
 
-1. **Flash the board with `master`** (the owner; the board is not on USB from here) —
-   `cd ~/Source/repos/vcds/.worktrees/flash && just fw-flash dash --no-default-features`. It takes
-   the VCDS plan `46df4dd19f9cc72c` with the English pages, #41's fix for the ESC's acceleration,
-   #33's exchange count and #34's core; none is on the board's `451e3b5` image.
+1. ~~**Flash the board with `master`**~~ — done 2026-10-21, `f58678c` (above).
 2. **Unit names from the run's source** (decided 2026-10-21, not started): `units`, `info`,
    `sensors` and `faults --unit NN` still name and number units from VCDS's label files on every
    run. On an ODIS run they take ODIS's names; where the run's source has none, the request id,
@@ -151,7 +150,7 @@ temperatures (`02:102A`–`102C`) answer — outside the August survey's pages.
 
 **With the car**
 
-8. **The board after 1, on the glass** — the ESC's acceleration back (no `––` the whole drive),
+8. **The `f58678c` image on the glass** (flashed 2026-10-21) — the ESC's acceleration back (no `––` the whole drive),
    the English pages, the strip, the stopwatch's rounding and the acceleration's zero at rest; then
    `dashcfg` → `state` after a drive: `exch=…/s`, the car's own exchange rate, which the bus-time
    estimate's 34 ms waits for ([`dash/24`](../.archive/tasks/done/dash/24-bus-time-check.md)).
