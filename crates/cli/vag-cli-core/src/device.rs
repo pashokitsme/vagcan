@@ -395,6 +395,16 @@ pub fn resolve_cable_for(requested: Option<&str>, slcan: bool, why: &NotThroughT
 	resolve_cable_for_with(requested.as_deref(), slcan, why, list_adapters().map_err(Into::into), probe)
 }
 
+/// The half of [`resolve_cable_for`] that needs nothing at all: `--device ble…` refused,
+/// with `why.over_ble` ([`SLCAN_OVER_BLE`] with `slcan`). For a command that checks its
+/// data before it resolves a device, and would otherwise answer a BLE request with that.
+pub fn refuse_ble(requested: Option<&str>, slcan: bool, why: &NotThroughTheBoard) -> Result<()> {
+	if requested.is_some_and(|r| ble_request(r).is_some()) {
+		return Err(if slcan { slcan_over_ble() } else { anyhow!("{}", why.over_ble) });
+	}
+	Ok(())
+}
+
 /// [`resolve_cable_for`] with the listing and the board probe handed in.
 pub fn resolve_cable_for_with(
 	requested: Option<&str>,
@@ -403,9 +413,7 @@ pub fn resolve_cable_for_with(
 	listing: Result<Vec<AdapterInfo>>,
 	probe: impl FnMut(&str) -> BoardAnswer,
 ) -> Result<String> {
-	if requested.is_some_and(|r| ble_request(r).is_some()) {
-		return Err(if slcan { slcan_over_ble() } else { anyhow!("{}", why.over_ble) });
-	}
+	refuse_ble(requested, slcan, why)?;
 	let usb = match requested {
 		Some(path) => named_usb(path, listing, probe)?,
 		// A dash board is a candidate only as `--slcan`'s adapter: without it the board is
