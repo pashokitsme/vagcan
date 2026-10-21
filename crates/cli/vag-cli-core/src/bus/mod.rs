@@ -227,6 +227,40 @@ enum Command {
 	Shutdown,
 }
 
+/// Every bus task this process started and has not seen end, for [`closed`].
+static TASKS: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>> = std::sync::Mutex::new(Vec::new());
+
+/// Remember a bus task until it has ended; the ones already over are let go here.
+fn keep(task: tokio::task::JoinHandle<()>) {
+	if let Ok(mut tasks) = TASKS.lock() {
+		tasks.retain(|task| !task.is_finished());
+		tasks.push(task);
+	}
+}
+
+/// Wait for every bus task to end, `within` at most; `true` when they all did.
+///
+/// **Called before the runtime is dropped** (`vagcan`'s `main`). A bus task runs on a
+/// blocking-pool thread, and dropping a multi-thread runtime shuts its workers and its
+/// timers down *before* it joins that pool. A command returns the moment it drops its last
+/// handle, while the task may still be between its inbox and its next timer: polled on a
+/// runtime shutting down, the timer panics ("A Tokio 1.x context was found, but it is being
+/// shutdown"), seen at the end of `watch --for` in CI's e2e. With no handle left a task ends
+/// at its next poll, so this is quick; the bound is for a handle something still holds.
+pub async fn closed(within: Duration) -> bool {
+	let tasks = match TASKS.lock() {
+		Ok(mut tasks) => std::mem::take(&mut *tasks),
+		Err(_) => return false,
+	};
+	tokio::time::timeout(within, async {
+		for task in tasks {
+			let _ = task.await;
+		}
+	})
+	.await
+	.is_ok()
+}
+
 /// A handle on the one task that owns the link. Cheap to clone; see the module docs.
 ///
 /// The task ends — and drops the link, closing the port — when every `Bus` and every
@@ -252,7 +286,9 @@ impl Bus {
 		let started = Instant::now();
 		let runtime = tokio::runtime::Handle::current();
 		let once_wait = once_deadline(&budget);
-		tokio::task::spawn_blocking(move || runtime.block_on(task::run(link, budget, inbox, started)));
+		keep(tokio::task::spawn_blocking(move || {
+			runtime.block_on(task::run(link, budget, inbox, started))
+		}));
 		Bus {
 			commands,
 			started,
@@ -276,7 +312,9 @@ impl Bus {
 		let peer = peer.to_string();
 		let closed = Arc::new(std::sync::OnceLock::new());
 		let told = closed.clone();
-		tokio::task::spawn_blocking(move || runtime.block_on(remote::run(pipe, peer, carrier, inbox, started, told)));
+		keep(tokio::task::spawn_blocking(move || {
+			runtime.block_on(remote::run(pipe, peer, carrier, inbox, started, told))
+		}));
 		Bus {
 			commands,
 			started,

@@ -648,7 +648,11 @@ async fn main() -> ExitCode {
 	if let Some(note) = vag_cli_core::datadir::test_build_note() {
 		vag_cli_core::say!("{note}");
 	}
-	match run().await {
+	let ran = run().await;
+	// Every bus task over before the runtime goes: one still between its inbox and a
+	// timer when the runtime drops panics on the way out (`bus::closed`).
+	vag_cli_core::bus::closed(BUSES_CLOSE_WITHIN).await;
+	match ran {
 		Ok(code) => code,
 		// `vagcan watch … | head`: the reader had what it wanted; the run ends quietly.
 		Err(err) if vag_cli_core::verbosity::is_broken_pipe(&err) => ExitCode::SUCCESS,
@@ -661,6 +665,10 @@ async fn main() -> ExitCode {
 		}
 	}
 }
+
+/// How long the bus tasks get to end once the command has returned. They end at their next
+/// poll with no handle left; this bounds a handle something still holds.
+const BUSES_CLOSE_WITHIN: Duration = Duration::from_secs(2);
 
 /// Everything before the command, and then the command.
 async fn run() -> Result<ExitCode> {
