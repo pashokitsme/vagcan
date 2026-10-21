@@ -31,9 +31,15 @@
 //!    second Ctrl-C in that time ends it at once.
 //!
 //! A command blocked on its thread at that moment is not dropped — nothing can drop a
-//! future that is not being polled — so a link it holds is closed by the operating system
-//! when the process ends, without slcan's close command. The process still ends on time;
-//! only that guarantee is lost, and only for a command that blocks while it holds a link.
+//! future that is not being polled; `measure` holds a bus across its questions. So the
+//! bus tasks do not wait for it: each waits on [`ends`] beside its work, on its own
+//! blocking-pool thread, and returns — dropping its link, close command and all — the
+//! moment the process is ending, whatever the command's thread is doing.
+//!
+//! Right before the exit, on every path, the terminal is given back once more: raw mode
+//! first, then the rest. A screen that switched on after the first give-back (a replay
+//! still loading when Ctrl-C came) is refused once the process is ending, and undone if
+//! it raced in ([`term`](crate::ui::term)).
 //!
 //! **Raw mode is the other half.** A menu or a full screen turns the terminal's own
 //! interrupt off, and Ctrl-C arrives as a key. [`term::interrupts`](crate::ui::term::interrupts)
@@ -70,8 +76,11 @@ static ENDING: AtomicBool = AtomicBool::new(false);
 static TOLD: Notify = Notify::const_new();
 /// A Ctrl-C read as a key in raw mode, handed to the handler ([`raise`]).
 static RAISED: Notify = Notify::const_new();
-/// What the first Ctrl-C does in this process: 0 until [`install`], then a [`First`].
+/// What the first Ctrl-C does in this process: 0 until [`install`] has a listener
+/// running, then a [`First`].
 static POLICY: AtomicU8 = AtomicU8::new(0);
+/// Set by the first [`install`], whether or not its listener starts.
+static INSTALLING: AtomicBool = AtomicBool::new(false);
 /// Set by [`run`] once the interrupted command is gone: dropped, or finished anyway.
 static GONE: AtomicBool = AtomicBool::new(false);
 /// How long the terminal is left to the command's own guards before it is taken back.
@@ -96,15 +105,30 @@ impl std::error::Error for Interrupted {}
 /// A process that cannot have a signal handler (no thread, no runtime) keeps the
 /// default disposition, which still ends it; that is said under `-v` and not refused.
 pub fn install(first: First) {
-	let code = match first {
-		First::Ends => 1,
-		First::Stops => 2,
-	};
-	if POLICY.compare_exchange(0, code, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+	if INSTALLING.swap(true, Ordering::SeqCst) {
 		return;
 	}
-	if let Err(why) = spawn(first) {
-		crate::note!("Ctrl-C: no handler of its own ({why}); it ends the process without closing the links");
+	// The policy is set only once a listener runs: with none, a key's [`raise`] must not
+	// mark the process as ending, or [`run`] would wait for an exit nobody makes.
+	match spawn(first) {
+		Ok(()) => POLICY.store(code(first), Ordering::SeqCst),
+		Err(why) => crate::note!("Ctrl-C: no handler of its own ({why}); it ends the process without closing the links"),
+	}
+}
+
+fn code(first: First) -> u8 {
+	match first {
+		First::Ends => 1,
+		First::Stops => 2,
+	}
+}
+
+/// The installed handler's policy, if one is listening.
+fn policy() -> Option<First> {
+	match POLICY.load(Ordering::SeqCst) {
+		1 => Some(First::Ends),
+		2 => Some(First::Stops),
+		_ => None,
 	}
 }
 
@@ -122,7 +146,7 @@ fn spawn(first: First) -> std::io::Result<()> {
 
 async fn listen(first: First, mut signals: Signals) {
 	next(&mut signals).await;
-	heard();
+	heard(Some(first));
 	if first == First::Ends {
 		// Detached: the exit below does not wait for it, and must not.
 		let _ = std::thread::Builder::new().name("ctrl-c-goodbye".into()).spawn(goodbye);
@@ -133,15 +157,21 @@ async fn listen(first: First, mut signals: Signals) {
 	} else {
 		next(&mut signals).await;
 	}
+	// On every way out, a second Ctrl-C and `dev sniff`'s included, and after a screen
+	// that switched on late: raw mode first, which writes nothing and so cannot be held
+	// up by a terminal that takes no bytes, then everything else still on.
+	crate::ui::term::give_back_raw();
+	crate::ui::term::give_back();
 	std::process::exit(i32::from(EXIT_CODE));
 }
 
 /// The first Ctrl-C, from the signal or a key: the flags set and the command told.
 /// Called by [`raise`] on the loop's own thread too, so the flags are up before the
-/// loop's error reaches [`run`]; doing it twice changes nothing.
-fn heard() {
+/// loop's error reaches [`run`]; doing it twice changes nothing. Ending is set only
+/// with a listener that will make the exit.
+fn heard(first: Option<First>) {
 	REQUESTED.store(true, Ordering::SeqCst);
-	if POLICY.load(Ordering::SeqCst) == 1 {
+	if first == Some(First::Ends) {
 		ENDING.store(true, Ordering::SeqCst);
 	}
 	TOLD.notify_waiters();
@@ -209,9 +239,33 @@ pub async fn requested() {
 /// A Ctrl-C a raw-mode loop read as a key, handed to the handler as if it were the
 /// signal. The error is for the loop to return, so the command stops on its way out.
 pub fn raise() -> anyhow::Error {
-	heard();
+	heard(policy());
 	RAISED.notify_one();
 	anyhow::Error::new(Interrupted)
+}
+
+/// Resolves once the process is ending on a Ctrl-C — at once if it is already. What a
+/// bus task waits on beside its work, so it drops its link on its own thread even while
+/// the command's thread is blocked (a question waiting for a line) and cannot drop it.
+pub async fn ends() {
+	loop {
+		let told = TOLD.notified();
+		tokio::pin!(told);
+		told.as_mut().enable();
+		if ending() {
+			return;
+		}
+		told.await;
+	}
+}
+
+/// The state a Ctrl-C leaves behind, with no handler to end the process: for a test of
+/// what reacts to it, in a test binary of its own (the flags stay set for its life).
+#[cfg(any(test, feature = "test-util"))]
+pub fn end_for_test() {
+	REQUESTED.store(true, Ordering::SeqCst);
+	ENDING.store(true, Ordering::SeqCst);
+	TOLD.notify_waiters();
 }
 
 /// Whether an error is a Ctrl-C's ([`raise`]) rather than the command's own.

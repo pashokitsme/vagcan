@@ -1526,6 +1526,8 @@ async fn drive_to<F: Feed>(
 	// terminal while it is up, and still written to a redirected stderr.
 	let hold = screen.is_some().then(vag_cli_core::verbosity::hold);
 
+	// Left with Ctrl-C: the run then ends with 130, once the results are printed.
+	let mut interrupted = false;
 	let result: Result<()> = loop {
 		if last_frame.is_none_or(|at| at.elapsed() >= FRAME) && (terminal.is_some() || cycled) {
 			last_frame = Some(Instant::now());
@@ -1644,7 +1646,15 @@ async fn drive_to<F: Feed>(
 
 		if terminal.is_some() {
 			let unsaved = session.unsaved().saturating_sub(discarded_unsaved);
-			drain(&mut controls, &mut session, unsaved, &mut warning, &mut pending, &mut quit)?;
+			drain(
+				&mut controls,
+				&mut session,
+				unsaved,
+				&mut warning,
+				&mut pending,
+				&mut quit,
+				&mut interrupted,
+			)?;
 		}
 
 		if cycle {
@@ -1834,6 +1844,9 @@ async fn drive_to<F: Feed>(
 			Some(level) => (held.say)(level, &line),
 		}
 	}
+	if interrupted {
+		return Err(vag_cli_core::interrupt::raise());
+	}
 	result
 }
 
@@ -1977,6 +1990,7 @@ fn drain(
 	warning: &mut Option<String>,
 	events: &mut Vec<session::Event>,
 	quit: &mut bool,
+	interrupted: &mut bool,
 ) -> Result<bool> {
 	// Zero, and it is not the reason a cancel ever went missing. A lone `Esc`
 	// is the prefix of every ANSI sequence, so the suspicion was that
@@ -1992,7 +2006,8 @@ fn drain(
 		{
 			// Ctrl-C is `q`, with `q`'s guard: runs not saved yet are not lost to one
 			// keystroke, and a second Ctrl-C quits. On its own it is `c`, cancel.
-			let code = match term::interrupts(&key) {
+			let ctrl_c = term::interrupts(&key);
+			let code = match ctrl_c {
 				true => crossterm::event::KeyCode::Char('q'),
 				false => key.code,
 			};
@@ -2018,6 +2033,7 @@ fn drain(
 				ui::Action::Refuse(text) => *warning = Some(text),
 				ui::Action::Quit => {
 					*quit = true;
+					*interrupted = ctrl_c;
 					return Ok(true);
 				}
 			}

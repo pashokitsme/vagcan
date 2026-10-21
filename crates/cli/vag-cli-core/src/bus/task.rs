@@ -80,6 +80,12 @@ pub(super) async fn run<L: UnitLink>(link: L, budget: Budget, mut inbox: mpsc::U
 	};
 	let mut link = Some(link);
 	loop {
+		// A Ctrl-C ending the process closes the link from here, on this thread: the
+		// command's thread may be blocked at a question and never drop its handles
+		// (`interrupt::ends`).
+		if crate::interrupt::ending() {
+			return;
+		}
 		// Everything already asked goes into the planner before the next slot is filled.
 		loop {
 			match inbox.try_recv() {
@@ -107,6 +113,7 @@ pub(super) async fn run<L: UnitLink>(link: L, budget: Budget, mut inbox: mpsc::U
 								None | Some(Command::Shutdown) => return,
 								Some(command) => state.apply(command),
 							},
+							() = crate::interrupt::ends() => return,
 							heard = &mut exchange => break heard,
 						}
 					}
@@ -125,6 +132,7 @@ pub(super) async fn run<L: UnitLink>(link: L, budget: Budget, mut inbox: mpsc::U
 						None | Some(Command::Shutdown) => return,
 						Some(command) => state.apply(command),
 					},
+					() = crate::interrupt::ends() => return,
 					() = sleep_until(wake) => {}
 				}
 			}

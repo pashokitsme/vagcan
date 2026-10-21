@@ -19,9 +19,16 @@ use super::glass::{Canvas, braille, half_blocks};
 use crate::ui::term;
 use vag_dash_core::panel::{HEIGHT, WIDTH};
 
-/// Play `replay` to the end or until the person leaves, and return the events of the log —
-/// the lines under the panel after `notes` — for the caller to print once the screen is gone.
-pub fn show(mut replay: Replay, notes: &[String], title: &str, speed: f64) -> Result<Vec<String>> {
+/// What the panel leaves behind: the events of the log — the lines under the panel after
+/// the notes — for the caller to print once the screen is gone, and whether it was left
+/// with Ctrl-C, after which the run ends with 130.
+pub struct Shown {
+	pub events: Vec<String>,
+	pub interrupted: bool,
+}
+
+/// Play `replay` to the end or until the person leaves.
+pub fn show(mut replay: Replay, notes: &[String], title: &str, speed: f64) -> Result<Shown> {
 	let screen = term::full_screen()
 		.hiding_cursor()
 		.enter()
@@ -32,11 +39,11 @@ pub fn show(mut replay: Replay, notes: &[String], title: &str, speed: f64) -> Re
 	let mut canvas = Canvas::new(WIDTH, HEIGHT);
 	let (first, end) = (replay.start_ms(), replay.end_ms());
 	let started = Instant::now();
-	let mut left = false;
+	let mut left = None;
 	while let Some(tick) = replay.step() {
 		let due = started + Duration::from_secs_f64((tick.t_ms - first) as f64 / 1000.0 / speed);
-		if wait_until(due)? {
-			left = true;
+		if let Some(key) = wait_until(due)? {
+			left = Some(key);
 			break;
 		}
 		log.extend(tick.events.iter().map(|event| replay.line(tick.t_ms, event)));
@@ -49,33 +56,37 @@ pub fn show(mut replay: Replay, notes: &[String], title: &str, speed: f64) -> Re
 		);
 		paint(&mut out, &canvas, &log, &status)?;
 	}
-	if !left {
+	if left.is_none() {
 		paint(&mut out, &canvas, &log, &format!(" {title} · end of the recording — any key to leave"))?;
 		loop {
 			if let Event::Key(key) = event::read()?
 				&& key.kind == KeyEventKind::Press
 			{
+				left = Some(key);
 				break;
 			}
 		}
 	}
 	drop(screen);
-	Ok(log.split_off(notes.len()))
+	Ok(Shown {
+		events: log.split_off(notes.len()),
+		interrupted: left.is_some_and(|key| term::interrupts(&key)),
+	})
 }
 
-/// Wait for the frame's moment, listening for a way out. `true` when the person left.
-fn wait_until(due: Instant) -> Result<bool> {
+/// Wait for the frame's moment, listening for a way out: the key the person left with.
+fn wait_until(due: Instant) -> Result<Option<KeyEvent>> {
 	loop {
 		let now = Instant::now();
 		if now >= due {
-			return Ok(false);
+			return Ok(None);
 		}
 		if event::poll((due - now).min(Duration::from_millis(50)))?
 			&& let Event::Key(key) = event::read()?
 			&& key.kind == KeyEventKind::Press
 			&& leaves(key)
 		{
-			return Ok(true);
+			return Ok(Some(key));
 		}
 	}
 }

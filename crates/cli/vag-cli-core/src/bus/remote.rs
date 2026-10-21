@@ -194,6 +194,12 @@ pub(super) async fn run<P: Pipe>(
 	};
 	let mut reassembler = Reassembler::new();
 	let broken = 'live: loop {
+		// A Ctrl-C ending the process parts from the board from here, on this thread: the
+		// command's thread may be blocked at a question and never drop its handles
+		// (`interrupt::ends`).
+		if crate::interrupt::ending() {
+			return state.part(&mut pipe).await;
+		}
 		// What the pipe already holds comes first: the board does not wait for the host.
 		if let Some(broken) = state.take_in(&mut pipe, &mut reassembler).await {
 			break broken;
@@ -222,6 +228,7 @@ pub(super) async fn run<P: Pipe>(
 			biased;
 			chunk = pipe.read() => Event::Chunk(chunk),
 			command = inbox.recv() => Event::Command(command),
+			() = crate::interrupt::ends() => Event::Command(None),
 			() = sleep_until(deadline) => Event::Deadline,
 		};
 		match event {

@@ -141,8 +141,25 @@ impl Run {
 
 	/// The terminal back in line mode before the program has ended: the handler hands it
 	/// back at once and ends the process a moment later, which is the time to look.
+	///
+	/// A 130 exit before the mode was read counts too: the handler gives the terminal back
+	/// before it exits, and on macOS the terminal cannot be read once the program has ended,
+	/// so a loaded machine can let the exit land between two looks.
 	fn assert_gives_the_terminal_back(&mut self) {
-		self.reach("the terminal back in line mode", |run| run.raw() == Some(false));
+		let started = Instant::now();
+		while self.raw() != Some(false) {
+			if let Some(status) = self.child.try_wait().unwrap() {
+				assert_eq!(
+					status.code(),
+					Some(130),
+					"ended ({status}) with the terminal still raw; on screen:\n{}",
+					self.screen()
+				);
+				return;
+			}
+			assert!(started.elapsed() < ENDS_WITHIN, "the terminal stayed raw; on screen:\n{}", self.screen());
+			std::thread::sleep(Duration::from_millis(5));
+		}
 	}
 
 	/// Ctrl-C as a terminal sends it.

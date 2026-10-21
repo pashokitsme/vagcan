@@ -78,6 +78,11 @@ impl Crossterm {
 
 impl Terminal for Crossterm {
 	fn on(&mut self, switch: Switch) -> Result<()> {
+		// Once a Ctrl-C is ending the process, the terminal has been or is being given back
+		// from the handler's thread: a screen that starts now would outlive it.
+		if crate::interrupt::ending() {
+			return Err(crate::interrupt::Interrupted.into());
+		}
 		let mut out = std::io::stdout();
 		match switch {
 			Switch::Raw => terminal::enable_raw_mode()?,
@@ -86,6 +91,12 @@ impl Terminal for Crossterm {
 			Switch::Mouse => execute!(out, event::EnableMouseCapture)?,
 		}
 		ON.fetch_or(bit(switch, self.cursor_on_stderr), Ordering::SeqCst);
+		// One that raced in — on before the flag, listed after the give-back read the list —
+		// is undone here. Listed first and checked second, so one of the two always sees it.
+		if crate::interrupt::ending() {
+			let _ = self.off(switch);
+			return Err(crate::interrupt::Interrupted.into());
+		}
 		Ok(())
 	}
 
@@ -122,6 +133,13 @@ fn bit(switch: Switch, cursor_on_stderr: bool) -> u8 {
 	}
 }
 
+/// Raw mode alone switched off, if it is on: line mode back without writing a byte, so a
+/// terminal that has stopped taking bytes cannot hold it up. What the handler does first
+/// on its way to the exit, before [`give_back`] writes its escapes.
+pub fn give_back_raw() {
+	let _ = Crossterm { cursor_on_stderr: false }.off(Switch::Raw);
+}
+
 /// Everything still switched on, switched off, in the order a guard would: for a
 /// Ctrl-C, which ends the process from its own thread while a menu or a screen may be
 /// up ([`crate::interrupt`]). The cursor comes back on a full screen too, which
@@ -145,8 +163,9 @@ pub fn give_back() {
 /// Whether a key is Ctrl-C. Raw mode turns the terminal's own interrupt off, so in a
 /// menu or a full screen the keystroke that ends every other command arrives as `c`
 /// with Control held; every raw-mode loop asks this first, or there is no Ctrl-C there.
-/// A menu hands it to [`crate::interrupt::raise`]; a full screen quits the way its own
-/// quit key does, so what it was recording is closed properly.
+/// A menu hands it to [`crate::interrupt::raise`] at once; a full screen quits the way
+/// its own quit key does, so what it was recording is closed properly, and raises it
+/// after — the run ends with 130 either way.
 pub fn interrupts(key: &KeyEvent) -> bool {
 	key.kind != KeyEventKind::Release && key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'C'))
 }
