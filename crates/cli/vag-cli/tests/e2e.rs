@@ -114,6 +114,53 @@ fn home(at: &Path) {
 		],
 	)
 	.unwrap();
+
+	// The engine's fault records, as `setup` stores the variant's extended-data multiplexer:
+	// the two standard records and an own record 0x70 of four bytes. Made up.
+	{
+		use vag_data_labels::odis::{EnvironmentField, EnvironmentRecord};
+		let field = |name: &str, bit: u32, bits: u32, factor: f64, unit: Option<&str>| EnvironmentField {
+			name: Some(name.to_string()),
+			text_id: None,
+			unit: unit.map(str::to_string),
+			bit_offset: Some(bit),
+			bit_length: Some(bits),
+			signed: false,
+			big_endian: true,
+			scaling: Some(Scaling::Linear(LinearScale { factor, offset: 0.0 })),
+			constant: false,
+		};
+		let record = |number: i32, length: u32, fields: Vec<EnvironmentField>| EnvironmentRecord {
+			range: Some((number, number)),
+			name: None,
+			length: Some(length),
+			fields,
+		};
+		let records = [
+			record(
+				1,
+				2,
+				vec![field("DTC Priority", 0, 8, 1.0, None), field("Occurence Counter", 8, 8, 1.0, None)],
+			),
+			record(
+				2,
+				10,
+				vec![
+					field("Central-Aging-Counter", 0, 8, 1.0, None),
+					field("km-Mileage", 8, 24, 1.0, Some("km")),
+				],
+			),
+			record(
+				0x70,
+				4,
+				vec![
+					field("Sim Engine Speed", 0, 16, 0.25, Some("1/min")),
+					field("Sim Terminal 30", 16, 8, 0.1, Some("V")),
+				],
+			),
+		];
+		vag_data_db::put_all_odis_freeze_frames(&cache, source, [("EV_SimEngine_001", &records[..])]).unwrap();
+	}
 	// The demo car's dash: one value on one page, the engine's coolant temperature.
 	let dash = at.join("dash").join("SIMVIN00000000001");
 	std::fs::create_dir_all(&dash).unwrap();

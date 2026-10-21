@@ -44,9 +44,10 @@ unit  id   name        code    dtc
       confirmed  123392      1  2026-07-27 00:00
 
 7E0  000129  P000129
-    priority       6
-    aging counter  16
-    record 70      0F A0 7B 00 (no layout for this variant, not decoded)
+    priority          6
+    aging counter     16
+    Sim Engine Speed  1000 1/min
+    Sim Terminal 30   12.3 V
 713  047120
     priority       4
     aging counter  32
@@ -65,9 +66,10 @@ unit  id   name        code    dtc      status         km  count  last seen     
 --    713  SIM ESC     047120           confirmed  123392      1  2026-07-27 00:00:01
 
 7E0  000129  P000129
-    priority       6
-    aging counter  16
-    record 70      0F A0 7B 00 (no layout for this variant, not decoded)
+    priority          6
+    aging counter     16
+    Sim Engine Speed  1000 1/min
+    Sim Terminal 30   12.3 V
 713  047120
     priority       4
     aging counter  32
