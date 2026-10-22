@@ -26,6 +26,7 @@ use vag_cli_core::{note, outln, say};
 
 pub mod catalog;
 pub mod edit;
+pub mod save;
 
 // Clone for the reason `recording::Tool` is: the dispatcher keeps a copy of the
 // command so it can be run again after the label data has been made.
@@ -93,23 +94,29 @@ pub enum Tool {
 		input: Option<PathBuf>,
 	},
 
-	/// Lay out the dash's pages in a browser, for one car. Offline.
+	/// Lay out the dash's pages in a browser and save them, for one car. Offline.
 	///
 	/// FOR: choosing what each page shows — cells, charts, titles, labels — on
 	/// the board's own renderer, from the channels this car's build accepts,
-	/// before writing them into `dash.toml`.
+	/// and writing them into `dash.toml`.
 	///
 	/// IN: the car's record of its control units and this project's catalogs,
 	/// as `dev dash build` reads them, and `~/.vagcan/dash/<VIN>/dash.toml` when
 	/// there is one: the page opens on its pages. No adapter, no car.
 	///
 	/// OUT: a page on `http://127.0.0.1:<port>/`, opened in the browser; the
-	/// address is the one line on stdout. Its
-	/// files are under `~/.vagcan/dash/<VIN>/editor/`; the channel list is kept
-	/// there and made again when the project, the record, names.csv or the language
-	/// change. It changes no file of yours: it shows the `[[page]]` and
-	/// `[[channel]]` blocks to copy into `dash.toml`, then `dev dash build`
-	/// checks them. Nothing leaves 127.0.0.1. Ctrl-C ends it.
+	/// address is the one line on stdout. Save (Cmd-S or Ctrl-S) writes
+	/// `~/.vagcan/dash/<VIN>/dash.toml` — creating it if there is none — and
+	/// `plan.json` and `plan.rs` beside it, once the plan builds from the new
+	/// file as `dev dash build` builds it; a refused build writes nothing and the
+	/// page shows why. A save rewrites the `[[page]]` tables, adds a
+	/// `[[channel]]` for a channel new to the file and changes `label` and
+	/// `decimals`; every other line of the file stays as written. A file changed
+	/// on disk since the page read it is never overwritten: reload the page.
+	/// Each save prints one line on stderr. The page's files are under
+	/// `~/.vagcan/dash/<VIN>/editor/`; the channel list is kept there and made
+	/// again when the project, the record, names.csv or the language change.
+	/// Nothing leaves 127.0.0.1. Ctrl-C ends it.
 	///
 	/// Needs a `vagcan` built with the `wasm32-unknown-unknown` target
 	/// installed (`rustup target add wasm32-unknown-unknown`, then build again):

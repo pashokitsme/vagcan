@@ -8,7 +8,7 @@ workspace; this file keeps what the research found.
 | `index.html` | `crates/cli/vag-cli-diag/src/dash/editor.html`, embedded in `vagcan`, in English; opens on the car's own `dash.toml` (`layout.json`), not on a layout written into the page |
 | `wasm/` | `crates/dash/vag-dash-wasm`, a workspace member (so the host build catches a renderer API change); `vag-cli-diag/build.rs` compiles it for `wasm32-unknown-unknown` when that target is installed |
 | `catalog/` (`dash-catalog`) | `crates/cli/vag-cli-diag/src/dash/catalog.rs`, run in-process; `channels.json` is kept under `~/.vagcan/dash/<VIN>/editor/` until the project, the record, `names.csv`, the language or `vagcan` change |
-| `build.sh`, `python3 -m http.server` | the command: writes the page, the wasm, `channels.json` and `layout.json` into that directory and serves it on `127.0.0.1` |
+| `build.sh`, `python3 -m http.server` | the command: writes the page, the wasm and `channels.json` into that directory and serves it on `127.0.0.1`; `layout.json` is answered from `dash.toml` when the page asks |
 
 Dropped on the way, on purpose:
 
@@ -18,8 +18,9 @@ Dropped on the way, on purpose:
 - **Consumption in watts**: not a channel the build can resolve yet (`todo/dash/23`).
 - **Saving into a claude.ai artifact's store**, and Google Fonts: the page talks to its own
   server only (a Content-Security-Policy of `default-src 'self'`).
-- **A "save to dash.toml" button**: a complete file means rewriting a commented, hand-written
-  TOML; a fragment written beside it is not a `dash.toml`. The page shows the blocks to copy.
+- **A "save to dash.toml" button**, at first: a complete file meant rewriting a commented,
+  hand-written TOML. Added on 2026-10-22 without that cost: Save edits the file in place with
+  `toml_edit` and keeps every line it does not change (`vag-cli-diag/src/dash/save.rs`).
 
 ## Notes from the session that made it
 

@@ -26,6 +26,13 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # The ODIS parse fans out one variant per task over rayon's pool.
 rayon = { workspace = true }
 serde_json.workspace = true
+# `dev dash edit`'s save request, read into types that refuse a field they do not know.
+serde.workspace = true
+# `dev dash edit`'s save: `dash.toml` edited in place, its comments and order kept.
+toml_edit.workspace = true
+# `dev dash edit`'s save token, from the system's random source. Nothing else in the
+# workspace reads one, and the standard library offers none.
+getrandom = "0.4"
 ratatui = "0.29"
 crossterm = "0.28"
 # `dev recording dash`: the board's own screen, alarm and drawing code, run over a

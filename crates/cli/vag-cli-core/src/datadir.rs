@@ -403,7 +403,8 @@ pub fn dash_dir(vin: &str) -> anyhow::Result<PathBuf> {
 
 /// What `vagcan dev dash edit` serves for a car — `~/.vagcan/dash/<VIN>/editor/`: the page, the
 /// renderer as WebAssembly, the car's channels (`channels.json`, kept between runs while what it
-/// was made from is unchanged) and the layout of its `dash.toml`.
+/// was made from is unchanged). The layout of its `dash.toml` is answered from the file itself,
+/// at the moment the page asks, and is not kept here.
 ///
 /// Beside the plan and not in the checkout, for the plan's reason: `channels.json` is the
 /// project's label data resolved for one car. Everything in it is rebuilt by the next run.

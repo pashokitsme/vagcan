@@ -162,7 +162,7 @@ pub const REFERENCE_DOC: &str = "docs/dash/dash-toml.md";
 pub fn no_input(vin: &str, path: &Path) -> anyhow::Error {
 	anyhow::anyhow!("no dash.toml for {vin} yet")
 		.note(format!("a build reads {}", path.display()))
-		.help(format!("lay out its pages with `vagcan dev dash edit {vin}`, then write them there"))
+		.help(format!("lay out its pages and save them with `vagcan dev dash edit {vin}`"))
 		.help("see the smallest one: `vagcan dev dash build --help`")
 		.help(format!("read every key in {REFERENCE_DOC} in the vagcan repository"))
 		.help(FIND_IDS)
@@ -3486,7 +3486,15 @@ pub fn read_inputs(vin: &str, input: Option<&Path>) -> anyhow::Result<Inputs> {
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(missing_input(vin, &input_path, input.is_some())),
 		Err(e) => return Err(e).with_context(|| format!("reading the build input {}", input_path.display())),
 	};
-	let parsed = parse_input(&text)?;
+	inputs_from_text(vin, &text, input_path)
+}
+
+/// [`read_inputs`] on a build input's text, said to be read from `input_path`: what
+/// `dev dash edit` checks a `dash.toml` with before it writes one, so the editor's save and
+/// `dev dash build` refuse the same text with the same words.
+pub fn inputs_from_text(vin: &str, text: &str, input_path: PathBuf) -> anyhow::Result<Inputs> {
+	let dir = crate::datadir::dash_dir(vin)?;
+	let parsed = parse_input(text)?;
 	if !parsed.vin.eq_ignore_ascii_case(vin.trim()) {
 		anyhow::bail!("{} is for VIN {} but the build asked for {vin}", input_path.display(), parsed.vin);
 	}
@@ -3722,8 +3730,15 @@ pub fn build_for_car(vin: &str, input: Option<&Path>) -> anyhow::Result<Written>
 /// [`build_for_car`] on inputs already read — for `dev dash build`, which reads the
 /// registry for the units on record between the two.
 pub fn build_inputs(inputs: Inputs) -> anyhow::Result<Written> {
+	write_plan(resolve(inputs)?)
+}
+
+/// Write a resolved plan where [`build_inputs`] writes it: `plan.json` and `plan.rs` under
+/// `~/.vagcan/dash/<VIN>/`. Split from it for `dev dash edit`, which resolves the plan
+/// before it writes `dash.toml` and writes the plan only after.
+pub fn write_plan(resolved: Resolved) -> anyhow::Result<Written> {
 	use anyhow::Context as _;
-	let Resolved { built, dir, inputs, .. } = resolve(inputs)?;
+	let Resolved { built, dir, inputs, .. } = resolved;
 	std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 	let json = dir.join("plan.json");
 	let rust = dir.join("plan.rs");
@@ -4834,7 +4849,7 @@ mod tests {
 		assert!(why.starts_with("error: no dash.toml for TESTVIN0000000001 yet\n\n"), "{why}");
 		assert!(why.contains(&path.display().to_string()), "where: {why}");
 		assert!(
-			why.contains("help: lay out its pages with `vagcan dev dash edit TESTVIN0000000001`"),
+			why.contains("help: lay out its pages and save them with `vagcan dev dash edit TESTVIN0000000001`"),
 			"what: {why}"
 		);
 		assert!(why.contains(REFERENCE_DOC), "{why}");
