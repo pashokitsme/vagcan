@@ -13,7 +13,7 @@ use vag_uds_can::UnitLink;
 use vag_uds_client::address::UnitAddress;
 use vag_uds_client::{AsyncUdsClient, UdsReadExt};
 
-use crate::{anomaly, labels, plan, progress, project, props, render, safety, scan};
+use crate::{anomaly, plan, progress, props, render, safety, scan};
 use vag_cli_core::marks::facts;
 use vag_cli_core::report::Advice as _;
 
@@ -24,7 +24,7 @@ use vag_cli_core::report::Advice as _;
 /// `flag` is the flag the unit was typed on (`--unit`, `--identify`), and what an
 /// error is said under.
 pub fn parse_unit(flag: &str, text: &str) -> Result<UnitAddress> {
-	vag_uds_client::address::parse(text).map_err(|e| anyhow::anyhow!("{flag}: {e}"))
+	vag_cli_core::unit_names::parse(flag, text)
 }
 
 /// A unit's short number as every table writes it — `01` — and `--` for one with none,
@@ -167,7 +167,7 @@ pub async fn sensors<L: UnitLink>(open: impl AsyncFnOnce(Reach) -> Result<L>, un
 	use render::SensorLine;
 	use vag_data_labels::obd::{self, PIDS};
 
-	labels::install_recorded_units();
+	vag_cli_core::unit_names::install().await;
 	let unit = parse_unit("--unit", unit_text)?;
 	let established = unit.is_emissions_related();
 	let mut backend = open(if established { Reach::AnyLink } else { Reach::CableOnly }).await?;
@@ -271,7 +271,7 @@ pub async fn sensors<L: UnitLink>(open: impl AsyncFnOnce(Reach) -> Result<L>, un
 pub async fn odx_name_from_car<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, unit_text: &str) -> Result<String> {
 	const ODX_FILE_NAME: u16 = 0xF19E;
 
-	labels::install_recorded_units();
+	vag_cli_core::unit_names::install().await;
 	let unit = parse_unit("--unit", unit_text)?;
 	let mut uds = address_unit(open().await?, unit);
 	let data = uds
@@ -287,44 +287,36 @@ pub async fn odx_name_from_car<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L
 
 /// List the car's control units (see the `Units` subcommand docs).
 pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify: bool) -> Result<()> {
+	use vag_cli_core::unit_names::UnitNames;
 	use vag_cli_core::units as walk;
 
-	// The label files turn a part number the car reports into the unit's diagnostic
-	// address and name, for any VAG car rather than for a list written here.
-	// They come from what `vagcan setup` extracted, so `units --identify`
-	// resolves names with no flag, the plain listing names what it can from them,
-	// and a machine that has not run setup simply goes without.
-	//
-	// A machine with no VCDS installation read simply identifies without names — this
-	// is the ordinary "setup has not run yet" case, not an error.
-	let label_files_dir = project::vcds().ok().filter(labels::has_project_labels);
-	let label_files = match &label_files_dir {
-		Some(project) => match labels::load_project(project) {
-			Ok(db) => {
-				// The label files' numbering, in force for the rest of the run: what
-				// each number *is*. Which id answers it is learned below, from the
-				// car.
-				labels::install_unit_numbers(&db);
-				note!("unit names from the label files of {}", project.id);
-				Some(db)
+	// The run's one source names and numbers the units — an ODIS project by what each unit's
+	// `F19E` says it is, a VCDS installation by its part number — for any VAG car rather than
+	// for a list written here, and never the other source (CLAUDE.md). What `vagcan setup`
+	// read is all it takes; a machine that has not run setup identifies units without names,
+	// which is the ordinary "setup has not run yet" case, not an error.
+	let names = UnitNames::for_run_async().await;
+	match names.unnamed() {
+		Some(unnamed) => {
+			// An identification records what it reads; one whose naming broke says so first.
+			if unnamed.warning && identify {
+				return Err(anyhow::anyhow!("the units are not named: {}", unnamed.why));
 			}
-			Err(e) if identify => return Err(e),
-			// The plain listing only borrows names from them, and a list of ids is
-			// still the answer without.
-			Err(e) => {
-				say!(
-					"warning: the units are not named: the label files of {} would not open: {e:#}",
-					project.id
-				);
-				None
+			let level = if unnamed.warning { "warning" } else { "note" };
+			say!("{level}: the units are not named: {}", unnamed.why);
+			if let Some(hint) = &unnamed.hint {
+				say!("  ({hint})");
 			}
-		},
-		None => {
-			say!("note: the units are not named: no label data on this machine");
-			say!("  (use \"vagcan setup\" to read it)");
-			None
 		}
-	};
+		None => {
+			if let Some(what) = names.describe() {
+				note!("unit names from {what}");
+			}
+		}
+	}
+	// The source's numbering, in force for the rest of the run: what each number *is*. Which
+	// id answers it is learned below, from the car.
+	names.install(&[]);
 
 	// The same read `watch` and `measure` start from, so the three cannot come to
 	// different lists.
@@ -338,7 +330,9 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 	let (ids, unlisted) = match listed {
 		Ok(ids) => (ids, None),
 		Err(e) if identify => (Vec::new(), Some(e)),
-		Err(e) => return Err(anyhow::Error::new(e).context("reading the car's list of control units from the gateway")),
+		Err(e) => {
+			return Err(anyhow::Error::new(e).context("reading the car's list of control units from the gateway"));
+		}
 	};
 
 	if !identify {
@@ -351,21 +345,22 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 		// that does not read is no names, not a failed listing.
 		let cars = walk::recorded_cars().unwrap_or_default();
 		let record = record_of_these(&ids, &cars);
-		let by_part = |part: &str| label_files.as_ref()?.unit_for_part(part).map(|u| (u.address, u.name.clone()));
-		let by_number = |number: u8| label_files.as_ref()?.unit_name(number).map(str::to_owned);
-		out!(
-			"{}",
-			render_listing(
-				&ids,
-				record.map(|car| car.units.as_slice()),
-				by_part,
-				by_number,
-				vag_uds_client::address::short_number
-			)
+		let listing = render_listing(
+			&ids,
+			record.map(|car| car.units.as_slice()),
+			|unit| names.of(unit),
+			vag_uds_client::address::short_number,
 		);
+		out!("{}", listing.text);
 		// The record is the one source here that may not be this car's: say whose it is.
 		if let Some(car) = record {
 			note!("part numbers and names from what {}'s units said to `vagcan units --identify`", car.vin);
+		}
+		let said: Vec<&plan::UnitIdentity> = record
+			.map(|car| car.units.iter().filter(|u| ids.contains(&u.request)).collect())
+			.unwrap_or_default();
+		if !say_none_named(&names, &said) {
+			say_unnamed(&names, listing.unnamed, ids.len(), record.is_none());
 		}
 		return Ok(());
 	}
@@ -399,7 +394,7 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 		(None, true) => say!("warning: the gateway listed no control units: only the gateway and the powertrain were asked"),
 		(None, false) => {}
 	}
-	let mut table = vag_cli_core::table::Table::new(&["", "UNIT", "ID", "PART", "COMPONENT", "NAME"]);
+	let mut table = vag_cli_core::table::Table::new(&["", "UNIT", "ID", "PART", "NAME", "COMPONENT"]);
 	let mut answered = 0usize;
 	let mut resolved = 0usize;
 	let mut rows = 0usize;
@@ -424,39 +419,36 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 			]);
 			continue;
 		}
-		// Two names, both from data: the unit's own component string, and
-		// what the label files call the part number — the latter also
-		// supplying the diagnostic address people use.
+		// Two names, both from data: the unit's own component string, and what the run's
+		// source calls the unit it said it is — the latter also supplying the diagnostic
+		// address people use.
 		answered += 1;
-		let name = label_files
-			.as_ref()
-			.and_then(|db| db.unit_for_part(&part))
-			.map(|u| {
-				resolved += 1;
-				// This is the pairing: the label files say the part number is
-				// unit 44, the car says 0x712 answered with it. Neither
-				// half is in this program's source, and one read of the
-				// car is what joins them.
-				vag_uds_client::address::install([vag_uds_client::address::UnitNumber {
-					number: u.address,
-					request: Some(id),
-					name: Some(u.name.clone()),
-				}]);
-				u.name.clone()
-			})
-			.unwrap_or_default();
-		if !part.is_empty() && name.is_empty() && label_files.is_some() {
-			note!("{id:03X} {part}: not in the label files");
+		let named = unit.and_then(|u| names.of(u)).unwrap_or_default();
+		if let Some(number) = named.number {
+			// This is the pairing: the source says the unit is 44, the car says 0x712
+			// answered as it. Neither half is in this program's source, and one read of
+			// the car is what joins them.
+			vag_uds_client::address::install([vag_uds_client::address::UnitNumber {
+				number,
+				request: Some(id),
+				name: named.name.clone(),
+			}]);
 		}
-		// The number in force — the label files' and the car's, then the
-		// built-in fallback's — or nothing when nothing has paired one with it.
+		let name = named.name.unwrap_or_default();
+		match (name.is_empty(), names.describe()) {
+			(false, _) => resolved += 1,
+			(true, Some(what)) => note!("{id:03X}: no name in {what}"),
+			(true, None) => {}
+		}
+		// The number in force — the source's and the car's, then the built-in fallback's —
+		// or nothing when nothing has paired one with it.
 		table.row(vec![
 			vag_cli_core::marks::OK.to_string(),
 			unit_number(vag_uds_client::address::short_number(id)),
 			format!("{id:03X}"),
 			part,
-			component,
 			name,
+			component,
 		]);
 	}
 	let summary = facts([
@@ -470,13 +462,53 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 		),
 		format!("{answered} answered"),
 		format!("{} on the gateway's list", ids.len()),
-		match &label_files_dir {
+		match names.describe() {
 			Some(_) => format!("{resolved} named"),
 			None => String::new(),
 		},
 	]);
 	out!("{}", vag_cli_core::table::list(&summary, &table, vag_cli_core::table::terminal_width()));
+	say_none_named(&names, &found.iter().collect::<Vec<_>>());
 	Ok(())
+}
+
+/// The one line, at every level, for a run whose source names none of the units the car said
+/// it has — and, where the other source would name some of them, the command that reads it.
+/// Says whether it said anything.
+fn say_none_named(names: &vag_cli_core::unit_names::UnitNames, units: &[&plan::UnitIdentity]) -> bool {
+	let named = |names: &vag_cli_core::unit_names::UnitNames, u: &plan::UnitIdentity| names.of(u).and_then(|n| n.name).is_some();
+	let Some(what) = names.describe() else { return false };
+	if units.is_empty() || units.iter().any(|u| named(names, u)) {
+		return false;
+	}
+	say!("note: {what} names none of these units");
+	if let Some(other) = names.other()
+		&& units.iter().any(|u| named(&other, u))
+		&& let (Some(source), Some(theirs)) = (other.source(), other.describe())
+	{
+		let args: Vec<String> = std::env::args().skip(1).collect();
+		say!(
+			"  (use \"{}\" to name them from {theirs})",
+			vag_cli_core::unit_names::retyped(&args, source)
+		);
+	}
+	true
+}
+
+/// The plain listing's `-v` line that says some units go by their id: `unnamed` of `total`
+/// have no name in the run's source. Nothing when every unit is named, or when the source
+/// names none at all — that was said before the read. `--identify` says it in its summary
+/// (`N named`), and so has no such line.
+fn say_unnamed(names: &vag_cli_core::unit_names::UnitNames, unnamed: usize, total: usize, unrecorded: bool) {
+	let Some(what) = names.describe() else { return };
+	if unnamed == 0 {
+		return;
+	}
+	let verb = if unnamed == 1 { "has" } else { "have" };
+	note!("{unnamed} of {total} {} {verb} no name in {what}", render::plural(total, "unit"));
+	if unrecorded {
+		note!("  (use \"vagcan units --identify\" to name each unit by what it says it is)");
+	}
 }
 
 /// The one recorded car whose record holds every unit the gateway listed, if there is exactly
@@ -495,47 +527,58 @@ pub fn record_of_these<'a>(listed: &[u16], cars: &'a [vag_cli_core::units::Recor
 	}
 }
 
+/// The plain `units` listing, and how many of its units the run's source does not name.
+pub struct Listing {
+	pub text: String,
+	pub unnamed: usize,
+}
+
 /// The plain `units` listing, `gh pr list`'s shape: a count, then a table of each request
-/// id, the short number it goes by, the part number recorded for it and a name.
+/// id, the short number it goes by, the part number recorded for it, the run's source's name
+/// for it and what it calls itself.
 ///
-/// The name is, in order: what the label files call the part number the unit reported (with
-/// the number they give it), what they call its short number, and what the unit called itself
-/// (`F197`). The part number and that last name come from `record`, what an earlier
-/// `--identify` wrote down. With none of them, just the id.
+/// The same rule as `--identify`: a unit is named by what it said it is (`by_unit`, from the
+/// record an earlier `--identify` wrote down), never by its number — NAME is the run's source's
+/// alone, and COMPONENT the unit's own (`F197`). With no record, just the id and its number. A
+/// unit the source does not name is counted in [`Listing::unnamed`].
 pub fn render_listing(
 	ids: &[u16],
 	record: Option<&[plan::UnitIdentity]>,
-	by_part: impl Fn(&str) -> Option<(u8, String)>,
-	by_number: impl Fn(u8) -> Option<String>,
+	by_unit: impl Fn(&plan::UnitIdentity) -> Option<vag_cli_core::unit_names::Named>,
 	short: impl Fn(u16) -> Option<u8>,
-) -> String {
-	let mut table = vag_cli_core::table::Table::new(&["UNIT", "ID", "PART", "NAME"]);
+) -> Listing {
+	let mut table = vag_cli_core::table::Table::new(&["UNIT", "ID", "PART", "NAME", "COMPONENT"]);
+	let mut unnamed = 0;
 	for &id in ids {
 		let said = record.and_then(|units| units.iter().find(|u| u.request == id));
 		let part = said.and_then(|u| u.part_number.clone());
-		let from_part = part.as_deref().and_then(&by_part);
-		let number = from_part.as_ref().map(|(n, _)| *n).or_else(|| short(id));
-		let name = from_part
-			.map(|(_, name)| name)
-			.or_else(|| number.and_then(&by_number))
-			.or_else(|| said.and_then(|u| u.component.clone()));
+		let named = said.and_then(&by_unit).unwrap_or_default();
+		let number = named.number.or_else(|| short(id));
+		if named.name.is_none() {
+			unnamed += 1;
+		}
 		table.row(vec![
 			unit_number(number),
 			format!("{id:03X}"),
 			part.unwrap_or_default(),
-			name.unwrap_or_default(),
+			named.name.unwrap_or_default(),
+			said.and_then(|u| u.component.clone()).unwrap_or_default(),
 		]);
 	}
 	let summary = format!("{} control {} on the gateway's list", ids.len(), render::plural(ids.len(), "unit"));
-	vag_cli_core::table::list(&summary, &table, vag_cli_core::table::terminal_width())
+	Listing {
+		text: vag_cli_core::table::list(&summary, &table, vag_cli_core::table::terminal_width()),
+		unnamed,
+	}
 }
-
 /// Read one unit's whole identification block (`vagcan units --identify <unit>`).
 ///
 /// The deeper of the two depths `units` has: the shallow one asks every unit
 /// the four identifiers that name it, this asks one unit the whole
 /// 256-identifier block and names what answers.
 pub async fn identification<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, unit_text: &str, while_driving: bool) -> Result<()> {
+	// The run's numbering, so `--identify 44` is the unit the run's source numbers 44.
+	vag_cli_core::unit_names::install().await;
 	let unit = parse_unit("--identify", unit_text)?;
 	let ranges = scan::parse_ranges(props::IDENT_RANGE).expect("the built-in range parses");
 
@@ -660,34 +703,36 @@ mod tests {
 
 	#[test]
 	fn the_plain_listing_names_each_unit_from_what_is_on_this_machine() {
+		use vag_cli_core::unit_names::Named;
 		// Invented parts and names; the rule is what is tested.
 		let record = [identity(0x7E0, "PART-E", "ENGINE SELF"), identity(0x713, "PART-B", "BRAKES SELF")];
-		let by_part = |part: &str| (part == "PART-B").then(|| (0x03, "Brakes by part".to_string()));
-		let by_number = |n: u8| (n == 0x01).then(|| "Engine by number".to_string());
+		let by_unit = |u: &plan::UnitIdentity| {
+			(u.part_number.as_deref() == Some("PART-B")).then(|| Named {
+				number: Some(0x03),
+				name: Some("Brakes by source".to_string()),
+			})
+		};
 		let short = |request: u16| (request == 0x7E0).then_some(0x01);
-		let listing = render_listing(&[0x7E0, 0x713, 0x70A], Some(&record), by_part, by_number, short);
+		let listing = render_listing(&[0x7E0, 0x713, 0x70A], Some(&record), by_unit, short);
+		// The engine has a number and no name from the source: its NAME stays empty, whatever
+		// the source would call unit 01 — a unit is named by what it said it is, not by its
+		// number. What it calls itself is its COMPONENT.
 		assert_eq!(
-			listing,
+			listing.text,
 			"3 control units on the gateway's list\n\
 			 \n\
-			 UNIT  ID   PART    NAME\n\
-			 01    7E0  PART-E  Engine by number\n\
-			 03    713  PART-B  Brakes by part\n\
+			 UNIT  ID   PART    NAME              COMPONENT\n\
+			 01    7E0  PART-E                    ENGINE SELF\n\
+			 03    713  PART-B  Brakes by source  BRAKES SELF\n\
 			 --    70A\n"
 		);
-		// No label files: what the units called themselves.
-		let listing = render_listing(&[0x7E0, 0x713], Some(&record), |_| None, |_| None, short);
-		assert_eq!(
-			listing,
-			"2 control units on the gateway's list\n\
-			 \n\
-			 UNIT  ID   PART    NAME\n\
-			 01    7E0  PART-E  ENGINE SELF\n\
-			 --    713  PART-B  BRAKES SELF\n"
-		);
+		assert_eq!(listing.unnamed, 2, "7E0 and 70A go by their ids");
 		// Nothing on this machine: the ids, as before.
-		let listing = render_listing(&[0x7E0], None, |_| None, |_| None, |_| None);
-		assert_eq!(listing, "1 control unit on the gateway's list\n\nUNIT  ID   PART  NAME\n--    7E0\n");
+		let listing = render_listing(&[0x7E0], None, |_| None, |_| None);
+		assert_eq!(
+			listing.text,
+			"1 control unit on the gateway's list\n\nUNIT  ID   PART  NAME  COMPONENT\n--    7E0\n"
+		);
 	}
 
 	#[test]

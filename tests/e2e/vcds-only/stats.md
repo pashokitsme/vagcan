@@ -7,11 +7,11 @@ other registries by section.
 $ vagcan dev vcds stats
 ? success
 label cache ~/.vagcan/vcds/cache.sqlite
-7 tables · 3 rows
+7 tables · 5 rows
 
 TABLES
-  label_file      0
-  measurement     0
+  label_file      1
+  measurement     1
   redirect        0
   adaptation      0
   long_coding     0
@@ -24,11 +24,11 @@ REGISTRY ROWS
 $ vagcan -v dev vcds stats
 ? success
 label cache ~/.vagcan/vcds/cache.sqlite
-7 tables · 3 rows
+7 tables · 5 rows
 
 TABLES
-  label_file      0
-  measurement     0
+  label_file      1
+  measurement     1
   redirect        0
   adaptation      0
   long_coding     0

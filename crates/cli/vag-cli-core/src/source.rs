@@ -367,6 +367,21 @@ pub fn run(stores: &Stores) -> Result<Option<Run>> {
 	Ok(run_source(stores)?.and_then(|source| Run::of(stores, source)))
 }
 
+/// [`run`] over this run's stores, the project or the VCDS store alone: `None` with nothing
+/// set up. An error for a source asked for and not set up.
+pub fn run_here() -> Result<Option<Run>> {
+	match crate::project::stores_or_vcds() {
+		Some(stores) => run(&stores),
+		None => Ok(None),
+	}
+}
+
+/// One source's store over this run's stores, whichever the run reads — for a line that offers
+/// the other. `None` where it is not there.
+pub fn run_of_here(source: Source) -> Option<Run> {
+	crate::project::stores_or_vcds().and_then(|stores| Run::of(&stores, source))
+}
+
 /// Refuse what would make a run read the wrong source, before a command opens anything: a
 /// source asked for and not set up, a store that does not answer, and a project named that is
 /// not there — read without it, the run would quietly be a VCDS run. Nothing set up at all is

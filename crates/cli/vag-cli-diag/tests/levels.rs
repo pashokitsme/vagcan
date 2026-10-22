@@ -326,7 +326,7 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	let units = levels!("units", car::units(open, false).await);
 	assert_eq!(
 		units[0].stdout,
-		"2 control units on the gateway's list\n\nUNIT  ID   PART  NAME\n09    70E\n--    713\n"
+		"2 control units on the gateway's list\n\nUNIT  ID   PART  NAME  COMPONENT\n--    70E\n--    713\n"
 	);
 
 	// `--identify` records the units under this HOME, so the plain listing after it has
@@ -337,12 +337,12 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 		format!(
 			"5 control units on {VIN} · 4 answered · 2 on the gateway's list\n\
 			 \n\
-			 \x20  UNIT  ID   PART          COMPONENT     NAME\n\
-			 ✗  09    70E                              (no answer)\n\
-			 ✓  --    710  PART-GATEWAY  GATEWAY SELF\n\
-			 ✓  --    713  PART-ESC      ESC SELF\n\
-			 ✓  01    7E0  PART-ENGINE   ENGINE SELF\n\
-			 ✓  02    7E1  PART-GEAR     GEAR SELF\n"
+			 \x20  UNIT  ID   PART          NAME  COMPONENT\n\
+			 ✗  --    70E                      (no answer)\n\
+			 ✓  --    710  PART-GATEWAY        GATEWAY SELF\n\
+			 ✓  --    713  PART-ESC            ESC SELF\n\
+			 ✓  01    7E0  PART-ENGINE         ENGINE SELF\n\
+			 ✓  02    7E1  PART-GEAR           GEAR SELF\n"
 		)
 	);
 	assert!(
@@ -359,7 +359,7 @@ async fn every_car_command_keeps_data_on_stdout_and_the_rest_on_stderr_at_every_
 	let units = levels!("units after --identify", car::units(open, false).await);
 	assert_eq!(
 		units[0].stdout,
-		"2 control units on the gateway's list\n\nUNIT  ID   PART  NAME\n09    70E\n--    713\n"
+		"2 control units on the gateway's list\n\nUNIT  ID   PART  NAME  COMPONENT\n--    70E\n--    713\n"
 	);
 
 	let block = levels!("units --identify 01", car::identification(open, "01", false).await);

@@ -349,6 +349,53 @@ mod tests {
 		}
 	}
 
+	/// A row spells its unit by number only where the run's numbering pairs the number with the
+	/// car's request id, and by the request id otherwise — and either spelling builds. Made-up
+	/// units on `78C` (paired with `E6` here) and `78D` (paired with nothing); no other test uses
+	/// either.
+	#[test]
+	fn a_row_is_spelled_by_number_only_where_the_number_is_paired() {
+		vag_uds_client::address::install([vag_uds_client::address::UnitNumber {
+			number: 0xE6,
+			request: Some(0x78C),
+			name: Some("Sim Paired".into()),
+		}]);
+		let here = tempfile::tempdir().unwrap();
+		let cache = here.path().join("cache.sqlite");
+		vag_data_db::put_readings(
+			&cache,
+			"/nowhere/TEST",
+			"EV_Test_001",
+			&[reading(0x1001, "Coolant", "IDE00001", 0, 8, 1.0)],
+		)
+		.unwrap();
+		let extracted = Extracted::synthetic(cache, Default::default());
+		let store = CatalogStore::open(here.path().join("proven"));
+		let unit = |request: u16| UnitIdentity {
+			request,
+			part_number: Some("PART1".to_string()),
+			odx_name: Some("EV_Test".to_string()),
+			odx_version: Some("001004".to_string()),
+			component: Some("SIM".to_string()),
+		};
+		let units = [unit(0x78C), unit(0x78D)];
+		let sources = Sources {
+			vin: "TESTVIN0000000001",
+			language: None,
+			default_language: Language::En,
+			store: &store,
+			extracted: &extracted,
+			units: &units,
+		};
+		let rows = rows(&sources);
+		let refs: Vec<&str> = rows.iter().map(|r| r.reference.as_str()).collect();
+		assert!(refs.contains(&"E6:IDE00001"), "{refs:?}");
+		assert!(refs.contains(&"78D:IDE00001"), "{refs:?}");
+		assert!(!refs.contains(&"78C:IDE00001"), "a paired unit is spelled by its number: {refs:?}");
+		let paired = rows.iter().find(|r| r.reference == "E6:IDE00001").unwrap();
+		assert!(paired.aliases.contains(&"78C:IDE00001".to_string()), "{:?}", paired.aliases);
+	}
+
 	#[test]
 	fn every_numeric_row_builds_to_itself_and_the_rest_say_why_not() {
 		let here = tempfile::tempdir().unwrap();

@@ -613,8 +613,8 @@ impl Extracted {
 	}
 
 	/// The ODIS sources of this run whose adaptation channels were never read — read before
-	/// they were kept, which `vagcan setup` must read again to have them. A source whose read
-	/// found none is not among them. Empty on a VCDS run.
+	/// they were kept, and not read since from their folder ([`crate::odis_read`]). A source
+	/// whose read found none is not among them. Empty on a VCDS run.
 	pub fn odis_unread_adaptations(&self) -> Vec<String> {
 		if self.source != Some(Source::Odis) {
 			return Vec::new();

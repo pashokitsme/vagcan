@@ -188,21 +188,38 @@ impl Project {
 	/// for it: the two are never mixed (CLAUDE.md). A VCDS installation describes them per
 	/// unit, read when the unit is first seen, so a run of one is never refused here.
 	///
+	/// An ODIS project read before adaptations were kept has them read here, from its folder,
+	/// the first time ([`vag_cli_core::odis_read`]); only a folder that is gone is refused.
+	///
 	/// [`Extracted::run_source`]: vag_cli_core::extracted::Extracted::run_source
-	pub fn current() -> Result<Project> {
+	pub async fn current() -> Result<Project> {
+		use vag_cli_core::odis_read::{Ensured, Part};
 		let stores = vag_cli_core::project::stores()?;
 		// A source asked for and not set up is refused here, by name.
-		vag_cli_core::source::run_source(&stores)?;
+		let source = vag_cli_core::source::run_source(&stores)?;
+		if source == Some(vag_cli_core::source::Source::Odis)
+			&& let Some(project) = stores.project.clone()
+		{
+			match vag_cli_core::odis_read::ensure_async(project, Part::Adaptations).await {
+				Ensured::Held => {}
+				Ensured::Gone(folder) => {
+					return Err(
+						anyhow!("project {} describes no adaptations", stores.id())
+							.note(format!(
+								"its adaptation channels were never read, and its folder {} is not on this machine",
+								home_short(&folder.to_string_lossy())
+							))
+							.help("read the project where it is now: `vagcan setup <ODIS project>`"),
+					);
+				}
+				Ensured::Failed(why) => {
+					return Err(anyhow!("project {} describes no adaptations", stores.id()).note(format!("its adaptation channels did not read: {why}")));
+				}
+			}
+		}
 		let extracted = vag_cli_core::extracted::open(&stores);
 		match extracted.run_source() {
 			Some(vag_cli_core::source::Source::Odis) => {
-				if let Some(source) = extracted.odis_unread_adaptations().first() {
-					return Err(
-						anyhow!("project {} describes no adaptations", stores.id())
-							.note("its ODIS project was read before adaptations were kept")
-							.help(format!("read it again: `vagcan setup {}`", home_short(source))),
-					);
-				}
 				// Read, and none found: reading it again would find none again.
 				if !extracted.describes_adaptations() {
 					return Err(anyhow!("this ODIS project describes no adaptations"));
@@ -272,15 +289,15 @@ pub enum Which {
 /// Everything that can be checked without the car is checked before `open`: the unit's
 /// spelling, the project's data, and whether there is anybody to pick with.
 pub async fn run<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, which: Which) -> Result<()> {
-	crate::labels::install_recorded_units();
+	vag_cli_core::unit_names::install().await;
 	let unit = match &which {
-		Which::One(text) => Some(car::parse_unit("unit", text)?),
+		Which::One(text) => Some(car::parse_unit("<UNIT>", text)?),
 		Which::Pick | Which::All => None,
 	};
 	if which == Which::Pick && !vag_cli_core::ui::can_ask() {
 		return Err(no_unit());
 	}
-	let data = Project::current()?;
+	let data = Project::current().await?;
 	let link = open().await?;
 	match (which, unit) {
 		(Which::All, _) => {
@@ -907,9 +924,9 @@ mod tests {
 		assert_eq!(
 			said.stdout,
 			format!(
-				"4 adaptations of unit 09 (70E){SEP}2 of 3 identifiers answered{SEP}1 refused\n\
+				"4 adaptations of unit 70E{SEP}2 of 3 identifiers answered{SEP}1 refused\n\
 				 \n\
-				 09 70E  TEST UNIT  PART-0001\n\
+				 70E  TEST UNIT  PART-0001\n\
 				 \x20 0600  first   1 s\n\
 				 \x20 0600  second  42 s\n\
 				 \x20 0610  third   5 s\n\
@@ -1028,7 +1045,7 @@ mod tests {
 		let refused = single(silent, unit(), &described()).await.err().expect("refused");
 		assert_eq!(
 			vag_cli_core::report::unlabelled(&refused),
-			"unit 09 (70E) did not answer\n\nhelp: `vagcan units` lists this car's units"
+			"unit 70E did not answer\n\nhelp: `vagcan units` lists this car's units"
 		);
 		assert_eq!(capture.finish().stdout, "");
 
@@ -1050,7 +1067,7 @@ mod tests {
 		let refused = single(car(Some(0)), unit(), &Stale).await.err().expect("refused");
 		assert_eq!(
 			vag_cli_core::report::unlabelled(&refused),
-			"nothing describes the adaptations of unit 09 (70E)\n\
+			"nothing describes the adaptations of unit 70E\n\
 			 \n\
 			 note: the ODIS project was read before adaptations were kept\n\
 			 help: read it again: `vagcan setup ~/odis`"
@@ -1072,7 +1089,7 @@ mod tests {
 			runs[1].stderr
 		);
 		assert!(
-			runs[1].stderr.contains(&format!("unit 09 (70E){SEP}F19E EV_TestUnit{SEP}F1A2 001001")),
+			runs[1].stderr.contains(&format!("unit 70E{SEP}F19E EV_TestUnit{SEP}F1A2 001001")),
 			"{}",
 			runs[1].stderr
 		);
@@ -1162,9 +1179,9 @@ mod tests {
 			headers,
 			[
 				format!("3 of 3 units read{SEP}3 adaptations{SEP}3 of 3 identifiers answered").as_str(),
-				"09 70E  TEST UNIT  PART-0001",
+				"70E  TEST UNIT  PART-0001",
 				"713  PART",
-				"17 714  PART"
+				"714  PART"
 			],
 			"{}",
 			said.stdout
@@ -1263,7 +1280,7 @@ mod tests {
 		assert!(
 			said
 				.stderr
-				.contains("skipped unit 09 (70E): it did not answer, before any unit was read\n  (use \"vagcan units\" to list this car's units)"),
+				.contains("skipped unit 70E: it did not answer, before any unit was read\n  (use \"vagcan units\" to list this car's units)"),
 			"{}",
 			said.stderr
 		);
@@ -1317,9 +1334,9 @@ mod tests {
 		let refused = single(car.clone(), unit(), &Unsure).await.err().expect("refused");
 		assert_eq!(
 			vag_cli_core::report::unlabelled(&refused),
-			"nothing describes the adaptations of unit 09 (70E)\n\
+			"nothing describes the adaptations of unit 70E\n\
 			 \n\
-			 note: the variant of unit 09 (70E) is not settled (F1A2 001001 is none of the 17 variants of its family)\n\
+			 note: the variant of unit 70E is not settled (F1A2 001001 is none of the 17 variants of its family)\n\
 			 help: a newer ODIS project or VCDS installation may describe it: `vagcan setup <dir>`"
 		);
 		assert!(adaptation_reads(&car).is_empty(), "{:?}", adaptation_reads(&car));
@@ -1403,13 +1420,13 @@ mod tests {
 		wide.name = "bytes".into();
 		wide.did = 0x0620;
 		let text = render(
-			"09 70E  BODY  PART-0001",
+			"70E  BODY  PART-0001",
 			&[rows[0].clone(), rows[1].clone(), wide],
 			&[(0x0600, vec![7]), (0x0610, vec![1]), (0x0620, (0u8..30).collect())],
 		);
 		assert_eq!(
 			text,
-			"09 70E  BODY  PART-0001\n\
+			"70E  BODY  PART-0001\n\
 			 \x20 0600  A name long enough that it cannot sit on one    7 s\n\
 			 \x20       line beside its value and has to wrap under\n\
 			 \x20       itself\n\

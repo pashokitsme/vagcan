@@ -87,7 +87,7 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 
 ## Roadmap
 
-Updated 2026-10-22 (`dev dash edit` saves `dash.toml` itself).
+Updated 2026-10-22 (unit names and numbers from the run's one source).
 
 **Done**
 - [x] Read the car: identity, units, faults, OBD-II sensors, live values, acceleration timing with html-report
@@ -115,6 +115,7 @@ Updated 2026-10-22 (`dev dash edit` saves `dash.toml` itself).
 - [x] `setup` and `faults` print in the shape of established tools: steps as lines under a heading, faults as a block per unit (2026-10-21)
 - [x] ODIS and VCDS independent: one source per run, never mixed; `--source`, `VAGCAN_SOURCE` or `[source] use` picks it (2026-10-21)
 - [x] `dev dash edit` saves `dash.toml` itself, checked by the dash build first; the rest of the file stays as written (2026-10-22)
+- [x] Unit names and numbers from the run's one source: ODIS's on an ODIS run, VCDS's on a VCDS run; a unit the source does not name goes by its id (2026-10-22)
 - [ ] Adaptation channels and their values, read only: `vagcan adaptations <unit>`, `--all` (built 2026-10-21, waiting for the car)
 - [ ] Freeze frames under each stored code in `vagcan faults`, from an ODIS project or a VCDS install alone (built 2026-10-21, checked offline on one recorded answer; waits for the car)
 - [ ] Page the dash with buttons on its pins
@@ -339,7 +340,7 @@ vagcan adaptations 09     # one unit's adaptation channels and their values (par
 vagcan watch              # live values from several units at once
 ```
 
-A unit is named as `vagcan units` lists it: its number or its request id (`vagcan faults --unit 01,713`, `vagcan watch --did 713:IDE00001`).
+A unit is named as `vagcan units` lists it: its request id, which always works, or its number, which works where the run's source numbers that unit (`vagcan faults --unit 01,713`, `vagcan watch --did 713:IDE00001`).
 
 **Through the dash board over BLE:** no cable needed. Add `--ble`: `vagcan` finds the board and says which one it uses, or asks when there are several. The ignition must be on. On macOS:
 

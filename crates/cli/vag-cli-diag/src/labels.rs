@@ -63,40 +63,6 @@ fn cache_is_current(cache: &Path, dir: &Path) -> bool {
 	}
 }
 
-/// Load the VCDS store's label rows out of its cache, with nothing to rebuild from.
-///
-/// **D5, and it is the consequence of D4 rather than a new rule.** The
-/// `.lbl`/`.clb` files are no longer kept — `cache.sqlite` is what survives of
-/// them — so there is no directory to compare an mtime against and no way to
-/// rebuild if the answer came back "stale". A cache whose source directory is
-/// gone is therefore **trusted**, not distrusted: the alternative is that every
-/// run after somebody deletes their VCDS installation tries to rebuild from
-/// nothing and reports a car with no label data at all.
-///
-/// The freshness rule still applies where it can still do something — see
-/// [`load_cached`], which is what a directory somebody *named* goes through.
-pub fn load_project(project: &crate::project::Project) -> anyhow::Result<LabelDb> {
-	let cache = project.cache();
-	if !cache.is_file() {
-		return Err(
-			crate::missing::NoLabelData::new("the VCDS installation has no label cache")
-				.looked_for(&cache)
-				.into_error(),
-		);
-	}
-	vag_data_db::load_db(&cache).map_err(|e| anyhow::anyhow!("reading {}: {e}", cache.display()))
-}
-
-/// Whether this store — the VCDS store, where label files are kept — has anything to
-/// look a label up in.
-///
-/// Cheap and non-committal, for the callers that degrade rather than fail: a
-/// machine where `vagcan setup` has not run identifies units without names
-/// instead of refusing to identify them.
-pub fn has_project_labels(project: &crate::project::Project) -> bool {
-	project.cache().is_file()
-}
-
 /// Load label files, using the SQLite cache when it is usable and building it when
 /// it is not.
 ///
@@ -150,72 +116,6 @@ pub fn load_cached(dir: &Path, cache: &Path, refresh: bool) -> anyhow::Result<La
 		plural(stats.measurements, "measurement")
 	);
 	vag_data_db::load_db(cache).map_err(|e| anyhow::anyhow!("reading the label cache: {e}"))
-}
-
-/// Hand the label files' unit numbering to the address layer.
-///
-/// `vag-uds-client` cannot read a label file — it is the protocol layer, and
-/// label files are not a protocol — so the numbering is pushed in from here, where
-/// both crates are already in scope. What crosses the seam is plain numbers and
-/// strings.
-///
-/// Names only: no label file states which CAN id a number is answered on (see
-/// `vag_uds_client::address`), so this tier fills in *what* `44` is and leaves
-/// *where to reach it* to the car or to the built-in fallback.
-pub fn install_unit_numbers(db: &LabelDb) {
-	vag_uds_client::address::install(db.unit_numbers().iter().map(|(number, name)| vag_uds_client::address::UnitNumber {
-		number: *number,
-		request: None,
-		name: Some(name.clone()),
-	}));
-}
-
-/// The unit numbers `vagcan units` lists, in force for a command that takes a unit
-/// (`faults --unit`, `sensors --unit`, `watch --did`, and `watch`'s Unit column).
-///
-/// The same two halves the plain listing joins, both already on this machine: the
-/// part number each unit gave `units --identify` (the car's record), and the number
-/// the label files give that part number. Nothing is asked of the car. A machine with
-/// no label files, or no record, keeps the numbers it had — request ids still work.
-pub fn install_recorded_units() {
-	let Some(project) = crate::project::vcds().ok().filter(has_project_labels) else {
-		return;
-	};
-	let Ok(db) = load_project(&project) else {
-		return;
-	};
-	install_unit_numbers(&db);
-	let cars = crate::units::recorded_cars().unwrap_or_default();
-	vag_uds_client::address::install(recorded_pairings(&cars, |part| {
-		db.unit_for_part(part).map(|u| (u.address, u.name.clone()))
-	}));
-}
-
-/// Each recorded unit's number through its part number (`by_part`, the label files),
-/// paired with the request id it answered on.
-///
-/// Over every recorded car, since which one is plugged in is not known before it is
-/// asked. Where two records disagree — one number on two ids, or one id under two
-/// numbers — neither is used: a guess there addresses another unit than the one named.
-fn recorded_pairings(cars: &[crate::units::Recorded], by_part: impl Fn(&str) -> Option<(u8, String)>) -> Vec<vag_uds_client::address::UnitNumber> {
-	let mut found: Vec<(u8, u16, String)> = Vec::new();
-	for unit in cars.iter().flat_map(|car| &car.units) {
-		let Some((number, name)) = unit.part_number.as_deref().and_then(&by_part) else {
-			continue;
-		};
-		if !found.iter().any(|(n, r, _)| *n == number && *r == unit.request) {
-			found.push((number, unit.request, name));
-		}
-	}
-	found
-		.iter()
-		.filter(|(number, request, _)| found.iter().all(|(n, r, _)| (n == number) == (r == request)))
-		.map(|(number, request, name)| vag_uds_client::address::UnitNumber {
-			number: *number,
-			request: Some(*request),
-			name: Some(name.clone()),
-		})
-		.collect()
 }
 
 /// The label files under `dir`, for a lookup, **without writing the VCDS store's cache**.
@@ -281,7 +181,6 @@ pub fn labels_cmd(dir: &str, part: Option<&str>, block: Option<u16>, field: Opti
 	}
 
 	let db = look_into(Path::new(dir), crate::project::vcds().ok().as_ref(), refresh)?;
-	install_unit_numbers(&db);
 	let mut answers = Vec::new();
 	if let Some(part_no) = part {
 		answers.push(render_part_lookup(&db, part_no));
@@ -635,100 +534,6 @@ fn redirected(root: &Path, odx_name: &str, cache: &mut vag_data_labels::rod::IvC
 mod tests {
 	use super::*;
 	use vag_data_labels::parse_label;
-
-	/// What `units` lists is what `--unit` and `--did` take: a recorded unit's part
-	/// number gives its number through the label files, and the record gives the id it
-	/// answered on.
-	#[test]
-	fn a_recorded_part_number_pairs_its_label_file_number_with_the_id_that_answered() {
-		use crate::plan::UnitIdentity;
-		use crate::units::Recorded;
-		let unit = |request: u16, part: Option<&str>| UnitIdentity {
-			request,
-			part_number: part.map(str::to_owned),
-			..UnitIdentity::default()
-		};
-		let car = |vin: &str, units: Vec<UnitIdentity>| Recorded { vin: vin.to_string(), units };
-		let by_part = |part: &str| match part {
-			"STEER" => Some((0x44, "Power Steering".to_string())),
-			"BRAKE" => Some((0x03, "Brakes".to_string())),
-			"OTHER" => Some((0x44, "Power Steering".to_string())),
-			_ => None,
-		};
-		let pairs = |cars: &[Recorded]| -> Vec<(u8, Option<u16>, Option<String>)> {
-			recorded_pairings(cars, by_part)
-				.into_iter()
-				.map(|p| (p.number, p.request, p.name))
-				.collect()
-		};
-		let one = [car(
-			"A",
-			vec![
-				unit(0x712, Some("STEER")),
-				unit(0x713, Some("BRAKE")),
-				unit(0x70A, Some("NOBODY")),
-				unit(0x715, None),
-			],
-		)];
-		assert_eq!(
-			pairs(&one),
-			vec![
-				(0x44, Some(0x712), Some("Power Steering".to_string())),
-				(0x03, Some(0x713), Some("Brakes".to_string()))
-			],
-			"a part the label files do not know, and a unit with no part number, give nothing"
-		);
-		// Two records agreeing is one pairing.
-		let same = [one[0].clone(), car("B", vec![unit(0x712, Some("STEER"))])];
-		assert_eq!(pairs(&same), pairs(&one));
-		// Two records disagreeing: which car is plugged in is not known before it is
-		// asked, so neither pairing is guessed at — by number, or by id.
-		let by_number = [one[0].clone(), car("B", vec![unit(0x70C, Some("OTHER"))])];
-		assert_eq!(pairs(&by_number), vec![(0x03, Some(0x713), Some("Brakes".to_string()))]);
-		let by_id = [one[0].clone(), car("B", vec![unit(0x712, Some("BRAKE"))])];
-		assert_eq!(pairs(&by_id), vec![]);
-	}
-
-	#[test]
-	fn a_cache_whose_label_files_are_gone_is_trusted_rather_than_declared_stale() {
-		// D5. The `.lbl`/`.clb` files are not kept any more, so there is nothing
-		// to compare an mtime against and nothing to rebuild from if the answer
-		// came back "stale". Without this, every run after somebody deletes
-		// their VCDS installation tries to rebuild from nothing.
-		let here = tempfile::tempdir().unwrap();
-		let labels = here.path().join("Labels");
-		std::fs::create_dir_all(&labels).unwrap();
-		std::fs::write(labels.join("index.lbl"), b"001,1,Engine Speed,(G28),Range: 0...6500 RPM").unwrap();
-
-		let project = crate::project::Project {
-			id: "SK37X".into(),
-			dir: here.path().join("projects").join("SK37X"),
-		};
-		std::fs::create_dir_all(&project.dir).unwrap();
-		vag_data_db::build_db(&labels, &project.cache()).unwrap();
-
-		// The installation goes, which is the whole point of the copy that
-		// preceded it — and the cache still answers.
-		std::fs::remove_dir_all(&labels).unwrap();
-		assert!(has_project_labels(&project));
-		let db = load_project(&project).unwrap();
-		assert_eq!(db.measurement("index.lbl", 1, 1).map(|m| m.name.as_str()), Some("Engine Speed"));
-	}
-
-	#[test]
-	fn a_project_with_no_cache_says_to_run_setup_rather_than_naming_sqlite() {
-		let here = tempfile::tempdir().unwrap();
-		let project = crate::project::Project {
-			id: "SK37X".into(),
-			dir: here.path().join("SK37X"),
-		};
-		assert!(!has_project_labels(&project));
-		let why = match load_project(&project) {
-			Err(e) => vag_cli_core::report::render(&e, 0, vag_cli_core::report::Colour::Never),
-			Ok(_) => panic!("a project with no cache loaded one"),
-		};
-		assert!(why.contains("vagcan setup"), "{why}");
-	}
 
 	#[test]
 	fn summary_reports_all_three_file_kinds_and_total() {

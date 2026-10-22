@@ -49,7 +49,10 @@ const WASM_WHY: &str = include_str!(concat!(env!("OUT_DIR"), "/dash-wasm-why.txt
 
 /// Bumped when the shape of `channels.json` or the catalog's rules change, so a kept one is
 /// not served to a page that reads another.
-const CATALOG_FORMAT: &str = "2";
+///
+/// 3 (2026-10-22): a row's ref spells its unit by number only where the run's source numbers the
+/// unit and pairs it with the car's request id, by request id otherwise.
+const CATALOG_FORMAT: &str = "3";
 
 /// The refusal when this `vagcan` was built without the renderer, from `build.rs`'s
 /// [`WASM_WHY`]. A missing target is installed; any other failure is built again from clean.
@@ -73,6 +76,9 @@ pub async fn run(vin: &str) -> Result<()> {
 		bail!(no_renderer(WASM_WHY));
 	}
 	let vin = vin.trim();
+	// The run's numbering, before the file is read and the catalog spelled: `17:` in the file is
+	// the unit the run's source numbers 17, and a row is spelled `17:…` only where it does.
+	vag_cli_core::unit_names::install().await;
 	let record = vag_cli_core::datadir::units_record(vin)?;
 	let units = vag_cli_core::units::read_record(&record)?.ok_or_else(|| dash::no_record(vin, &record))?;
 	// The car's own pages, when it has a `dash.toml`. One that does not parse is refused here

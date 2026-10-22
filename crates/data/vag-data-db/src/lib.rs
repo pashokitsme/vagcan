@@ -183,6 +183,8 @@ CREATE INDEX IF NOT EXISTS idx_long_coding_file   ON long_coding(file_id);
 -- - `parsed_at`: when `setup` last read it, RFC 3339 in UTC.
 -- - `adaptations_at`: when `setup` last read an ODIS project's adaptation
 --   channels, even none; NULL for a project read before they were kept (schema 5).
+-- - `units_at`: when `setup` last read an ODIS project's unit names, even none;
+--   NULL for a project read before they were kept (schema 6).
 --
 -- `dir` is stored absolute. A relative one is a row an older vagcan wrote from a
 -- checkout; nothing resolves it against the working directory (`stored_key`).
@@ -196,6 +198,7 @@ CREATE TABLE IF NOT EXISTS source (
     detail    TEXT,
     parsed_at TEXT,
     adaptations_at TEXT,
+    units_at  TEXT,
     UNIQUE (kind, dir)
 );
 -- One fault code of one ECU variant, as an ODIS project describes it.
@@ -362,6 +365,22 @@ CREATE TABLE IF NOT EXISTS registry_level (
 );
 CREATE INDEX IF NOT EXISTS idx_registry_row_lookup ON registry_row(variant, section, identifier);
 CREATE INDEX IF NOT EXISTS idx_registry_level      ON registry_level(registry_row_id);
+-- What an ODIS project calls a control unit, and the number it gives it: one row per ECU
+-- variant (or base variant) and the logical link that reaches its base variant. `name` is
+-- the link's long name; `address` the diagnostic address VW's table of logical links gives
+-- the link, NULL where it gives none or more than one
+-- (`vag_data_labels::odis::Project::unit_names`). Which variant a unit on a car is comes
+-- from its own `F19E`/`F1A2`; nothing here is a car's. `ON DELETE CASCADE`: a vagcan older
+-- than this table drops a source knowing nothing of it, and its rows go with the source.
+CREATE TABLE IF NOT EXISTS unit_name (
+    source_id    INTEGER NOT NULL REFERENCES source(id) ON DELETE CASCADE,
+    variant      TEXT NOT NULL,
+    base_variant TEXT NOT NULL,
+    link         TEXT NOT NULL,
+    name         TEXT,
+    address      INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_unit_name_variant ON unit_name(variant);
 "#;
 
 /// Create what [`SCHEMA`] makes, in one transaction: a batch that fails part way leaves no
@@ -387,16 +406,20 @@ fn create_schema(conn: &Connection, db_path: &Path) -> Result<(), Error> {
 /// installation fills them.
 /// 4 (2026-10-21): `adaptation_channel` and `adaptation_level`, an ODIS project's
 /// adaptation channels, created empty; the next `vagcan setup` of the project fills them.
-const SCHEMA_VERSION: i64 = 5;
+/// 5 (2026-10-21): `source.adaptations_at`.
+/// 6 (2026-10-22): `unit_name`, an ODIS project's unit names and numbers, created empty,
+/// and `source.units_at`; the next `vagcan setup` of the project fills them.
+const SCHEMA_VERSION: i64 = 6;
 
 /// The tables [`migrate`] creates in a cache that predates them. Nothing in them is
 /// derived from what the cache holds, so a missing one is made, empty, rather than the
 /// cache refused: the read that fills them runs with the next read of the source —
 /// the VCDS installation for the registry rows, the ODIS project for the adaptations.
-const MIGRATED_TABLES: &[&str] = &["registry_row", "registry_level", "adaptation_channel", "adaptation_level"];
+const MIGRATED_TABLES: &[&str] = &["registry_row", "registry_level", "adaptation_channel", "adaptation_level", "unit_name"];
 
 /// The columns [`migrate`] adds to a cache that predates them: the five of the shape before
-/// [`SCHEMA_VERSION`] 1, and `source.adaptations_at` of the shape before 5. A
+/// [`SCHEMA_VERSION`] 1, `source.adaptations_at` of the shape before 5 and `source.units_at`
+/// of the shape before 6. A
 /// cache lacking only these is upgraded rather than refused.
 const MIGRATED: &[(&str, &str)] = &[
 	("label_file", "source_id"),
@@ -405,6 +428,7 @@ const MIGRATED: &[(&str, &str)] = &[
 	("source", "detail"),
 	("source", "parsed_at"),
 	("source", "adaptations_at"),
+	("source", "units_at"),
 ];
 
 /// Refuse a cache an older vagcan wrote: one holding some of this schema's tables but
@@ -596,7 +620,8 @@ fn merge_into(conn: &Connection, keep: i64, other: i64) -> rusqlite::Result<()> 
 		     version   = COALESCE(version,   (SELECT version   FROM source WHERE id = ?2)), \
 		     detail    = COALESCE(detail,    (SELECT detail    FROM source WHERE id = ?2)), \
 		     parsed_at = COALESCE(parsed_at, (SELECT parsed_at FROM source WHERE id = ?2)), \
-		     adaptations_at = COALESCE(adaptations_at, (SELECT adaptations_at FROM source WHERE id = ?2)) \
+		     adaptations_at = COALESCE(adaptations_at, (SELECT adaptations_at FROM source WHERE id = ?2)), \
+		     units_at  = COALESCE(units_at,  (SELECT units_at  FROM source WHERE id = ?2)) \
 		 WHERE id = ?1",
 		params![keep, other],
 	)?;
@@ -1475,6 +1500,64 @@ pub fn put_all_adaptations<'a>(
 pub fn odis_sources_without_adaptations(db_path: &Path) -> Result<Vec<String>, Error> {
 	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare("SELECT dir FROM source WHERE kind = ?1 AND adaptations_at IS NULL ORDER BY id")?;
+	let rows = stmt.query_map(params![ODIS], |row| row.get(0))?;
+	Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// What one ODIS source calls its control units ([`vag_data_labels::odis::Project::unit_names`]),
+/// in one transaction, replacing everything that source said about them before, and the
+/// source marked as read for them — even with none, so that a project which names no unit is
+/// told from one read before names were kept ([`odis_sources_without_unit_names`]). Returns
+/// how many rows landed.
+///
+/// Immediate, and waiting out another writer: a command can read a project's names the first
+/// time it needs them, so two processes may write them at once, and the second's replace is
+/// the same rows.
+pub fn put_unit_names(db_path: &Path, project_dir: &str, units: &[vag_data_labels::odis::UnitName]) -> Result<usize, Error> {
+	let mut conn = Connection::open(db_path)?;
+	conn.busy_timeout(std::time::Duration::from_secs(30))?;
+	create_schema(&conn, db_path)?;
+	let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+	let source = source_id(&tx, ODIS, project_dir)?;
+	tx.execute("DELETE FROM unit_name WHERE source_id = ?1", params![source])?;
+	{
+		let mut insert = tx.prepare("INSERT INTO unit_name (source_id, variant, base_variant, link, name, address) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
+		for u in units {
+			insert.execute(params![source, u.variant, u.base_variant, u.link, u.name, u.address])?;
+		}
+	}
+	tx.execute(
+		"UPDATE source SET units_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1",
+		params![source],
+	)?;
+	tx.commit()?;
+	Ok(units.len())
+}
+
+/// Every unit name the ODIS sources of this cache hold, in source order, then write order.
+pub fn unit_names_of(db_path: &Path) -> Result<Vec<vag_data_labels::odis::UnitName>, Error> {
+	let conn = open_existing(db_path)?;
+	let mut stmt = conn.prepare(
+		"SELECT u.variant, u.base_variant, u.link, u.name, u.address FROM unit_name u \
+		 JOIN source s ON s.id = u.source_id WHERE s.kind = ?1 ORDER BY s.id, u.rowid",
+	)?;
+	let rows = stmt.query_map(params![ODIS], |row| {
+		Ok(vag_data_labels::odis::UnitName {
+			variant: row.get(0)?,
+			base_variant: row.get(1)?,
+			link: row.get(2)?,
+			name: row.get(3)?,
+			address: row.get(4)?,
+		})
+	})?;
+	Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The ODIS sources whose unit names were never read — read before they were kept — by
+/// directory. A source whose read found none is not among them.
+pub fn odis_sources_without_unit_names(db_path: &Path) -> Result<Vec<String>, Error> {
+	let conn = open_existing(db_path)?;
+	let mut stmt = conn.prepare("SELECT dir FROM source WHERE kind = ?1 AND units_at IS NULL ORDER BY id")?;
 	let rows = stmt.query_map(params![ODIS], |row| row.get(0))?;
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
@@ -3815,6 +3898,85 @@ mod tests {
 		assert!(adaptation_variants(&ws.db_path).unwrap().is_empty());
 	}
 
+	/// A made-up unit name row.
+	fn unit(variant: &str, link: &str, name: &str, address: Option<u32>) -> vag_data_labels::odis::UnitName {
+		vag_data_labels::odis::UnitName {
+			variant: variant.into(),
+			base_variant: "BV_Sim".into(),
+			link: link.into(),
+			name: Some(name.into()),
+			address,
+		}
+	}
+
+	#[test]
+	fn unit_names_are_replaced_per_source_and_their_read_is_recorded_even_when_none_land() {
+		let ws = TempWorkspace::new("unit-names");
+		put_readings(&ws.db_path, "/x/SIM", "EV_SimA_001", &[banded(0x1000)]).unwrap();
+		assert_eq!(odis_sources_without_unit_names(&ws.db_path).unwrap(), ["/x/SIM"], "not read yet");
+		let first = [
+			unit("EV_SimA_001", "LL_SimA", "Sim A", Some(0x17)),
+			unit("BV_Sim", "LL_SimA", "Sim A", Some(0x17)),
+		];
+		assert_eq!(put_unit_names(&ws.db_path, "/x/SIM", &first).unwrap(), 2);
+		assert_eq!(unit_names_of(&ws.db_path).unwrap(), first);
+		// A reread replaces; another project's rows stand.
+		put_unit_names(&ws.db_path, "/x/OTHER", &[unit("EV_Other_001", "LL_Other", "Other", None)]).unwrap();
+		let again = [unit("EV_SimA_001", "LL_SimA", "Sim A again", None)];
+		put_unit_names(&ws.db_path, "/x/SIM", &again).unwrap();
+		let held = unit_names_of(&ws.db_path).unwrap();
+		assert_eq!(held.len(), 2, "{held:?}");
+		assert!(held.contains(&again[0]));
+		// A read that names nothing is a read.
+		put_unit_names(&ws.db_path, "/x/SIM", &[]).unwrap();
+		assert!(odis_sources_without_unit_names(&ws.db_path).unwrap().is_empty());
+		// Dropping the source takes its rows.
+		let id = sources(&ws.db_path).unwrap().into_iter().find(|s| s.path() == "/x/OTHER").unwrap().id;
+		drop_source(&ws.db_path, id).unwrap();
+		assert!(unit_names_of(&ws.db_path).unwrap().is_empty());
+	}
+
+	#[test]
+	fn a_drop_that_knows_no_unit_names_takes_them_with_the_source() {
+		let ws = TempWorkspace::new("unit-names-cascade");
+		put_unit_names(&ws.db_path, "/x/OLD", &[unit("EV_Old_001", "LL_Old", "Old", None)]).unwrap();
+		put_unit_names(&ws.db_path, "/x/SIM", &[unit("EV_SimA_001", "LL_SimA", "Sim A", Some(0x17))]).unwrap();
+		// What an older vagcan's drop does: the tables it knows, then the source row.
+		Connection::open(&ws.db_path)
+			.unwrap()
+			.execute("DELETE FROM source WHERE dir = '/x/OLD'", [])
+			.unwrap();
+		let held: i64 = Connection::open(&ws.db_path)
+			.unwrap()
+			.query_row("SELECT COUNT(*) FROM unit_name", [], |row| row.get(0))
+			.unwrap();
+		assert_eq!(held, 1, "the dropped source's row went with it, the other stayed");
+		assert_eq!(unit_names_of(&ws.db_path).unwrap()[0].variant, "EV_SimA_001");
+	}
+
+	#[test]
+	fn a_cache_from_before_the_unit_names_is_upgraded_in_place_not_refused() {
+		// Schema version 5: today's shape without `unit_name` and `source.units_at`.
+		let ws = TempWorkspace::new("before-unit-names");
+		put_readings(&ws.db_path, "/x/SK37X", "EV_BCM", &[banded(0x1000)]).unwrap();
+		{
+			let conn = Connection::open(&ws.db_path).unwrap();
+			conn
+				.execute_batch("DROP TABLE unit_name; ALTER TABLE source DROP COLUMN units_at; PRAGMA user_version = 5;")
+				.unwrap();
+		}
+		assert!(check(&ws.db_path).is_ok(), "not refused");
+		assert_eq!(readings_of(&ws.db_path, "EV_BCM").unwrap().len(), 1, "nothing lost");
+		assert!(unit_names_of(&ws.db_path).unwrap().is_empty(), "made, empty");
+		assert_eq!(
+			odis_sources_without_unit_names(&ws.db_path).unwrap(),
+			["/x/SK37X"],
+			"read before unit names were kept"
+		);
+		let conn = Connection::open(&ws.db_path).unwrap();
+		assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
+	}
+
 	#[test]
 	fn a_cache_from_before_the_registry_tables_is_upgraded_in_place_not_refused() {
 		// Schema version 2: today's shape without `registry_row` and `registry_level`.
@@ -4290,6 +4452,7 @@ mod tests {
 		put_all_readings(&ws.db_path, "/x/SK37X", [("EV_Brake1", &[banded(0x1000)][..])]).unwrap();
 		put_all_faults(&ws.db_path, "/x/SK37X", [("EV_Brake1", &[fault(297, "Fehler")][..])]).unwrap();
 		put_all_adaptations(&ws.db_path, "/x/SK37X", [("EV_Brake1", &[banded(0x0550)][..])]).unwrap();
+		put_unit_names(&ws.db_path, "/x/SK37X", &[unit("EV_Brake1", "LL_Brake", "Brakes", Some(3))]).unwrap();
 		// Its freeze-frame rows too, one a text table with its states in `registry_level`.
 		let state = vag_data_labels::odis::EnvironmentField {
 			name: Some("Sim state".into()),

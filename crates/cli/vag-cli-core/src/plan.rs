@@ -844,9 +844,10 @@ mod tests {
 	fn a_spec_names_control_units_by_number_or_by_request_id() {
 		assert_eq!(ids("2029,202A"), vec![(ENGINE, 0x2029), (ENGINE, 0x202A)]);
 		assert_eq!(ids("01:2029 02:380A,3816"), vec![(ENGINE, 0x2029), (GEARBOX, 0x380A), (GEARBOX, 0x3816)]);
-		// The cluster by number and by id are the same unit.
-		assert_eq!(ids("17:2203"), vec![(CLUSTER, 0x2203)]);
-		assert_eq!(ids("714:2203"), ids("17:2203"));
+		// The cluster by id; by number only where the run's source and the car's record pair
+		// one with it — nothing built in does.
+		assert_eq!(ids("714:2203"), vec![(CLUSTER, 0x2203)]);
+		assert!(parse_spec("17:2203").is_err(), "no pairing for 17");
 		// A unit with no established number is still reachable by its id.
 		assert_eq!(ids("713:1001"), vec![(0x713, 0x1001)]);
 		assert!(parse_spec("").is_err());

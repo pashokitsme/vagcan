@@ -6,52 +6,44 @@ terminal of that width would: these are the layouts at 80 and 100 columns.
 ```console
 $ VAGCAN_COLUMNS=80 vagcan units --identify
 ? success
-note: the units are not named: no label data on this machine
-  (use "vagcan setup" to read it)
 note: adapter from VAGCAN_DEVICE=[PORT]
-5 control units on SIMVIN00000000001 · 4 answered · 2 on the gateway's list
+5 control units on SIMVIN00000000001 · 4 answered · 2 on the gateway's list · 2 named
 
-   UNIT  ID   PART        COMPONENT    NAME
-✗  09    70E                           (no answer)
-✓  --    710  SIM907000C  SIM GATEWAY
-✓  --    713  SIM614000D  SIM ESC
-✓  01    7E0  SIM906000A  SIM ENGINE
-✓  02    7E1  SIM300000B  SIM GEARBOX
+   UNIT  ID   PART        NAME         COMPONENT
+✗  --    70E                           (no answer)
+✓  --    710  SIM907000C               SIM GATEWAY
+✓  --    713  SIM614000D               SIM ESC
+✓  01    7E0  SIM906000A  Sim Engine   SIM ENGINE
+✓  02    7E1  SIM300000B  Sim Gearbox  SIM GEARBOX
 
 $ VAGCAN_COLUMNS=100 vagcan units --identify
 ? success
-note: the units are not named: no label data on this machine
-  (use "vagcan setup" to read it)
 note: adapter from VAGCAN_DEVICE=[PORT]
-5 control units on SIMVIN00000000001 · 4 answered · 2 on the gateway's list
+5 control units on SIMVIN00000000001 · 4 answered · 2 on the gateway's list · 2 named
 
-   UNIT  ID   PART        COMPONENT    NAME
-✗  09    70E                           (no answer)
-✓  --    710  SIM907000C  SIM GATEWAY
-✓  --    713  SIM614000D  SIM ESC
-✓  01    7E0  SIM906000A  SIM ENGINE
-✓  02    7E1  SIM300000B  SIM GEARBOX
+   UNIT  ID   PART        NAME         COMPONENT
+✗  --    70E                           (no answer)
+✓  --    710  SIM907000C               SIM GATEWAY
+✓  --    713  SIM614000D               SIM ESC
+✓  01    7E0  SIM906000A  Sim Engine   SIM ENGINE
+✓  02    7E1  SIM300000B  Sim Gearbox  SIM GEARBOX
 
 $ VAGCAN_COLUMNS=80 vagcan units
 ? success
-note: the units are not named: no label data on this machine
-  (use "vagcan setup" to read it)
 note: adapter from VAGCAN_DEVICE=[PORT]
 2 control units on the gateway's list
 
-UNIT  ID   PART  NAME
-09    70E
+UNIT  ID   PART  NAME  COMPONENT
+--    70E
 --    713
 
 $ VAGCAN_COLUMNS=100 vagcan units
 ? success
-note: the units are not named: no label data on this machine
-  (use "vagcan setup" to read it)
 note: adapter from VAGCAN_DEVICE=[PORT]
 2 control units on the gateway's list
 
-UNIT  ID   PART  NAME
-09    70E
+UNIT  ID   PART  NAME  COMPONENT
+--    70E
 --    713
 
 $ VAGCAN_COLUMNS=80 vagcan sensors

@@ -34,13 +34,13 @@ unanswered, rather than waiting out every parameter's timeout.
 $ vagcan sensors --unit 70E
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
-unit 09 (70E) does not answer
+unit 70E does not answer
   (use "vagcan units --identify" to see which units answer)
 
 $ vagcan -v sensors --unit 70E
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
-unit 09 (70E) does not answer
+unit 70E does not answer
   (use "vagcan units --identify" to see which units answer)
 its first 3 requests went unanswered, so the rest were not asked
 

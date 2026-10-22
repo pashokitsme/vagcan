@@ -388,13 +388,16 @@ Grouped results, summary first (`faults`):
 A list (`units`; `setup --list` and `devices` the same way):
 
 ```
-15 control units on XW8AD4NE9JH008917
+12 control units on the gateway's list
 
-UNIT  ID   PART         NAME
-01    7E0  8V0906264H   1.8l R4 TFSI
-02    7E1  0CW300041G   GSG DQ200G2_M
-03    713  5Q0614517AQ  ESC
+UNIT  ID   PART         NAME                         COMPONENT
+16    70C  5Q0953521KM  Steering Column Electronics  Lenks.Modul
+03    713  5Q0614517AQ  Brakes 1                     ESC
+17    714  5E0920740D   Dash Board                   KOMBI
 ```
+
+NAME is the run's source's name for the unit and nothing else; COMPONENT is what the unit
+calls itself (`F197`). Either may be blank (owner, 2026-10-22).
 
 A card (`info`):
 

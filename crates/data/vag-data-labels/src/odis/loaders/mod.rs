@@ -164,6 +164,9 @@ pub mod code {
 	pub const MCD_DB_PHYSICAL_DIMENSION: u16 = 0x010C;
 	/// `MCD_DB_ECU` — a control unit's name and where it lives.
 	pub const MCD_DB_ECU: u16 = 0x010D;
+	/// `MCD_DB_LOGICAL_LINK` — one way to reach a control unit: its name, and the base
+	/// variant it reaches. The `.vi` pool holds one per unit.
+	pub const MCD_DB_LOGICAL_LINK: u16 = 0x006A;
 }
 
 /// The ten types this project will never parse into anything executable, with

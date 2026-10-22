@@ -530,13 +530,7 @@ fn odis_named(naming: Option<crate::odisfaults::Naming>, project_has_unit: bool)
 /// the cable is a single-user resource, and holding it open to fail on a typo
 /// blocks the next attempt.
 fn unit_list(flag: &str, spec: &str) -> Result<Vec<u16>> {
-	Ok(
-		vag_uds_client::address::parse_list(spec)
-			.map_err(|e| anyhow::anyhow!("{flag}: {e}"))?
-			.iter()
-			.map(|u| u.request)
-			.collect(),
-	)
+	Ok(vag_cli_core::unit_names::parse_list(flag, spec)?.iter().map(|u| u.request).collect())
 }
 
 /// The caveat that used to head every listing, said at `-v` (and in `faults --help`):
@@ -777,7 +771,7 @@ pub async fn run<L: UnitLink>(
 	// read and shown as numbers, with a note that names `vagcan setup`.
 	// The keys are the VCDS store's (`rod-keys.json`) unless `--iv-cache` names a file.
 	// The numbers `vagcan units` lists, for `--unit` and for the headings below.
-	crate::labels::install_recorded_units();
+	vag_cli_core::unit_names::install().await;
 	// `--unit` before the project is opened: opening it can upgrade its cache, and a
 	// typo is refused touching nothing.
 	let requested = only.map(|spec| unit_list("--unit", spec)).transpose()?;

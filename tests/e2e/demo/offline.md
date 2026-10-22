@@ -14,7 +14,7 @@ $ vagcan setup --list
 $ vagcan units --identify
 ? success
 ...
-✓  02    7E1  SIM300000B  SIM GEARBOX
+✓  02    7E1  SIM300000B  Sim Gearbox  SIM GEARBOX
 
 $ vagcan dev dash build SIMVIN00000000001
 ? success
