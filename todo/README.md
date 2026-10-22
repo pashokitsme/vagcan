@@ -56,8 +56,9 @@ below. `just check` green on `f58678c` on 2026-10-21 (2,568 tests passed across 
 - **The dash** (PR #41, `f004549`, 2026-10-20): a refused or blank `F187`, or one late answer, no
   longer strikes a unit off for the boot. That is what left the ESC's acceleration at `––` on the
   owner's board from 2026-10-20 on (the plan's ESC channel unchanged across plans).
-- **The board in the car** runs `dash` without BLE from `f58678c` (`master`, PR #56), flashed by
-  the owner on 2026-10-21 at 20:13 UTC from `.worktrees/flash` (detached at `f58678c`, clean):
+- **The board in the car** runs `dash` without BLE from `6d7406a` (`master`, PR #59), flashed by
+  the owner on 2026-10-22 at 14:20 UTC: the SERVICE page (the cluster's ESI by its id `714`) and
+  no RPM chart, plan `30adc85bd61fec27`. Before it, `f58678c` (PR #56), flashed 2026-10-21 at 20:13 UTC from `.worktrees/flash` (detached at `f58678c`, clean):
   the VCDS plan (`channels from the VCDS installation` in the build), 6 pages, the English
   labels, #41's fix, #33's exchange count, #34's core. Before it, from 2026-10-19 21:21 UTC, an
   image of `451e3b5` (#31), dated from the session's log. Its glass is wired SDIN `GPIO8`, CS
