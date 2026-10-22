@@ -340,7 +340,7 @@ vagcan adaptations 09     # one unit's adaptation channels and their values (par
 vagcan watch              # live values from several units at once
 ```
 
-A unit is named as `vagcan units` lists it: its number or its request id (`vagcan faults --unit 01,713`, `vagcan watch --did 713:IDE00001`).
+A unit is named as `vagcan units` lists it: its request id, which always works, or its number, which works where the run's source numbers that unit (`vagcan faults --unit 01,713`, `vagcan watch --did 713:IDE00001`).
 
 **Through the dash board over BLE:** no cable needed. Add `--ble`: `vagcan` finds the board and says which one it uses, or asks when there are several. The ignition must be on. On macOS:
 

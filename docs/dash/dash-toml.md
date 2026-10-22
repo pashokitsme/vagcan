@@ -435,14 +435,17 @@ The pins, with this board's wiring:
 
 ## Naming a channel
 
-Two spellings, both `<unit>:<row>`:
+Two spellings, both `<unit number or request id>:<channel>`:
 
 | spelling | example | when |
 |---|---|---|
 | channel id | `01:IDE00025` | The usual one: stable across variants, and what `names.csv` is keyed by. |
 | identifier | `02:380A`, `02:3816@3` | A row with no channel id: one measured on a car, or a standard OBD-II parameter. `@` is the bit offset, 0 when left out. |
 
-- The unit is a short number (`01`, `02`, `4B`) or a request id (`7E0`, `714`).
+- The unit is a request id (`7E0`, `714`) or a unit number (`01`, `17`, `4B`).
+- A request id always works.
+- A unit number works only where the run's source numbers that unit: `17` on an ODIS run, not on a VCDS run that has no label file for the cluster. Otherwise write the request id: `714:IDE00698`. `vagcan units` lists both.
+- `dev dash edit` writes a new channel by number where the run's source numbers the unit, and by request id otherwise. A ref already in the file keeps its spelling.
 - A **channel id** is VW's own id for a measurement, such as `IDE00025`. The build's messages call it a "text id".
 - An identifier is exactly four hex digits. Anything else after the colon is a channel id.
 - A channel id takes no `@`.
@@ -522,7 +525,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `a channel is <unit>:<text id> or <unit>:<DID>[@<bit>]` / `nothing after the unit` | Spell it as in [Naming a channel](#naming-a-channel). |
 | `no control unit given` | Write the unit before the colon. |
 | `"X" is not a control-unit number like 01 or 17` / `is not a hex request id like 714` | Fix the unit. |
-| `control unit NN … has no known request id` | Write the unit's request id instead: `vagcan units` lists them. |
+| `control unit NN … has no known request id` | Write the unit's request id instead, as the `help:` line spells it: `714:IDE00698`. `vagcan units` lists them. |
 | `… has no diagnostic address (700-795 or 7E0-7E7)` | Not a diagnostic unit. Fix the unit. |
 | `a bit offset goes with an identifier, not a text id` | Drop the `@`, or write the identifier. |
 | `"b" is not a bit offset` | A whole number after `@`. |

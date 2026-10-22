@@ -243,6 +243,10 @@ pub fn edit(current: Option<&str>, vin: &str, wanted: &Wanted, describe: impl Fn
 		}
 	};
 
+	// Every reference the file spells, as it spells it: a channel the page sends back keeps the
+	// spelling the file gave it, `17:…` or `714:…`, whatever this run would write for a new one.
+	let spelled = spellings(&doc);
+
 	// The channels there are: a label or decimals the editor changed, and nothing else.
 	let mut known: Vec<Reference> = Vec::new();
 	if let Some(item) = doc.get_mut("channel") {
@@ -286,7 +290,7 @@ pub fn edit(current: Option<&str>, vin: &str, wanted: &Wanted, describe: impl Fn
 			.ok_or("dash.toml: channel is not a list of [[channel]] tables")?;
 		for at in fresh {
 			let mut table = Table::new();
-			let mut reference = Value::from(at.to_string());
+			let mut reference = Value::from(spelling(at, &spelled));
 			if let Some(said) = describe(at) {
 				let said: String = said.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
 				reference.decor_mut().set_suffix(format!("   # {}", said.trim()));
@@ -315,7 +319,7 @@ pub fn edit(current: Option<&str>, vin: &str, wanted: &Wanted, describe: impl Fn
 			Some(i) => old.get(i).cloned().ok_or(format!("the file has no page {}", i + 1))?,
 			None => Table::new(),
 		};
-		write_page(&mut table, page);
+		write_page(&mut table, page, &spelled);
 		table.set_position(first);
 		pages.push(table);
 	}
@@ -371,9 +375,53 @@ fn reference_at(item: &Item) -> Option<Reference> {
 	item.as_str().and_then(|r| Reference::parse(r).ok())
 }
 
+/// Each reference the file's `[[channel]]`s and pages hold, with its spelling there — the first
+/// one where it is spelled two ways.
+fn spellings(doc: &DocumentMut) -> Vec<(Reference, String)> {
+	let mut out: Vec<(Reference, String)> = Vec::new();
+	let mut keep = |text: &str| {
+		if let Ok(at) = Reference::parse(text)
+			&& !out.iter().any(|(r, _)| *r == at)
+		{
+			out.push((at, text.trim().to_string()));
+		}
+	};
+	let tables = |name: &str| doc.get(name).and_then(Item::as_array_of_tables).into_iter().flat_map(|t| t.iter());
+	for table in tables("channel") {
+		if let Some(text) = table.get("ref").and_then(Item::as_str) {
+			keep(text);
+		}
+	}
+	for table in tables("page") {
+		if let Some(text) = table.get("cell").and_then(Item::as_str) {
+			keep(text);
+		}
+		for text in table
+			.get("cells")
+			.and_then(Item::as_array)
+			.into_iter()
+			.flat_map(|a| a.iter())
+			.filter_map(|v| v.as_str())
+		{
+			keep(text);
+		}
+	}
+	out
+}
+
+/// How `at` is written: as the file spells it, or else as this run spells a reference — by the
+/// unit's number where the run's source numbers it and pairs it with the car's request id, by
+/// the request id otherwise ([`Reference`]'s display, over the run's numbering).
+fn spelling(at: &Reference, spelled: &[(Reference, String)]) -> String {
+	spelled
+		.iter()
+		.find(|(r, _)| r == at)
+		.map_or_else(|| at.to_string(), |(_, text)| text.clone())
+}
+
 /// `page` written into `table` — a table from the file, or a new one — touching only what
 /// differs from what it holds.
-fn write_page(table: &mut Table, page: &Page) {
+fn write_page(table: &mut Table, page: &Page, spelled: &[(Reference, String)]) {
 	let kind = match page.shows {
 		Shows::Values(_) => "values",
 		Shows::Chart { .. } => "chart",
@@ -400,7 +448,7 @@ fn write_page(table: &mut Table, page: &Page) {
 				put(
 					table,
 					"cells",
-					Value::Array(cells.iter().map(ToString::to_string).collect::<Array>()),
+					Value::Array(cells.iter().map(|c| spelling(c, spelled)).collect::<Array>()),
 					PAGE_KEYS,
 				);
 			}
@@ -408,7 +456,7 @@ fn write_page(table: &mut Table, page: &Page) {
 		Shows::Chart { cell, min, max } => {
 			table.remove("cells");
 			if table.get("cell").and_then(reference_at).as_ref() != Some(cell) {
-				put(table, "cell", cell.to_string().into(), PAGE_KEYS);
+				put(table, "cell", spelling(cell, spelled).into(), PAGE_KEYS);
 			}
 			for (key, v) in [("min", *min), ("max", *max)] {
 				if number_at(table, key) != Some(v) {
@@ -525,6 +573,41 @@ cruise_off = "off"
 		let mut doc: DocumentMut = text.parse().unwrap();
 		doc.remove("page");
 		doc.to_string()
+	}
+
+	/// A ref keeps the spelling the file gave it, by number or by request id; a ref new to the
+	/// file is spelled by the unit's number only where the run's numbering pairs that number with
+	/// the request id, and by the request id otherwise. Made-up unit `E7` on `78F` (paired here)
+	/// and `78E` (paired with nothing); no other test uses either.
+	#[test]
+	fn a_ref_keeps_the_files_spelling_and_a_new_one_is_spelled_by_the_runs_numbering() {
+		vag_uds_client::address::install([vag_uds_client::address::UnitNumber {
+			number: 0xE7,
+			request: Some(0x78F),
+			name: Some("Sim Unit".into()),
+		}]);
+		let file = "vin = \"TESTVIN0000000001\"\n\n[[channel]]\nref = \"78F:IDE00009\"\n\n[[page]]\nkind = \"values\"\ncells = [\"78F:IDE00009\"]\n";
+		let body = |cells: serde_json::Value| {
+			json!({
+				"fingerprint": "f",
+				"pages": [{"kind": "values", "title": "", "cells": cells, "volts": true, "from": 0}],
+				"labels": {},
+				"decimals": {},
+			})
+		};
+		let save = |cells: serde_json::Value| {
+			let wanted = wanted(body(cells), Some(file)).unwrap();
+			edit(Some(file), "TESTVIN0000000001", &wanted, |_| None).unwrap()
+		};
+		// Saved as opened: byte for byte, though this run would spell the unit `E7`.
+		assert_eq!(save(json!(["78F:IDE00009"])), file);
+		// The page sends the unit's number back: the file's spelling stays.
+		assert_eq!(save(json!(["E7:IDE00009"])), file);
+		// New refs: by number where it is paired, by request id where nothing pairs it.
+		let out = save(json!(["78F:IDE00009", "78F:IDE00010", "78E:IDE00011"]));
+		assert!(out.contains("ref = \"E7:IDE00010\""), "{out}");
+		assert!(out.contains("ref = \"78E:IDE00011\""), "{out}");
+		assert!(out.contains("cells = [\"78F:IDE00009\", \"E7:IDE00010\", \"78E:IDE00011\"]"), "{out}");
 	}
 
 	#[test]
