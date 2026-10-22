@@ -10,7 +10,7 @@ note: adapter from VAGCAN_DEVICE=[PORT]
 5 control units on SIMVIN00000000001 · 4 answered · 2 on the gateway's list · 2 named
 
    UNIT  ID   PART        NAME         COMPONENT
-✗  --    70E              (no answer)
+✗  --    70E                           (no answer)
 ✓  --    710  SIM907000C               SIM GATEWAY
 ✓  --    713  SIM614000D               SIM ESC
 ✓  01    7E0  SIM906000A  Sim Engine   SIM ENGINE
@@ -22,7 +22,7 @@ note: adapter from VAGCAN_DEVICE=[PORT]
 5 control units on SIMVIN00000000001 · 4 answered · 2 on the gateway's list · 2 named
 
    UNIT  ID   PART        NAME         COMPONENT
-✗  --    70E              (no answer)
+✗  --    70E                           (no answer)
 ✓  --    710  SIM907000C               SIM GATEWAY
 ✓  --    713  SIM614000D               SIM ESC
 ✓  01    7E0  SIM906000A  Sim Engine   SIM ENGINE

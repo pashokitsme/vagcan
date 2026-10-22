@@ -356,7 +356,12 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 		if let Some(car) = record {
 			note!("part numbers and names from what {}'s units said to `vagcan units --identify`", car.vin);
 		}
-		say_unnamed(&names, listing.unnamed, ids.len(), record.is_none());
+		let said: Vec<&plan::UnitIdentity> = record
+			.map(|car| car.units.iter().filter(|u| ids.contains(&u.request)).collect())
+			.unwrap_or_default();
+		if !say_none_named(&names, &said) {
+			say_unnamed(&names, listing.unnamed, ids.len(), record.is_none());
+		}
 		return Ok(());
 	}
 
@@ -409,8 +414,8 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 				unit_number(vag_uds_client::address::short_number(id)),
 				format!("{id:03X}"),
 				String::new(),
-				"(no answer)".to_string(),
 				String::new(),
+				"(no answer)".to_string(),
 			]);
 			continue;
 		}
@@ -463,7 +468,31 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 		},
 	]);
 	out!("{}", vag_cli_core::table::list(&summary, &table, vag_cli_core::table::terminal_width()));
+	say_none_named(&names, &found.iter().collect::<Vec<_>>());
 	Ok(())
+}
+
+/// The one line, at every level, for a run whose source names none of the units the car said
+/// it has — and, where the other source would name some of them, the command that reads it.
+/// Says whether it said anything.
+fn say_none_named(names: &vag_cli_core::unit_names::UnitNames, units: &[&plan::UnitIdentity]) -> bool {
+	let named = |names: &vag_cli_core::unit_names::UnitNames, u: &plan::UnitIdentity| names.of(u).and_then(|n| n.name).is_some();
+	let Some(what) = names.describe() else { return false };
+	if units.is_empty() || units.iter().any(|u| named(names, u)) {
+		return false;
+	}
+	say!("note: {what} names none of these units");
+	if let Some(other) = names.other()
+		&& units.iter().any(|u| named(&other, u))
+		&& let (Some(source), Some(theirs)) = (other.source(), other.describe())
+	{
+		let args: Vec<String> = std::env::args().skip(1).collect();
+		say!(
+			"  (use \"{}\" to name them from {theirs})",
+			vag_cli_core::unit_names::retyped(&args, source)
+		);
+	}
+	true
 }
 
 /// The plain listing's `-v` line that says some units go by their id: `unnamed` of `total`

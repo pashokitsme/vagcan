@@ -122,7 +122,11 @@ impl UnitNames {
 					vag_data_db::odis_sources_without_unit_names(&run.cache()),
 				) {
 					(Ok(rows), Ok(unread)) => match (rows.is_empty(), unread.into_iter().next()) {
-						(true, Some(dir)) => Held::Gone(dir.into()),
+						(true, Some(dir)) if !std::path::Path::new(&dir).is_dir() => Held::Gone(dir.into()),
+						// The folder is there: the read failed, and says why, or has not been made.
+						(true, Some(_)) => Held::NotRead(
+							crate::odis_read::last_failure(&run.store, crate::odis_read::Part::UnitNames).unwrap_or_else(|| "they are not read yet".to_string()),
+						),
 						_ => Held::Odis(rows),
 					},
 					(Err(e), _) | (_, Err(e)) => Held::Unreadable(e.to_string()),
@@ -135,6 +139,25 @@ impl UnitNames {
 	/// The source the names are from; `None` with none.
 	pub fn source(&self) -> Option<Source> {
 		self.run.as_ref().map(|run| run.source)
+	}
+
+	/// The other source's names, where it is set up beside this run's — read as it holds them,
+	/// nothing read to fill it: for a line that says the other would name what this run does
+	/// not. Never used to name anything.
+	pub fn other(&self) -> Option<UnitNames> {
+		let other = self.source()?.other();
+		crate::source::held_here()
+			.contains(&other)
+			.then(|| crate::source::run_of_here(other))
+			.flatten()
+			.map(|run| UnitNames::as_held(Some(run)))
+	}
+
+	/// Say on stderr, as `units` does, when this run's names are broken rather than not set up.
+	fn warn_broken(&self) {
+		if let Some(unnamed) = self.unnamed().filter(|u| u.warning) {
+			crate::say!("warning: the units are not named: {}", unnamed.why);
+		}
 	}
 
 	/// The source in a sentence — `the ODIS project SK37X`, `the VCDS installation` — when
@@ -277,19 +300,16 @@ impl UnitNames {
 /// calls [`install_blocking`].
 pub async fn install() -> UnitNames {
 	let names = UnitNames::for_run_async().await;
+	names.warn_broken();
 	names.install(&crate::units::recorded_cars().unwrap_or_default());
 	names
 }
 
-/// [`install`] from what the run's source already holds, reading nothing to fill it — for a
-/// build (the dash's, and the firmware's build script through it), which writes nothing.
-pub fn install_held() {
-	UnitNames::as_held(crate::source::run_here().ok().flatten()).install(&crate::units::recorded_cars().unwrap_or_default());
-}
-
-/// [`install`], for a command with no async runtime to keep free.
+/// [`install`], for a command with no async runtime to keep free — the dash build, and the
+/// firmware's build script through it.
 pub fn install_blocking() -> UnitNames {
 	let names = UnitNames::for_run();
+	names.warn_broken();
 	names.install(&crate::units::recorded_cars().unwrap_or_default());
 	names
 }
@@ -324,17 +344,48 @@ fn refusal(flag: &str, text: &str, why: String) -> anyhow::Error {
 	let Some(number) = number.filter(|n| vag_uds_client::address::request_for_short(*n).is_none()) else {
 		return anyhow::anyhow!("{flag}: {why}");
 	};
-	let cars = crate::units::recorded_cars().unwrap_or_default();
-	let run = crate::source::run_here().ok().flatten();
-	let other = run
-		.as_ref()
-		.map(|run| run.source.other())
-		.filter(|other| crate::source::held_here().contains(other))
-		.and_then(crate::source::run_of_here);
-	let this = Facts::of(&UnitNames::as_held(run), number, &cars);
-	let other = other.map(|run| Facts::of(&UnitNames::as_held(Some(run)), number, &cars));
+	let (this, other) = facts_here(number);
 	let args: Vec<String> = std::env::args().skip(1).collect();
 	refuse(flag, number, &this, other.as_ref(), &args)
+}
+
+/// What both sources say of `number` over this machine's record.
+fn facts_here(number: u8) -> (Facts, Option<Facts>) {
+	let cars = crate::units::recorded_cars().unwrap_or_default();
+	let run = crate::source::run_here().ok().flatten();
+	let names = UnitNames::as_held(run);
+	let other = names.other().map(|other| Facts::of(&other, number, &cars));
+	(Facts::of(&names, number, &cars), other)
+}
+
+/// The refusal of a `dash.toml` reference `<NN>:<rest>` whose number nothing pairs with a
+/// request id — said as the build's error `why` is, with the request id to write instead where
+/// the car's record has the unit, and the identification only where nothing is recorded.
+pub fn dash_refusal(vin: &str, number: u8, rest: &str, why: &str) -> anyhow::Error {
+	let (this, other) = facts_here(number);
+	let args: Vec<String> = ["dev", "dash", "build", vin].iter().map(|a| a.to_string()).collect();
+	dash_refuse(number, rest, why, &this, other.as_ref(), &args)
+}
+
+/// [`dash_refusal`] from what each source says.
+fn dash_refuse(number: u8, rest: &str, why: &str, this: &Facts, other: Option<&Facts>, args: &[String]) -> anyhow::Error {
+	use crate::report::Advice as _;
+	let mut err = anyhow::anyhow!("{why}");
+	// The id the car's record holds for the unit, where a source knows which recorded unit it is.
+	if let Some(request) = this.request.or(other.and_then(|o| o.request)) {
+		err = err.help(format!("refer to it by its request id: `{request:03X}:{rest}`"));
+	} else if this.recorded == 0 {
+		err = err.help("pair each unit's number with its id: `vagcan units --identify` with the car");
+	}
+	if let Some(note) = this.unpaired_note(number) {
+		err = err.note(note);
+	}
+	if let Some(other) = other.filter(|other| other.request.is_some())
+		&& let Some(source) = other.source
+	{
+		err = err.help(format!("or build as {source} numbers it: `{}`", retyped(args, source)));
+	}
+	err
 }
 
 /// What one source says of a unit number, for a refusal: whether it names it, whether a
@@ -346,10 +397,12 @@ struct Facts {
 	describe: Option<String>,
 	/// The folder of an ODIS project whose names were never read and cannot be.
 	gone: Option<std::path::PathBuf>,
+	/// Why its names did not read, where they did not.
+	failed: Option<String>,
 	/// What it calls the unit it numbers so.
 	name: Option<String>,
-	/// Whether a recorded unit is that unit, by this source — and so has a request id.
-	paired: bool,
+	/// The request id of the recorded unit that is that unit, by this source.
+	request: Option<u16>,
 	/// Units recorded on this machine, and how many of them this source names nothing of.
 	recorded: usize,
 	unknown: usize,
@@ -365,11 +418,29 @@ impl Facts {
 				Held::Gone(dir) => Some(dir.clone()),
 				_ => None,
 			},
+			failed: match &names.held {
+				Held::NotRead(why) => Some(why.clone()),
+				_ => None,
+			},
 			name: names.name_of_number(number),
-			paired: names.pairings(cars).iter().any(|p| p.number == number),
+			request: names.pairings(cars).iter().find(|p| p.number == number).and_then(|p| p.request),
 			recorded: units.len(),
 			unknown: units.iter().filter(|u| names.of(u).is_none()).count(),
 		}
+	}
+
+	/// Why no recorded unit is `number`, where units are recorded and the source numbers it:
+	/// `the VCDS installation knows 1 of the 15 recorded units; none is unit 44`.
+	fn unpaired_note(&self, number: u8) -> Option<String> {
+		let what = self.describe.as_ref()?;
+		self.name.as_ref()?;
+		(self.recorded > 0).then(|| {
+			format!(
+				"{what} knows {} of the {} recorded units; none is unit {number:02X}",
+				self.recorded - self.unknown,
+				self.recorded
+			)
+		})
 	}
 }
 
@@ -385,28 +456,22 @@ fn refuse(flag: &str, number: u8, this: &Facts, other: Option<&Facts>, args: &[S
 			.note(format!("the ODIS project's folder {} is not on this machine", crate::datadir::tilde(dir)))
 			.help(by_id)
 			.help("or read the project where it is now: `vagcan setup <ODIS project>`"),
-		(None, Some(name), Some(what)) => {
+		(None, None, None) if this.failed.is_some() => anyhow::anyhow!("{flag}: unit {number:02X}: this run's unit names did not read")
+			.note(this.failed.clone().unwrap_or_default())
+			.help(by_id),
+		(None, Some(name), Some(_)) => {
 			let err = anyhow::anyhow!("{flag}: control unit {number:02X} ({name}) has no known request id");
-			match (this.recorded, this.unknown) {
-				(0, _) => err
+			match this.unpaired_note(number) {
+				None => err
 					.help(by_id)
 					.help("or pair each unit's number with its id: `vagcan units --identify` with the car"),
-				(recorded, 0) => err
-					.note(format!(
-						"none of the {recorded} units recorded on this machine is unit {number:02X} in {what}"
-					))
-					.help(by_id),
-				(recorded, unknown) => err
-					.note(format!(
-						"none of the {recorded} units recorded on this machine is unit {number:02X} in {what}, which knows nothing of {unknown} of them"
-					))
-					.help(by_id),
+				Some(note) => err.note(note).help(by_id),
 			}
 		}
 		(None, _, Some(what)) => anyhow::anyhow!("{flag}: {what} numbers no control unit {number:02X}").help(by_id),
 		(None, _, None) => anyhow::anyhow!("{flag}: no control unit is numbered {number:02X} on this machine").help(by_id),
 	};
-	if let Some(other) = other.filter(|other| other.paired)
+	if let Some(other) = other.filter(|other| other.request.is_some())
 		&& let Some(source) = other.source
 	{
 		err = err.help(format!("or read it as {source} numbers it: `{}`", retyped(args, source)));
@@ -415,7 +480,7 @@ fn refuse(flag: &str, number: u8, this: &Facts, other: Option<&Facts>, args: &[S
 }
 
 /// The command line as typed, made to read `source`: `vagcan --source vcds faults --unit 44`.
-fn retyped(args: &[String], source: Source) -> String {
+pub fn retyped(args: &[String], source: Source) -> String {
 	let mut kept = Vec::new();
 	let mut rest = args.iter();
 	while let Some(arg) = rest.next() {
@@ -674,8 +739,9 @@ mod tests {
 				Source::Vcds => "the VCDS installation".into(),
 			}),
 			gone: None,
+			failed: None,
 			name: name.map(str::to_string),
-			paired,
+			request: paired.then_some(0x714),
 			recorded,
 			unknown,
 		}
@@ -725,7 +791,7 @@ mod tests {
 			(
 				"--unit: control unit 44 (J500 - Steering) has no known request id".into(),
 				vec![
-					note("none of the 15 units recorded on this machine is unit 44 in the VCDS installation, which knows nothing of 9 of them"),
+					note("the VCDS installation knows 6 of the 15 recorded units; none is unit 44"),
 					help(BY_ID),
 					help("or read it as ODIS numbers it: `vagcan --source odis faults --unit 44`"),
 				]
@@ -737,7 +803,7 @@ mod tests {
 			(
 				"--unit: control unit 4B (Multifunction Module) has no known request id".into(),
 				vec![
-					note("none of the 15 units recorded on this machine is unit 4B in the ODIS project SIM00"),
+					note("the ODIS project SIM00 knows 15 of the 15 recorded units; none is unit 4B"),
 					help(BY_ID)
 				]
 			)
@@ -780,6 +846,50 @@ mod tests {
 		let (error, hints) = refused(&gone, None, 0x44);
 		assert_eq!(error, "--unit: unit 44: this run's unit names were never read");
 		assert_eq!(hints[0], note("the ODIS project's folder /nowhere/SIM00 is not on this machine"));
+		// Names whose read failed, the folder there: the reason, never "not on this machine".
+		let failed = Facts {
+			failed: Some("not an ODIS project: no AStringData.data".into()),
+			describe: None,
+			..facts(Source::Odis, None, false, 15, 15)
+		};
+		let (error, hints) = refused(&failed, None, 0x44);
+		assert_eq!(error, "--unit: unit 44: this run's unit names did not read");
+		assert_eq!(hints, [note("not an ODIS project: no AStringData.data"), help(BY_ID)]);
+	}
+
+	/// A `dash.toml` reference whose number nothing pairs: the request id to write, where the
+	/// car's record has the unit by some source; never the identification when units are
+	/// recorded.
+	#[test]
+	fn a_dash_reference_nothing_pairs_names_the_request_id_to_write() {
+		let args: Vec<String> = ["dev", "dash", "build", "SIMVIN"].iter().map(|a| a.to_string()).collect();
+		let why = "17:IDE00698: control unit 17 (J285) has no known request id";
+		let refused = |this: &Facts, other: Option<&Facts>| {
+			let err = dash_refuse(0x17, "IDE00698", why, this, other, &args);
+			(err.to_string(), crate::report::hints(&err))
+		};
+		let vcds = facts(Source::Vcds, Some("J285"), false, 15, 14);
+		let odis = facts(Source::Odis, Some("Dash Board"), true, 15, 0);
+		assert_eq!(
+			refused(&vcds, Some(&odis)),
+			(
+				why.to_string(),
+				vec![
+					help("refer to it by its request id: `714:IDE00698`"),
+					note("the VCDS installation knows 1 of the 15 recorded units; none is unit 17"),
+					help("or build as ODIS numbers it: `vagcan --source odis dev dash build SIMVIN`"),
+				]
+			)
+		);
+		// Nothing knows which recorded unit it is: no id to offer, and no identification either.
+		let (_, hints) = refused(&vcds, Some(&facts(Source::Odis, None, false, 15, 15)));
+		assert_eq!(hints, [note("the VCDS installation knows 1 of the 15 recorded units; none is unit 17")]);
+		// Nothing recorded: the identification is what pairs it.
+		let (_, hints) = refused(&facts(Source::Vcds, Some("J285"), false, 0, 0), None);
+		assert_eq!(
+			hints,
+			[help("pair each unit's number with its id: `vagcan units --identify` with the car")]
+		);
 	}
 
 	#[test]

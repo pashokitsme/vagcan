@@ -28,5 +28,6 @@ note: adapter from VAGCAN_DEVICE=[PORT]
 
 UNIT  ID   PART        NAME  COMPONENT
 --    713  SIM614000D        SIM ESC
+note: the VCDS installation names none of these units
 
 ```

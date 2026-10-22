@@ -11,6 +11,11 @@
 //! exclusive SQLite transaction, as the VCDS store's migration does) and asks again under it
 //! whether anything is unread: two processes started together read once, and the second finds
 //! the first one's rows.
+//!
+//! **A read that fails is not tried on every run.** Its reason is written beside the cache
+//! (`.odis-read.json`) with the folder's modification time; later runs give that reason without
+//! reading again, until the folder changes — then it is read once more, and says it is a
+//! retry, not a first time.
 
 use std::path::{Path, PathBuf};
 
@@ -31,6 +36,14 @@ impl Part {
 		match self {
 			Part::UnitNames => "unit names",
 			Part::Adaptations => "adaptation channels",
+		}
+	}
+
+	/// Its key in the record of failed reads.
+	fn key(self) -> &'static str {
+		match self {
+			Part::UnitNames => "unit_names",
+			Part::Adaptations => "adaptations",
 		}
 	}
 
@@ -93,14 +106,109 @@ fn ensure_with(store: &Project, part: Part, read: impl Fn(&Path) -> anyhow::Resu
 		if !folder.is_dir() {
 			return Ensured::Gone(folder);
 		}
-		crate::say!("note: reading the {} of the ODIS project {}, the first time only", part.what(), store.id);
+		let changed = changed_at(&folder);
+		let failed = failure(store, part).filter(|f| f.dir == dir);
+		match &failed {
+			// Failed before, and nothing about the folder has changed since: the same answer.
+			Some(f) if f.changed == changed => return Ensured::Failed(f.why.clone()),
+			Some(_) => crate::say!(
+				"note: reading the {} of the ODIS project {} again: its folder changed since the read failed",
+				part.what(),
+				store.id
+			),
+			None => crate::say!("note: reading the {} of the ODIS project {}, the first time only", part.what(), store.id),
+		}
 		crate::note!("  from {}", crate::datadir::tilde(&folder));
 		match read(&folder) {
-			Ok(found) => crate::note!("  {found}"),
-			Err(e) => return Ensured::Failed(format!("{e:#}")),
+			Ok(found) => {
+				crate::note!("  {found}");
+				forget_failure(store, part);
+			}
+			Err(e) => {
+				let why = format!("{e:#}");
+				remember_failure(
+					store,
+					part,
+					Failure {
+						dir,
+						changed,
+						why: why.clone(),
+					},
+				);
+				return Ensured::Failed(why);
+			}
 		}
 	}
 	Ensured::Held
+}
+
+/// One failed read, as `.odis-read.json` keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Failure {
+	/// The folder it was read from, as the cache names it.
+	dir: String,
+	/// The folder's modification time then, in nanoseconds; a read is tried again when it moves.
+	changed: String,
+	why: String,
+}
+
+/// The record of failed reads beside a project's cache.
+fn failures_file(store: &Project) -> PathBuf {
+	store.dir.join(".odis-read.json")
+}
+
+fn failures(store: &Project) -> std::collections::BTreeMap<String, Failure> {
+	std::fs::read_to_string(failures_file(store))
+		.ok()
+		.and_then(|text| serde_json::from_str(&text).ok())
+		.unwrap_or_default()
+}
+
+fn failure(store: &Project, part: Part) -> Option<Failure> {
+	failures(store).remove(part.key())
+}
+
+/// Why `part` of `store` did not read the last time it was tried, while it is still unread.
+pub fn last_failure(store: &Project, part: Part) -> Option<String> {
+	failure(store, part).map(|f| f.why)
+}
+
+/// Written whole; a record that cannot be written costs only a read tried again next time.
+fn write_failures(store: &Project, all: &std::collections::BTreeMap<String, Failure>) {
+	let path = failures_file(store);
+	match all.is_empty() {
+		true => {
+			let _ = std::fs::remove_file(path);
+		}
+		false => {
+			if let Ok(text) = serde_json::to_string_pretty(all) {
+				let _ = std::fs::write(path, text);
+			}
+		}
+	}
+}
+
+fn remember_failure(store: &Project, part: Part, failed: Failure) {
+	let mut all = failures(store);
+	all.insert(part.key().to_string(), failed);
+	write_failures(store, &all);
+}
+
+fn forget_failure(store: &Project, part: Part) {
+	let mut all = failures(store);
+	if all.remove(part.key()).is_some() {
+		write_failures(store, &all);
+	}
+}
+
+/// A folder's modification time, in nanoseconds since the epoch; empty when it will not say.
+fn changed_at(folder: &Path) -> String {
+	std::fs::metadata(folder)
+		.and_then(|m| m.modified())
+		.ok()
+		.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+		.map(|d| d.as_nanos().to_string())
+		.unwrap_or_default()
 }
 
 /// Open the project at `dir` and write `part` of it into `store`'s cache, under the folder
@@ -236,6 +344,35 @@ mod tests {
 			1,
 			"still unread"
 		);
+	}
+
+	/// A read that fails is tried once, and then not again until its folder changes — and the
+	/// retry is not a "first time".
+	#[test]
+	fn a_read_that_failed_is_not_tried_again_until_the_folder_changes() {
+		let here = tempfile::tempdir().unwrap();
+		let folder = here.path().join("SIM00-odis");
+		std::fs::create_dir_all(&folder).unwrap();
+		let store = unread_project(here.path(), &folder);
+		let calls = AtomicUsize::new(0);
+		let failing = |_: &Path| -> anyhow::Result<String> {
+			calls.fetch_add(1, Ordering::SeqCst);
+			anyhow::bail!("no project here")
+		};
+		let failed = Ensured::Failed("no project here".into());
+		assert_eq!(ensure_with(&store, Part::UnitNames, failing), failed);
+		assert_eq!(ensure_with(&store, Part::UnitNames, failing), failed, "the same reason, given again");
+		assert_eq!(calls.load(Ordering::SeqCst), 1, "not read again");
+		assert_eq!(last_failure(&store, Part::UnitNames).as_deref(), Some("no project here"));
+		// The folder changes: one more read.
+		std::thread::sleep(std::time::Duration::from_millis(10));
+		std::fs::write(folder.join("AStringData.data"), b"").unwrap();
+		assert_eq!(ensure_with(&store, Part::UnitNames, failing), failed);
+		assert_eq!(calls.load(Ordering::SeqCst), 2);
+		// And a read that works clears the record.
+		std::fs::write(folder.join("UStringData.data"), b"").unwrap();
+		assert_eq!(ensure_with(&store, Part::UnitNames, reader(&store, &calls)), Ensured::Held);
+		assert_eq!(last_failure(&store, Part::UnitNames), None);
 	}
 
 	#[test]

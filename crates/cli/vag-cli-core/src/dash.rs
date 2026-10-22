@@ -203,6 +203,15 @@ pub enum Reference {
 	Field { request: u16, did: u16, bit_offset: u32 },
 }
 
+/// Why a reference by number does not resolve, short: what the address layer knows of it, and
+/// none of its prose about what to type — the refusal adds that, true to this run.
+fn unpaired_why(number: u8) -> String {
+	match address::name_for_short(number) {
+		Some(name) => format!("control unit {number:02X} ({name}) has no known request id"),
+		None => format!("no control unit is numbered {number:02X} in this run"),
+	}
+}
+
 impl Reference {
 	/// Parse the spelling the input uses. The unit part accepts whatever
 	/// [`vag_uds_client::address::parse`] accepts.
@@ -211,7 +220,19 @@ impl Reference {
 		let (unit, rest) = text
 			.split_once(':')
 			.ok_or_else(|| Error::Parse(format!("{text:?}: a channel is <unit>:<text id> or <unit>:<DID>[@<bit>]")))?;
-		let request = address::parse(unit).map_err(Error::Parse)?.request;
+		let request = address::parse(unit)
+			.map_err(|why| {
+				let number = (unit.trim().len() < 3).then(|| u8::from_str_radix(unit.trim(), 16).ok()).flatten();
+				match number.filter(|n| address::request_for_short(*n).is_none()) {
+					Some(number) => Error::Unpaired {
+						number,
+						rest: rest.trim().to_string(),
+						why: format!("{text}: {}", unpaired_why(number)),
+					},
+					None => Error::Parse(why),
+				}
+			})?
+			.request;
 		let rest = rest.trim();
 		if rest.is_empty() {
 			return Err(Error::Parse(format!("{text:?}: nothing after the unit")));
@@ -1061,6 +1082,13 @@ fn parse_stopwatch(
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
 	Parse(String),
+	/// A reference by a unit number nothing pairs with a request id in this run: the number,
+	/// what follows the colon, and the reference's own error.
+	Unpaired {
+		number: u8,
+		rest: String,
+		why: String,
+	},
 	/// The car's record has nothing about this unit — it was not among the
 	/// units that answered the command that wrote it.
 	UnknownUnit(u16),
@@ -1123,7 +1151,7 @@ pub enum Error {
 impl fmt::Display for Error {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
-			Error::Parse(why) => write!(f, "{why}"),
+			Error::Parse(why) | Error::Unpaired { why, .. } => write!(f, "{why}"),
 			Error::UnknownUnit(r) => write!(
 				f,
 				"unit {r:03X} is not in the car's record of its units — it has not said what it is, so nothing can be resolved for it; \
@@ -3494,10 +3522,14 @@ pub fn read_inputs(vin: &str, input: Option<&Path>) -> anyhow::Result<Inputs> {
 /// `dev dash build` refuse the same text with the same words.
 pub fn inputs_from_text(vin: &str, text: &str, input_path: PathBuf) -> anyhow::Result<Inputs> {
 	let dir = crate::datadir::dash_dir(vin)?;
-	// The run's numbering, so `17:2203` is the unit the run's source numbers 17 — from what the
-	// source holds, reading nothing: the firmware's build script builds through here.
-	crate::unit_names::install_held();
-	let parsed = parse_input(text)?;
+	// The run's numbering, so `17:2203` is the unit the run's source numbers 17 — an ODIS
+	// project's names read the first time if they never were: the firmware's build script
+	// builds through here too, and gets the same plan.
+	crate::unit_names::install_blocking();
+	let parsed = parse_input(text).map_err(|e| match e {
+		Error::Unpaired { number, rest, why } => crate::unit_names::dash_refusal(vin, number, &rest, &why),
+		e => e.into(),
+	})?;
 	if !parsed.vin.eq_ignore_ascii_case(vin.trim()) {
 		anyhow::bail!("{} is for VIN {} but the build asked for {vin}", input_path.display(), parsed.vin);
 	}
