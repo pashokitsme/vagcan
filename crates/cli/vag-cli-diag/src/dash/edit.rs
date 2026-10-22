@@ -16,7 +16,9 @@
 //! `127.0.0.1` only, for `GET` and `HEAD` of a file directly in that directory; `layout.json`
 //! is answered from the file as it is at that moment. The one request that writes is
 //! `POST /save`, taken only from this server's own page: its `Host`, its `Origin`, and the
-//! token this run made, which only `layout.json` carries ([`Editor::respond`]). The page asks
+//! token this run made ([`Editor::respond`]). The token is in the fragment of the address the
+//! browser is opened with (`/#t=<token>`), which a browser never sends to a server: the page
+//! reads it there, and no request this server answers carries it back to anyone. The page asks
 //! for nothing but these: its Content-Security-Policy says so to the browser too.
 
 use std::collections::BTreeMap;
@@ -97,11 +99,12 @@ pub async fn run(vin: &str) -> Result<()> {
 		Made::Kept(n) => vag_cli_core::note!("channels  {n}, kept from the last run: {}", dir.join("channels.json").display()),
 		Made::Built(n, numeric) => vag_cli_core::note!("channels  {n}, {numeric} of them numbers: {}", dir.join("channels.json").display()),
 	}
+	let token = token()?;
 	let editor = Arc::new(Editor::new(
 		dir.clone(),
 		vin,
 		input_path.clone(),
-		token()?,
+		token.clone(),
 		names(&dir.join("channels.json")),
 		CarBuild {
 			vin: vin.to_string(),
@@ -113,7 +116,9 @@ pub async fn run(vin: &str) -> Result<()> {
 		.await
 		.context("opening a port on 127.0.0.1")?;
 	let port = listener.local_addr()?.port();
-	let url = format!("http://127.0.0.1:{port}/");
+	// The token in the fragment: the browser keeps it and never sends it, so only whoever has
+	// this address — the person at this terminal, and the browser it opens — can save.
+	let url = address(port, &token);
 	// The address is what the command makes: data. How to use it is a note.
 	vag_cli_core::outln!("{url}");
 	vag_cli_core::note!("serving   {} on 127.0.0.1 only", dir.display());
@@ -124,6 +129,12 @@ pub async fn run(vin: &str) -> Result<()> {
 	vag_cli_core::say!("Ctrl-C ends it");
 	vag_cli_core::desktop::open(&url);
 	serve(listener, editor).await
+}
+
+/// The page's address: this server, and the run's token in the fragment — the part of an address
+/// a browser keeps to itself.
+fn address(port: u16, token: &str) -> String {
+	format!("http://127.0.0.1:{port}/#t={token}")
 }
 
 /// `dash.toml` at `path` as it is now — its bytes, or `None` when there is none — and parsed,
@@ -154,7 +165,7 @@ pub fn file_fingerprint(bytes: Option<&[u8]>) -> String {
 }
 
 /// The token this run's page sends with a save: 128 bits from the system's random source, as
-/// hex. Never printed: only `layout.json`, which only this server's own page can read, holds it.
+/// hex. Printed once, in the address on stdout; never in a log line, a file or an answer.
 fn token() -> Result<String> {
 	let mut bytes = [0u8; 16];
 	getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("no random bytes from the system for the editor's save token: {e}"))?;
@@ -331,6 +342,14 @@ pub fn layout(vin: &str, input: Option<&Input>, from_file: bool) -> Value {
 	})
 }
 
+/// `layout.json` of a `dash.toml` — its bytes, or `None` — as parsed: [`layout`] and the
+/// fingerprint a save sends back.
+fn layout_with_fingerprint(vin: &str, bytes: Option<&[u8]>, input: Option<&Input>) -> Value {
+	let mut layout = layout(vin, input, bytes.is_some());
+	layout["fingerprint"] = json!(file_fingerprint(bytes));
+	layout
+}
+
 /// What a save's build made, for the line that says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Saved {
@@ -463,6 +482,9 @@ struct Request<'a> {
 	/// The target without its query.
 	path: &'a str,
 	headers: Vec<(String, &'a str)>,
+	/// A header line that is not `name: value` with a name of token characters — `Content-Length :`
+	/// among them. Such a request is refused whole, never read one way here and another there.
+	malformed: bool,
 }
 
 /// A header sent twice where once is the rule: a request that does it is refused, not read
@@ -474,15 +496,24 @@ impl<'a> Request<'a> {
 		let mut lines = head.split("\r\n");
 		let mut parts = lines.next().unwrap_or_default().split(' ');
 		let (method, target) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
-		let headers = lines
-			.filter_map(|l| l.split_once(':'))
-			.map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim()))
-			.collect();
+		let mut headers = Vec::new();
+		let mut malformed = false;
+		for line in lines.filter(|l| !l.is_empty()) {
+			match line.split_once(':') {
+				// RFC 9110 §5.6.2: a field name is a token, and nothing may stand between it and
+				// the colon (RFC 9112 §5.1).
+				Some((k, v)) if !k.is_empty() && k.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)) => {
+					headers.push((k.to_ascii_lowercase(), v.trim()));
+				}
+				_ => malformed = true,
+			}
+		}
 		Request {
 			method,
 			target,
 			path: target.split(['?', '#']).next().unwrap_or_default(),
 			headers,
+			malformed,
 		}
 	}
 
@@ -503,7 +534,7 @@ impl<'a> Request<'a> {
 
 	/// The body length a save request declares, when it is one this server reads.
 	fn save_length(&self) -> Option<usize> {
-		if self.method != "POST" || self.path != "/save" {
+		if self.malformed || self.method != "POST" || self.path != "/save" {
 			return None;
 		}
 		let length = self.header("content-length").ok()??;
@@ -569,6 +600,12 @@ impl<B: Build> Editor<B> {
 	/// cross-origin preflight fails before a save is sent.
 	pub fn respond(&self, port: u16, head: &str, body: &[u8]) -> Response {
 		let request = Request::parse(head);
+		if request.malformed {
+			return Response {
+				head_only: request.method == "HEAD",
+				..Response::refuse(400, "Bad Request")
+			};
+		}
 		if request.path == "/save" {
 			return match request.method {
 				"POST" => self.post_save(port, &request, body),
@@ -599,20 +636,16 @@ impl<B: Build> Editor<B> {
 		Response { head_only, ..answer }
 	}
 
-	/// `layout.json`: [`layout`] of the file as it is now, with its fingerprint and the token a
-	/// save sends back. Only to this server's own pages: a browser that says the request came
-	/// from another site is refused, though no other site could read the answer anyway.
+	/// `layout.json`: [`layout`] of the file as it is now, with its fingerprint. Only to this
+	/// server's own pages: a browser that says the request came from another site is refused,
+	/// though no other site could read the answer anyway. It holds no token: anything on this
+	/// machine can ask for it.
 	fn layout_now(&self, request: &Request<'_>) -> Response {
 		if !matches!(request.header("sec-fetch-site"), Ok(None | Some("same-origin" | "none"))) {
 			return Response::refuse(403, "Forbidden");
 		}
 		match read_input(&self.vin, &self.input) {
-			Ok((bytes, input)) => {
-				let mut layout = layout(&self.vin, input.as_ref(), bytes.is_some());
-				layout["fingerprint"] = json!(file_fingerprint(bytes.as_deref()));
-				layout["token"] = json!(self.token);
-				Response::json(200, "OK", &layout)
-			}
+			Ok((bytes, input)) => Response::json(200, "OK", &layout_with_fingerprint(&self.vin, bytes.as_deref(), input.as_ref())),
 			Err(e) => Response::said(409, "Conflict", &vag_cli_core::report::render(&e, 0, vag_cli_core::report::Colour::Never)),
 		}
 	}
@@ -662,18 +695,18 @@ impl<B: Build> Editor<B> {
 		self.save(body)
 	}
 
-	/// A save: the page's state checked, made into the file, built, and only then written.
+	/// A save: the page's state checked, made into the file, built, and only then written —
+	/// and not over a file that changed on disk at any point before the write.
 	fn save(&self, body: &[u8]) -> Response {
+		use vag_cli_core::report::Advice as _;
 		let _one = self.saving.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 		let shown = vag_cli_core::datadir::tilde(&self.input);
+		let render = |err: &anyhow::Error| vag_cli_core::report::render(err, 0, vag_cli_core::report::Colour::Never);
 		let refused = |status: u16, reason: &'static str, err: anyhow::Error| {
 			vag_cli_core::say!("error: {shown} not saved: {err}");
-			Response::said(
-				status,
-				reason,
-				&vag_cli_core::report::render(&err, 0, vag_cli_core::report::Colour::Never),
-			)
+			Response::said(status, reason, &render(&err))
 		};
+		let changed = || anyhow::anyhow!("the file changed on disk since the page read it").help("reload the page: it opens on the file as it is now");
 		let body: save::Body = match serde_json::from_slice(body) {
 			Ok(body) => body,
 			Err(e) => {
@@ -684,65 +717,65 @@ impl<B: Build> Editor<B> {
 				);
 			}
 		};
-		let current = match std::fs::read(&self.input) {
-			Ok(bytes) => Some(bytes),
-			Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-			Err(e) => return refused(500, "Internal Server Error", anyhow::Error::new(e).context(format!("reading {shown}"))),
+		let current = match read_input(&self.vin, &self.input) {
+			Ok(current) => current,
+			Err(e) => return refused(409, "Conflict", e.help("reload the page: it opens on the file as it is now")),
 		};
-		if body.fingerprint != file_fingerprint(current.as_deref()) {
-			use vag_cli_core::report::Advice as _;
-			let err = anyhow::anyhow!("the file changed on disk since the page read it").help("reload the page: it opens on the file as it is now");
-			return refused(409, "Conflict", err);
+		let fingerprint = body.fingerprint.clone();
+		if fingerprint != file_fingerprint(current.0.as_deref()) {
+			return refused(409, "Conflict", changed());
 		}
-		let current = match current.map(String::from_utf8).transpose() {
-			Ok(text) => text,
-			Err(_) => return refused(500, "Internal Server Error", anyhow::anyhow!("{shown} is not UTF-8 text")),
-		};
-		let wanted = match body.check(current.as_deref().map_or(0, save::pages_in)) {
+		let (bytes, input) = current;
+		// `read_input` took the bytes as UTF-8 text, or refused them.
+		let text = bytes.as_deref().map(|b| String::from_utf8_lossy(b).into_owned());
+		let wanted = match body.check(input.as_ref()) {
 			Ok(wanted) => wanted,
 			Err(why) => return refused(400, "Bad Request", anyhow::anyhow!(why)),
 		};
-		let text = match save::edit(current.as_deref(), &self.vin, &wanted, |r| self.names.get(&r.to_string()).cloned()) {
-			Ok(text) => text,
+		let new = match save::edit(text.as_deref(), &self.vin, &wanted, |r| self.names.get(&r.to_string()).cloned()) {
+			Ok(new) => new,
 			Err(why) => return refused(500, "Internal Server Error", anyhow::anyhow!(why)),
 		};
-		let checked = match self.build.check(&text) {
+		let checked = match self.build.check(&new) {
 			Ok(checked) => checked,
 			Err(err) => return refused(422, "Unprocessable Content", err),
 		};
-		if let Err(err) = vag_cli_core::datadir::replace_file(&self.input, text.as_bytes()) {
+		// The build takes a moment; a hand edit saved meanwhile is the file now, not this text.
+		let now = match std::fs::read(&self.input) {
+			Ok(now) => Some(now),
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+			Err(e) => return refused(500, "Internal Server Error", anyhow::Error::new(e).context(format!("reading {shown}"))),
+		};
+		if file_fingerprint(now.as_deref()) != fingerprint {
+			return refused(409, "Conflict", changed());
+		}
+		if let Err(err) = vag_cli_core::datadir::replace_through_links(&self.input, new.as_bytes()) {
 			return refused(500, "Internal Server Error", err);
 		}
-		let saved = match self.build.write(checked) {
-			Ok(saved) => saved,
+		// The layout of the text written, not of the file read again: what the page saved is what
+		// its next save is checked against.
+		let layout = dash::parse_input(&new).map_or(Value::Null, |input| {
+			layout_with_fingerprint(&self.vin, Some(new.as_bytes()), Some(&input))
+		});
+		match self.build.write(checked) {
+			Ok(saved) => {
+				vag_cli_core::say!("{}", facts([format!("saved {shown}"), format!("plan {:016x}", saved.plan)]));
+				Response::json(
+					200,
+					"OK",
+					&json!({ "saved": facts(["saved".to_string(), saved.facts()]), "layout": layout }),
+				)
+			}
 			Err(err) => {
-				use vag_cli_core::report::Advice as _;
+				// `dash.toml` is saved: the page gets its layout, so its next save is not refused as
+				// stale, and the plan is what the reply is about.
 				let err = err
 					.context(format!("{shown} is saved, and its plan is not"))
 					.help(format!("run `vagcan dev dash build {}`", self.vin));
-				vag_cli_core::say!("error: {err}");
-				return Response::said(
-					500,
-					"Internal Server Error",
-					&vag_cli_core::report::render(&err, 0, vag_cli_core::report::Colour::Never),
-				);
+				vag_cli_core::say!("error: {err:#}");
+				Response::json(500, "Internal Server Error", &json!({ "error": render(&err), "layout": layout }))
 			}
-		};
-		vag_cli_core::say!("{}", facts([format!("saved {shown}"), format!("plan {:016x}", saved.plan)]));
-		let layout = match read_input(&self.vin, &self.input) {
-			Ok((bytes, input)) => {
-				let mut layout = layout(&self.vin, input.as_ref(), bytes.is_some());
-				layout["fingerprint"] = json!(file_fingerprint(bytes.as_deref()));
-				layout["token"] = json!(self.token);
-				layout
-			}
-			Err(_) => Value::Null,
-		};
-		Response::json(
-			200,
-			"OK",
-			&json!({ "saved": facts(["saved".to_string(), saved.facts()]), "layout": layout }),
-		)
+		}
 	}
 }
 
@@ -784,6 +817,9 @@ const MAX_HEAD: usize = 16 * 1024;
 
 /// How long one connection may take to send its request, head and body.
 const READ_FOR: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long one connection may take to take the answer.
+const WRITE_FOR: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// One request off `stream`: its head, and the body [`body_length`] says to read. `None` for
 /// a head longer than [`MAX_HEAD`]; an error for a connection that closed or went quiet first.
@@ -838,8 +874,12 @@ pub async fn serve<B: Build>(listener: tokio::net::TcpListener, editor: Arc<Edit
 				_ => return,
 			};
 			vag_cli_core::wire!("{line} → {} {}", response.status, response.reason);
-			let _ = stream.write_all(&response.bytes()).await;
-			let _ = stream.shutdown().await;
+			// A client that stops reading does not hold the task.
+			let _ = tokio::time::timeout(WRITE_FOR, async {
+				stream.write_all(&response.bytes()).await?;
+				stream.shutdown().await
+			})
+			.await;
 		});
 	}
 }
@@ -857,6 +897,14 @@ mod tests {
 	#[derive(Default)]
 	struct Stub {
 		refuse: Option<&'static str>,
+		/// The editor's `dash.toml`, for the two below.
+		input: PathBuf,
+		/// Written over `dash.toml` while the build checks: a hand edit saved at that moment.
+		edit_during_check: Option<&'static str>,
+		/// Written over `dash.toml` while the plan is written, after the save replaced it.
+		edit_during_write: Option<&'static str>,
+		/// The plan's write fails.
+		fail_write: bool,
 		wrote: std::sync::Mutex<Vec<String>>,
 	}
 
@@ -866,6 +914,9 @@ mod tests {
 		fn check(&self, text: &str) -> Result<String> {
 			use vag_cli_core::report::Advice as _;
 			dash::parse_input(text)?;
+			if let Some(edit) = self.edit_during_check {
+				std::fs::write(&self.input, edit).unwrap();
+			}
 			match self.refuse {
 				Some(why) => Err(anyhow::anyhow!(why).help("write it another way")),
 				None => Ok(text.to_string()),
@@ -873,6 +924,12 @@ mod tests {
 		}
 
 		fn write(&self, text: String) -> Result<Saved> {
+			if let Some(edit) = self.edit_during_write {
+				std::fs::write(&self.input, edit).unwrap();
+			}
+			if self.fail_write {
+				anyhow::bail!("writing plan.rs: no space left on device");
+			}
 			let input = dash::parse_input(&text)?;
 			self.wrote.lock().unwrap().push(text);
 			Ok(Saved {
@@ -893,7 +950,7 @@ mod tests {
 		editor: Editor<Stub>,
 	}
 
-	fn served_with(build: Stub, file: Option<&str>) -> Served {
+	fn served_with(mut build: Stub, file: Option<&str>) -> Served {
 		let root = tempfile::tempdir().unwrap();
 		let dir = root.path().join("editor");
 		std::fs::create_dir(&dir).unwrap();
@@ -910,6 +967,7 @@ mod tests {
 			std::fs::write(&input, text).unwrap();
 		}
 		let names = BTreeMap::from([("01:IDE00002".to_string(), "Boost, kPa".to_string())]);
+		build.input = input.clone();
 		let editor = Editor::new(dir.clone(), VIN, input.clone(), TOKEN.to_string(), names, build);
 		Served {
 			_root: root,
@@ -1126,11 +1184,13 @@ mod tests {
 	}
 
 	#[test]
-	fn the_layout_is_the_file_as_it_is_now_with_its_fingerprint_and_the_token() {
+	fn the_layout_is_the_file_as_it_is_now_with_its_fingerprint_and_no_token() {
 		let s = served();
 		let layout = layout_of(&s);
 		assert_eq!(layout["fingerprint"], file_fingerprint(Some(FILE.as_bytes())));
-		assert_eq!(layout["token"], TOKEN);
+		// Anything on this machine can ask for it: the token is in the address's fragment only.
+		assert_eq!(layout["token"], Value::Null);
+		assert!(!String::from_utf8_lossy(&get(&s, "/layout.json").body).contains(TOKEN));
 		assert_eq!(layout["pages"][0]["from"], 0);
 		// Changed by hand: the next read says so.
 		std::fs::write(&s.input, FILE.replace("110", "115")).unwrap();
@@ -1141,7 +1201,7 @@ mod tests {
 		assert_eq!(r.status, 409);
 		let said: Value = serde_json::from_slice(&r.body).unwrap();
 		assert!(said["error"].as_str().unwrap().starts_with("error: "), "{said}");
-		// A browser that says another site asked is refused the token.
+		// A browser that says another site asked is refused.
 		std::fs::write(&s.input, FILE).unwrap();
 		let r = s.editor.respond(
 			PORT,
@@ -1183,7 +1243,7 @@ mod tests {
 			"the plan of the file written"
 		);
 		assert_eq!(said["layout"]["fingerprint"], file_fingerprint(Some(text.as_bytes())));
-		assert_eq!(said["layout"]["token"], TOKEN);
+		assert_eq!(said["layout"]["token"], Value::Null, "the page keeps its token from the address");
 		assert_eq!(said["layout"]["pages"][0]["title"], "MAIN");
 		// The page saves again from the layout it was given.
 		let again = post(&s, &body(&said["layout"]).to_string(), &[]);
@@ -1425,6 +1485,134 @@ mod tests {
 	}
 
 	#[test]
+	fn a_hand_edit_saved_while_the_build_runs_is_kept() {
+		let edit = "vin = \"TESTVIN0000000001\"\n# edited by hand meanwhile\n[[channel]]\nref = \"01:IDE00001\"\n[[page]]\nkind = \"values\"\ncells = [\"01:IDE00001\"]\n";
+		let s = served_with(
+			Stub {
+				edit_during_check: Some(edit),
+				..Stub::default()
+			},
+			Some(FILE),
+		);
+		let r = post(&s, &body(&layout_of(&s)).to_string(), &[]);
+		assert_eq!(r.status, 409, "{}", String::from_utf8_lossy(&r.body));
+		assert_eq!(std::fs::read_to_string(&s.input).unwrap(), edit, "the hand edit, not the page's");
+		assert!(s.editor.build.wrote.lock().unwrap().is_empty(), "no plan of a file not written");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn a_linked_dash_toml_is_saved_where_it_points_with_its_permissions() {
+		use std::os::unix::fs::PermissionsExt as _;
+		let s = served();
+		let target = s.dir.parent().unwrap().join("kept-elsewhere.toml");
+		std::fs::rename(&s.input, &target).unwrap();
+		std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+		std::os::unix::fs::symlink(&target, &s.input).unwrap();
+		let r = post(&s, &body(&layout_of(&s)).to_string(), &[]);
+		assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+		assert!(std::fs::symlink_metadata(&s.input).unwrap().file_type().is_symlink(), "still a link");
+		assert!(std::fs::read_to_string(&target).unwrap().contains("title = \"MAIN\""), "the target saved");
+		assert_eq!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o600);
+	}
+
+	#[test]
+	fn a_page_over_the_board_s_limits_is_shown_whole_and_refused_not_cut() {
+		let cells = ["01:IDE00001", "01:IDE00002", "01:IDE00003", "01:IDE00004", "01:IDE00005"];
+		let mut file = String::from("vin = \"TESTVIN0000000001\"\n");
+		for c in cells {
+			file.push_str(&format!("[[channel]]\nref = \"{c}\"\n"));
+		}
+		file.push_str(&format!("[[page]]\nkind = \"values\"\ncells = {cells:?}\n"));
+		let s = served_with(Stub::default(), Some(&file));
+		let layout = layout_of(&s);
+		assert_eq!(layout["pages"][0]["cells"], json!(cells), "all five, as the file has them");
+		// Saved as it opened: refused with the limit's words, and the file keeps all five.
+		let body = json!({
+			"fingerprint": layout["fingerprint"],
+			"pages": [{"kind": "values", "title": "", "cells": cells, "volts": true, "from": 0}],
+			"labels": {"01:IDE00001": "WATER"},
+		});
+		let r = post(&s, &body.to_string(), &[]);
+		assert_eq!(r.status, 400);
+		let said: Value = serde_json::from_slice(&r.body).unwrap();
+		assert!(
+			said["error"].as_str().unwrap().contains("5 cells, and a values page holds at most 4"),
+			"{said}"
+		);
+		assert_eq!(std::fs::read_to_string(&s.input).unwrap(), file);
+	}
+
+	#[test]
+	fn the_answer_is_the_file_written_not_the_file_read_again() {
+		let later = "vin = \"TESTVIN0000000001\"\n# a hand edit after the save\n[[channel]]\nref = \"01:IDE00001\"\n[[page]]\nkind = \"values\"\ncells = [\"01:IDE00001\"]\n";
+		let s = served_with(
+			Stub {
+				edit_during_write: Some(later),
+				..Stub::default()
+			},
+			Some(FILE),
+		);
+		let r = post(&s, &body(&layout_of(&s)).to_string(), &[]);
+		assert_eq!(r.status, 200);
+		let said: Value = serde_json::from_slice(&r.body).unwrap();
+		let written = s.editor.build.wrote.lock().unwrap()[0].clone();
+		assert_eq!(said["layout"]["fingerprint"], file_fingerprint(Some(written.as_bytes())));
+		assert_eq!(said["layout"]["pages"][0]["title"], "MAIN");
+		// So the page's next save sees the hand edit, and is refused.
+		assert_eq!(post(&s, &body(&said["layout"]).to_string(), &[]).status, 409);
+		assert_eq!(std::fs::read_to_string(&s.input).unwrap(), later);
+	}
+
+	#[test]
+	fn a_plan_not_written_still_hands_the_page_the_saved_file() {
+		let s = served_with(
+			Stub {
+				fail_write: true,
+				..Stub::default()
+			},
+			Some(FILE),
+		);
+		let r = post(&s, &body(&layout_of(&s)).to_string(), &[]);
+		assert_eq!(r.status, 500);
+		let said: Value = serde_json::from_slice(&r.body).unwrap();
+		let text = std::fs::read_to_string(&s.input).unwrap();
+		assert!(text.contains("title = \"MAIN\""), "dash.toml is saved");
+		assert_eq!(said["layout"]["fingerprint"], file_fingerprint(Some(text.as_bytes())));
+		let error = said["error"].as_str().unwrap();
+		assert!(error.contains("is saved, and its plan is not"), "{error}");
+		assert!(error.contains("help: run `vagcan dev dash build TESTVIN0000000001`"), "{error}");
+	}
+
+	#[test]
+	fn a_header_line_that_is_not_name_colon_value_is_refused() {
+		let s = served();
+		let good = body(&layout_of(&s)).to_string();
+		for bad in [("Content-Length :", "Content-Length"), ("Origin :", "Origin"), (" Host:", "Host")] {
+			let head = format!(
+				"POST /save HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\nOrigin: http://127.0.0.1:{PORT}\r\nX-Vagcan-Token: {TOKEN}\r\n\
+				 Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+				good.len()
+			)
+			.replace(&format!("{}:", bad.1), bad.0);
+			assert_eq!(s.editor.respond(PORT, &head, good.as_bytes()).status, 400, "{:?}", bad.0);
+			assert_eq!(body_length(&head), 0, "{:?}: no body read for it", bad.0);
+		}
+		let r = s
+			.editor
+			.respond(PORT, &format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\nno colon here\r\n\r\n"), &[]);
+		assert_eq!(r.status, 400);
+	}
+
+	#[test]
+	fn the_address_carries_the_token_in_its_fragment_only() {
+		let url = address(41234, TOKEN);
+		assert_eq!(url, format!("http://127.0.0.1:41234/#t={TOKEN}"));
+		// What a browser sends for it: the path, never the fragment.
+		assert_eq!(url.split_once('#').unwrap().0, "http://127.0.0.1:41234/");
+	}
+
+	#[test]
 	fn the_names_for_a_new_channel_s_comment_come_from_the_catalog() {
 		let root = tempfile::tempdir().unwrap();
 		let path = root.path().join("channels.json");
@@ -1453,7 +1641,10 @@ mod tests {
 		// The one request that writes: to this server's `save`, with the token, as JSON.
 		assert_eq!(PAGE.matches("fetch(").count(), 4, "three files and the save");
 		assert!(PAGE.contains("fetch(\"save\", {"), "it saves to save");
-		assert!(PAGE.contains("\"X-Vagcan-Token\": LAYOUT.token"));
+		assert!(PAGE.contains("\"X-Vagcan-Token\": TOKEN"));
+		// The token comes from the address's fragment, which the browser never sends.
+		assert!(PAGE.contains("new URLSearchParams(location.hash.slice(1)).get(\"t\")"));
+		assert!(!PAGE.contains("LAYOUT.token"));
 		assert!(PAGE.contains("\"Content-Type\": \"application/json\""));
 		// Not even a `/favicon.ico` the server has no file for.
 		assert!(PAGE.contains("<link rel=\"icon\" href=\"data:,\">"));

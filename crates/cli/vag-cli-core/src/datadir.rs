@@ -326,6 +326,52 @@ pub fn replace_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 	written
 }
 
+/// [`replace_file`] for a file a person keeps — `dash.toml`, which `dev dash edit` saves: one
+/// that is a link is replaced where it points, the link left as it is; the file keeps its
+/// permissions; and its bytes are on disk before the new name takes over.
+///
+/// A rename over a link replaces the link with a plain file and leaves its target with the old
+/// text, so the target is resolved first and the temporary file is staged beside it, in the
+/// directory the rename happens in.
+pub fn replace_through_links(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+	use anyhow::Context as _;
+	use std::io::Write as _;
+	static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+	let target = match std::fs::canonicalize(path) {
+		Ok(target) => target,
+		// A link to a file not made yet is followed to where the file goes.
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => match std::fs::read_link(path) {
+			Ok(to) => path.parent().unwrap_or(Path::new(".")).join(to),
+			Err(_) => path.to_path_buf(),
+		},
+		Err(e) => return Err(e).with_context(|| format!("resolving {}", path.display())),
+	};
+	let dir = target.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+	std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+	let kept = std::fs::metadata(&target).ok().map(|m| m.permissions());
+	let name = target.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+	let temporary = dir.join(format!(
+		".{name}.{}.{}.tmp",
+		std::process::id(),
+		COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+	));
+	let written = (|| {
+		let mut file = std::fs::File::create(&temporary).with_context(|| format!("creating {}", temporary.display()))?;
+		file.write_all(bytes).with_context(|| format!("writing {}", temporary.display()))?;
+		if let Some(permissions) = kept {
+			file
+				.set_permissions(permissions)
+				.with_context(|| format!("setting the permissions of {}", temporary.display()))?;
+		}
+		file.sync_all().with_context(|| format!("writing {} to disk", temporary.display()))?;
+		std::fs::rename(&temporary, &target).with_context(|| format!("replacing {}", target.display()))
+	})();
+	if written.is_err() {
+		let _ = std::fs::remove_file(&temporary);
+	}
+	written
+}
+
 /// Copy a file into place in one step, or leave the destination as it was.
 ///
 /// `setup`'s step 1 copies the `.rod` files into the shared pool, and skips a
@@ -744,5 +790,39 @@ mod tests {
 		assert_eq!(remove_stale_copies(&dir.path().join("nowhere")), 0, "no pool is nothing to sweep");
 		// The name a real copy stages under is one this recognises.
 		assert!(is_stale_copy(&format!(".EV_X.rod.{}.copying", std::process::id())));
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn a_file_kept_by_hand_is_replaced_through_its_link_with_its_permissions() {
+		use std::os::unix::fs::PermissionsExt as _;
+		let here = tempfile::tempdir().unwrap();
+		let target = here.path().join("elsewhere").join("dash.toml");
+		std::fs::create_dir(target.parent().unwrap()).unwrap();
+		std::fs::write(&target, "old").unwrap();
+		std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+		let link = here.path().join("dash.toml");
+		std::os::unix::fs::symlink(&target, &link).unwrap();
+		replace_through_links(&link, b"new").unwrap();
+		assert!(
+			std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+			"the link stays a link"
+		);
+		assert_eq!(std::fs::read_to_string(&target).unwrap(), "new", "its target holds the new text");
+		assert_eq!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o600);
+		let left: Vec<_> = std::fs::read_dir(target.parent().unwrap())
+			.unwrap()
+			.flatten()
+			.map(|e| e.file_name())
+			.collect();
+		assert_eq!(left, ["dash.toml"], "no temporary file left behind");
+		// A plain file, and one not there yet.
+		let plain = here.path().join("plain.toml");
+		std::fs::write(&plain, "old").unwrap();
+		std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o640)).unwrap();
+		replace_through_links(&plain, b"new").unwrap();
+		assert_eq!(std::fs::metadata(&plain).unwrap().permissions().mode() & 0o777, 0o640);
+		replace_through_links(&here.path().join("fresh.toml"), b"made").unwrap();
+		assert_eq!(std::fs::read_to_string(here.path().join("fresh.toml")).unwrap(), "made");
 	}
 }

@@ -187,6 +187,9 @@ let MAX_PAGES = 8, MAX_CELLS = 4;
 const SHOWN_CARDS = 150, LABEL_FITS = 10;
 
 let state = { pages: [], labels: {}, decimals: {} };
+// The key a save sends: in the fragment of the address `vagcan dev dash edit` opened, which the
+// browser never sends to any server.
+const TOKEN = new URLSearchParams(location.hash.slice(1)).get("t") || "";
 let sel = 0, selCol = -1, block = "all";
 const $ = id => document.getElementById(id);
 function page() { return state.pages[sel]; }
@@ -395,6 +398,7 @@ function renderUnder(st) {
   }
   const notes = [];
   let warn = false;
+  if (p.kind === "values" && p.cells.length > MAX_CELLS) { warn = true; notes.push(`This page has ${p.cells.length} cells and the board shows ${MAX_CELLS}: the build refuses it. Take a cell off.`); }
   if (st.voltsDup) notes.push("The voltage is a cell on this page: the strip does not show it twice.");
   if (p.kind === "chart" && st.title) notes.push("The title is in the strip, so the chart's header has no label.");
   if (!st.shown) notes.push("No strip: no title and no voltage. The page takes all 64 rows.");
@@ -541,38 +545,47 @@ function renderSave() {
   const dirty = isDirty(), d = $("dirty");
   d.textContent = !LAYOUT ? "" : dirty ? "unsaved changes" : LAYOUT.fromFile ? "saved" : "no dash.toml yet";
   d.className = "hint" + (dirty ? " warn" : "");
-  $("save").disabled = saving || !LAYOUT?.token || (!dirty && !!LAYOUT?.fromFile);
+  $("save").disabled = saving || !TOKEN || !LAYOUT || (!dirty && !!LAYOUT.fromFile);
   const used = [];
   for (const p of state.pages) for (const r of onPageRefs(p)) if (!used.some(u => same(u, r))) used.push(r);
   const missing = used.filter(r => chan(r).missing);
+  const over = [];
+  if (state.pages.length > MAX_PAGES) over.push(`${state.pages.length} pages, and the board holds ${MAX_PAGES}`);
+  state.pages.forEach((p, i) => { if (p.kind === "values" && p.cells.length > MAX_CELLS) over.push(`page ${i + 1} has ${p.cells.length} cells, and a page holds ${MAX_CELLS}`); });
   const vin = LAYOUT?.vin || "<VIN>";
   const h = $("export-hint");
-  h.textContent = missing.length
+  h.textContent = !TOKEN && LAYOUT
+    ? `Save needs the address vagcan dev dash edit printed, with its #t= part: open that one.`
+    : over.length
+    ? `More than the board holds, so Save is refused until it fits: ${over.join("; ")}.`
+    : missing.length
     ? `Not among this car's channels, so the build refuses it: ${missing.join(", ")}.`
     : `Save writes ~/.vagcan/dash/${vin}/dash.toml, plan.json and plan.rs once the dash build accepts the pages. A label belongs to the channel, so it is the same on every page. Comments, alarms and everything else in the file stay as they are.`;
-  h.className = "hint" + (missing.length ? " warn" : "");
+  h.className = "hint" + (missing.length || over.length || !TOKEN ? " warn" : "");
 }
 function said(ok, text) { const s = $("said"); s.hidden = !text; s.className = "said " + (ok ? "ok" : "bad"); s.textContent = text || ""; }
 async function save() {
-  if (saving || !LAYOUT?.token) return;
+  if (saving || !TOKEN || !LAYOUT) return;
   saving = true; renderSave();
   try {
     const r = await fetch("save", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Vagcan-Token": LAYOUT.token },
+      headers: { "Content-Type": "application/json", "X-Vagcan-Token": TOKEN },
       body: JSON.stringify(saveRequest()),
     });
     const text = await r.text();
     let answer = null;
     try { answer = JSON.parse(text); } catch { answer = null; }
-    if (r.ok && answer?.layout) {
+    // A reply with a layout means dash.toml was written — the plan too, unless it says not.
+    if (answer?.layout) {
       const keep = sel;
       LAYOUT = answer.layout; adopt(LAYOUT); sel = keep; selCol = -1;
       savedState = JSON.stringify(saveRequest());
-      said(true, answer.saved);
       setStatus(`${LAYOUT.vin} · the pages of its dash.toml`);
       render();
-    } else said(false, answer?.error || text.trim() || `HTTP ${r.status}`);
+    }
+    if (r.ok && answer?.layout) said(true, answer.saved);
+    else said(false, answer?.error || text.trim() || `HTTP ${r.status}`);
   } catch (e) {
     said(false, `error: the editor's server did not answer: ${e?.message || e}\n\nhelp: is \`vagcan dev dash edit\` still running?`);
   } finally { saving = false; renderSave(); }
@@ -596,9 +609,11 @@ function adopt(layout) {
   MAX_PAGES = layout.maxPages || MAX_PAGES;
   MAX_CELLS = layout.maxCells || MAX_CELLS;
   state = {
-    pages: (layout.pages || []).slice(0, MAX_PAGES).map(p => ({
+    // Everything the file has, even past the board's limits: the build refuses that, and
+    // the page says so; a save never drops what nobody touched.
+    pages: (layout.pages || []).map(p => ({
       title: p.title || "", kind: p.kind === "chart" ? "chart" : "values",
-      cells: Array.isArray(p.cells) ? p.cells.slice(0, MAX_CELLS) : [],
+      cells: Array.isArray(p.cells) ? p.cells.slice() : [],
       cell: p.cell || "", min: Number.isFinite(p.min) ? p.min : 0, max: Number.isFinite(p.max) ? p.max : 100,
       volts: p.volts !== false,
       // Which of the file's pages this is: a save keeps that table's comments.

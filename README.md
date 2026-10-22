@@ -396,6 +396,7 @@ To lay out the pages in a browser instead: `vagcan dev dash edit <VIN>`. It open
 - **Save** (Cmd-S or Ctrl-S) builds the plan from the new pages first. A refused build writes nothing; the page shows why.
 - A build that passes writes `dash.toml`, `plan.json` and `plan.rs`. It replaces the `[[page]]` tables, adds a `[[channel]]` for a new channel and changes labels. Comments, alarms and every other line stay as written.
 - A `dash.toml` changed on disk since the page opened is not overwritten: reload the page.
+- Save works from the address the command prints and opens: its `#t=` part is the key.
 - It needs a `vagcan` built after `rustup target add wasm32-unknown-unknown`.
 
 **3. Check it.**

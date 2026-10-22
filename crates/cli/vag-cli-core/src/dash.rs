@@ -3742,14 +3742,26 @@ pub fn write_plan(resolved: Resolved) -> anyhow::Result<Written> {
 	std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 	let json = dir.join("plan.json");
 	let rust = dir.join("plan.rs");
-	std::fs::write(&json, built.plan.to_json()).with_context(|| format!("writing {}", json.display()))?;
-	std::fs::write(&rust, to_rust(&built.plan)).with_context(|| format!("writing {}", rust.display()))?;
+	write_plan_files(&built.plan.vin, (&json, &built.plan.to_json()), (&rust, &to_rust(&built.plan)))?;
 	Ok(Written {
 		built,
 		dir,
 		json,
 		rust,
 		inputs,
+	})
+}
+
+/// `plan.json` and `plan.rs`, both rendered before either is written, each replaced in one step
+/// ([`crate::datadir::replace_file`]): a reader sees an old file or a new one, never half of
+/// one. When the second write fails the first has happened, and the error says the two now
+/// disagree and what writes them again.
+fn write_plan_files(vin: &str, json: (&Path, &str), rust: (&Path, &str)) -> anyhow::Result<()> {
+	use crate::report::Advice as _;
+	crate::datadir::replace_file(json.0, json.1.as_bytes())?;
+	crate::datadir::replace_file(rust.0, rust.1.as_bytes()).map_err(|e| {
+		e.context(format!("{} and {} now disagree", json.0.display(), rust.0.display()))
+			.help(format!("run `vagcan dev dash build {vin}`"))
 	})
 }
 
@@ -7166,5 +7178,21 @@ mod tests {
 			.unwrap_err()
 			.to_string();
 		assert!(why.contains("run `vagcan setup` again"), "{why}");
+	}
+
+	#[test]
+	fn a_plan_written_halfway_says_the_two_files_disagree() {
+		let here = tempfile::tempdir().unwrap();
+		let (json, rust) = (here.path().join("plan.json"), here.path().join("plan.rs"));
+		write_plan_files("TESTVIN0000000001", (&json, "{}"), (&rust, "// plan")).unwrap();
+		assert_eq!(std::fs::read_to_string(&rust).unwrap(), "// plan");
+		// `plan.rs` that cannot be replaced: a directory where the file goes.
+		std::fs::remove_file(&rust).unwrap();
+		std::fs::create_dir(&rust).unwrap();
+		let err = write_plan_files("TESTVIN0000000001", (&json, "{\"new\":1}"), (&rust, "// new")).unwrap_err();
+		let said = crate::report::render(&err, 0, crate::report::Colour::Never);
+		assert!(said.contains("plan.rs now disagree"), "{said}");
+		assert!(said.contains("help: run `vagcan dev dash build TESTVIN0000000001`"), "{said}");
+		assert_eq!(std::fs::read_to_string(&json).unwrap(), "{\"new\":1}");
 	}
 }

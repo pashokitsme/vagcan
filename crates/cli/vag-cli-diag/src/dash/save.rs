@@ -7,7 +7,8 @@
 //! - every `[[page]]`, replaced as a whole, in the editor's order, where the file's first
 //!   `[[page]]` was. A page the editor opened from the file (`from`) keeps that table's own
 //!   comments and every value it did not change; a page taken off goes with its comments.
-//! - `label` and `decimals` of an existing `[[channel]]`, where the editor's differ;
+//! - `label` of an existing `[[channel]]`, where the editor's differs — and `decimals`, which
+//!   the page carries through as the file has them;
 //! - a new `[[channel]]` for each channel a page shows that the file has none for, after the
 //!   last one, with the channel's name and unit of measure in a comment.
 //!
@@ -19,14 +20,18 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, Value};
-use vag_cli_core::dash::Reference;
+use vag_cli_core::dash::{Input, PageInput, Reference};
 
-/// The longest label taken. The board fits ten characters in a cell of a page of four; the
-/// build says what it does with more. This only keeps a request within reason.
-pub const MAX_LABEL: usize = 32;
+/// The longest label or title taken when it is new — the page's own fields hold 16 and 34. A
+/// label or title the file already has is taken as it is: the build sets no length, and a
+/// file it accepts must save.
+pub const MAX_NEW_TEXT: usize = 64;
 
-/// The longest page title taken, for the same reason.
-pub const MAX_TITLE: usize = 64;
+/// The order a person writes a channel's keys in, as far as a save adds any.
+const CHANNEL_KEYS: &[&str] = &["ref", "label", "decimals"];
+
+/// The order a person writes a page's keys in.
+const PAGE_KEYS: &[&str] = &["kind", "title", "cells", "cell", "min", "max", "volts"];
 
 /// A save request as the page sends it.
 #[derive(Debug, Deserialize)]
@@ -104,14 +109,18 @@ impl Page {
 	}
 }
 
-/// Text a person typed, taken when it is short and has no control character in it.
-fn text(what: &str, raw: &str, longest: usize) -> Result<String, String> {
+/// Text a person typed, trimmed: what the file already has (`was`) as it is, and anything
+/// new only when it is short and has no control character in it.
+fn text(what: &str, raw: &str, was: Option<&str>) -> Result<String, String> {
 	let trimmed = raw.trim();
+	if was == Some(trimmed) {
+		return Ok(trimmed.to_string());
+	}
 	if trimmed.chars().any(char::is_control) {
 		return Err(format!("{what} has a control character in it"));
 	}
-	if trimmed.chars().count() > longest {
-		return Err(format!("{what} is longer than {longest} characters"));
+	if trimmed.chars().count() > MAX_NEW_TEXT {
+		return Err(format!("{what} is longer than {MAX_NEW_TEXT} characters"));
 	}
 	Ok(trimmed.to_string())
 }
@@ -121,9 +130,10 @@ fn reference(what: &str, raw: &str) -> Result<Reference, String> {
 }
 
 impl Body {
-	/// The request checked field by field, against a file of `file_pages` pages. The board's
-	/// limits are the renderer's; whether the car has the channels is the build's question.
-	pub fn check(self, file_pages: usize) -> Result<Wanted, String> {
+	/// The request checked field by field, against `file` — the car's `dash.toml` as parsed,
+	/// `None` when there is none. A request over the board's limits (the renderer's) is refused,
+	/// never cut; whether the car has the channels is the build's question.
+	pub fn check(self, file: Option<&Input>) -> Result<Wanted, String> {
 		use vag_dash_render::pages::MAX_PAGES;
 		use vag_dash_render::plan::MAX_VALUE_CELLS;
 		if self.pages.is_empty() {
@@ -132,11 +142,16 @@ impl Body {
 		if self.pages.len() > MAX_PAGES {
 			return Err(format!("{} pages, and the board holds at most {MAX_PAGES}", self.pages.len()));
 		}
+		let file_pages: &[PageInput] = file.map_or(&[], |f| f.pages.as_slice());
+		let file_pages = file_pages.len();
 		let mut pages = Vec::new();
 		let mut taken = vec![false; file_pages];
 		for (i, page) in self.pages.into_iter().enumerate() {
 			let n = i + 1;
-			let title = text(&format!("page {n}'s title"), &page.title, MAX_TITLE)?;
+			let was = page.from.and_then(|from| file?.pages.get(from)).map(|p| match p {
+				PageInput::Values { title, .. } | PageInput::Chart { title, .. } => title.as_str(),
+			});
+			let title = text(&format!("page {n}'s title"), &page.title, was)?;
 			let shows = match page.kind.as_str() {
 				"values" => {
 					if page.cell.is_some() || page.min.is_some() || page.max.is_some() {
@@ -190,7 +205,10 @@ impl Body {
 		let mut labels = BTreeMap::new();
 		for (key, label) in self.labels {
 			let at = reference("a label's channel", &key)?;
-			let label = text(&format!("the label of {at}"), &label, MAX_LABEL)?;
+			let was = file
+				.and_then(|f| f.channels.iter().find(|c| c.reference == at))
+				.and_then(|c| c.label.as_deref());
+			let label = text(&format!("the label of {at}"), &label, was)?;
 			if label.is_empty() {
 				continue;
 			}
@@ -211,15 +229,6 @@ impl Body {
 		}
 		Ok(Wanted { pages, labels, decimals })
 	}
-}
-
-/// How many `[[page]]` tables `text` holds, the indexes a page's `from` counts in.
-pub fn pages_in(text: &str) -> usize {
-	text
-		.parse::<DocumentMut>()
-		.ok()
-		.and_then(|doc| doc.get("page").and_then(Item::as_array_of_tables).map(ArrayOfTables::len))
-		.unwrap_or(0)
 }
 
 /// `current` — the file as it is, or `None` for a car with none yet — with `wanted` in it.
@@ -244,22 +253,20 @@ pub fn edit(current: Option<&str>, vin: &str, wanted: &Wanted, describe: impl Fn
 			let Some(at) = table.get("ref").and_then(Item::as_str).and_then(|r| Reference::parse(r).ok()) else {
 				continue;
 			};
-			let before = keys(table);
 			let label = wanted.labels.get(&at).map(String::as_str);
 			if table.get("label").and_then(Item::as_str).map(str::trim).filter(|l| !l.is_empty()) != label {
 				match label {
-					Some(label) => put(table, "label", label.into()),
+					Some(label) => put(table, "label", label.into(), CHANNEL_KEYS),
 					None => drop(table.remove("label")),
 				}
 			}
 			let decimals = wanted.decimals.get(&at).map(|&d| i64::from(d));
 			if table.get("decimals").and_then(Item::as_integer) != decimals {
 				match decimals {
-					Some(d) => put(table, "decimals", d.into()),
+					Some(d) => put(table, "decimals", d.into(), CHANNEL_KEYS),
 					None => drop(table.remove("decimals")),
 				}
 			}
-			in_order(table, &before, &["ref", "label", "decimals"]);
 			known.push(at);
 		}
 	}
@@ -323,32 +330,26 @@ pub fn edit(current: Option<&str>, vin: &str, wanted: &Wanted, describe: impl Fn
 	Ok(text)
 }
 
-/// The keys of `table`, in its order.
-fn keys(table: &Table) -> Vec<String> {
-	table.iter().map(|(k, _)| k.to_string()).collect()
-}
-
-/// A key the edit added to `table` put where a person writes it, by `order`: what was there
-/// keeps its order and its comments, and a key `order` does not name stays after those it does.
-/// Nothing moves when nothing was added.
-fn in_order(table: &mut Table, before: &[String], order: &[&str]) {
-	if keys(table).iter().all(|k| before.contains(k)) {
+/// `key = new` in `table`. A key it has keeps its place and the comment its old value had. A
+/// key it has not goes right after the last key `order` ranks before it — after `ref` for a
+/// label — and every key that was there keeps its order: nothing of the person's moves.
+fn put(table: &mut Table, key: &str, mut new: Value, order: &[&str]) {
+	if let Some(item) = table.get_mut(key) {
+		if let Some(old) = item.as_value() {
+			*new.decor_mut() = old.decor().clone();
+		}
+		*item = Item::Value(new);
 		return;
 	}
 	let rank = |k: &str| order.iter().position(|o| *o == k).unwrap_or(order.len());
-	table.sort_values_by(|a, _, b, _| rank(a.get()).cmp(&rank(b.get())));
-}
-
-/// `key = new` in `table`, keeping the key's place and the comment the old value had.
-fn put(table: &mut Table, key: &str, mut new: Value) {
-	match table.get_mut(key) {
-		Some(item) => {
-			if let Some(old) = item.as_value() {
-				*new.decor_mut() = old.decor().clone();
-			}
-			*item = Item::Value(new);
+	let keys: Vec<String> = table.iter().map(|(k, _)| k.to_string()).collect();
+	let at = keys.iter().rposition(|k| rank(k) < rank(key)).map_or(0, |i| i + 1);
+	table.insert(key, Item::Value(new));
+	// The keys after that place go behind the new one, each with its own formatting.
+	for k in &keys[at..] {
+		if let Some((k, item)) = table.remove_entry(k) {
+			table.insert_formatted(&k, item);
 		}
-		None => drop(table.insert(key, Item::Value(new))),
 	}
 }
 
@@ -373,18 +374,17 @@ fn reference_at(item: &Item) -> Option<Reference> {
 /// `page` written into `table` — a table from the file, or a new one — touching only what
 /// differs from what it holds.
 fn write_page(table: &mut Table, page: &Page) {
-	let before = keys(table);
 	let kind = match page.shows {
 		Shows::Values(_) => "values",
 		Shows::Chart { .. } => "chart",
 	};
 	if table.get("kind").and_then(Item::as_str) != Some(kind) {
-		put(table, "kind", kind.into());
+		put(table, "kind", kind.into(), PAGE_KEYS);
 	}
 	if table.get("title").and_then(Item::as_str).unwrap_or("").trim() != page.title {
 		match page.title.is_empty() {
 			true => drop(table.remove("title")),
-			false => put(table, "title", page.title.as_str().into()),
+			false => put(table, "title", page.title.as_str().into(), PAGE_KEYS),
 		}
 	}
 	match &page.shows {
@@ -397,17 +397,22 @@ fn write_page(table: &mut Table, page: &Page) {
 				.and_then(Item::as_array)
 				.and_then(|a| a.iter().map(|v| v.as_str().and_then(|r| Reference::parse(r).ok())).collect());
 			if was.as_ref() != Some(cells) {
-				put(table, "cells", Value::Array(cells.iter().map(ToString::to_string).collect::<Array>()));
+				put(
+					table,
+					"cells",
+					Value::Array(cells.iter().map(ToString::to_string).collect::<Array>()),
+					PAGE_KEYS,
+				);
 			}
 		}
 		Shows::Chart { cell, min, max } => {
 			table.remove("cells");
 			if table.get("cell").and_then(reference_at).as_ref() != Some(cell) {
-				put(table, "cell", cell.to_string().into());
+				put(table, "cell", cell.to_string().into(), PAGE_KEYS);
 			}
 			for (key, v) in [("min", *min), ("max", *max)] {
 				if number_at(table, key) != Some(v) {
-					put(table, key, number(v));
+					put(table, key, number(v), PAGE_KEYS);
 				}
 			}
 		}
@@ -415,10 +420,9 @@ fn write_page(table: &mut Table, page: &Page) {
 	if table.get("volts").and_then(Item::as_bool).unwrap_or(true) != page.volts {
 		match page.volts {
 			true => drop(table.remove("volts")),
-			false => put(table, "volts", false.into()),
+			false => put(table, "volts", false.into(), PAGE_KEYS),
 		}
 	}
-	in_order(table, &before, &["kind", "title", "cells", "cell", "min", "max", "volts"]);
 }
 
 #[cfg(test)]
@@ -506,12 +510,13 @@ cruise_off = "off"
 		})
 	}
 
-	fn wanted(body: serde_json::Value, file_pages: usize) -> Result<Wanted, String> {
-		serde_json::from_value::<Body>(body).map_err(|e| e.to_string())?.check(file_pages)
+	fn wanted(body: serde_json::Value, file: Option<&str>) -> Result<Wanted, String> {
+		let file = file.map(|f| vag_cli_core::dash::parse_input(f).unwrap());
+		serde_json::from_value::<Body>(body).map_err(|e| e.to_string())?.check(file.as_ref())
 	}
 
 	fn saved(body: serde_json::Value) -> String {
-		let wanted = wanted(body, pages_in(FILE)).unwrap();
+		let wanted = wanted(body, Some(FILE)).unwrap();
 		edit(Some(FILE), "TESTVIN0000000001", &wanted, |r| Some(format!("Name of {r}, °C"))).unwrap()
 	}
 
@@ -635,7 +640,7 @@ cruise_off = "off"
 			],
 			"labels": {"01:IDE00002": "BOOST"},
 		});
-		let wanted = wanted(body, 0).unwrap();
+		let wanted = wanted(body, None).unwrap();
 		let out = edit(None, "TESTVIN0000000001", &wanted, |r| {
 			(r.to_string() == "01:IDE00001").then(|| "Coolant, °C".to_string())
 		})
@@ -654,7 +659,7 @@ cruise_off = "off"
 		let refused = |change: &dyn Fn(&mut serde_json::Value), why: &str| {
 			let mut body = as_opened();
 			change(&mut body);
-			let said = wanted(body, 2).unwrap_err();
+			let said = wanted(body, Some(FILE)).unwrap_err();
 			assert!(said.contains(why), "{why}: {said}");
 		};
 		refused(&|b| b["pages"] = json!([]), "no page");
@@ -666,10 +671,10 @@ cruise_off = "off"
 		refused(&|b| b["pages"][0]["min"] = json!(1), "a values page has cells");
 		refused(&|b| b["pages"][1]["cells"] = json!([]), "not cells");
 		refused(&|b| b["pages"][0]["title"] = json!("A\nB"), "control character");
-		refused(&|b| b["pages"][0]["title"] = json!("X".repeat(MAX_TITLE + 1)), "longer than");
+		refused(&|b| b["pages"][0]["title"] = json!("X".repeat(MAX_NEW_TEXT + 1)), "longer than");
 		refused(&|b| b["pages"][1]["from"] = json!(0), "two pages come from page 1");
 		refused(&|b| b["pages"][1]["from"] = json!(7), "page 8 of a file with 2");
-		refused(&|b| b["labels"] = json!({"01:IDE00001": "L".repeat(MAX_LABEL + 1)}), "longer than");
+		refused(&|b| b["labels"] = json!({"01:IDE00001": "L".repeat(MAX_NEW_TEXT + 1)}), "longer than");
 		refused(&|b| b["labels"] = json!({"01:IDE00001": "A\u{7}"}), "control character");
 		refused(&|b| b["labels"] = json!({"01:X": "A", "7E0:X": "B"}), "two labels");
 		refused(&|b| b["labels"] = json!({"no unit": "A"}), "a label's channel");
@@ -695,7 +700,7 @@ cruise_off = "off"
 	fn a_name_with_a_line_break_cannot_break_the_file() {
 		let mut body = as_opened();
 		body["pages"][0]["cells"] = json!(["01:IDE00009"]);
-		let wanted = wanted(body, 2).unwrap();
+		let wanted = wanted(body, Some(FILE)).unwrap();
 		let out = edit(Some(FILE), "TESTVIN0000000001", &wanted, |_| Some("two\nlines = 1".to_string())).unwrap();
 		assert!(out.contains("ref = \"01:IDE00009\"   # two lines = 1\n"), "{out}");
 		vag_cli_core::dash::parse_input(&out).unwrap();
@@ -712,7 +717,7 @@ cruise_off = "off"
 				{"kind": "values", "cells": ["01:IDE00002"], "from": 1},
 			],
 		});
-		let wanted = wanted(body, pages_in(file)).unwrap();
+		let wanted = wanted(body, Some(file)).unwrap();
 		let out = edit(Some(file), "TESTVIN0000000001", &wanted, |_| None).unwrap();
 		// The comment above the second channel stays with that channel, after the pages.
 		assert_eq!(
@@ -721,5 +726,50 @@ cruise_off = "off"
 			 [[page]]\nkind = \"values\"\ncells = [\"01:IDE00002\"]\n\n# a channel written between the pages\n[[channel]]\nref = \"01:IDE00002\"\n"
 		);
 		vag_cli_core::dash::parse_input(&out).unwrap();
+	}
+
+	#[test]
+	fn a_label_added_goes_after_ref_and_moves_nothing_else() {
+		// The second channel holds a setpoint, a drift alarm and decimals, and no label.
+		let mut body = as_opened();
+		body["labels"]["01:IDE00002"] = json!("BOOST");
+		let out = saved(body);
+		assert_eq!(
+			out,
+			FILE.replace(
+				"ref = \"01:IDE00002\"\ndecimals = 1\n",
+				"ref = \"01:IDE00002\"\nlabel = \"BOOST\"\ndecimals = 1\n"
+			),
+			"the label after ref, and every key of the person's where it was"
+		);
+		// Decimals added where the label is the last of the ranked keys: after it, the rest stays.
+		let file = "vin = \"TESTVIN0000000001\"\n[[channel]]\nref = \"01:IDE00001\"\nsetpoint = \"01:IDE00002\"\nlabel = \"A\"\nhz = 1\n[[page]]\nkind = \"values\"\ncells = [\"01:IDE00001\"]\n";
+		let body = json!({
+			"fingerprint": "f",
+			"pages": [{"kind": "values", "cells": ["01:IDE00001"], "from": 0}],
+			"labels": {"01:IDE00001": "A"},
+			"decimals": {"01:IDE00001": 2},
+		});
+		let out = edit(Some(file), "TESTVIN0000000001", &wanted(body, Some(file)).unwrap(), |_| None).unwrap();
+		assert!(
+			out.contains("ref = \"01:IDE00001\"\nsetpoint = \"01:IDE00002\"\nlabel = \"A\"\ndecimals = 2\nhz = 1\n"),
+			"{out}"
+		);
+	}
+
+	#[test]
+	fn a_long_label_or_title_the_file_has_is_saved_as_it_is() {
+		// The build sets no length: a file it accepts saves, whatever it holds.
+		let long = "A VERY LONG LABEL THAT NO CELL OF THE BOARD HOLDS, WRITTEN BY HAND, LONGER THAN ANY LIMIT";
+		let file = FILE
+			.replace("label = \"COOLANT\"", &format!("label = \"{long}\""))
+			.replace("title = \"MAIN\"", &format!("title = \"{long}\""));
+		let mut body = as_opened();
+		body["labels"]["01:IDE00001"] = json!(long);
+		body["pages"][0]["title"] = json!(long);
+		let wanted = wanted(body.clone(), Some(&file)).unwrap();
+		assert_eq!(edit(Some(&file), "TESTVIN0000000001", &wanted, |_| None).unwrap(), file);
+		// The same text new to the file is refused.
+		assert!(super::tests::wanted(body, Some(FILE)).unwrap_err().contains("longer than"));
 	}
 }

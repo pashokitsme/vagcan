@@ -105,13 +105,14 @@ pub enum Tool {
 	/// there is one: the page opens on its pages. No adapter, no car.
 	///
 	/// OUT: a page on `http://127.0.0.1:<port>/`, opened in the browser; the
-	/// address is the one line on stdout. Save (Cmd-S or Ctrl-S) writes
+	/// address is the one line on stdout, and its `#t=` part is the key Save
+	/// needs: open the page from that address. Save (Cmd-S or Ctrl-S) writes
 	/// `~/.vagcan/dash/<VIN>/dash.toml` — creating it if there is none — and
 	/// `plan.json` and `plan.rs` beside it, once the plan builds from the new
 	/// file as `dev dash build` builds it; a refused build writes nothing and the
 	/// page shows why. A save rewrites the `[[page]]` tables, adds a
-	/// `[[channel]]` for a channel new to the file and changes `label` and
-	/// `decimals`; every other line of the file stays as written. A file changed
+	/// `[[channel]]` for a channel new to the file and changes `label`; every
+	/// other line of the file stays as written. A file changed
 	/// on disk since the page read it is never overwritten: reload the page.
 	/// Each save prints one line on stderr. The page's files are under
 	/// `~/.vagcan/dash/<VIN>/editor/`; the channel list is kept there and made
