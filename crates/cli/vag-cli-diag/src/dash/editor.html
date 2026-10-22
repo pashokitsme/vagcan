@@ -188,8 +188,17 @@ const SHOWN_CARDS = 150, LABEL_FITS = 10;
 
 let state = { pages: [], labels: {}, decimals: {} };
 // The key a save sends: in the fragment of the address `vagcan dev dash edit` opened, which the
-// browser never sends to any server.
-const TOKEN = new URLSearchParams(location.hash.slice(1)).get("t") || "";
+// browser never sends to any server. Kept for this tab in sessionStorage, so a reload still
+// saves, and taken out of the address so it stays out of the browser's history.
+const TOKEN = (() => {
+  const given = new URLSearchParams(location.hash.slice(1)).get("t");
+  if (given) {
+    try { sessionStorage.setItem("vagcan-save-token", given); } catch { /* the tab keeps it only until a reload */ }
+    try { history.replaceState(null, "", location.pathname); } catch { /* the address keeps it */ }
+    return given;
+  }
+  try { return sessionStorage.getItem("vagcan-save-token") || ""; } catch { return ""; }
+})();
 let sel = 0, selCol = -1, block = "all";
 const $ = id => document.getElementById(id);
 function page() { return state.pages[sel]; }
@@ -542,16 +551,16 @@ function saveRequest() {
 }
 function isDirty() { return !!LAYOUT && JSON.stringify(saveRequest()) !== savedState; }
 function renderSave() {
+  const over = [];
+  if (state.pages.length > MAX_PAGES) over.push(`${state.pages.length} pages, and the board holds ${MAX_PAGES}`);
+  state.pages.forEach((p, i) => { if (p.kind === "values" && p.cells.length > MAX_CELLS) over.push(`page ${i + 1} has ${p.cells.length} cells, and a page holds ${MAX_CELLS}`); });
   const dirty = isDirty(), d = $("dirty");
-  d.textContent = !LAYOUT ? "" : dirty ? "unsaved changes" : LAYOUT.fromFile ? "saved" : "no dash.toml yet";
-  d.className = "hint" + (dirty ? " warn" : "");
+  d.textContent = !LAYOUT ? "" : over.length ? "does not fit the board" : dirty ? "unsaved changes" : LAYOUT.fromFile ? "saved" : "no dash.toml yet";
+  d.className = "hint" + (dirty || over.length ? " warn" : "");
   $("save").disabled = saving || !TOKEN || !LAYOUT || (!dirty && !!LAYOUT.fromFile);
   const used = [];
   for (const p of state.pages) for (const r of onPageRefs(p)) if (!used.some(u => same(u, r))) used.push(r);
   const missing = used.filter(r => chan(r).missing);
-  const over = [];
-  if (state.pages.length > MAX_PAGES) over.push(`${state.pages.length} pages, and the board holds ${MAX_PAGES}`);
-  state.pages.forEach((p, i) => { if (p.kind === "values" && p.cells.length > MAX_CELLS) over.push(`page ${i + 1} has ${p.cells.length} cells, and a page holds ${MAX_CELLS}`); });
   const vin = LAYOUT?.vin || "<VIN>";
   const h = $("export-hint");
   h.textContent = !TOKEN && LAYOUT

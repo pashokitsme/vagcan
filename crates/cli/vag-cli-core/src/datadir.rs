@@ -326,6 +326,11 @@ pub fn replace_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 	written
 }
 
+/// The most links [`replace_through_links`] follows to a file not made yet: Linux's limit
+/// (`MAXSYMLINKS`, 40); macOS's is 32, and a chain the system would refuse fails in the
+/// rename instead.
+const MAX_LINK_HOPS: usize = 40;
+
 /// [`replace_file`] for a file a person keeps — `dash.toml`, which `dev dash edit` saves: one
 /// that is a link is replaced where it points, the link left as it is; the file keeps its
 /// permissions; and its bytes are on disk before the new name takes over.
@@ -339,11 +344,20 @@ pub fn replace_through_links(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 	static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 	let target = match std::fs::canonicalize(path) {
 		Ok(target) => target,
-		// A link to a file not made yet is followed to where the file goes.
-		Err(e) if e.kind() == std::io::ErrorKind::NotFound => match std::fs::read_link(path) {
-			Ok(to) => path.parent().unwrap_or(Path::new(".")).join(to),
-			Err(_) => path.to_path_buf(),
-		},
+		// A link to a file not made yet — through any number of links — is followed to where
+		// the file goes, as the system would, and as far as it would.
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+			let mut at = path.to_path_buf();
+			let mut hops = 0;
+			while let Ok(to) = std::fs::read_link(&at) {
+				hops += 1;
+				if hops > MAX_LINK_HOPS {
+					anyhow::bail!("{} is a chain of more than {MAX_LINK_HOPS} links", path.display());
+				}
+				at = at.parent().unwrap_or(Path::new(".")).join(to);
+			}
+			at
+		}
 		Err(e) => return Err(e).with_context(|| format!("resolving {}", path.display())),
 	};
 	let dir = target.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
@@ -824,5 +838,29 @@ mod tests {
 		assert_eq!(std::fs::metadata(&plain).unwrap().permissions().mode() & 0o777, 0o640);
 		replace_through_links(&here.path().join("fresh.toml"), b"made").unwrap();
 		assert_eq!(std::fs::read_to_string(here.path().join("fresh.toml")).unwrap(), "made");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn a_chain_of_links_to_a_file_not_made_yet_is_followed_to_its_end() {
+		let here = tempfile::tempdir().unwrap();
+		let (first, second, end) = (here.path().join("a.toml"), here.path().join("b.toml"), here.path().join("c.toml"));
+		std::os::unix::fs::symlink(&second, &first).unwrap();
+		std::os::unix::fs::symlink("c.toml", &second).unwrap();
+		replace_through_links(&first, b"made").unwrap();
+		assert_eq!(std::fs::read_to_string(&end).unwrap(), "made", "the file at the chain's end");
+		for link in [&first, &second] {
+			assert!(
+				std::fs::symlink_metadata(link).unwrap().file_type().is_symlink(),
+				"{} stays a link",
+				link.display()
+			);
+		}
+		// A loop is refused, and nothing is written.
+		let (x, y) = (here.path().join("x.toml"), here.path().join("y.toml"));
+		std::os::unix::fs::symlink(&y, &x).unwrap();
+		std::os::unix::fs::symlink(&x, &y).unwrap();
+		assert!(replace_through_links(&x, b"no").is_err());
+		assert!(std::fs::symlink_metadata(&x).unwrap().file_type().is_symlink());
 	}
 }

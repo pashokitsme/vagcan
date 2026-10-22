@@ -769,9 +769,14 @@ impl<B: Build> Editor<B> {
 			Err(err) => {
 				// `dash.toml` is saved: the page gets its layout, so its next save is not refused as
 				// stale, and the plan is what the reply is about.
-				let err = err
-					.context(format!("{shown} is saved, and its plan is not"))
-					.help(format!("run `vagcan dev dash build {}`", self.vin));
+				// One way to write the plan again, said once: the plan's own write may say it already.
+				let said_how = vag_cli_core::report::hints(&err)
+					.iter()
+					.any(|h| matches!(h, vag_cli_core::report::Hint::Help(_)));
+				let mut err = err.context(format!("{shown} is saved, and its plan is not"));
+				if !said_how {
+					err = err.help(format!("run `vagcan dev dash build {}`", self.vin));
+				}
 				vag_cli_core::say!("error: {err:#}");
 				Response::json(500, "Internal Server Error", &json!({ "error": render(&err), "layout": layout }))
 			}
@@ -928,7 +933,9 @@ mod tests {
 				std::fs::write(&self.input, edit).unwrap();
 			}
 			if self.fail_write {
-				anyhow::bail!("writing plan.rs: no space left on device");
+				// As `write_plan` fails halfway: with the help that writes the plan again.
+				use vag_cli_core::report::Advice as _;
+				return Err(anyhow::anyhow!("plan.json and plan.rs now disagree").help(format!("run `vagcan dev dash build {VIN}`")));
 			}
 			let input = dash::parse_input(&text)?;
 			self.wrote.lock().unwrap().push(text);
@@ -1581,7 +1588,11 @@ mod tests {
 		assert_eq!(said["layout"]["fingerprint"], file_fingerprint(Some(text.as_bytes())));
 		let error = said["error"].as_str().unwrap();
 		assert!(error.contains("is saved, and its plan is not"), "{error}");
-		assert!(error.contains("help: run `vagcan dev dash build TESTVIN0000000001`"), "{error}");
+		assert_eq!(
+			error.matches("help: run `vagcan dev dash build TESTVIN0000000001`").count(),
+			1,
+			"said once: {error}"
+		);
 	}
 
 	#[test]
@@ -1644,6 +1655,10 @@ mod tests {
 		assert!(PAGE.contains("\"X-Vagcan-Token\": TOKEN"));
 		// The token comes from the address's fragment, which the browser never sends.
 		assert!(PAGE.contains("new URLSearchParams(location.hash.slice(1)).get(\"t\")"));
+		// Kept for the tab, so a reload saves, and out of the address, so out of the history.
+		assert!(PAGE.contains("sessionStorage.setItem(\"vagcan-save-token\", given)"));
+		assert!(PAGE.contains("sessionStorage.getItem(\"vagcan-save-token\")"));
+		assert!(PAGE.contains("history.replaceState(null, \"\", location.pathname)"));
 		assert!(!PAGE.contains("LAYOUT.token"));
 		assert!(PAGE.contains("\"Content-Type\": \"application/json\""));
 		// Not even a `/favicon.ico` the server has no file for.
