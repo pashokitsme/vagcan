@@ -39,7 +39,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 | `dev recording` | Works on recorded drives: `discover` finds gear and mode channels, `dash` plays one on the dash panel |
 | `dev vcds` | Works on VCDS files: label lookup, name search, `.rod` decryption, log analysis |
 | `dev dash build` | Builds the dash configuration for one car, offline |
-| `dev dash edit` | Lays out the dash's pages in a browser, drawn by the board's renderer, from your car's channels. Shows the `dash.toml` blocks to copy |
+| `dev dash edit` | Lays out the dash's pages in a browser, drawn by the board's renderer, from your car's channels. Save writes them into `dash.toml` once the build accepts them |
 
 ### Where names and numbers come from
 
@@ -87,7 +87,7 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 
 ## Roadmap
 
-Updated 2026-10-21 (one source per run; the cleanup pass after it).
+Updated 2026-10-22 (`dev dash edit` saves `dash.toml` itself).
 
 **Done**
 - [x] Read the car: identity, units, faults, OBD-II sensors, live values, acceleration timing with html-report
@@ -114,6 +114,7 @@ Updated 2026-10-21 (one source per run; the cleanup pass after it).
 - [x] One VCDS installation per machine, for every car, in `~/.vagcan/vcds/`; projects are ODIS's alone; an older layout moves on its own (2026-10-21)
 - [x] `setup` and `faults` print in the shape of established tools: steps as lines under a heading, faults as a block per unit (2026-10-21)
 - [x] ODIS and VCDS independent: one source per run, never mixed; `--source`, `VAGCAN_SOURCE` or `[source] use` picks it (2026-10-21)
+- [x] `dev dash edit` saves `dash.toml` itself, checked by the dash build first; the rest of the file stays as written (2026-10-22)
 - [ ] Adaptation channels and their values, read only: `vagcan adaptations <unit>`, `--all` (built 2026-10-21, waiting for the car)
 - [ ] Freeze frames under each stored code in `vagcan faults`, from an ODIS project or a VCDS install alone (built 2026-10-21, checked offline on one recorded answer; waits for the car)
 - [ ] Page the dash with buttons on its pins
@@ -390,7 +391,13 @@ cells = ["01:IDE00025"]
 
 To find your car's channel ids: run `vagcan watch`, press `,`, set "Key at the end of each row" to shown. The Unit column is the control unit, the Key column is the channel id. Every key of the file: [`docs/dash/dash-toml.md`](docs/dash/dash-toml.md).
 
-To lay out the pages in a browser instead: `vagcan dev dash edit <VIN>`. It opens on your `dash.toml`, offers only channels the build accepts, and shows the blocks to copy into the file. It needs a `vagcan` built after `rustup target add wasm32-unknown-unknown`.
+To lay out the pages in a browser instead: `vagcan dev dash edit <VIN>`. It opens on your `dash.toml`, or on no pages when there is none, and offers only channels the build accepts.
+
+- **Save** (Cmd-S or Ctrl-S) builds the plan from the new pages first. A refused build writes nothing; the page shows why.
+- A build that passes writes `dash.toml`, `plan.json` and `plan.rs`. It replaces the `[[page]]` tables, adds a `[[channel]]` for a new channel and changes labels. Comments, alarms and every other line stay as written.
+- A `dash.toml` changed on disk since the page opened is not overwritten: reload the page.
+- Save works from the address the command prints and opens: its `#t=` part is the key.
+- It needs a `vagcan` built after `rustup target add wasm32-unknown-unknown`.
 
 **3. Check it.**
 

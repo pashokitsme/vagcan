@@ -685,8 +685,23 @@ installed; otherwise the command says to install it and build again. A compile t
 tried again at the next build, and the command shows its error. CI's `test` job installs the
 target and sets `VAGCAN_DASH_WASM_REQUIRED`, which makes either case a failed build. The channels it offers are
 `watch`'s rows, each put through `dash::build` (`vag-cli-diag/src/dash/catalog.rs`): a row is a
-number only when a `[[channel]]` naming it builds, to that row. The page writes nothing; it
-shows the blocks to copy into `dash.toml`.
+number only when a `[[channel]]` naming it builds, to that row.
+
+**The editor saves `dash.toml`** (`vag-cli-diag/src/dash/save.rs`). The page sends its state as
+JSON, never TOML; the server checks every field, edits the file with `toml_edit` — the
+`[[page]]` tables replaced where the first one was, a `[[channel]]` added after the last for a
+channel new to the file, `label` changed, every other line kept — and builds
+the plan from the new text through `dash::resolve`, the function `dev dash build` runs. Only a
+plan that builds is written: `dash.toml` replaced in one step, then `plan.json` and `plan.rs`
+by `dash::write_plan`, each in one step. `layout.json` is answered from the file at the moment of the request and
+carries its fingerprint (length and FNV-1a of the bytes); a save whose fingerprint is not the
+file's is refused, so a hand edit made meanwhile is never overwritten. `POST /save` is the one
+request that writes, taken only with this server's `Host`, an `Origin` of this server, a
+128-bit token the run made, and a JSON body within 1 MiB; `OPTIONS` is refused, so a
+browser's cross-origin preflight fails. The token is in the fragment of the address the
+command prints and opens (`/#t=<token>`): a browser never sends a fragment, so no answer of
+the server holds it, and another process on the machine that asks for `layout.json` gets no
+key. A `dash.toml` that is a link is saved where it points, with its permissions.
 
 **BLE, always on.** The board advertises a Nordic UART service from boot and again after
 every disconnect; no button, no pairing. `dashcfg` sends text commands (`state`,

@@ -108,7 +108,8 @@ input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); ou
 .more { font-size: 13px; color: var(--muted); padding: 6px 2px; }
 input#label-input { width: 150px; }
 
-.export pre { margin: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 12px; font: 13px/1.5 var(--mono); color: var(--fg); overflow-x: auto; max-height: 420px; }
+.said { margin: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 10px 12px; font: 13px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.said.ok { color: var(--ok); } .said.bad { color: var(--bad); border-color: var(--bad); }
 .export .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 code { font-family: var(--mono); font-size: .92em; color: var(--oled); }
 
@@ -119,7 +120,7 @@ code { font-family: var(--mono); font-size: .92em; color: var(--oled); }
 <div class="wrap">
   <header>
     <h1>DASH PAGES</h1>
-    <span class="sub">Drag a channel onto the panel, or click its card. Click a cell to change its label. The panel is drawn by the dash's own renderer; a cell shows dashes, as the board does before a channel answers.</span>
+    <span class="sub">Drag a channel onto the panel, or click its card. Click a cell to change its label. Save (Cmd-S or Ctrl-S) writes dash.toml. The panel is drawn by the dash's own renderer; a cell shows dashes, as the board does before a channel answers.</span>
     <span class="status" id="status">loading…</span>
   </header>
 
@@ -167,11 +168,12 @@ code { font-family: var(--mono); font-size: .92em; color: var(--oled); }
 
   <section class="box export" aria-label="dash.toml">
     <div class="row">
-      <div class="label">For dash.toml</div>
+      <div class="label">dash.toml</div>
+      <span class="hint" id="dirty"></span>
       <span class="spacer"></span>
-      <button type="button" class="btn primary" id="copy">Copy</button>
+      <button type="button" class="btn primary" id="save" title="Cmd-S or Ctrl-S">Save</button>
     </div>
-    <pre id="toml"></pre>
+    <pre class="said" id="said" hidden></pre>
     <div class="hint" id="export-hint"></div>
   </section>
 </div>
@@ -185,6 +187,18 @@ let MAX_PAGES = 8, MAX_CELLS = 4;
 const SHOWN_CARDS = 150, LABEL_FITS = 10;
 
 let state = { pages: [], labels: {}, decimals: {} };
+// The key a save sends: in the fragment of the address `vagcan dev dash edit` opened, which the
+// browser never sends to any server. Kept for this tab in sessionStorage, so a reload still
+// saves, and taken out of the address so it stays out of the browser's history.
+const TOKEN = (() => {
+  const given = new URLSearchParams(location.hash.slice(1)).get("t");
+  if (given) {
+    try { sessionStorage.setItem("vagcan-save-token", given); } catch { /* the tab keeps it only until a reload */ }
+    try { history.replaceState(null, "", location.pathname); } catch { /* the address keeps it */ }
+    return given;
+  }
+  try { return sessionStorage.getItem("vagcan-save-token") || ""; } catch { return ""; }
+})();
 let sel = 0, selCol = -1, block = "all";
 const $ = id => document.getElementById(id);
 function page() { return state.pages[sel]; }
@@ -253,7 +267,7 @@ function render() {
   sel = Math.min(sel, state.pages.length - 1);
   const p = page();
   if (p.kind !== "values" || selCol >= p.cells.length) selCol = -1;
-  renderStrip(); renderSettings(); renderPanel(); renderCards(); renderToml();
+  renderStrip(); renderSettings(); renderPanel(); renderCards(); renderSave();
 }
 
 function renderStrip() {
@@ -393,6 +407,7 @@ function renderUnder(st) {
   }
   const notes = [];
   let warn = false;
+  if (p.kind === "values" && p.cells.length > MAX_CELLS) { warn = true; notes.push(`This page has ${p.cells.length} cells and the board shows ${MAX_CELLS}: the build refuses it. Take a cell off.`); }
   if (st.voltsDup) notes.push("The voltage is a cell on this page: the strip does not show it twice.");
   if (p.kind === "chart" && st.title) notes.push("The title is in the strip, so the chart's header has no label.");
   if (!st.shown) notes.push("No strip: no title and no voltage. The page takes all 64 rows.");
@@ -511,65 +526,90 @@ $("delete-page").addEventListener("click", () => { if (state.pages.length > 1) {
 $("search").addEventListener("input", renderCards);
 $("only-numeric").addEventListener("change", renderCards);
 
-// ---- dash.toml
-function q(s) { return JSON.stringify(s); }
-function pageLines(p) {
-  const out = [`[[page]]`, `kind = ${q(p.kind)}`];
-  const t = (p.title || "").trim().toUpperCase();
-  if (t) out.push(`title = ${q(t)}`);
-  if (p.kind === "values") out.push(`cells = [${p.cells.map(q).join(", ")}]`);
-  else out.push(`cell = ${q(p.cell || "")}`, `min = ${p.min}`, `max = ${p.max}`);
-  if (LAYOUT?.strip && !p.volts) out.push(`volts = false`);
-  out.push(``);
-  return out;
+// ---- dash.toml. Save sends the editor's state, not TOML: the server makes the file from it,
+// builds the plan from that file as `vagcan dev dash build` does, and writes nothing the build
+// refuses. Everything in the file but the pages, new channels and labels stays as written.
+let savedState = "", saving = false;
+// A channel as dash.toml spells it: the file's own spelling where it has the channel, the
+// catalog's otherwise, so a channel the file has is not added again under another name.
+function spelled(ref) {
+  const known = (LAYOUT?.channels || []).find(c => same(c.ref, ref));
+  return known ? known.ref : chan(ref).ref;
 }
-function channelLines(r) {
-  const c = chan(r), out = [`[[channel]]`, `ref = ${q(c.ref)}   # ${c.name}${c.uom ? ", " + c.uom : ""}`];
-  if (state.labels[c.ref]) out.push(`label = ${q(state.labels[c.ref])}`);
-  out.push(``);
-  return out;
+function saveRequest() {
+  const pages = state.pages.map(p => {
+    const out = { kind: p.kind, title: (p.title || "").trim(), volts: !!p.volts };
+    if (Number.isInteger(p.from)) out.from = p.from;
+    if (p.kind === "values") out.cells = p.cells.map(spelled);
+    else Object.assign(out, { cell: p.cell ? spelled(p.cell) : "", min: p.min, max: p.max });
+    return out;
+  });
+  const labels = {}, decimals = {};
+  for (const [r, v] of Object.entries(state.labels)) labels[spelled(r)] = v;
+  for (const [r, v] of Object.entries(state.decimals)) decimals[spelled(r)] = v;
+  return { fingerprint: LAYOUT?.fingerprint || "", pages, labels, decimals };
 }
-function renderToml() {
+function isDirty() { return !!LAYOUT && JSON.stringify(saveRequest()) !== savedState; }
+function renderSave() {
+  const over = [];
+  if (state.pages.length > MAX_PAGES) over.push(`${state.pages.length} pages, and the board holds ${MAX_PAGES}`);
+  state.pages.forEach((p, i) => { if (p.kind === "values" && p.cells.length > MAX_CELLS) over.push(`page ${i + 1} has ${p.cells.length} cells, and a page holds ${MAX_CELLS}`); });
+  const dirty = isDirty(), d = $("dirty");
+  d.textContent = !LAYOUT ? "" : over.length ? "does not fit the board" : dirty ? "unsaved changes" : LAYOUT.fromFile ? "saved" : "no dash.toml yet";
+  d.className = "hint" + (dirty || over.length ? " warn" : "");
+  $("save").disabled = saving || !TOKEN || !LAYOUT || (!dirty && !!LAYOUT.fromFile);
   const used = [];
   for (const p of state.pages) for (const r of onPageRefs(p)) if (!used.some(u => same(u, r))) used.push(r);
-  const known = (LAYOUT?.channels || []).map(c => c.ref);
-  const fileLabel = Object.fromEntries((LAYOUT?.channels || []).map(c => [chan(c.ref).ref, c.label || ""]));
-  const out = [];
-  if (!LAYOUT?.fromFile) {
-    // No dash.toml yet: the whole file.
-    out.push(`vin = ${q(LAYOUT?.vin || "")}`, ``);
-    for (const r of used) out.push(...channelLines(r));
-    for (const p of state.pages) out.push(...pageLines(p));
-    $("export-hint").textContent = "This car has no dash.toml yet: this is the whole file. Save it as ~/.vagcan/dash/" + (LAYOUT?.vin || "<VIN>") + "/dash.toml, then run vagcan dev dash build " + (LAYOUT?.vin || "<VIN>") + ".";
-  } else {
-    out.push(`# Replace every [[page]] of dash.toml with these:`, ``);
-    for (const p of state.pages) out.push(...pageLines(p));
-    const fresh = used.filter(r => !known.some(k => same(k, r)));
-    if (fresh.length) {
-      out.push(`# Channels dash.toml does not have yet:`, ``);
-      for (const r of fresh) out.push(...channelLines(r));
-    }
-    const relabelled = used.filter(r => known.some(k => same(k, r)) && state.labels[chan(r).ref] && state.labels[chan(r).ref] !== fileLabel[chan(r).ref]);
-    if (relabelled.length) {
-      out.push(`# A new label (in the [[channel]] with this ref):`);
-      for (const r of relabelled) out.push(`#   ${chan(r).ref}: label = ${q(state.labels[chan(r).ref])}`);
-      out.push(``);
-    }
-    $("export-hint").textContent = "A label belongs to the channel, so it is the same on every page. Then run vagcan dev dash build " + LAYOUT.vin + ": it checks every line.";
-  }
-  if (used.some(r => chan(r).missing)) out.push(`# Not among this car's channels — the build refuses it: ${used.filter(r => chan(r).missing).join(", ")}`);
-  $("toml").textContent = out.join("\n").trimEnd();
+  const missing = used.filter(r => chan(r).missing);
+  const vin = LAYOUT?.vin || "<VIN>";
+  const h = $("export-hint");
+  h.textContent = !TOKEN && LAYOUT
+    ? `Save needs the address vagcan dev dash edit printed, with its #t= part: open that one.`
+    : over.length
+    ? `More than the board holds, so Save is refused until it fits: ${over.join("; ")}.`
+    : missing.length
+    ? `Not among this car's channels, so the build refuses it: ${missing.join(", ")}.`
+    : `Save writes ~/.vagcan/dash/${vin}/dash.toml, plan.json and plan.rs once the dash build accepts the pages. A label belongs to the channel, so it is the same on every page. Comments, alarms and everything else in the file stay as they are.`;
+  h.className = "hint" + (missing.length || over.length || !TOKEN ? " warn" : "");
 }
-$("copy").addEventListener("click", async () => {
-  try { await navigator.clipboard.writeText($("toml").textContent); toast("Copied."); }
-  catch { const r = document.createRange(); r.selectNodeContents($("toml")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); toast("Selected: press Cmd-C or Ctrl-C."); }
+function said(ok, text) { const s = $("said"); s.hidden = !text; s.className = "said " + (ok ? "ok" : "bad"); s.textContent = text || ""; }
+async function save() {
+  if (saving || !TOKEN || !LAYOUT) return;
+  saving = true; renderSave();
+  try {
+    const r = await fetch("save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Vagcan-Token": TOKEN },
+      body: JSON.stringify(saveRequest()),
+    });
+    const text = await r.text();
+    let answer = null;
+    try { answer = JSON.parse(text); } catch { answer = null; }
+    // A reply with a layout means dash.toml was written — the plan too, unless it says not.
+    if (answer?.layout) {
+      const keep = sel;
+      LAYOUT = answer.layout; adopt(LAYOUT); sel = keep; selCol = -1;
+      savedState = JSON.stringify(saveRequest());
+      setStatus(`${LAYOUT.vin} · the pages of its dash.toml`);
+      render();
+    }
+    if (r.ok && answer?.layout) said(true, answer.saved);
+    else said(false, answer?.error || text.trim() || `HTTP ${r.status}`);
+  } catch (e) {
+    said(false, `error: the editor's server did not answer: ${e?.message || e}\n\nhelp: is \`vagcan dev dash edit\` still running?`);
+  } finally { saving = false; renderSave(); }
+}
+$("save").addEventListener("click", save);
+document.addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "s") { e.preventDefault(); save(); }
 });
+window.addEventListener("beforeunload", e => { if (isDirty()) { e.preventDefault(); e.returnValue = ""; } });
 
 let toastTimer;
 function toast(msg) { const t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 3200); }
 function setStatus(text) { $("status").textContent = text; }
 function changed(keepFocus) {
-  if (keepFocus) { renderStrip(); paint($("panel"), bitsOf(page()), 0.8); if (document.activeElement?.id !== "label-input") renderPanel(); renderToml(); }
+  if (keepFocus) { renderStrip(); paint($("panel"), bitsOf(page()), 0.8); if (document.activeElement?.id !== "label-input") renderPanel(); renderSave(); }
   else render();
 }
 
@@ -578,11 +618,15 @@ function adopt(layout) {
   MAX_PAGES = layout.maxPages || MAX_PAGES;
   MAX_CELLS = layout.maxCells || MAX_CELLS;
   state = {
-    pages: (layout.pages || []).slice(0, MAX_PAGES).map(p => ({
+    // Everything the file has, even past the board's limits: the build refuses that, and
+    // the page says so; a save never drops what nobody touched.
+    pages: (layout.pages || []).map(p => ({
       title: p.title || "", kind: p.kind === "chart" ? "chart" : "values",
-      cells: Array.isArray(p.cells) ? p.cells.slice(0, MAX_CELLS) : [],
+      cells: Array.isArray(p.cells) ? p.cells.slice() : [],
       cell: p.cell || "", min: Number.isFinite(p.min) ? p.min : 0, max: Number.isFinite(p.max) ? p.max : 100,
       volts: p.volts !== false,
+      // Which of the file's pages this is: a save keeps that table's comments.
+      from: Number.isInteger(p.from) ? p.from : null,
     })),
     labels: {}, decimals: {},
   };
@@ -596,7 +640,12 @@ function adopt(layout) {
 (async () => {
   const [cat, layout] = await Promise.all([
     fetch("channels.json").then(r => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status))).catch(e => { toast("The channel list did not load: " + e.message); return []; }),
-    fetch("layout.json").then(r => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status))).catch(e => { toast("dash.toml's pages did not load: " + e.message); return null; }),
+    fetch("layout.json").then(async r => {
+      if (r.ok) return r.json();
+      let why = null;
+      try { why = (await r.json()).error; } catch { why = null; }
+      throw new Error(why || "HTTP " + r.status);
+    }).catch(e => { said(false, e.message.startsWith("error:") ? e.message : "error: dash.toml's pages did not load: " + e.message); return null; }),
     loadWasm(),
   ]);
   CAT = cat;
@@ -606,6 +655,8 @@ function adopt(layout) {
   if (layout) adopt(layout);
   renderBlocks();
   render();
+  savedState = LAYOUT ? JSON.stringify(saveRequest()) : "";
+  renderSave();
   setStatus(layout?.vin ? `${layout.vin} · ${layout.fromFile ? "the pages of its dash.toml" : "no dash.toml yet"}` : "");
 })();
 </script>
