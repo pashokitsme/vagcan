@@ -876,9 +876,9 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 		// first, since it needs nothing checked to refuse.
 		Command::Adaptations { device, unit, all } => {
 			// The unit's spelling first, as every command checks its arguments first.
-			vag_cli_core::unit_names::install();
+			vag_cli_core::unit_names::install().await;
 			if let Some(text) = &unit {
-				car::parse_unit("unit", text)?;
+				car::parse_unit("<UNIT>", text)?;
 			}
 			device::refuse_ble(device.requested(), slcan, &ADAPTATIONS)?;
 			let which = match (unit, all) {
@@ -915,7 +915,7 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 			..
 		} => {
 			// What `units` lists, `--did` and the Unit column use: 44 as well as 712.
-			vag_cli_core::unit_names::install();
+			vag_cli_core::unit_names::install().await;
 			let preselect = match did.as_deref() {
 				Some(spec) => plan::parse_checked(spec).map_err(|e| anyhow::anyhow!("--did: {e}"))?,
 				None => Vec::new(),
@@ -1518,7 +1518,7 @@ mod tests {
 		for device in ["ble", "ble:vagcan-dash"] {
 			let cases = [
 				(vec!["vagcan", "units", "--identify", "01", "--device", device], IDENTIFY_OVER_BLE),
-				(vec!["vagcan", "adaptations", "09", "--device", device], ADAPTATIONS_OVER_BLE),
+				(vec!["vagcan", "adaptations", "713", "--device", device], ADAPTATIONS_OVER_BLE),
 				(vec!["vagcan", "adaptations", "--all", "--device", device], ADAPTATIONS_OVER_BLE),
 				(vec!["vagcan", "adaptations", "--device", device], ADAPTATIONS_OVER_BLE),
 				(vec!["vagcan", "dev", "sniff", "--device", device], SNIFF_OVER_BLE),
@@ -1553,8 +1553,8 @@ mod tests {
 			(vec!["vagcan", "units", "--identify", "01", "--ble", "--slcan"], device::SLCAN_OVER_BLE),
 			(vec!["vagcan", "sensors", "--unit", "713", "--ble"], SENSORS_OVER_BLE),
 			(vec!["vagcan", "sensors", "--unit", "713", "--ble", "--slcan"], device::SLCAN_OVER_BLE),
-			(vec!["vagcan", "adaptations", "09", "--ble"], ADAPTATIONS_OVER_BLE),
-			(vec!["vagcan", "adaptations", "09", "--ble", "--slcan"], device::SLCAN_OVER_BLE),
+			(vec!["vagcan", "adaptations", "713", "--ble"], ADAPTATIONS_OVER_BLE),
+			(vec!["vagcan", "adaptations", "713", "--ble", "--slcan"], device::SLCAN_OVER_BLE),
 			(vec!["vagcan", "info", "--ble", "--slcan"], device::SLCAN_OVER_BLE),
 		];
 		for (args, why) in cases {
@@ -1698,7 +1698,8 @@ mod tests {
 		let cases = [
 			(vec!["vagcan", "units", "--identify", "ZZZ"], "--identify: "),
 			(vec!["vagcan", "sensors", "--unit", "ZZZ"], "--unit: "),
-			(vec!["vagcan", "adaptations", "ZZZ"], "unit: "),
+			// No flag: the argument as clap names it.
+			(vec!["vagcan", "adaptations", "ZZZ"], "<UNIT>: "),
 		];
 		for (args, flag) in cases {
 			let mut args = args.clone();

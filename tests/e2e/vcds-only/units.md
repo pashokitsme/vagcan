@@ -15,20 +15,18 @@ note: 2 control units of this car have no channels yet: the project was set up f
 7E1: no name in the VCDS installation
 4 control units on SIMVIN00000000002 · 4 answered · 1 on the gateway's list · 1 named
 
-   UNIT  ID   PART        COMPONENT    NAME
-✓  --    710  SIM907000C  SIM GATEWAY
-✓  --    713  SIM614000D  SIM ESC
-✓  01    7E0  SIM906000A  SIM ENGINE   Sim Engine (VCDS)
-✓  02    7E1  SIM300000B  SIM GEARBOX
-note: 3 of 4 units have no name in the VCDS installation
+   UNIT  ID   PART        NAME               COMPONENT
+✓  --    710  SIM907000C                     SIM GATEWAY
+✓  --    713  SIM614000D                     SIM ESC
+✓  01    7E0  SIM906000A  Sim Engine (VCDS)  SIM ENGINE
+✓  02    7E1  SIM300000B                     SIM GEARBOX
 
 $ vagcan units
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
 1 control unit on the gateway's list
 
-UNIT  ID   PART        NAME
---    713  SIM614000D  SIM ESC
-note: 1 of 1 unit has no name in the VCDS installation
+UNIT  ID   PART        NAME  COMPONENT
+--    713  SIM614000D        SIM ESC
 
 ```

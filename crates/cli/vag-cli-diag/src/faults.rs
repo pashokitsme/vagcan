@@ -771,7 +771,7 @@ pub async fn run<L: UnitLink>(
 	// read and shown as numbers, with a note that names `vagcan setup`.
 	// The keys are the VCDS store's (`rod-keys.json`) unless `--iv-cache` names a file.
 	// The numbers `vagcan units` lists, for `--unit` and for the headings below.
-	vag_cli_core::unit_names::install();
+	vag_cli_core::unit_names::install().await;
 	// `--unit` before the project is opened: opening it can upgrade its cache, and a
 	// typo is refused touching nothing.
 	let requested = only.map(|spec| unit_list("--unit", spec)).transpose()?;

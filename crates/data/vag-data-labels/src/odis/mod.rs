@@ -137,6 +137,29 @@ pub struct UnitName {
 /// The pool kind that holds a project's logical links: `0.0.0@VI_SK37X.vi`.
 const VEHICLE_INFO_POOL: &str = ".vi";
 
+/// The word a link's long name carries for the protocol it speaks, by the protocol layer's
+/// short name: VW's converter names a UDS-on-CAN link `Dash Board UDS`. What a tester calls
+/// the unit is the name before it. A link on any other protocol keeps its name as written.
+const PROTOCOL_IN_NAME: &[(&str, &str)] = &[("PR_UDSOnCAN", " UDS")];
+
+/// A link's long name without the word its protocol adds ([`PROTOCOL_IN_NAME`]).
+fn unit_name_of(long_name: &str, protocol: Option<&str>) -> String {
+	let added = PROTOCOL_IN_NAME.iter().find(|(layer, _)| Some(*layer) == protocol).map(|(_, word)| *word);
+	match added.and_then(|word| long_name.strip_suffix(word)).map(str::trim_end) {
+		Some(name) if !name.is_empty() => name.to_string(),
+		_ => long_name.to_string(),
+	}
+}
+
+/// What [`Project::unit_names`] found, and how many logical links it could not read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NamedUnits {
+	pub units: Vec<UnitName>,
+	/// Links — or objects of a `.vi` pool — that did not inflate, open or parse: skipped,
+	/// each costing its own unit's name and nothing else.
+	pub skipped: usize,
+}
+
 /// One readable channel of one variant, in this project's terms.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reading {
@@ -470,10 +493,15 @@ impl Project {
 	///
 	/// A variant whose base variant no link reaches has no row: the project does not name
 	/// it. A link no table lists, or one the tables list under two addresses, has a name and
-	/// no address. A table that does not read costs its own rows, not the others'.
-	pub fn unit_names(&self) -> Result<Vec<UnitName>, Error> {
-		let links = self.logical_links()?;
-		let addresses = self.link_addresses()?;
+	/// no address. A table or a link that does not read costs its own rows, not the others':
+	/// it is skipped and counted ([`NamedUnits::skipped`]). Only the variant list failing
+	/// is an error — without it nothing can be named.
+	///
+	/// The name is the link's long name less the word its protocol adds
+	/// ([`PROTOCOL_IN_NAME`]): `Dash Board`, not `Dash Board UDS`.
+	pub fn unit_names(&self) -> Result<NamedUnits, Error> {
+		let (links, skipped) = self.logical_links();
+		let addresses = self.link_addresses();
 		let mut out = Vec::new();
 		for variant in self.variants()? {
 			let base = variant.base_variant.clone().unwrap_or_else(|| variant.name.clone());
@@ -487,32 +515,44 @@ impl Project {
 					variant: variant.name.clone(),
 					base_variant: base.clone(),
 					link: short,
-					name: link.long_name.clone(),
+					name: link.long_name.as_deref().map(|name| unit_name_of(name, link.protocol.as_deref())),
 					address,
 				});
 			}
 		}
-		Ok(out)
+		Ok(NamedUnits { units: out, skipped })
 	}
 
 	/// Every logical link of the project's `.vi` pools, its head read
-	/// ([`loaders::identity::logical_link`]). A pool of vehicle information is a handful of
-	/// objects, so each is opened and kept when it is a link.
-	fn logical_links(&self) -> Result<Vec<loaders::identity::LogicalLink>, Error> {
+	/// ([`loaders::identity::logical_link`]), and how many objects there did not read. A
+	/// pool of vehicle information is a handful of objects, so each is opened and kept when
+	/// it is a link; one that will not inflate, open or parse is counted and skipped.
+	fn logical_links(&self) -> (Vec<loaders::identity::LogicalLink>, usize) {
 		let mut out = Vec::new();
+		let mut skipped = 0;
 		for pool_id in self.pools.iter().filter(|id| id.ends_with(VEHICLE_INFO_POOL)) {
-			let Some(files) = self.pool(pool_id)? else { continue };
+			let Ok(Some(files)) = self.pool(pool_id) else {
+				skipped += 1;
+				continue;
+			};
 			for locator in files.index.values() {
-				let bytes = files.db.member(locator)?;
-				let (type_code, mut stream) = object::Stream::open(&bytes, &self.strings)?;
-				if type_code == loaders::code::MCD_DB_LOGICAL_LINK {
-					out.push(loaders::identity::logical_link(&mut stream)?);
+				let link = files.db.member(locator).and_then(|bytes| {
+					let (type_code, mut stream) = object::Stream::open(&bytes, &self.strings)?;
+					match type_code == loaders::code::MCD_DB_LOGICAL_LINK {
+						true => loaders::identity::logical_link(&mut stream).map(Some),
+						false => Ok(None),
+					}
+				});
+				match link {
+					Ok(Some(link)) => out.push(link),
+					Ok(None) => {}
+					Err(_) => skipped += 1,
 				}
 			}
 		}
 		// The index is a hash map: the order a project's links come in is made stable here.
 		out.sort_by(|a, b| a.short_name.cmp(&b.short_name));
-		Ok(out)
+		(out, skipped)
 	}
 
 	/// Logical link → every diagnostic address the project's tables of logical links give
@@ -522,11 +562,11 @@ impl Project {
 	/// opened, and kept when it is a data object property of exactly that short name — the
 	/// ObjectID only narrows the search (`DOP_<library>_DOP_TEXTTABLELogicLinkNames`), the
 	/// short name decides. Only one-value levels count: a level is one address.
-	fn link_addresses(&self) -> Result<std::collections::BTreeMap<String, std::collections::BTreeSet<u32>>, Error> {
+	fn link_addresses(&self) -> std::collections::BTreeMap<String, std::collections::BTreeSet<u32>> {
 		use loaders::identity::LOGIC_LINK_NAMES;
 		let mut out: std::collections::BTreeMap<String, std::collections::BTreeSet<u32>> = Default::default();
 		for pool_id in &self.pools {
-			let Some(files) = self.pool(pool_id)? else { continue };
+			let Ok(Some(files)) = self.pool(pool_id) else { continue };
 			for (hash, locator) in &files.index {
 				if !self.strings.ascii.get(*hash).is_some_and(|name| name.contains(LOGIC_LINK_NAMES)) {
 					continue;
@@ -551,7 +591,7 @@ impl Project {
 				}
 			}
 		}
-		Ok(out)
+		out
 	}
 
 	/// The readable channels of one variant.
@@ -1907,14 +1947,6 @@ mod tests {
 		}
 	}
 
-	/// Build the whole fixture: one pool, one variant, two readings.
-	///
-	/// `inherit` selects which of the two shapes the real files use. `false`
-	/// puts the measurement service on the ECU variant's own layer. `true` gives
-	/// that layer **no** services and one parent, and puts the service on the
-	/// pool's base-variant layer instead — which is what
-	/// `EV_DCUDriveSideEWMAXCONT_006` looks like on disk. Both must yield the
-	/// same channels; that is the whole assertion.
 	/// A `DB_COMPU_METHOD` of category `TEXTTABLE`: one closed one-value level per
 	/// `(coded value, text)`.
 	fn text_table(b: &mut Build, levels: &[(u32, &str)]) -> Obj {
@@ -1952,10 +1984,12 @@ mod tests {
 	}
 
 	/// A project with units to name: one base variant `BV_SimDash` with one ECU variant, a
-	/// `.vi` pool whose links reach it (`LL_SimDash`) and every system (`LL_AllSim`), and a
-	/// library whose table of logical links gives `LL_SimDash` the address `0x17` — beside a
-	/// two-byte table of the same links, which is not the one-byte numbering and is not
-	/// read. `linked` false leaves the base variant reached by no link. Made-up names.
+	/// `.vi` pool whose links reach it (`LL_SimDash`, on UDS) and every system (`LL_AllSim`),
+	/// a link on another protocol (`LL_SimOld`, to `BV_SimOld`, which no variant derives
+	/// from), one object there that does not parse, and a library whose table of logical links
+	/// gives `LL_SimDash` the address `0x17` — beside a two-byte table of the same links,
+	/// which is not the one-byte numbering and is not read. `linked` false leaves the base
+	/// variant reached by no link. Made-up names.
 	fn named_units_project(dir: &std::path::Path, linked: bool) -> Project {
 		let bv_pool = "0.0.0@BV_SimDash.bv";
 		let vi_pool = "0.0.0@VI_Sim.vi";
@@ -1988,11 +2022,12 @@ mod tests {
 			.u16(0); // no nested project data
 		b.put("#RtGen_DB_PROJECT_DATA", code::DB_PROJECT_DATA, pd);
 
-		let protocol = b.a("PR_UDSOnCAN");
-		for (link, long, reaches, group) in [
-			("LL_SimDash", "Sim Dash UDS", linked.then_some("BV_SimDash"), None),
-			("LL_AllSim", "All Sim Systems", None, Some("FG_AllSim")),
+		for (link, long, protocol, reaches, group) in [
+			("LL_SimDash", "Sim Dash UDS", "PR_UDSOnCAN", linked.then_some("BV_SimDash"), None),
+			("LL_AllSim", "All Sim Systems", "PR_UDSOnCAN", None, Some("FG_AllSim")),
+			("LL_SimOld", "Sim Old UDS", "PR_KWP2000OnCAN", Some("BV_SimOld"), None),
 		] {
+			let protocol = b.a(protocol);
 			let short = b.a(link);
 			let long = b.u(long);
 			let reaches = reaches.map_or(0, |r| b.a(r));
@@ -2009,6 +2044,8 @@ mod tests {
 				.hash(group);
 			b.put(&format!("{link}.object"), code::MCD_DB_LOGICAL_LINK, o);
 		}
+		// A link whose bytes stop before its first name: skipped, and counted.
+		b.put("LL_SimBroken.object", code::MCD_DB_LOGICAL_LINK, Obj::default());
 
 		for (object, short, levels) in [
 			(
@@ -2043,21 +2080,41 @@ mod tests {
 			variant: variant.into(),
 			base_variant: "BV_SimDash".into(),
 			link: "LL_SimDash".into(),
-			name: Some("Sim Dash UDS".into()),
+			name: Some("Sim Dash".into()),
 			address: Some(0x17),
 		};
 		// The base variant and its ECU variant, both through the one link; the two-byte table
-		// and the link to every system give nothing.
-		assert_eq!(named, [row("BV_SimDash"), row("EV_SimDash_001")]);
+		// and the link to every system give nothing. The broken link costs itself alone.
+		assert_eq!(named.units, [row("BV_SimDash"), row("EV_SimDash_001")]);
+		assert_eq!(named.skipped, 1);
+	}
+
+	#[test]
+	fn a_name_loses_the_word_its_links_protocol_adds_and_no_other() {
+		assert_eq!(unit_name_of("Dash Board UDS", Some("PR_UDSOnCAN")), "Dash Board");
+		// Another protocol's link keeps its name as written, and so does one with no protocol.
+		assert_eq!(unit_name_of("Sim Old UDS", Some("PR_KWP2000OnCAN")), "Sim Old UDS");
+		assert_eq!(unit_name_of("Dash Board UDS", None), "Dash Board UDS");
+		// A name that is nothing but the word stays whole; one without it is untouched.
+		assert_eq!(unit_name_of("UDS", Some("PR_UDSOnCAN")), "UDS");
+		assert_eq!(unit_name_of("Gateway", Some("PR_UDSOnCAN")), "Gateway");
 	}
 
 	#[test]
 	fn a_unit_no_link_reaches_has_no_name() {
 		let dir = tempfile::tempdir().expect("a temporary directory");
 		let project = named_units_project(dir.path(), false);
-		assert_eq!(project.unit_names().expect("unit names read"), []);
+		assert_eq!(project.unit_names().expect("unit names read").units, []);
 	}
 
+	/// Build the whole fixture: one pool, one variant, two readings.
+	///
+	/// `inherit` selects which of the two shapes the real files use. `false`
+	/// puts the measurement service on the ECU variant's own layer. `true` gives
+	/// that layer **no** services and one parent, and puts the service on the
+	/// pool's base-variant layer instead — which is what
+	/// `EV_DCUDriveSideEWMAXCONT_006` looks like on disk. Both must yield the
+	/// same channels; that is the whole assertion.
 	fn miniature_project(dir: &std::path::Path, inherit: bool) -> (Project, String) {
 		miniature_project_serving(dir, inherit, loaders::identity::RDBI_MEASUREMENT)
 	}

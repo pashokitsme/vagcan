@@ -30,6 +30,8 @@ use vag_dash_render::button::PRESS_GAP_MS;
 /// `vagcan dev dash build` resolves it, `presses` are `dashsim`'s short presses in seconds of
 /// the recording's own clock, `speed` how much faster than it happened.
 pub fn run(vin: &str, log: &str, input: Option<&Path>, presses: &[f64], speed: f64) -> Result<()> {
+	// The run's numbering, so a heading `44/2BCA` is the unit the run's source numbers 44.
+	vag_cli_core::unit_names::install_blocking();
 	let text = std::fs::read_to_string(log).with_context(|| format!("reading the recording {log:?}"))?;
 	let recording = Recording::parse(&text).map_err(|e| anyhow!("{log}: {e}"))?;
 	let resolved = vag_cli_core::dash::resolve_for_car(vin, input)?;

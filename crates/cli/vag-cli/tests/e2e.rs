@@ -136,8 +136,8 @@ fn home(at: &Path) {
 		&cache,
 		source,
 		&[
-			odis_unit("EV_SimEngine_001", "LL_SimEngine", "Sim Engine UDS", Some(0x01)),
-			odis_unit("EV_SimGear_001", "LL_SimGearbox", "Sim Gearbox UDS", Some(0x02)),
+			odis_unit("EV_SimEngine_001", "LL_SimEngine", "Sim Engine", Some(0x01)),
+			odis_unit("EV_SimGear_001", "LL_SimGearbox", "Sim Gearbox", Some(0x02)),
 		],
 	)
 	.unwrap();
@@ -255,8 +255,8 @@ fn two_sources_home(at: &Path) {
 		&project.join("cache.sqlite"),
 		odis,
 		&[
-			odis_unit("EV_SimEngine_001", "LL_SimEngine", "Odis Engine UDS", Some(0x01)),
-			odis_unit("EV_SimBrake_001", "LL_SimBrake", "Odis Brakes UDS", Some(0x03)),
+			odis_unit("EV_SimEngine_001", "LL_SimEngine", "Odis Engine", Some(0x01)),
+			odis_unit("EV_SimBrake_001", "LL_SimBrake", "Odis Brakes", Some(0x03)),
 		],
 	)
 	.unwrap();

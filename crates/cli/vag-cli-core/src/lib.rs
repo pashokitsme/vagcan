@@ -36,6 +36,7 @@ pub mod glossary;
 pub mod interrupt;
 pub mod marks;
 pub mod missing;
+pub mod odis_read;
 pub mod plan;
 pub mod progress;
 pub mod project;

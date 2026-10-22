@@ -164,17 +164,15 @@ pub fn install(pairings: impl IntoIterator<Item = UnitNumber>) {
 	}
 }
 
-/// **The fallback, not the table.** The pairings this project has verified on
-/// hardware, kept so a run with no label files and no record of the car still
-/// reaches the units it always could.
+/// **The fallback, not the table: two pairings the protocol gives.** ISO 15765-4 makes
+/// `0x7E0` and `0x7E1` the first two physical request ids of the legislated OBD servers, and
+/// by OBD-II convention those are the engine and the transmission — VW's `01` and `02` on any
+/// car that has them. So a run with no source and no record of the car still reaches the
+/// powertrain, and `info` asks it by number.
 ///
-/// The numbers are hex, as the label files write them:
-///
-/// * `01`/`02` — engine and gearbox, cross-checked against the car's Auto-Scan.
-/// * `17` — the instrument cluster: a VCDS log names the unit it came from and
-///   four of its identification fields match `0x714`'s answers byte for byte.
-/// * `09`/`16` — central electrics and the steering column module, both opened
-///   by VCDS in the capture where `0x70E` and `0x70C` identified themselves.
+/// Nothing else is built in. The pairings once beside these — `09`, `16` and `17` on `0x70E`,
+/// `0x70C` and `0x714` — were measured on one car, which makes them that car's data, not the
+/// protocol's (CLAUDE.md, "No car-specific data in the code"; owner, 2026-10-22).
 ///
 /// Everything else comes from data at run time. **Which CAN id a number is
 /// answered on is in no data file this project has found** — the label files
@@ -186,7 +184,7 @@ pub fn install(pairings: impl IntoIterator<Item = UnitNumber>) {
 /// asks each id for its part number and asks the label files whose part number that
 /// is, and records the answer in the car's `units.json`).
 #[cfg(feature = "std")]
-const BUILT_IN_SHORT_NUMBERS: &[(u8, u16)] = &[(0x01, 0x7E0), (0x02, 0x7E1), (0x09, 0x70E), (0x16, 0x70C), (0x17, 0x714)];
+const BUILT_IN_SHORT_NUMBERS: &[(u8, u16)] = &[(0x01, 0x7E0), (0x02, 0x7E1)];
 
 /// The built-in fallback as pairings.
 #[cfg(feature = "std")]
@@ -331,17 +329,17 @@ mod tests {
 	#[test]
 	fn the_cluster_is_not_addressed_as_an_iso_unit() {
 		// The bug this module exists to stop: treating `17` as an index into
-		// the ISO block gives 0x7F0, which nothing on this car answers.
-		let cluster = parse("17").unwrap();
-		assert_eq!(cluster.request, 0x714);
-		assert_ne!(cluster.request, 0x7E0 + 16);
+		// the ISO block gives 0x7F0, which nothing on this car answers. With no
+		// pairing for it, `17` is refused, never extrapolated.
+		let err = parse("17").unwrap_err();
+		assert!(err.contains("no known request id"), "{err}");
 	}
 
 	#[test]
 	fn a_unit_may_be_named_by_short_number_or_by_request_id() {
 		assert_eq!(parse("01").unwrap().request, 0x7E0);
 		assert_eq!(parse("2").unwrap().request, 0x7E1);
-		assert_eq!(parse("714").unwrap(), parse("17").unwrap());
+		assert_eq!(parse("714").unwrap().request, 0x714);
 		assert_eq!(parse("713").unwrap().request, 0x713);
 		assert_eq!(parse("7E1").unwrap().request, 0x7E1);
 	}
@@ -369,28 +367,30 @@ mod tests {
 
 	#[test]
 	fn the_built_in_list_is_the_fallback_when_nothing_is_installed() {
-		// No label files, no record of the car: the five pairings proven on hardware still
-		// answer, so a run on a machine with no VCDS installation reaches the
-		// units it always could.
+		// No source, no record of the car: the two ids ISO 15765-4 gives the engine and the
+		// transmission still answer, and nothing measured on one car does.
 		let built_in = built_in_pairings();
 		let in_force = pairings_in_force(&[&built_in]);
-		for (number, request) in [(0x01, 0x7E0), (0x02, 0x7E1), (0x09, 0x70E), (0x16, 0x70C), (0x17, 0x714)] {
+		for (number, request) in [(0x01, 0x7E0), (0x02, 0x7E1)] {
 			let found = in_force.iter().find(|e| e.number == number).expect("built in");
 			assert_eq!(found.request, Some(request), "{number:02X}");
+		}
+		for number in [0x09, 0x16, 0x17] {
+			assert!(in_force.iter().all(|e| e.number != number), "{number:02X} is one car's pairing");
 		}
 	}
 
 	#[test]
 	fn the_tiers_are_label_files_then_built_in() {
 		// 01: both tiers claim it, and the label files' id is the one that survives.
-		// 17: the label files name it but does not know its id; the built-in id
+		// 02: the label files name it but does not know its id; the built-in id
 		//     must still come through, so a name never costs an address.
 		// 44: only the label files have it — the built-in list is not the source of
 		//     truth any more.
 		// 86: only the label files, and only a name: a number with no id at all.
 		let label_files = vec![
 			pairing(0x01, Some(0x70A), Some("label files engine")),
-			pairing(0x17, None, Some("J285 - Instrument Cluster")),
+			pairing(0x02, None, Some("J217 - Transmission")),
 			pairing(0x44, Some(0x712), Some("J500 - Power Steering")),
 			pairing(0x86, None, Some("R - Radio")),
 		];
@@ -399,8 +399,8 @@ mod tests {
 
 		assert_eq!(at(0x01).request, Some(0x70A), "the label files outrank the built-in id");
 		assert_eq!(at(0x01).name.as_deref(), Some("label files engine"));
-		assert_eq!(at(0x17).request, Some(0x714), "the built-in id survives label files name");
-		assert_eq!(at(0x17).name.as_deref(), Some("J285 - Instrument Cluster"));
+		assert_eq!(at(0x02).request, Some(0x7E1), "the built-in id survives label files name");
+		assert_eq!(at(0x02).name.as_deref(), Some("J217 - Transmission"));
 		assert_eq!(at(0x44).request, Some(0x712), "the label files outrank the absent built-in");
 		assert_eq!(at(0x86).request, None, "a name is not an address");
 	}
@@ -427,7 +427,7 @@ mod tests {
 
 		// Installing does not disturb the fallback.
 		assert_eq!(parse("01").unwrap().request, 0x7E0);
-		assert_eq!(parse("17").unwrap().request, 0x714);
+		assert_eq!(parse("02").unwrap().request, 0x7E1);
 	}
 
 	#[test]
@@ -457,7 +457,9 @@ mod tests {
 	#[test]
 	fn a_unit_is_labelled_by_number_when_known_and_by_id_when_not() {
 		assert_eq!(UnitAddress::from_request(0x7E0).unwrap().label(), "01");
-		assert_eq!(UnitAddress::from_request(0x714).unwrap().label(), "17");
+		assert_eq!(UnitAddress::from_request(0x7E1).unwrap().label(), "02");
+		// A number one car's cluster answered on is not built in: its id stands.
+		assert_eq!(UnitAddress::from_request(0x714).unwrap().label(), "714");
 		assert_eq!(UnitAddress::from_request(0x713).unwrap().label(), "713");
 	}
 }

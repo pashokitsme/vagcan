@@ -26,24 +26,21 @@ $ vagcan units
 note: adapter from VAGCAN_DEVICE=[PORT]
 2 control units on the gateway's list
 
-UNIT  ID   PART  NAME
-09    70E
+UNIT  ID   PART  NAME  COMPONENT
+--    70E
 --    713
-note: 2 of 2 units have no name in the ODIS project SIM00
-  (use "vagcan units --identify" to name each unit by what it says it is)
 
 $ vagcan units --identify
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
 5 control units on SIMVIN00000000001 · 4 answered · 2 on the gateway's list · 2 named
 
-   UNIT  ID   PART        COMPONENT    NAME
-✗  09    70E                           (no answer)
-✓  --    710  SIM907000C  SIM GATEWAY
-✓  --    713  SIM614000D  SIM ESC
-✓  01    7E0  SIM906000A  SIM ENGINE   Sim Engine UDS
-✓  02    7E1  SIM300000B  SIM GEARBOX  Sim Gearbox UDS
-note: 2 of 4 units have no name in the ODIS project SIM00
+   UNIT  ID   PART        NAME         COMPONENT
+✗  --    70E              (no answer)
+✓  --    710  SIM907000C               SIM GATEWAY
+✓  --    713  SIM614000D               SIM ESC
+✓  01    7E0  SIM906000A  Sim Engine   SIM ENGINE
+✓  02    7E1  SIM300000B  Sim Gearbox  SIM GEARBOX
 
 $ vagcan units --identify 01
 ? success
@@ -62,7 +59,7 @@ IDENTIFICATION
 $ vagcan units --identify 70E
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
-unit 09 (70E) does not answer
+unit 70E does not answer
   (use "vagcan units --identify" to see which units answer)
 
 ```

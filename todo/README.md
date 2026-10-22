@@ -133,8 +133,11 @@ temperatures (`02:102A`–`102C`) answer — outside the August survey's pages.
 2. ~~**Unit names from the run's source**~~ — done 2026-10-22: `units`, `faults --unit`,
    `sensors --unit`, `units --identify <unit>`, `adaptations` and `watch` name and number units
    from the run's one source (`vag_cli_core::unit_names`); `setup` caches an ODIS project's
-   (`unit_name`, schema 6). On the reference project: 54 logical links name all 717 variants,
-   47 of them numbered; `info` and the dash build were never named from a source.
+   (`unit_name`, schema 6), and a project read before that has them read from its folder the
+   first time a run needs them (`vag_cli_core::odis_read`, adaptations too). On the reference
+   project: 54 logical links name all 717 variants, 47 of them numbered. Review round 1
+   (owner, 2026-10-22): names lose the protocol's ` UDS`; NAME is the source's alone, F197 in
+   its own COMPONENT column; the built-in pairings are `01`/`02` only.
 3. **The housing** — [`dash/15`](dash/15-enclosure.md): print the 2026-10-03 changes (the
    socket's rim, the ESP's clip, the face's teeth).
 4. **Runs in flash** — [`dash/21`](dash/21-runs-in-flash.md): how many runs, and when LIMIT

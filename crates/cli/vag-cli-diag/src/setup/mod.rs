@@ -1103,7 +1103,20 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 	// What the project calls each unit, and the number it gives it: `units`, `faults --unit`
 	// and the rest name and number units from these on an ODIS run, never from VCDS's.
 	let named_started = std::time::Instant::now();
-	let unit_names = timed("odis unit names", || odis.unit_names()).with_context(|| format!("reading the unit names of {}", dir.display()))?;
+	// A link that does not read costs its own unit's name, never the setup: it is counted in
+	// the step's line, and the read is recorded all the same, so no run reads it again.
+	let named = timed("odis unit names", || odis.unit_names());
+	let (unit_names, unreadable) = match named {
+		Ok(named) => {
+			let unreadable = match named.skipped {
+				0 => String::new(),
+				1 => ", 1 link unreadable".to_string(),
+				n => format!(", {n} links unreadable"),
+			};
+			(named.units, unreadable)
+		}
+		Err(e) => (Vec::new(), format!(", none read: {e}")),
+	};
 	timed("odis unit names (sqlite)", || {
 		vag_data_db::put_unit_names(&project.cache(), &source, &unit_names)
 	})
@@ -1117,11 +1130,11 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 		"unit names",
 		State::Wrote,
 		format!(
-			"{} {} for {} {}, {numbered} numbered",
+			"{} {} for {} {}, {numbered} numbered{unreadable}",
 			links.len(),
 			plural(links.len(), "unit name"),
 			unit_names.len(),
-			plural(unit_names.len(), "variant")
+			plural(unit_names.len(), "variant"),
 		),
 	)
 	.at(project.cache());

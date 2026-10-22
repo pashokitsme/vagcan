@@ -1871,6 +1871,8 @@ fn replay_identities(vin: Option<&str>) -> Result<Vec<crate::plan::UnitIdentity>
 /// car recorded on this machine does. With no car recorded — or several and no
 /// `vin` — there is no unit list, and every catalog is offered under one tab.
 pub async fn run_recording(recording_path: &str, catalogs: &str, vin: Option<&str>, speed: f64) -> Result<()> {
+	// The run's numbering, as the live `watch` has it: headings and the Unit column read alike.
+	vag_cli_core::unit_names::install().await;
 	let csv = std::fs::read_to_string(recording_path).with_context(|| format!("reading the recording {recording_path:?}"))?;
 	let recording = replay::Recording::parse(&csv).map_err(|e| anyhow::anyhow!("{recording_path}: {e}"))?;
 

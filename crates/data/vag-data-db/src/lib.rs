@@ -370,9 +370,10 @@ CREATE INDEX IF NOT EXISTS idx_registry_level      ON registry_level(registry_ro
 -- the link's long name; `address` the diagnostic address VW's table of logical links gives
 -- the link, NULL where it gives none or more than one
 -- (`vag_data_labels::odis::Project::unit_names`). Which variant a unit on a car is comes
--- from its own `F19E`/`F1A2`; nothing here is a car's.
+-- from its own `F19E`/`F1A2`; nothing here is a car's. `ON DELETE CASCADE`: a vagcan older
+-- than this table drops a source knowing nothing of it, and its rows go with the source.
 CREATE TABLE IF NOT EXISTS unit_name (
-    source_id    INTEGER NOT NULL REFERENCES source(id),
+    source_id    INTEGER NOT NULL REFERENCES source(id) ON DELETE CASCADE,
     variant      TEXT NOT NULL,
     base_variant TEXT NOT NULL,
     link         TEXT NOT NULL,
@@ -1508,10 +1509,15 @@ pub fn odis_sources_without_adaptations(db_path: &Path) -> Result<Vec<String>, E
 /// source marked as read for them — even with none, so that a project which names no unit is
 /// told from one read before names were kept ([`odis_sources_without_unit_names`]). Returns
 /// how many rows landed.
+///
+/// Immediate, and waiting out another writer: a command can read a project's names the first
+/// time it needs them, so two processes may write them at once, and the second's replace is
+/// the same rows.
 pub fn put_unit_names(db_path: &Path, project_dir: &str, units: &[vag_data_labels::odis::UnitName]) -> Result<usize, Error> {
 	let mut conn = Connection::open(db_path)?;
+	conn.busy_timeout(std::time::Duration::from_secs(30))?;
 	create_schema(&conn, db_path)?;
-	let tx = conn.transaction()?;
+	let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 	let source = source_id(&tx, ODIS, project_dir)?;
 	tx.execute("DELETE FROM unit_name WHERE source_id = ?1", params![source])?;
 	{
@@ -3928,6 +3934,24 @@ mod tests {
 		let id = sources(&ws.db_path).unwrap().into_iter().find(|s| s.path() == "/x/OTHER").unwrap().id;
 		drop_source(&ws.db_path, id).unwrap();
 		assert!(unit_names_of(&ws.db_path).unwrap().is_empty());
+	}
+
+	#[test]
+	fn a_drop_that_knows_no_unit_names_takes_them_with_the_source() {
+		let ws = TempWorkspace::new("unit-names-cascade");
+		put_unit_names(&ws.db_path, "/x/OLD", &[unit("EV_Old_001", "LL_Old", "Old", None)]).unwrap();
+		put_unit_names(&ws.db_path, "/x/SIM", &[unit("EV_SimA_001", "LL_SimA", "Sim A", Some(0x17))]).unwrap();
+		// What an older vagcan's drop does: the tables it knows, then the source row.
+		Connection::open(&ws.db_path)
+			.unwrap()
+			.execute("DELETE FROM source WHERE dir = '/x/OLD'", [])
+			.unwrap();
+		let held: i64 = Connection::open(&ws.db_path)
+			.unwrap()
+			.query_row("SELECT COUNT(*) FROM unit_name", [], |row| row.get(0))
+			.unwrap();
+		assert_eq!(held, 1, "the dropped source's row went with it, the other stayed");
+		assert_eq!(unit_names_of(&ws.db_path).unwrap()[0].variant, "EV_SimA_001");
 	}
 
 	#[test]

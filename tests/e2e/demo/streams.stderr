@@ -3,4 +3,3 @@ note: adapter from VAGCAN_DEVICE=[PORT]
 recorded the units in ~/.vagcan/cars/SIMVIN00000000001/units.json
 710: no name in the ODIS project SIM00
 713: no name in the ODIS project SIM00
-note: 2 of 4 units have no name in the ODIS project SIM00

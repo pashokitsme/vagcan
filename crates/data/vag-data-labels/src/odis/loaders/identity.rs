@@ -178,6 +178,8 @@ pub struct LogicalLink {
 	pub short_name: Option<String>,
 	/// `Dash Board UDS`: the name the project gives the unit behind the link.
 	pub long_name: Option<String>,
+	/// The protocol layer the link speaks, `PR_UDSOnCAN`.
+	pub protocol: Option<String>,
 	/// The base variant the link reaches; `None` for a link to a functional group (every
 	/// UDS system, every OBD system), which reaches no one unit.
 	pub base_variant: Option<String>,
@@ -197,11 +199,12 @@ pub fn logical_link(stream: &mut Stream<'_>) -> Result<LogicalLink, Error> {
 	let _reserved = stream.ascii()?;
 	let _long_name_id = stream.ascii()?;
 	let _description_id = stream.ascii()?;
-	let _protocol = stream.ascii()?;
+	let protocol = stream.ascii()?.map(str::to_owned);
 	let base_variant = stream.ascii()?.map(str::to_owned);
 	Ok(LogicalLink {
 		short_name,
 		long_name,
+		protocol,
 		base_variant,
 	})
 }
@@ -652,6 +655,7 @@ mod tests {
 		let link = logical_link(&mut stream).expect("a link's head parses");
 		assert_eq!(link.short_name.as_deref(), Some("LL_SimDashUDS"));
 		assert_eq!(link.long_name.as_deref(), Some("Sim Dash UDS"));
+		assert_eq!(link.protocol.as_deref(), Some("PR_UDSOnCAN"));
 		assert_eq!(link.base_variant.as_deref(), Some("BV_SimDashUDS"));
 
 		// A link to every UDS system reaches no one unit.

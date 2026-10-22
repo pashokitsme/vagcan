@@ -16,12 +16,11 @@ recorded the units in ~/.vagcan/cars/SIMVIN00000000002/units.json
 7E1: no name in the ODIS project SIM00
 4 control units on SIMVIN00000000002 · 4 answered · 1 on the gateway's list · 2 named
 
-   UNIT  ID   PART        COMPONENT    NAME
-✓  --    710  SIM907000C  SIM GATEWAY
-✓  03    713  SIM614000D  SIM ESC      Odis Brakes UDS
-✓  01    7E0  SIM906000A  SIM ENGINE   Odis Engine UDS
-✓  02    7E1  SIM300000B  SIM GEARBOX
-note: 2 of 4 units have no name in the ODIS project SIM00
+   UNIT  ID   PART        NAME         COMPONENT
+✓  --    710  SIM907000C               SIM GATEWAY
+✓  03    713  SIM614000D  Odis Brakes  SIM ESC
+✓  01    7E0  SIM906000A  Odis Engine  SIM ENGINE
+✓  02    7E1  SIM300000B               SIM GEARBOX
 
 $ vagcan --source vcds -v units --identify
 ? success
@@ -32,12 +31,11 @@ recorded the units in ~/.vagcan/cars/SIMVIN00000000002/units.json
 713: no name in the VCDS installation
 4 control units on SIMVIN00000000002 · 4 answered · 1 on the gateway's list · 2 named
 
-   UNIT  ID   PART        COMPONENT    NAME
-✓  --    710  SIM907000C  SIM GATEWAY
-✓  --    713  SIM614000D  SIM ESC
-✓  01    7E0  SIM906000A  SIM ENGINE   Vcds Engine
-✓  02    7E1  SIM300000B  SIM GEARBOX  Vcds Gearbox
-note: 2 of 4 units have no name in the VCDS installation
+   UNIT  ID   PART        NAME          COMPONENT
+✓  --    710  SIM907000C                SIM GATEWAY
+✓  --    713  SIM614000D                SIM ESC
+✓  01    7E0  SIM906000A  Vcds Engine   SIM ENGINE
+✓  02    7E1  SIM300000B  Vcds Gearbox  SIM GEARBOX
 
 ```
 
@@ -62,7 +60,7 @@ $ vagcan --source vcds faults --unit 03
 error: --unit: the VCDS installation numbers no control unit 03
 
 help: give its request id instead: `vagcan units` lists them
-help: or number the units as ODIS does: `--source odis`
+help: or read it as ODIS numbers it: `vagcan --source odis faults --unit 03`
 
 $ vagcan units --identify 03
 ? success
@@ -81,7 +79,7 @@ $ vagcan --source vcds units --identify 03
 error: --identify: the VCDS installation numbers no control unit 03
 
 help: give its request id instead: `vagcan units` lists them
-help: or number the units as ODIS does: `--source odis`
+help: or read it as ODIS numbers it: `vagcan --source odis units --identify 03`
 
 ```
 
@@ -93,16 +91,15 @@ $ vagcan units
 note: adapter from VAGCAN_DEVICE=[PORT]
 1 control unit on the gateway's list
 
-UNIT  ID   PART        NAME
-03    713  SIM614000D  Odis Brakes UDS
+UNIT  ID   PART        NAME         COMPONENT
+03    713  SIM614000D  Odis Brakes  SIM ESC
 
 $ vagcan --source vcds units
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
 1 control unit on the gateway's list
 
-UNIT  ID   PART        NAME
---    713  SIM614000D  SIM ESC
-note: 1 of 1 unit has no name in the VCDS installation
+UNIT  ID   PART        NAME  COMPONENT
+--    713  SIM614000D        SIM ESC
 
 ```

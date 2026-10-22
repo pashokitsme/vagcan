@@ -133,12 +133,18 @@ What that means per reader:
 - **the overview and `setup`** count and close on one source each: the overview the run's,
   `setup` each source it read, with a hint when car commands read another.
 - **unit names and numbers** (`vag_cli_core::unit_names`, 2026-10-22): an ODIS run names a
-  unit by the logical link that reaches its base variant (the variant from its `F19E`/`F1A2`)
-  and numbers it by VW's table of logical links by diagnostic address
-  (`DOP_TEXTTABLELogicLinkNames`), as `setup` cached them in `unit_name`; a VCDS run names and
-  numbers it by the label file its `F187` resolves to. A unit the run's source does not name
-  goes by its request id, and the command says how many. `units`, `faults --unit`, `sensors
-  --unit`, `units --identify <unit>`, `adaptations` and `watch` take the same numbering.
+  unit by the logical link that reaches its base variant (the variant from its `F19E`/`F1A2`),
+  less the word the link's protocol adds (`Dash Board`, not `Dash Board UDS`), and numbers it
+  by VW's table of logical links by diagnostic address (`DOP_TEXTTABLELogicLinkNames`), as
+  `setup` cached them in `unit_name`; a VCDS run names and numbers it by the label file its
+  `F187` resolves to. A unit is named by what it said it is, never by its number. In `units`,
+  NAME is the source's name and COMPONENT the unit's own (`F197`). A unit the source does not
+  name goes by its request id. `units`, `faults --unit`, `sensors --unit`, `units --identify
+  <unit>`, `adaptations`, `watch`, the replays and the dash build take the same numbering.
+- **what an older `setup` did not keep** (`vag_cli_core::odis_read`): a project read before
+  unit names or adaptation channels were kept has them read from its folder (`source.dir`) the
+  first time a run needs them, under the project's lock, and never again. Only a folder that
+  is gone is said, with what is missing.
 
 The two sources write their names to separate files — VCDS to `names.json`, wholesale,
 ODIS to `names-odis.json`, merged — so neither run overwrites the other's names.
@@ -524,6 +530,12 @@ baked in and could not hold a catalog if it wanted to.
 `vag-uds-client` cannot read a label file or an ODIS project — it is the protocol layer
 and neither is a protocol — so the run's source's unit numbering is pushed *in* from
 `vag_cli_core::unit_names`, and what crosses the seam is plain numbers and strings.
+
+**A number is paired with a request id by data alone.** Built in are only `01 → 7E0` and
+`02 → 7E1`, the first two request ids ISO 15765-4 gives the legislated OBD servers, by
+convention the engine and the transmission. Every other pairing comes from the run's source
+and the car's own record (`units.json`): `09`, `16` and `17` were one car's and were removed
+(owner, 2026-10-22).
 
 **Two addressing conventions are live on the same car.** ISO 15765-4 pairs
 `0x7E0..0x7E7` with `+8`, so the engine answers `0x7E0 → 0x7E8`. VW's own block

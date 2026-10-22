@@ -37,13 +37,12 @@ $ vagcan units --identify
 note: adapter from VAGCAN_DEVICE=[PORT]
 5 control units on SIMVIN00000000003 · 3 answered · 2 on the gateway's list · 1 named
 
-   UNIT  ID   PART        COMPONENT    NAME
-✗  09    70E                           (no answer)
-✓  --    710  SIM907000C  SIM GATEWAY
+   UNIT  ID   PART        NAME         COMPONENT
+✗  --    70E              (no answer)
+✓  --    710  SIM907000C               SIM GATEWAY
 ✓  --    713  SIM614000D
-✓  01    7E0  SIM906000A  SIM ENGINE   Sim Engine UDS
-✗  02    7E1                           (no answer)
-note: 2 of 3 units have no name in the ODIS project SIM00
+✓  01    7E0  SIM906000A  Sim Engine   SIM ENGINE
+✗  02    7E1              (no answer)
 
 $ vagcan faults
 ? success

@@ -167,7 +167,7 @@ pub async fn sensors<L: UnitLink>(open: impl AsyncFnOnce(Reach) -> Result<L>, un
 	use render::SensorLine;
 	use vag_data_labels::obd::{self, PIDS};
 
-	vag_cli_core::unit_names::install();
+	vag_cli_core::unit_names::install().await;
 	let unit = parse_unit("--unit", unit_text)?;
 	let established = unit.is_emissions_related();
 	let mut backend = open(if established { Reach::AnyLink } else { Reach::CableOnly }).await?;
@@ -271,7 +271,7 @@ pub async fn sensors<L: UnitLink>(open: impl AsyncFnOnce(Reach) -> Result<L>, un
 pub async fn odx_name_from_car<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, unit_text: &str) -> Result<String> {
 	const ODX_FILE_NAME: u16 = 0xF19E;
 
-	vag_cli_core::unit_names::install();
+	vag_cli_core::unit_names::install().await;
 	let unit = parse_unit("--unit", unit_text)?;
 	let mut uds = address_unit(open().await?, unit);
 	let data = uds
@@ -295,7 +295,7 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 	// for a list written here, and never the other source (CLAUDE.md). What `vagcan setup`
 	// read is all it takes; a machine that has not run setup identifies units without names,
 	// which is the ordinary "setup has not run yet" case, not an error.
-	let names = UnitNames::for_run();
+	let names = UnitNames::for_run_async().await;
 	match names.unnamed() {
 		Some(unnamed) => {
 			// An identification records what it reads; one whose naming broke says so first.
@@ -349,7 +349,6 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 			&ids,
 			record.map(|car| car.units.as_slice()),
 			|unit| names.of(unit),
-			|number| names.name_of_number(number),
 			vag_uds_client::address::short_number,
 		);
 		out!("{}", listing.text);
@@ -390,7 +389,7 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 		(None, true) => say!("warning: the gateway listed no control units: only the gateway and the powertrain were asked"),
 		(None, false) => {}
 	}
-	let mut table = vag_cli_core::table::Table::new(&["", "UNIT", "ID", "PART", "COMPONENT", "NAME"]);
+	let mut table = vag_cli_core::table::Table::new(&["", "UNIT", "ID", "PART", "NAME", "COMPONENT"]);
 	let mut answered = 0usize;
 	let mut resolved = 0usize;
 	let mut rows = 0usize;
@@ -410,8 +409,8 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 				unit_number(vag_uds_client::address::short_number(id)),
 				format!("{id:03X}"),
 				String::new(),
-				String::new(),
 				"(no answer)".to_string(),
+				String::new(),
 			]);
 			continue;
 		}
@@ -443,8 +442,8 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 			unit_number(vag_uds_client::address::short_number(id)),
 			format!("{id:03X}"),
 			part,
-			component,
 			name,
+			component,
 		]);
 	}
 	let summary = facts([
@@ -464,22 +463,22 @@ pub async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify:
 		},
 	]);
 	out!("{}", vag_cli_core::table::list(&summary, &table, vag_cli_core::table::terminal_width()));
-	say_unnamed(&names, answered - resolved, answered, false);
 	Ok(())
 }
 
-/// The one line that says some units go by their id: `unnamed` of `total` have no name in the
-/// run's source. Nothing when every unit is named, or when the source names none at all — that
-/// was said before the read.
+/// The plain listing's `-v` line that says some units go by their id: `unnamed` of `total`
+/// have no name in the run's source. Nothing when every unit is named, or when the source
+/// names none at all — that was said before the read. `--identify` says it in its summary
+/// (`N named`), and so has no such line.
 fn say_unnamed(names: &vag_cli_core::unit_names::UnitNames, unnamed: usize, total: usize, unrecorded: bool) {
 	let Some(what) = names.describe() else { return };
 	if unnamed == 0 {
 		return;
 	}
 	let verb = if unnamed == 1 { "has" } else { "have" };
-	say!("note: {unnamed} of {total} {} {verb} no name in {what}", render::plural(total, "unit"));
+	note!("{unnamed} of {total} {} {verb} no name in {what}", render::plural(total, "unit"));
 	if unrecorded {
-		say!("  (use \"vagcan units --identify\" to name each unit by what it says it is)");
+		note!("  (use \"vagcan units --identify\" to name each unit by what it says it is)");
 	}
 }
 
@@ -506,37 +505,35 @@ pub struct Listing {
 }
 
 /// The plain `units` listing, `gh pr list`'s shape: a count, then a table of each request
-/// id, the short number it goes by, the part number recorded for it and a name.
+/// id, the short number it goes by, the part number recorded for it, the run's source's name
+/// for it and what it calls itself.
 ///
-/// The name is, in order: what the run's source calls the unit the record says it is (with
-/// the number it gives it), what the source calls its short number, and what the unit called
-/// itself (`F197`). The part number and that last name come from `record`, what an earlier
-/// `--identify` wrote down. With none of them, just the id. A unit the source does not name
-/// is counted in [`Listing::unnamed`], whatever it called itself.
+/// The same rule as `--identify`: a unit is named by what it said it is (`by_unit`, from the
+/// record an earlier `--identify` wrote down), never by its number — NAME is the run's source's
+/// alone, and COMPONENT the unit's own (`F197`). With no record, just the id and its number. A
+/// unit the source does not name is counted in [`Listing::unnamed`].
 pub fn render_listing(
 	ids: &[u16],
 	record: Option<&[plan::UnitIdentity]>,
 	by_unit: impl Fn(&plan::UnitIdentity) -> Option<vag_cli_core::unit_names::Named>,
-	by_number: impl Fn(u8) -> Option<String>,
 	short: impl Fn(u16) -> Option<u8>,
 ) -> Listing {
-	let mut table = vag_cli_core::table::Table::new(&["UNIT", "ID", "PART", "NAME"]);
+	let mut table = vag_cli_core::table::Table::new(&["UNIT", "ID", "PART", "NAME", "COMPONENT"]);
 	let mut unnamed = 0;
 	for &id in ids {
 		let said = record.and_then(|units| units.iter().find(|u| u.request == id));
 		let part = said.and_then(|u| u.part_number.clone());
 		let named = said.and_then(&by_unit).unwrap_or_default();
 		let number = named.number.or_else(|| short(id));
-		let sourced = named.name.or_else(|| number.and_then(&by_number));
-		if sourced.is_none() {
+		if named.name.is_none() {
 			unnamed += 1;
 		}
-		let name = sourced.or_else(|| said.and_then(|u| u.component.clone()));
 		table.row(vec![
 			unit_number(number),
 			format!("{id:03X}"),
 			part.unwrap_or_default(),
-			name.unwrap_or_default(),
+			named.name.unwrap_or_default(),
+			said.and_then(|u| u.component.clone()).unwrap_or_default(),
 		]);
 	}
 	let summary = format!("{} control {} on the gateway's list", ids.len(), render::plural(ids.len(), "unit"));
@@ -552,7 +549,7 @@ pub fn render_listing(
 /// 256-identifier block and names what answers.
 pub async fn identification<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, unit_text: &str, while_driving: bool) -> Result<()> {
 	// The run's numbering, so `--identify 44` is the unit the run's source numbers 44.
-	vag_cli_core::unit_names::install();
+	vag_cli_core::unit_names::install().await;
 	let unit = parse_unit("--identify", unit_text)?;
 	let ranges = scan::parse_ranges(props::IDENT_RANGE).expect("the built-in range parses");
 
@@ -686,33 +683,27 @@ mod tests {
 				name: Some("Brakes by source".to_string()),
 			})
 		};
-		let by_number = |n: u8| (n == 0x01).then(|| "Engine by number".to_string());
 		let short = |request: u16| (request == 0x7E0).then_some(0x01);
-		let listing = render_listing(&[0x7E0, 0x713, 0x70A], Some(&record), by_unit, by_number, short);
+		let listing = render_listing(&[0x7E0, 0x713, 0x70A], Some(&record), by_unit, short);
+		// The engine has a number and no name from the source: its NAME stays empty, whatever
+		// the source would call unit 01 — a unit is named by what it said it is, not by its
+		// number. What it calls itself is its COMPONENT.
 		assert_eq!(
 			listing.text,
 			"3 control units on the gateway's list\n\
 			 \n\
-			 UNIT  ID   PART    NAME\n\
-			 01    7E0  PART-E  Engine by number\n\
-			 03    713  PART-B  Brakes by source\n\
+			 UNIT  ID   PART    NAME              COMPONENT\n\
+			 01    7E0  PART-E                    ENGINE SELF\n\
+			 03    713  PART-B  Brakes by source  BRAKES SELF\n\
 			 --    70A\n"
 		);
-		assert_eq!(listing.unnamed, 1, "70A goes by its id");
-		// A source that names nothing here: what the units called themselves, each counted.
-		let listing = render_listing(&[0x7E0, 0x713], Some(&record), |_| None, |_| None, short);
+		assert_eq!(listing.unnamed, 2, "7E0 and 70A go by their ids");
+		// Nothing on this machine: the ids, as before.
+		let listing = render_listing(&[0x7E0], None, |_| None, |_| None);
 		assert_eq!(
 			listing.text,
-			"2 control units on the gateway's list\n\
-			 \n\
-			 UNIT  ID   PART    NAME\n\
-			 01    7E0  PART-E  ENGINE SELF\n\
-			 --    713  PART-B  BRAKES SELF\n"
+			"1 control unit on the gateway's list\n\nUNIT  ID   PART  NAME  COMPONENT\n--    7E0\n"
 		);
-		assert_eq!(listing.unnamed, 2);
-		// Nothing on this machine: the ids, as before.
-		let listing = render_listing(&[0x7E0], None, |_| None, |_| None, |_| None);
-		assert_eq!(listing.text, "1 control unit on the gateway's list\n\nUNIT  ID   PART  NAME\n--    7E0\n");
 	}
 
 	#[test]

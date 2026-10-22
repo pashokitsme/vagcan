@@ -3494,6 +3494,9 @@ pub fn read_inputs(vin: &str, input: Option<&Path>) -> anyhow::Result<Inputs> {
 /// `dev dash build` refuse the same text with the same words.
 pub fn inputs_from_text(vin: &str, text: &str, input_path: PathBuf) -> anyhow::Result<Inputs> {
 	let dir = crate::datadir::dash_dir(vin)?;
+	// The run's numbering, so `17:2203` is the unit the run's source numbers 17 — from what the
+	// source holds, reading nothing: the firmware's build script builds through here.
+	crate::unit_names::install_held();
 	let parsed = parse_input(text)?;
 	if !parsed.vin.eq_ignore_ascii_case(vin.trim()) {
 		anyhow::bail!("{} is for VIN {} but the build asked for {vin}", input_path.display(), parsed.vin);
