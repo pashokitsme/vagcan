@@ -158,6 +158,54 @@ pub const RDBI_MEASUREMENT: &str = "DiagnServi_ReadDataByIdentMeasuValue";
 /// (`research/vcds-registry/README.md` §9.1).
 pub const RDBI_ADAPTATION: &str = "DiagnServi_ReadDataByIdentCalibData";
 
+/// The short name of VW's table of logical links by diagnostic address.
+///
+/// A `TEXTTABLE` whose coded value is a unit's diagnostic address (`0x17`) and whose text is
+/// the logical link that reaches it (`LL_DashBoardUDS`). Like [`RDBI_MEASUREMENT`] it is the
+/// name VW's converter gives a standard library's object, not a car's: the UDS
+/// identification and distributed-system libraries (VW 80125, VW 80127) carry it, and it is
+/// looked up by this name, never assumed to exist. On the reference project five copies
+/// hold it, and they agree.
+pub const LOGIC_LINK_NAMES: &str = "DOP_TEXTTABLELogicLinkNames";
+
+/// The head of an `MCD_DB_LOGICAL_LINK`: what the link is called, and what it reaches.
+///
+/// Read through the base-variant reference and no further — the rest is the physical link,
+/// the protocol stack and the link's communication parameters, which nothing here needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogicalLink {
+	/// `LL_DashBoardUDS`.
+	pub short_name: Option<String>,
+	/// `Dash Board UDS`: the name the project gives the unit behind the link.
+	pub long_name: Option<String>,
+	/// The base variant the link reaches; `None` for a link to a functional group (every
+	/// UDS system, every OBD system), which reaches no one unit.
+	pub base_variant: Option<String>,
+}
+
+/// Read the head of an `MCD_DB_LOGICAL_LINK`.
+///
+/// The common head every named database object opens with — short name, long name,
+/// description, a reserved name, the long name's text id, the description's — the field order
+/// [`ecu`] reads too, then the protocol and the base variant, each a bare pooled name. The
+/// reference project's 59 links all read this way: 54 name a base variant, and the five that
+/// do not name a functional group in the field after it.
+pub fn logical_link(stream: &mut Stream<'_>) -> Result<LogicalLink, Error> {
+	let short_name = stream.ascii()?.map(str::to_owned);
+	let long_name = stream.unicode()?.map(str::to_owned);
+	let _description = stream.unicode()?;
+	let _reserved = stream.ascii()?;
+	let _long_name_id = stream.ascii()?;
+	let _description_id = stream.ascii()?;
+	let _protocol = stream.ascii()?;
+	let base_variant = stream.ascii()?.map(str::to_owned);
+	Ok(LogicalLink {
+		short_name,
+		long_name,
+		base_variant,
+	})
+}
+
 /// Read a `DB_PROJECT_DATA`.
 ///
 /// It opens with a list of location references whose access keys are stepped
@@ -581,6 +629,38 @@ mod tests {
 		assert_eq!(refs[0].1.object.as_deref(), Some("EV_A"));
 		assert_eq!(refs[1].0.as_deref(), Some("EV_B"));
 		assert_eq!(refs[1].1.pool.as_deref(), Some("POOL"));
+	}
+
+	/// A link's head: its names, then the protocol and the base variant it reaches. What
+	/// follows — the functional group, the protocol stack, the physical link — is left
+	/// unread. Made-up names.
+	#[test]
+	fn a_logical_link_names_its_unit_and_the_base_variant_it_reaches() {
+		let mut b = Bytes::default();
+		b.a(Some("LL_SimDashUDS"))
+			.u(Some("Sim Dash UDS"))
+			.u(None)
+			.a(None)
+			.a(Some("SFT00099"))
+			.a(None)
+			.a(Some("PR_UDSOnCAN"))
+			.a(Some("BV_SimDashUDS"))
+			.a(None) // no functional group
+			.a(Some("ISO_15765_3_on_ISO_15765_2"));
+		let (body, strings) = b.done(code::MCD_DB_LOGICAL_LINK);
+		let (_, mut stream) = Stream::open(&body, &strings).expect("a well-formed object opens");
+		let link = logical_link(&mut stream).expect("a link's head parses");
+		assert_eq!(link.short_name.as_deref(), Some("LL_SimDashUDS"));
+		assert_eq!(link.long_name.as_deref(), Some("Sim Dash UDS"));
+		assert_eq!(link.base_variant.as_deref(), Some("BV_SimDashUDS"));
+
+		// A link to every UDS system reaches no one unit.
+		let mut b = Bytes::default();
+		b.a(Some("LL_AllSim")).u(Some("All Sim Systems")).u(None).a(None).a(None).a(None);
+		b.a(Some("PR_UDSOnCAN")).a(None).a(Some("FG_AllSim"));
+		let (body, strings) = b.done(code::MCD_DB_LOGICAL_LINK);
+		let (_, mut stream) = Stream::open(&body, &strings).expect("a well-formed object opens");
+		assert_eq!(logical_link(&mut stream).expect("parses").base_variant, None);
 	}
 
 	#[test]

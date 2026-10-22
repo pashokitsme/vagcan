@@ -272,7 +272,7 @@ pub enum Which {
 /// Everything that can be checked without the car is checked before `open`: the unit's
 /// spelling, the project's data, and whether there is anybody to pick with.
 pub async fn run<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, which: Which) -> Result<()> {
-	crate::labels::install_recorded_units();
+	vag_cli_core::unit_names::install();
 	let unit = match &which {
 		Which::One(text) => Some(car::parse_unit("unit", text)?),
 		Which::Pick | Which::All => None,

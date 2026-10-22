@@ -132,6 +132,13 @@ What that means per reader:
   which source it read and, where the other is set up, the flag that builds from it.
 - **the overview and `setup`** count and close on one source each: the overview the run's,
   `setup` each source it read, with a hint when car commands read another.
+- **unit names and numbers** (`vag_cli_core::unit_names`, 2026-10-22): an ODIS run names a
+  unit by the logical link that reaches its base variant (the variant from its `F19E`/`F1A2`)
+  and numbers it by VW's table of logical links by diagnostic address
+  (`DOP_TEXTTABLELogicLinkNames`), as `setup` cached them in `unit_name`; a VCDS run names and
+  numbers it by the label file its `F187` resolves to. A unit the run's source does not name
+  goes by its request id, and the command says how many. `units`, `faults --unit`, `sensors
+  --unit`, `units --identify <unit>`, `adaptations` and `watch` take the same numbering.
 
 The two sources write their names to separate files — VCDS to `names.json`, wholesale,
 ODIS to `names-odis.json`, merged — so neither run overwrites the other's names.
@@ -514,18 +521,18 @@ exists for a single module: `read.rs`, decoding a measurement against a catalog.
 behind the `std` feature, because the board executes a plan with the scaling already
 baked in and could not hold a catalog if it wanted to.
 
-`vag-uds-client` cannot read a label file — it is the protocol layer and label files are
-not a protocol — so the label files' unit numbering is pushed *in* from `vagcan`, and
-what crosses the seam is plain numbers and strings.
+`vag-uds-client` cannot read a label file or an ODIS project — it is the protocol layer
+and neither is a protocol — so the run's source's unit numbering is pushed *in* from
+`vag_cli_core::unit_names`, and what crosses the seam is plain numbers and strings.
 
 **Two addressing conventions are live on the same car.** ISO 15765-4 pairs
 `0x7E0..0x7E7` with `+8`, so the engine answers `0x7E0 → 0x7E8`. VW's own block
 answers at `+0x6A`, so the instrument cluster is `0x714 → 0x77E`. Assuming only the
 first makes every unit outside the powertrain invisible, which is exactly what
 happened before it was measured. Which CAN id a *unit number* is answered on is in no
-data file this project has found — the label files carry the numbers and the names and
-no CAN id anywhere — so that half is established by reading the car (`vagcan units
---identify`) or written down by hand.
+data file this project reads — the label files and an ODIS project's table of logical
+links carry the numbers and the names, not the CAN id — so that half is established by
+reading the car (`vagcan units --identify`) or written down by hand.
 
 **There is no whole-car sweep.** `dev survey` — which walked every unit and asked each the
 identifiers its data declared, with a blind sweep on request — was removed on 2026-09-28

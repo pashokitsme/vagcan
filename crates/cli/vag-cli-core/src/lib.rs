@@ -44,6 +44,7 @@ pub mod report;
 pub mod source;
 pub mod table;
 pub mod ui;
+pub mod unit_names;
 pub mod units;
 pub mod vcdslog;
 pub mod verbosity;

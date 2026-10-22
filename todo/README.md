@@ -107,7 +107,7 @@ temperatures (`02:102A`–`102C`) answer — outside the August survey's pages.
 | Knock retard alarm −6.0/−4.5, from the research (owner, 2026-09-26) | `dash/04` |
 | An alarm is a channel's minimum and maximum with an "off" value each, not a rule of its own; `[[alarm]]` removed; priority by `alarm_priority`, then the file's order; no bus-budget refusal — the build only says what is read (owner, 2026-10-19) | `dash/04` |
 | ~~A proven row outranks ODIS, and ODIS outranks VCDS, field by field (owner, 2026-09-28)~~ — superseded 2026-10-21: ODIS and VCDS are independent, one source per run, never mixed (`CLAUDE.md`) | `label-lookup/02` (archived) |
-| One source per run, picked by `--source`, then `VAGCAN_SOURCE`, then `[source] use` in `config.toml`, else ODIS when the project has one, else VCDS; a source asked for and not set up is an error; built 2026-10-21. Unit names and numbering (`units`, `info`, `sensors`, `faults --unit NN`, still from VCDS's label files on every run): decided 2026-10-21: follows the rule; ODIS unit names to come, on a branch of their own (Next item 2) | `vag_cli_core::source` |
+| One source per run, picked by `--source`, then `VAGCAN_SOURCE`, then `[source] use` in `config.toml`, else ODIS when the project has one, else VCDS; a source asked for and not set up is an error; built 2026-10-21. Unit names and numbering follow the rule (decided 2026-10-21, built 2026-10-22): an ODIS run names a unit by the logical link that reaches its base variant and numbers it by the project's table of logical links by diagnostic address; a VCDS run by the label file its part number resolves to; a unit the run's source does not name goes by its request id | `vag_cli_core::source`, `vag_cli_core::unit_names` |
 | `calibrate` removed entirely — «паразитный, никто этим заморачиваться не будет» (owner, 2026-09-28) | `label-lookup/02` (archived) |
 | `dev survey` removed entirely, with `faults --from`, `--diff` and the blind sweep: nobody runs a command just to feed the tool — the commands that meet the car record its units (owner, «б», 2026-09-28) | `label-lookup/03` (archived) |
 | `measure` times a run from the gearbox's speed, the board's stopwatch channel, and finds its roles by text id (owner, 2026-09-28) | PR #17 |
@@ -130,10 +130,11 @@ temperatures (`02:102A`–`102C`) answer — outside the August survey's pages.
 **Without the car**
 
 1. ~~**Flash the board with `master`**~~ — done 2026-10-21, `f58678c` (above).
-2. **Unit names from the run's source** (decided 2026-10-21, not started): `units`, `info`,
-   `sensors` and `faults --unit NN` still name and number units from VCDS's label files on every
-   run. On an ODIS run they take ODIS's names; where the run's source has none, the request id,
-   never the other source's name. A branch of its own.
+2. ~~**Unit names from the run's source**~~ — done 2026-10-22: `units`, `faults --unit`,
+   `sensors --unit`, `units --identify <unit>`, `adaptations` and `watch` name and number units
+   from the run's one source (`vag_cli_core::unit_names`); `setup` caches an ODIS project's
+   (`unit_name`, schema 6). On the reference project: 54 logical links name all 717 variants,
+   47 of them numbered; `info` and the dash build were never named from a source.
 3. **The housing** — [`dash/15`](dash/15-enclosure.md): print the 2026-10-03 changes (the
    socket's rim, the ESP's clip, the face's teeth).
 4. **Runs in flash** — [`dash/21`](dash/21-runs-in-flash.md): how many runs, and when LIMIT
@@ -310,7 +311,10 @@ Every command and flag the skills under `.claude/skills/` name was run against `
   is in no label file — the two numberings are unrelated — so it is learned per car by
   `units --identify` and lost when the process exits. `~/.vagcan/cars/<VIN>/` is
   where it would live; since 2026-09-28 it holds `units.json` — each identified unit's request
-  id and identity, not the unit number it answers for.
+  id and identity, not the unit number it answers for. An ODIS project may carry the id after
+  all (2026-10-22, unverified): its `DOP_TEXTTABLELogicLinkNamesNodeAddre` tables give each
+  logical link a node address, and on the reference project the dash's is `0x14` — `0x714`
+  is `0x700 + 0x14`. Not used: the pairing still comes from the car.
 
 ## Parked (designed, not being implemented now)
 - **The car picks its project** (parked by the owner, 2026-09-21, until a second ODIS

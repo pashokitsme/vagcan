@@ -13,11 +13,13 @@
 //! (`.archive/research/car/other-ecus.md` §1): eight units were observed answering, each on
 //! the id its rule predicts.
 //!
-//! The short numbers people use for units (`01` engine, `17` instruments) are a
-//! VCDS convention, not something the car transmits, and they are **hex bytes**
-//! — the label files write them `(#17)`, `(#4B)`, `(#86)` — so they are parsed and
-//! printed as hex here. Which request id each one is answered on is not a
-//! property of the protocol, so this module does not decide it: it accepts a
+//! The short numbers people use for units (`01` engine, `17` instruments) are VW's
+//! diagnostic addresses, which ODIS and VCDS number units by — not something the car
+//! transmits — and they are **hex bytes**: the label files write them `(#17)`, `(#4B)`,
+//! `(#86)`, an ODIS project's table of logical links keys them `0x17` — so they are parsed
+//! and printed as hex here. Which source's numbering a run uses is the caller's
+//! (`vag_cli_core::unit_names`, one source per run). Which request id each one is
+//! answered on is not a property of the protocol, so this module does not decide it: it accepts a
 //! table from whoever can establish it ([`install`]) and keeps a small built-in
 //! list as a fallback for a run that has no other source.
 //!
@@ -121,7 +123,7 @@ pub struct UnitNumber {
 	/// that. Nothing derives it from `number`: the two numberings are
 	/// unrelated (`17` answers on `0x714`, `19` on `0x710`).
 	pub request: Option<u16>,
-	/// What the label files call the unit, when label files said.
+	/// What the run's source calls the unit, when it said.
 	pub name: Option<String>,
 }
 
@@ -131,16 +133,16 @@ pub struct UnitNumber {
 /// it have nowhere to put one: [`UnitAddress::label`] takes no context, and
 /// [`parse`] runs while the command line is still being read.
 ///
-/// Nothing about label files reache this module: the caller does the
-/// label files work and hands in plain numbers and strings.
+/// Nothing about label files or ODIS projects reaches this module: the caller reads
+/// the run's source and hands in plain numbers and strings.
 #[cfg(feature = "std")]
 static INSTALLED: std::sync::RwLock<Vec<UnitNumber>> = std::sync::RwLock::new(Vec::new());
 
-/// Install pairings learned at run time — from the label files, and from what
+/// Install pairings learned at run time — from the run's source, and from what
 /// the car itself answered.
 ///
 /// Merged into whatever is already installed rather than replacing it, so a
-/// command can install the label files' numbering up front and add the request ids
+/// command can install the source's numbering up front and add the request ids
 /// it learns from the car as it goes. **First writer of a field wins**: a name
 /// or an id already established is not silently overwritten by a later,
 /// vaguer source.
@@ -296,42 +298,9 @@ pub fn parse(text: &str) -> Result<UnitAddress, String> {
 	})
 }
 
-/// Parse a comma-separated list of units, e.g. `01,713,70E`.
-///
-/// Every token is checked, and one bad token fails the whole list: the caller
-/// (`faults --ecu`) uses this to validate before it opens the
-/// adapter, which is a single-user resource — opening it and then failing on a
-/// typo leaves the port held while the user retypes.
-#[cfg(feature = "std")]
-pub fn parse_list(spec: &str) -> Result<Vec<UnitAddress>, String> {
-	let units: Vec<UnitAddress> = spec
-		.split(',')
-		.map(str::trim)
-		.filter(|token| !token.is_empty())
-		.map(parse)
-		.collect::<Result<_, _>>()?;
-	if units.is_empty() {
-		return Err("no control unit given".to_string());
-	}
-	Ok(units)
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
-
-	#[test]
-	fn a_list_is_parsed_whole_or_not_at_all() {
-		let units = parse_list("01, 713,70E").unwrap();
-		assert_eq!(units.iter().map(|u| u.request).collect::<Vec<_>>(), vec![0x7E0, 0x713, 0x70E]);
-
-		// One bad token fails the list — the caller is about to open the
-		// adapter on the strength of this having parsed.
-		assert!(parse_list("01,zz").is_err());
-		// Nothing at all is not an empty selection; it is a mistake.
-		assert!(parse_list("").is_err());
-		assert!(parse_list(" , ").is_err());
-	}
 
 	#[test]
 	fn each_block_uses_its_own_response_rule() {

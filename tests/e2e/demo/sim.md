@@ -64,7 +64,8 @@ status = 9
 $ vagcan units --identify
 ? success
 ...
-✓  02    7E1  SIM300000B  SIM GEARBOX
+✓  02    7E1  SIM300000B  SIM GEARBOX  Sim Gearbox UDS
+note: 2 of 4 units have no name in the ODIS project SIM00
 
 $ vagcan dev sim --from recording.csv --vin SIMVIN00000000001
 ? success

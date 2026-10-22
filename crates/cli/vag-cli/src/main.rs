@@ -876,7 +876,7 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 		// first, since it needs nothing checked to refuse.
 		Command::Adaptations { device, unit, all } => {
 			// The unit's spelling first, as every command checks its arguments first.
-			labels::install_recorded_units();
+			vag_cli_core::unit_names::install();
 			if let Some(text) = &unit {
 				car::parse_unit("unit", text)?;
 			}
@@ -915,7 +915,7 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 			..
 		} => {
 			// What `units` lists, `--did` and the Unit column use: 44 as well as 712.
-			labels::install_recorded_units();
+			vag_cli_core::unit_names::install();
 			let preselect = match did.as_deref() {
 				Some(spec) => plan::parse_checked(spec).map_err(|e| anyhow::anyhow!("--did: {e}"))?,
 				None => Vec::new(),

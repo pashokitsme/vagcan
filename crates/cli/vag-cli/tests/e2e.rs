@@ -44,8 +44,42 @@ fn binary() -> PathBuf {
 /// The made-up project every car's home holds, under `data/<PROJECT>/`.
 const PROJECT: &str = "SIM00";
 
-/// A `~/.vagcan` with one made-up project: channels and fault texts for the made-up ODX
-/// variants the cars' profiles name, as `vagcan setup` would have cached them from an ODIS
+/// What an ODIS project names a unit: its variant, the logical link that reaches it, the
+/// link's long name and the address the project's table of links gives it. Made up.
+fn odis_unit(variant: &str, link: &str, name: &str, address: Option<u32>) -> vag_data_labels::odis::UnitName {
+	vag_data_labels::odis::UnitName {
+		variant: variant.to_string(),
+		base_variant: format!("BV_{}", link.trim_start_matches("LL_")),
+		link: link.to_string(),
+		name: Some(name.to_string()),
+		address,
+	}
+}
+
+/// VCDS label files into the VCDS store's cache, as `setup` reads them, each named after the
+/// part number it describes and saying which unit it is, `(file, address, name)`; the store's
+/// source keeps the directory `source` names. Made up.
+fn vcds_label_files(cache: &Path, source: &str, files: &[(&str, u8, &str)]) {
+	let scratch = tempfile::tempdir().unwrap();
+	let labels = scratch.path().join("Labels");
+	std::fs::create_dir_all(&labels).unwrap();
+	for (file, address, name) in files {
+		std::fs::write(
+			labels.join(format!("{file}.lbl")),
+			format!("; Component: {name} (#{address:02X})\n001,1,Sim value,,\n"),
+		)
+		.unwrap();
+	}
+	vag_data_db::build_db(&labels, cache).unwrap();
+	// Read from a folder that is gone by now: the source keeps the made-up one.
+	rusqlite::Connection::open(cache)
+		.unwrap()
+		.execute("UPDATE source SET dir = ?1 WHERE kind = 'vcds'", [source])
+		.unwrap();
+}
+
+/// A `~/.vagcan` with one made-up project: channels, fault texts and unit names for the made-up
+/// ODX variants the cars' profiles name, as `vagcan setup` would have cached them from an ODIS
 /// project, and the project named in `config.toml`.
 fn home(at: &Path) {
 	use vag_data_labels::catalog::Scaling;
@@ -96,6 +130,17 @@ fn home(at: &Path) {
 	.unwrap();
 	vag_data_db::put_faults(&cache, source, "EV_SimBrake_001", &[fault(0x047120, "Made-up valve B: open circuit")]).unwrap();
 	vag_data_db::record_language(&cache, vag_data_db::ODIS, source, "eng").unwrap();
+	// What the project calls the engine and the gearbox, and their numbers. The brake unit
+	// names no ODX file, so the project names nothing of it.
+	vag_data_db::put_unit_names(
+		&cache,
+		source,
+		&[
+			odis_unit("EV_SimEngine_001", "LL_SimEngine", "Sim Engine UDS", Some(0x01)),
+			odis_unit("EV_SimGear_001", "LL_SimGearbox", "Sim Gearbox UDS", Some(0x02)),
+		],
+	)
+	.unwrap();
 	// Adaptation channels of the engine's and the gearbox's variants. The brake unit names no
 	// ODX file, so nothing describes its adaptations; 0612 is described and not on the car.
 	vag_data_db::put_all_adaptations(
@@ -178,10 +223,12 @@ const TWO_SOURCES: &str = "two-sources";
 /// read (CLAUDE.md, "ODIS and VCDS are independent sources"). Made-up paths, names and rows:
 ///
 /// - the ODIS project: `0x1001` as `Odis_oil_temperature` (×1 −40), the engine's fault
-///   `000129` with its text, and the engine's record 70 as `Odis Engine Speed`;
+///   `000129` with its text, the engine's record 70 as `Odis Engine Speed`, and the engine
+///   and the brakes named and numbered (`01`, `03`);
 /// - the VCDS store: `0x1001` as `Vcds oil temperature` (×0.5 −20), `0x1003` that ODIS does
 ///   not describe, the engine's record 70 as `Vcds engine speed`, and a registry log saying
-///   the car's units were read — no fault text (no `.rod` pool);
+///   the car's units were read — no fault text (no `.rod` pool) — and label files naming and
+///   numbering the engine and the gearbox (`01`, `02`);
 /// - the car's dash, `dash.toml`, reading `01:1001` and `01:1003`.
 fn two_sources_home(at: &Path) {
 	use vag_data_labels::catalog::Scaling;
@@ -191,10 +238,28 @@ fn two_sources_home(at: &Path) {
 	let project = at.join("data").join(PROJECT);
 	let vcds = "/nowhere/a-long-way-down/to-a-vcds-installation/Labels";
 	let odis = "/nowhere/SIM00-odis";
+	std::fs::create_dir_all(&store).unwrap();
+	// VCDS names the engine and the gearbox, each by its part number; not the brakes.
+	vcds_label_files(
+		&store.join("cache.sqlite"),
+		vcds,
+		&[("SIM906000A", 0x01, "Vcds Engine"), ("SIM300000B", 0x02, "Vcds Gearbox")],
+	);
 	for (dir, kind, source) in [(&store, vag_data_db::VCDS, vcds), (&project, vag_data_db::ODIS, odis)] {
 		std::fs::create_dir_all(dir).unwrap();
 		vag_data_db::record_language(&dir.join("cache.sqlite"), kind, source, "eng").unwrap();
 	}
+	// ODIS names the engine and the brakes, each by what its `F19E` says it is; not the
+	// gearbox, which names no ODX file.
+	vag_data_db::put_unit_names(
+		&project.join("cache.sqlite"),
+		odis,
+		&[
+			odis_unit("EV_SimEngine_001", "LL_SimEngine", "Odis Engine UDS", Some(0x01)),
+			odis_unit("EV_SimBrake_001", "LL_SimBrake", "Odis Brakes UDS", Some(0x03)),
+		],
+	)
+	.unwrap();
 	let reading = |did: u16, name: &str, factor: f64, offset: f64| Reading {
 		did,
 		name: name.to_string(),
@@ -328,13 +393,16 @@ fn two_sources_home(at: &Path) {
 const VCDS_ONLY: &str = "vcds-only";
 
 /// A `~/.vagcan` set up from a VCDS install alone: the machine's VCDS store holds the engine's
-/// freeze-frame layout, as `setup` stores `RF.rod`'s rows; no ODIS project.
+/// freeze-frame layout, as `setup` stores `RF.rod`'s rows, and a label file naming the engine;
+/// no ODIS project.
 fn vcds_home(at: &Path) {
 	let store = at.join("vcds");
 	std::fs::create_dir_all(&store).unwrap();
 	let cache = store.join("cache.sqlite");
 	// Record 0x70, four bytes — an engine speed, a voltage, a reserved byte. Made up.
 	let vcds = "/nowhere/sim-vcds/Labels";
+	// VCDS names the engine by its part number.
+	vcds_label_files(&cache, vcds, &[("SIM906000A", 0x01, "Sim Engine (VCDS)")]);
 	vag_data_db::record_language(&cache, vag_data_db::VCDS, vcds, "eng").unwrap();
 	let row = |bit: u32, bits: u32, kind: u8, scale: Option<(f64, f64)>, unit: Option<&str>, name: &str| {
 		use vag_data_labels::registries::{Described, Entry, Value};

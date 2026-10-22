@@ -225,7 +225,6 @@ const ALLOWED: &[(&str, &[&str])] = &[
 	),
 	("vag-cli-diag/src/faultnames.rs", &["project::vcds()"]),
 	("vag-cli-diag/src/labels.rs", &["project::vcds()"]),
-	("vag-cli-diag/src/car.rs", &["project::vcds()"]),
 	("vag-cli-diag/src/odisfaults.rs", &["project::current()"]),
 	// `bare vagcan` lists what is on the machine, and counts through a `Run`.
 	("vag-cli/src/overview.rs", &["project::vcds()", "project::current()", "project::vcds_at("]),

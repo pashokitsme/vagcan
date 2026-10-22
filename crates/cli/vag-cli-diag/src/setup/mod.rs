@@ -35,7 +35,7 @@
 //! naming reads `.rod` files straight off disk at run time, so those are taken
 //! from the install. The `.lbl`/`.clb` files are **not** copied (D4) — they are
 //! read once, here, into `cache.sqlite`, and that cache is what survives of
-//! them. The consequence is D5, honoured in [`crate::labels::load_project`]: a
+//! them. The consequence is D5, honoured by every reader of the store's cache: a
 //! cache whose label files are gone is trusted rather than declared stale, or
 //! every run after somebody moved their installation would try to rebuild from
 //! nothing. The installation is still worth keeping: step 5 and the first
@@ -1100,6 +1100,32 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 	)
 	.at(project.cache());
 	adaptation_step.took = Some(adaptations_started.elapsed());
+	// What the project calls each unit, and the number it gives it: `units`, `faults --unit`
+	// and the rest name and number units from these on an ODIS run, never from VCDS's.
+	let named_started = std::time::Instant::now();
+	let unit_names = timed("odis unit names", || odis.unit_names()).with_context(|| format!("reading the unit names of {}", dir.display()))?;
+	timed("odis unit names (sqlite)", || {
+		vag_data_db::put_unit_names(&project.cache(), &source, &unit_names)
+	})
+	.map_err(|e| anyhow::anyhow!("writing the unit names to {}: {e}", project.cache().display()))?;
+	let mut links: Vec<(&str, Option<u32>)> = unit_names.iter().map(|u| (u.link.as_str(), u.address)).collect();
+	links.sort_unstable();
+	links.dedup();
+	let numbered = links.iter().filter(|(_, address)| address.is_some()).count();
+	let mut named_step = Step::new(
+		vag_data_db::ODIS,
+		"unit names",
+		State::Wrote,
+		format!(
+			"{} {} for {} {}, {numbered} numbered",
+			links.len(),
+			plural(links.len(), "unit name"),
+			unit_names.len(),
+			plural(unit_names.len(), "variant")
+		),
+	)
+	.at(project.cache());
+	named_step.took = Some(named_started.elapsed());
 	let mut units = Step::new(
 		vag_data_db::ODIS,
 		"channels",
@@ -1119,7 +1145,8 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 		started
 			.elapsed()
 			.saturating_sub(faults_took)
-			.saturating_sub(adaptation_step.took.unwrap_or_default()),
+			.saturating_sub(adaptation_step.took.unwrap_or_default())
+			.saturating_sub(named_step.took.unwrap_or_default()),
 	);
 	let mut faults = Step::new(
 		vag_data_db::ODIS,
@@ -1163,7 +1190,7 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 			detail: Some(format!("{} variants, {} pools", variants.len(), odis.pools().len())),
 		},
 	)?;
-	Ok(vec![units, adaptation_step, faults, names])
+	Ok(vec![units, adaptation_step, faults, named_step, names])
 }
 
 /// Fold an ODIS project's pooled names into `names-odis.json`.
@@ -1212,7 +1239,7 @@ fn merge_names(path: &Path, incoming: std::collections::BTreeMap<String, String>
 /// **The `.lbl`/`.clb` files are not copied (D4).** They are read once, here,
 /// into `cache.sqlite`, and that cache is what survives of them. The
 /// consequence — a cache that can no longer be rebuilt without the installation
-/// — is D5, and `labels::load_project` is where it is honoured.
+/// — is D5: every reader of the store's cache opens it as it is, never rebuilding it.
 ///
 /// Idempotent and freshness-gated per file, the same rule the rest of setup
 /// follows: a file is copied only when it is missing from the destination or
