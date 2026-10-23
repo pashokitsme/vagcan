@@ -1,6 +1,6 @@
 ---
 name: use-vagcan
-description: Use when asked to read something off the car with vagcan — fault codes, live measurements, which control units it has, what a unit exposes — or when a command that touches the vehicle needs choosing.
+description: Use when asked to read something off the car with vagcan — fault codes, live measurements, which control units it has, what a unit exposes — when a command that touches the vehicle needs choosing, or when a question about a unit, a data identifier, a fault code, an adaptation or a scaling in ODIS or VCDS can be answered from the files under ~/.vagcan without the car.
 ---
 
 # Reading the car with `vagcan`
@@ -16,14 +16,18 @@ server**: each request takes a path through firmware nothing has exercised, and 
 with a defect in it crashes the server — a control unit the car is relying on. That is
 why the section on what not to run is not advisory.
 
-Everything below needs the car present and the ignition on. Commands under
-`vagcan dev vcds` and `vagcan dev recording` need only files and are out of scope here.
+Everything below needs the car present and the ignition on. **A question about the data
+itself** — what an identifier or a fault code means, how a channel scales, which
+adaptations a unit has, what the car's units said about themselves — needs no car: answer
+it from `~/.vagcan` with `sqlite3`. [`vagcan-dir.md`](vagcan-dir.md) is the map of that
+directory: every file, both caches' tables and indexes, the unit-to-variant join, and the
+queries. Read it before looking around `~/.vagcan` yourself.
 
 ## Invoking it
 
-There is no installed binary. Everything below is `cargo run -q -p vag-cli -- <args>`
-from the repository root — the package is `vag-cli`, the binary it builds is `vagcan` —
-and the commands are written bare for readability.
+`vagcan` is on `PATH` (`just install` puts the checkout's build there). It can lag the
+checkout: when the behaviour of the current source matters, use `just vagcan <args>`
+from the repository root, which builds it first.
 
 **One source per run.** With an ODIS project and a VCDS installation both set up, a run names
 everything — channels, scalings, fault text, freeze frames, adaptations — from one of them:
@@ -45,7 +49,8 @@ request and answer on the bus; stdout does not change with either.
 |---|---|
 | Is the adapter there? | `vagcan devices` |
 | Which car is this? | `vagcan info` |
-| Which control units does it have? | `vagcan units --identify` |
+| Which control units does it have? | `vagcan units` (one read of the gateway's list) |
+| Have every unit name itself, and record it | `vagcan units --identify` |
 | What does one unit say about itself? | `vagcan units --identify 01` |
 | One unit's adaptation channels and values | `vagcan adaptations 09` |
 | Every unit's adaptations, one after another | `vagcan adaptations --all` |
@@ -59,10 +64,11 @@ request and answer on the bus; stdout does not change with either.
 | The same, from the other source | `vagcan --source vcds faults` (or `odis`) |
 | Open a saved run as a chart page | `vagcan measure view` (offline) |
 
-Naming a unit: a short number (`01` engine, `02` gearbox) or a request id (`713`,
-`70E`), as `vagcan units` lists them for this car. The two id blocks answer by
-different rules, which is why `--unit 17` and `--unit 714` are not interchangeable
-guesses — pass what `units` printed.
+Naming a unit: **a request id (`713`, `70E`) always works.** A short number works for
+`01` (engine, `7E0`) and `02` (gearbox, `7E1`), and for any other unit only where the
+run's source numbers it: an ODIS project does, a VCDS installation does not. So on a
+VCDS run `--unit 17` is refused and `--unit 714` works. Pass the ID column of
+`vagcan units`.
 
 ## Monitoring for a set time
 
