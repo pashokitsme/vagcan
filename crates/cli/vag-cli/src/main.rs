@@ -321,8 +321,9 @@ enum Command {
 		/// there — and with a VCDS installation their channels are read from it
 		/// the first time.
 		///
-		/// Name ONE unit — a short number (01 engine, 02 gearbox, 09, 16, 17)
-		/// or a request id (713, 70E) — and it reads that unit's whole
+		/// Name ONE unit — a request id (713, 70E), or a short number: 01
+		/// engine, 02 gearbox, and others where the run's source numbers them
+		/// (an ODIS project does, a VCDS installation does not) — and it reads that unit's whole
 		/// identification block instead: every software and hardware version,
 		/// the supplier numbers, the ODX label file the unit is described by,
 		/// and whatever else answers, named where the meaning is documented and
