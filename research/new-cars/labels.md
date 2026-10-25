@@ -170,6 +170,18 @@ and this note records it as closed rather than as a lead.
 - Verdict: **abandon.** Do not budget the 5–21 h/file brute force of `tttext2.md` §12 as a
   general fix either — it opens one file you have a reason to open, never the 7,830-file corpus.
 
+> **2026-10-25 re-scope (`rod-mask-direct.md`).** The sentence above is right that `D` is *not
+> a function of the label data* — that stays dead. But the separate claim that the **direct path**
+> (vagcan asks the genuine interface the `0x45` challenges) is blocked by an *unreversed custom
+> re-key* was measured on the wrong binary (the old x86 24.7 VMProtect build). In the 26.3 arm64
+> build the owner runs, the session-key install is plain **RSA key-transport** —
+> `K = unpad(RSA1024_decrypt(embedded_privkey, wire_block))`, private key DER at `0x140171a30`,
+> single install path `FUN_140072ec0`→`FUN_14007ce68`, AES-256 IV table `0x140171d30`. So the
+> direct path is "ask the hardware over a link we can key", not "break a cipher"; it still needs
+> the genuine cable and is still one `0x45` per shifted file. See `rod-mask-direct.md` for
+> addresses and the concrete to-do. ODIS (§1.3(a)) remains the project's answer; this is the
+> VCDS-only alternative for an owner who has the interface.
+
 #### (a) ODIS for the shifted units — the project's actual answer
 
 ODIS-Service projects carry the whole (DID, layout, scaling, name, fault text) chain per variant
