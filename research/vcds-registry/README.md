@@ -162,8 +162,8 @@ shifted section will search for hours (§6).
 - **BCM (`EV_BCMMQB`) has no file in any of the three installs of §6a** — a missing file, not
   encryption. `ReDir.rod` sends its variant to another file: §6b (2026-10-20).
 - **Undecoded:** `f2` types 1/5/6/12, fields `f11`/`f12`, ~620 RM rows with an empty DID; the
-  first row of a TEA `MWB` (block 0 not repaired); 3 unresolved `INC` first rows; how VCDS
-  assembles the `ECM00*`/`GV_` engine lists.
+  first row of a TEA `MWB` (block 0 not repaired); 3 unresolved `INC` first rows. How VCDS
+  assembles the `ECM00*`/`GV_` engine lists: §6c (2026-10-25) — it does not, specially.
 - **`TTDOP` enum levels checked against the 25.12 table**, not re-cracked for 26.3.
 - **`TTTEXT2.ROD` no longer matters for the DID** (it comes from RM); still unopened.
 - **Budget spent:** ~111 CPU-min, incl. ~1,191 CPU-s wasted before the driver learned to skip
@@ -275,6 +275,86 @@ offset, 0 disagree, 6 are VCDS-only. All 15 units: 4,905 agree, 0 disagree, 6,08
 project moved nine units to their `_SK37` names (eight through `ReDir`), with identical rows except
 the gateway (`EV_GatewNF_SK37 → EV_GatewNF_VW37.rod`: 1,129 rows, the 1,123 of `EV_GatewNF_SK26`
 plus 6), and needed 5 more section keys (one search each on first run).
+
+### 6c. How VCDS assembles a unit's lists — engines and `GV_` included (2026-10-25)
+
+Read off `.archive/research/clb-crack/bin/VCDS-arm64-unpacked.exe` (PE ARM64, ImageBase
+`0x140000000`) and checked against the decoded EN 25.12 installation (10,108 `EV_`/`GV_` files,
+the 4,356 stores their `[INC]` names, `ReDir.rod`, `RM.rod`). Classic files only: a file whose
+`[CMP]` number has 8 digits is out of scope. **Observed** means read in the code; **inferred**
+says so. Scripts and decoded sections stayed in the session's scratchpad: they are
+Ross-Tech-derived.
+
+**`GV_` has no special case.** The binary holds no `GV_` string. A `GV_` file is opened as a
+`ReDir.rod` target (24 of 138 in EN 25.12, 15 of 127 in EN 26.3), or when the unit's `F19E` is
+itself a `GV_` name; inside it is an ordinary unit file with an `[INC]`. So "the engine-list
+assembly" is the assembly every unit gets (observed; that an engine reports a `GV_` `F19E` is
+inferred — no car has shown it).
+
+**1. Inputs** (`LoadASAMData`, `0x140025b48`): the unit's `F19E` (`obj+0xa46ec6`) and `F1A2`
+(`obj+0xa46f06`); the chassis from VIN characters 7–8 through `FUN_14002a200` (inferred to be
+`chassis.clb`), or from the first two characters of a part number without a VIN. When
+`XPAChassis` is set, a chassis containing `38`, `VN3S`, `VN47` or `VN54` and not ending in `P`
+gets a `P` appended. The version tag is `%c%02d`: `F1A2`'s first character, then its next two as
+a number (`001007` → `_001`).
+
+**2. Which file is the unit's** — a ladder, first file that opens wins (observed):
+
+- Pass 1, the exact version: file `<F19E>_<v>_<chassis>`, ReDir source `<F19E>_<v>_<chassis>`,
+  file `<F19E>_<v>`, ReDir source `<F19E>_<v>`. A chassis containing `VW32` or `VW36` then tries
+  the same two names with the other one of that pair.
+- Pass 0, older versions: the same steps with the version counted down — files to `_<c>00`, ReDir
+  sources to `_<c>01` — then with no version. The first character never changes: `_190` falls to
+  `_100`, never to `_0xx`.
+- Last, the same ladder with a second chassis value (`obj+0x148d93`; where it is set is unknown).
+- Nothing opened: the unit has no label data (`obj+0xa46ec5 = 1`).
+
+**3. ReDir** (`0x140032990`): binary search over the upper-cased source column (0xA0-byte
+entries, the target XOR-obfuscated); the target is opened with no version inserted and **no
+second ReDir lookup** — chains are not followed. `EMPTY` gets no handling on this path: it fails
+to open and the ladder goes on (observed; the string is used elsewhere).
+
+**4. Opening a file** (`0x1400278c0`): `[CMP]` reads `key,19B0,<stem>,19`; its second field,
+read `%04X`, must be below `0x1A31`. A file opened by the unit's own name must carry the `F19E`
+in its `[CMP]` name (case-insensitive substring); a ReDir target or a store is checked by stem
+only. A file that fails a check does not open, and the ladder goes on.
+
+**5. Sections, in this order** (`0x1400270b0`): the file's `[DTC]`; the global tables once;
+its `[FFMUX]`; its `[INC]`; then for every `[INC]` row in file order the store
+`UDS_EV\<row>.ROD` — its FFMUX, DTC, MWB, SOT, ADP, GES, SLV and XPL, whatever its name's last
+letter (a missing store is logged and skipped; `[INC]` names never go through ReDir); then the
+file's own MWB, SOT, ADP, GES, SLV and XPL; `SRI` at address `0x17` only.
+
+**6. Merging** (`0x14002c260`): plain concatenation, no de-duplication. DTC and FFMUX: the
+file first, then the stores; MWB, SOT, ADP, GES, SLV, XPL: the stores in `[INC]` order, then the
+file. Caps per list (DTC 23000, MWB 4100, SOT 675, ADP 4475, GES 575, SLV 1, IDN 8, INC 32, FFMUX
+5015, XPL 515): a full list logs `file:section` and stops.
+
+**7. Rows:** `%06d` (`%08d` for DTC only) is a 1-based row of the registry; a row outside it is
+logged once and kept uninitialised. A registry key of 999998 or 999997 takes the row out of the
+list (MWB, SOT, ADP); 999999 is a placeholder (DTC, FFMUX, XPL). EN 25.12's `RM.rod` (278,012
+rows) has none of those keys.
+
+**Checked against the installation:**
+
+- Classic files: one source per section kind, never two stores of a kind nor a store beside the
+  file's own section; every store holds exactly the section its letter names (3,639 of 3,639
+  with an open section; the 337 empty ones are shifted); no `[INC]` row names a missing store or
+  a `GV_` file. Largest list 3,624 MWB rows, largest `[INC]` 7 rows: no cap is reached.
+- The reference car's engine: no versioned or chassis name exists, so pass 0 ends on the bare
+  name; its `[INC]` names five stores, one per kind, and its MWB rows come to 1,102, all inside
+  `RM.rod`. The cache `setup` builds holds the same pieces: **today's chain and VCDS agree for
+  this engine.**
+
+**Where vagcan differs** (fixed on `fix/vcds-file-ladder`): it ranks `<name>_<vvv>` and
+`<name>_<project>` by `OdxMatch` with no older-version fallback and no `VW32`↔`VW36` swap; it
+follows ReDir chains and treats a ranked `EMPTY` as "no data"; it does not check `[CMP]`; and it
+drops the first row of 11 TEA `MWB` sections that VCDS reads.
+
+**Not known:** where the second chassis and the preset file (`obj+0x148dd7`) are set; what sets
+the PA flags (`DAT_14059f7b0`, `DAT_14020bbe4`), the "+1 to every row" flag (`DAT_15189ae8d`) and
+mode 5 of `DAT_1405e2b90` (skips SOT/ADP/GES); `FUN_14002a200` not decompiled; the binary's own
+build (checked against the 25.12 data).
 
 ## 7. Next — implementation (its own branch, reviewed)
 
