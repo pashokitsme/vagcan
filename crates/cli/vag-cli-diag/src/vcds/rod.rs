@@ -16,11 +16,52 @@ use std::path::{Path, PathBuf};
 use crate::render::plural;
 use vag_cli_core::marks::facts;
 use vag_cli_core::verbosity::{self, NOTES, WIRE};
-use vag_data_labels::rod::{IvCache, RodSection, RodStatus, Search, decode_rod_with};
+use vag_data_labels::rod::{IvCache, RodSection, RodStatus, Search, decode_rod_with, decode_rod_with_mask};
 
 /// The key cache for `path`: `cache` when given, `<path>.ivcache.json` beside it otherwise.
 fn cache_path(path: &str, cache: Option<&str>) -> PathBuf {
 	cache.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{path}.ivcache.json")))
+}
+
+/// The file's own name, which the name-derived IV is built from — the last path
+/// component, or the whole path when it has none.
+fn file_name_of(path: &str) -> String {
+	Path::new(path)
+		.file_name()
+		.map(|s| s.to_string_lossy().into_owned())
+		.unwrap_or_else(|| path.to_string())
+}
+
+/// Write each decoded section to `dir/<tag>.bin`, Latin-1 out as it was read in
+/// (`--dump`). Shared by the key-search path and the `--mask` path.
+fn write_dump(dir: &str, sections: &[RodSection]) -> Result<()> {
+	std::fs::create_dir_all(dir).with_context(|| format!("creating the dump directory {dir:?}"))?;
+	for s in sections {
+		if let Some(text) = &s.text {
+			// Latin-1 out, matching the way the section was read in: the text
+			// tables carry high bytes (umlauts, `°`, `µ`) that are plaintext
+			// evidence, and re-encoding them as UTF-8 would change the byte
+			// offsets every later tool counts on.
+			let bytes: Vec<u8> = text.chars().map(|c| c as u8).collect();
+			let out = Path::new(dir).join(format!("{}.bin", s.tag));
+			std::fs::write(&out, &bytes).with_context(|| format!("writing {}", out.display()))?;
+		}
+	}
+	Ok(())
+}
+
+/// Parse the eight-byte IV mask from 16 hex digits (an optional `0x` is allowed).
+fn parse_mask(hex: &str) -> Result<[u8; 8]> {
+	let hex = hex.strip_prefix("0x").unwrap_or(hex);
+	anyhow::ensure!(
+		hex.len() == 16 && hex.bytes().all(|b| b.is_ascii_hexdigit()),
+		"the mask must be 16 hex digits (8 bytes), got {hex:?}"
+	);
+	let mut mask = [0u8; 8];
+	for (i, byte) in mask.iter_mut().enumerate() {
+		*byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).expect("validated as hex above");
+	}
+	Ok(mask)
 }
 
 /// What one opening read and left behind.
@@ -44,10 +85,7 @@ pub fn open(path: &str, search: Search, cache: Option<&str>, dump: Option<&str>)
 
 fn open_keyed(path: &str, search: Search, cache: Option<&str>, dump: Option<&str>) -> Result<Opened> {
 	let data = std::fs::read(path).with_context(|| format!("reading {path:?}"))?;
-	let file_name = Path::new(path)
-		.file_name()
-		.map(|s| s.to_string_lossy().into_owned())
-		.unwrap_or_else(|| path.to_string());
+	let file_name = file_name_of(path);
 	let cache_path = cache_path(path, cache);
 
 	let before = IvCache::load(&cache_path);
@@ -69,18 +107,7 @@ fn open_keyed(path: &str, search: Search, cache: Option<&str>, dump: Option<&str
 	}
 
 	if let Some(dir) = dump {
-		std::fs::create_dir_all(dir).with_context(|| format!("creating the dump directory {dir:?}"))?;
-		for s in &sections {
-			if let Some(text) = &s.text {
-				// Latin-1 out, matching the way the section was read in: the
-				// text tables carry high bytes (umlauts, `°`, `µ`) that are
-				// plaintext evidence, and re-encoding them as UTF-8 would
-				// change the byte offsets every later tool counts on.
-				let bytes: Vec<u8> = text.chars().map(|c| c as u8).collect();
-				let out = Path::new(dir).join(format!("{}.bin", s.tag));
-				std::fs::write(&out, &bytes).with_context(|| format!("writing {}", out.display()))?;
-			}
-		}
+		write_dump(dir, &sections)?;
 	}
 	Ok(Opened {
 		sections,
@@ -155,14 +182,31 @@ fn key_of(before: &IvCache, after: &IvCache, file: &str, tag: &str) -> Key {
 fn render(path: &str, cache: &Path, sections: &[RodSection], keys: &[Key]) -> String {
 	let open = sections.iter().filter(|s| s.text.is_some()).count();
 	let recovered = keys.iter().filter(|k| matches!(k, Key::Recovered(_))).count();
-	let mut out = format!(
-		"{path}\n{}\n",
-		facts([
-			format!("{open} of {} {} open", sections.len(), plural(sections.len(), "section")),
-			format!("{recovered} {} recovered", plural(recovered, "key")),
-			format!("keys in {}", vag_cli_core::datadir::tilde(cache)),
-		])
-	);
+	let summary = facts([
+		format!("{open} of {} {} open", sections.len(), plural(sections.len(), "section")),
+		format!("{recovered} {} recovered", plural(recovered, "key")),
+		format!("keys in {}", vag_cli_core::datadir::tilde(cache)),
+	]);
+	format!("{path}\n{summary}\n{}", section_rows(sections, keys))
+}
+
+/// What `--mask` prints on stdout: the same per-section rows as [`render`], under
+/// a summary that names the mask instead of a key cache. The mask opens the file
+/// outright, so there are no per-section keys to show.
+fn render_masked(path: &str, mask: [u8; 8], sections: &[RodSection]) -> String {
+	let open = sections.iter().filter(|s| s.text.is_some()).count();
+	let summary = facts([
+		format!("{open} of {} {} open", sections.len(), plural(sections.len(), "section")),
+		format!("mask {}", verbosity::hex(&mask)),
+	]);
+	let keys = vec![Key::None; sections.len()];
+	format!("{path}\n{summary}\n{}", section_rows(sections, &keys))
+}
+
+/// One heading row per section — state, size and (where there is one) key — with the
+/// start of its text indented under it. The body shared by [`render`] and [`render_masked`].
+fn section_rows(sections: &[RodSection], keys: &[Key]) -> String {
+	let mut out = String::new();
 	for (s, key) in sections.iter().zip(keys) {
 		let preview: String = s
 			.text
@@ -244,7 +288,13 @@ fn wrote(sections: &[RodSection], dir: &str) -> String {
 }
 
 /// `vagcan dev vcds rod`: open a file and list its sections.
-pub fn run(path: &str, run_crack: bool, cache: Option<&str>, dump: Option<&str>) -> Result<()> {
+///
+/// With `mask`, a shifted file is opened by its known eight-byte IV mask instead of by a
+/// key search: no cache is touched, and `run_crack`/`cache` are refused beside it (clap).
+pub fn run(path: &str, run_crack: bool, cache: Option<&str>, dump: Option<&str>, mask: Option<&str>) -> Result<()> {
+	if let Some(mask) = mask {
+		return run_masked(path, parse_mask(mask)?, dump);
+	}
 	let search = match run_crack {
 		true => Search::All,
 		false => Search::Off,
@@ -262,6 +312,42 @@ pub fn run(path: &str, run_crack: bool, cache: Option<&str>, dump: Option<&str>)
 	Ok(())
 }
 
+/// `vagcan dev vcds rod --mask`: open a shifted file by its known IV mask.
+fn run_masked(path: &str, mask: [u8; 8], dump: Option<&str>) -> Result<()> {
+	let data = std::fs::read(path).with_context(|| format!("reading {path:?}"))?;
+	let file_name = file_name_of(path);
+	let sections = decode_rod_with_mask(&data, &file_name, mask);
+	if let Some(dir) = dump {
+		write_dump(dir, &sections)?;
+	}
+	vag_cli_core::out!("{}", render_masked(path, mask, &sections));
+	for (level, text) in mask_notes(&file_name, &sections, dump) {
+		verbosity::say(level, &text);
+	}
+	Ok(())
+}
+
+/// What [`run_masked`] says on stderr, by level: whether each section opened under the
+/// mask, and the per-section cipher at `-vv`. A sealed section means the wrong mask (or a
+/// file that is not shifted), not a key that could be searched for.
+fn mask_notes(file: &str, sections: &[RodSection], dump: Option<&str>) -> Vec<(u8, String)> {
+	let mut notes = Vec::new();
+	let sealed = sections.iter().filter(|s| s.text.is_none()).count();
+	if sealed > 0 {
+		notes.push((
+			NOTES,
+			format!("{sealed} sealed under this mask — check the mask, the file name, and that the file is shifted"),
+		));
+	}
+	for s in sections {
+		notes.push((WIRE, format!("{file} [{}] {:?}", s.tag, s.status)));
+	}
+	if let Some(dir) = dump {
+		notes.push((0, wrote(sections, dir)));
+	}
+	notes
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -272,6 +358,43 @@ mod tests {
 			status,
 			text: text.map(str::to_owned),
 		}
+	}
+
+	#[test]
+	fn a_mask_is_sixteen_hex_digits_with_an_optional_prefix() {
+		let want = [0x5e, 0xe6, 0x10, 0x51, 0x77, 0x19, 0x40, 0x8c];
+		assert_eq!(parse_mask("5ee610517719408c").unwrap(), want);
+		assert_eq!(parse_mask("0x5EE610517719408C").unwrap(), want);
+		// too short, too long, a non-hex digit, the prefix alone.
+		for bad in ["", "5ee6", "5ee610517719408c00", "5ee610517719zz8c", "0x"] {
+			assert!(parse_mask(bad).is_err(), "{bad:?}");
+		}
+	}
+
+	/// `--mask` names the mask where the key path names a cache, and shows no per-section
+	/// key, because the mask opens the file outright. A sealed section is the wrong mask.
+	#[test]
+	fn the_masked_listing_names_the_mask_and_shows_no_key_column() {
+		let mask = [0x5e, 0xe6, 0x10, 0x51, 0x77, 0x19, 0x40, 0x8c];
+		let sections = [
+			section("CMP", RodStatus::Tea, Some("12345678,AB")),
+			section("MWB", RodStatus::Zlib, Some("000003,abc")),
+			section("DTC", RodStatus::Undecodable, None),
+		];
+		let text = render_masked("X.rod", mask, &sections);
+		assert_eq!(
+			text,
+			"X.rod\n\
+			 2 of 3 sections open · mask 5E E6 10 51 77 19 40 8C\n\
+			 \n\
+			 CMP  open · 11 bytes\n\
+			 \x20 12345678,AB\n\
+			 \n\
+			 MWB  open · 10 bytes\n\
+			 \x20 000003,abc\n\
+			 \n\
+			 DTC  sealed\n"
+		);
 	}
 
 	#[test]

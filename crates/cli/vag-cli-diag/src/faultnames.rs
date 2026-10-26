@@ -307,7 +307,7 @@ pub fn offer_to_unseal(files: &[PathBuf], cache: &Path) -> Result<()> {
 		return Ok(());
 	}
 	unseal_each(files, |file| {
-		crate::vcds::rod::run(&file.to_string_lossy(), true, Some(&cache.to_string_lossy()), None)
+		crate::vcds::rod::run(&file.to_string_lossy(), true, Some(&cache.to_string_lossy()), None, None)
 	})?;
 	vag_cli_core::say!("unsealed: `vagcan faults` names those codes now");
 	Ok(())

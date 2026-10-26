@@ -204,6 +204,14 @@ pub enum Tool {
 		/// the input to `vagcan dev vcds tttext` is produced.
 		#[arg(long, value_name = "DIR")]
 		dump: Option<String>,
+		/// Open a shifted file whose eight-byte IV mask is already known: 16 hex
+		/// digits. A shifted file XORs this mask over every section's first-block
+		/// IV after `[CMP]`; where the mask came from — a recovered key, a capture
+		/// — is not this command's concern. Without it a shifted file's sections
+		/// stay sealed (`no crib`). Conflicts with the key search `--no-crack` and
+		/// `--cache` drive, which the mask replaces.
+		#[arg(long, value_name = "HEX", conflicts_with_all = ["no_crack", "cache"])]
+		mask: Option<String>,
 	},
 
 	/// Parse a whole VCDS `Labels/` directory into one JSON file.
@@ -363,8 +371,14 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 			)?;
 			Ok(Outcome::Done)
 		}
-		Tool::Rod { file, no_crack, cache, dump } => {
-			rod::run(&file, !no_crack, cache.as_deref(), dump.as_deref())?;
+		Tool::Rod {
+			file,
+			no_crack,
+			cache,
+			dump,
+			mask,
+		} => {
+			rod::run(&file, !no_crack, cache.as_deref(), dump.as_deref(), mask.as_deref())?;
 			Ok(Outcome::Done)
 		}
 		Tool::Dump { dir, out } => {

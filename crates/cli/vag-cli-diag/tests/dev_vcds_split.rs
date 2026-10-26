@@ -244,6 +244,7 @@ fn every_dev_vcds_tool_keeps_data_on_stdout_at_every_level() {
 		no_crack: true,
 		cache: Some(keys.to_string_lossy().into_owned()),
 		dump: None,
+		mask: None,
 	});
 	assert_eq!(
 		rod[0].stdout,
