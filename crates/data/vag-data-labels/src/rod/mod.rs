@@ -17,6 +17,8 @@
 
 use crate::tea::tea_cbc_decrypt;
 
+pub mod shifted;
+
 pub(crate) const KEY_ROD: [u32; 4] = [0x029b_76a4, 0xcb6d_b50a, 0x7139_5d29, 0x0dbc_09c2];
 pub(crate) const OFF_ROD: [usize; 8] = [0x07, 0xca, 0x22, 0x99, 0x3e, 0x88, 0xc3, 0x76];
 
@@ -757,9 +759,10 @@ fn open_framed(framed: &Framed<'_>, file: &str, regime: &Regime, cache: &mut IvC
 			return opened;
 		}
 	}
-	// Say which of the two happened. A search that ran and lost and a search
-	// that never started are not the same news, and only one of them means the
-	// section is beyond this tooling.
+	// A supplied mask was tried; an unknown mask means the expensive search was declined.
+	if matches!(regime, Regime::Shifted(_)) {
+		return section;
+	}
 	RodSection {
 		status: RodStatus::SearchDeclined,
 		..section
@@ -825,6 +828,22 @@ pub fn decode_rod_with(data: &[u8], file: &str, cache: &mut IvCache, search: Sea
 	let sections = frame(data);
 	let regime = regime(&sections, file, cache, search);
 	sections.iter().map(|framed| open_framed(framed, file, &regime, cache, search)).collect()
+}
+
+/// Decode every section of a shifted `.rod` whose eight-byte IV `mask` is known.
+///
+/// This is the direct counterpart of [`decode_rod_recover`]: no key cache and no
+/// brute force. The mask comes from [`shifted::mask_from_reply`], or from another
+/// capture of the same file and VCDS data release. `[CMP]` remains unmasked.
+/// A wrong mask leaves compressed sections [`RodStatus::Undecodable`].
+pub fn decode_rod_with_mask(data: &[u8], file: &str, mask: [u8; 8]) -> Vec<RodSection> {
+	let sections = frame(data);
+	let regime = Regime::Shifted(mask);
+	let mut cache = IvCache::default();
+	sections
+		.iter()
+		.map(|framed| open_framed(framed, file, &regime, &mut cache, Search::Off))
+		.collect()
 }
 
 /// Building `.rod` files for tests, with no Ross-Tech data in them.
@@ -1112,6 +1131,56 @@ mod tests {
 		// And one section asked for alone opens the same way.
 		let dtc = open_section(&data, file, "DTC", &mut cache, false).unwrap();
 		assert_eq!(dtc.status, RodStatus::Zlib);
+	}
+
+	#[test]
+	fn a_known_mask_opens_a_shifted_file_without_a_cached_key_or_search() {
+		let file = "EV_MadeUpShifted_Direct.rod";
+		let mask = [0x5e, 0xe6, 0x10, 0x51, 0x77, 0x19, 0x40, 0x8c];
+		let plain: Vec<u8> = (0..4096u32)
+			.map(|i| 0x20 + ((i.wrapping_mul(7).wrapping_add(i / 13)) % 60) as u8)
+			.collect();
+		let data = [
+			testkit::section("CMP", b"12345678,AB\r\n", false, testkit::named(file)),
+			testkit::masked_section("MWB", &plain, true, testkit::named(file), mask),
+			testkit::masked_section("DTC", &plain[..2048], true, testkit::named(file), mask),
+			testkit::masked_section("INC", b"000017,QRSTUV\r\n", false, testkit::named(file), mask),
+		]
+		.concat();
+
+		let opened = decode_rod_with_mask(&data, file, mask);
+		assert_eq!(opened[0].text.as_deref(), Some("12345678,AB\r\n"));
+		assert_eq!(opened[1].status, RodStatus::Zlib);
+		assert_eq!(opened[1].text.as_deref(), Some(decode_latin1(&plain).as_str()));
+		assert_eq!(opened[2].status, RodStatus::Zlib);
+		assert_eq!(opened[2].text.as_ref().map(String::len), Some(2048));
+		assert_eq!(opened[3].text.as_deref(), Some("000017,QRSTUV\r\n"));
+
+		let mut wrong = mask;
+		wrong[2] ^= 1;
+		let shut = decode_rod_with_mask(&data, file, wrong);
+		assert_eq!(shut[0].text.as_deref(), Some("12345678,AB\r\n"), "[CMP] is never masked");
+		assert_eq!(shut[1].status, RodStatus::Undecodable);
+		assert_eq!(shut[2].status, RodStatus::Undecodable);
+	}
+
+	#[test]
+	fn shifted_gate_and_reply_payload_have_exact_shapes() {
+		assert_eq!(shifted::gate("12345678,,_\r\n"), Some(12345678));
+		assert_eq!(shifted::gate("00000001"), Some(1));
+		for classic in ["123456,AB", "123456789,AB", "1234567x,AB", ",AB"] {
+			assert_eq!(shifted::gate(classic), None, "{classic}");
+		}
+		let payload: Vec<u8> = (0..32).collect();
+		assert_eq!(shifted::mask_from_reply(&payload), Some([31, 30, 29, 28, 27, 26, 25, 24]));
+		assert_eq!(shifted::mask_from_reply(&payload[..31]), None);
+		assert_eq!(shifted::mask_from_reply(&[0; 33]), None);
+	}
+
+	#[test]
+	fn shifted_challenge_matches_the_interface_algorithm() {
+		let expected = hex_decode("76e3b0c6da2da71487f4185e0a61188cf1168514300154600117a7ade32f8c05");
+		assert_eq!(shifted::challenge(r"C:\labels\EV_Demo.rod", 12345678).as_slice(), expected);
 	}
 
 	#[test]

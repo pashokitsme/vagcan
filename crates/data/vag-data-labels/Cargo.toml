@@ -11,7 +11,12 @@ miniz_oxide = "0.7"
 rayon = { workspace = true }
 
 [dev-dependencies]
+aes = "0.8"
+cbc = "0.1"
 criterion = { workspace = true }
+rand = "0.8"
+rsa = { version = "0.9", features = ["sha2"] }
+sha2 = "0.10"
 tempfile = "3"
 
 [[bench]]

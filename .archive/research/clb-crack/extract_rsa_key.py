@@ -2,13 +2,14 @@
 """extract_rsa_key.py -- extract the embedded RSA-1024 key-transport private key
 from VCDS-arm64-unpacked.exe.
 
-The VCDS diagnostic link is AES-256 in a per-channel keystream mode
-(KS_cid = AES256(K).ecb_encrypt(IV_TABLE[cid])).  The 32-byte session key K is
-NOT derived from the b6/b7 handshake -- it is RSA key-transport: the cable/
-transport delivers a 128-byte RSA-1024-wrapped blob, and the app RSA-decrypts it
-with a *static embedded private key* to recover K (sole AES-256 set-key path is
-0x140072ec0 -> RSA-CRT decrypt 0x14007ce68 -> memcpy K into cipher-ctx+0x5da4 ->
-AES schedule 0x14007b140).  The private key is DER-encoded in .rdata.
+The VCDS diagnostic link encrypts the CB body with AES-256-CBC, resetting to
+IV_TABLE[cid] for each block. The 32-byte session key K is NOT derived from the
+b6/b7 handshake -- it is RSA key-transport: the cable/transport delivers a
+128-byte RSA-1024-wrapped blob, and the app decrypts it with a *static embedded
+private key* using OAEP with SHA-256 and MGF1-SHA256 to recover K (sole AES-256
+set-key path is 0x140072ec0 -> RSA/OAEP decrypt 0x14007ce68 -> memcpy K into
+cipher-ctx+0x5da4 -> AES schedule 0x14007b140). The private key is DER-encoded
+in .rdata.
 
 Clean-room interop: the owner extracts a key embedded in software they possess to
 talk to their own genuine cable / own car.  No server, no circumvention.

@@ -170,17 +170,16 @@ and this note records it as closed rather than as a lead.
 - Verdict: **abandon.** Do not budget the 5–21 h/file brute force of `tttext2.md` §12 as a
   general fix either — it opens one file you have a reason to open, never the 7,830-file corpus.
 
-> **2026-10-25 re-scope (`rod-mask-direct.md`).** The sentence above is right that `D` is *not
-> a function of the label data* — that stays dead. But the separate claim that the **direct path**
-> (vagcan asks the genuine interface the `0x45` challenges) is blocked by an *unreversed custom
-> re-key* was measured on the wrong binary (the old x86 24.7 VMProtect build). In the 26.3 arm64
-> build the owner runs, the session-key install is plain **RSA key-transport** —
-> `K = unpad(RSA1024_decrypt(embedded_privkey, wire_block))`, private key DER at `0x140171a30`,
-> single install path `FUN_140072ec0`→`FUN_14007ce68`, AES-256 IV table `0x140171d30`. So the
-> direct path is "ask the hardware over a link we can key", not "break a cipher"; it still needs
-> the genuine cable and is still one `0x45` per shifted file. See `rod-mask-direct.md` for
-> addresses and the concrete to-do. ODIS (§1.3(a)) remains the project's answer; this is the
-> VCDS-only alternative for an owner who has the interface.
+> **2026-10-25 re-scope, PoC 2026-10-26 (`rod-mask-direct.md`).** The sentence above is right that
+> `D` is *not a function of the label data* — that stays dead. But the separate claim that the
+> **direct path** is blocked by an *unreversed custom re-key* was measured on the wrong binary
+> (the old x86 24.7 VMProtect build). In 26.3 arm64 the session key is RSA-1024 **OAEP-SHA256**
+> key transport and the encrypted CB body is **AES-256-CBC**, not the older guessed unpad/XOR
+> schemes. The existing ROD parser now accepts a known mask directly, and
+> `vag-data-labels/examples/rod-shifted.rs` implements the offline RSA/AES/CB PoC. A real shifted
+> ROD and an independent emulated exchange pass; a genuine cable and its outer transport remain
+> untested. See `rod-mask-direct.md` for the protocol, commands and boundaries. ODIS (§1.3(a))
+> remains the project's answer; this is the VCDS-only alternative for an owner with the interface.
 
 #### (a) ODIS for the shifted units — the project's actual answer
 
@@ -415,8 +414,8 @@ code for the assembler; needs a car: no to decode, yes to confirm an engine read
   SK37X variants.
 - `~/.vagcan/data/SK37X/{cache.sqlite,sources.json}` — the imported ODIS project (§2.1).
 - The three VCDS installs under `vendor/vcds-{en,ru}/UDS_EV` and `~/vcds-en/UDS_EV`.
-- `.archive/research/clb-crack/bin/VCDS-arm64-unpacked.exe` — the archived binary; a short static
-  look only, confirming §1.3(b) (no crack, no code produced).
+- `.archive/research/clb-crack/bin/VCDS-arm64-unpacked.exe` — the archived binary behind §1.3(b)
+  and the follow-up REA / offline PoC in `rod-mask-direct.md`.
 
 **Analysis scripts written here** (session scratchpad, each reads only `census_installs.json`
 unless noted): `suffix.py`, `lines.py`, `eras.py`, `versions.py`, `engines.py`, `words.py`,
