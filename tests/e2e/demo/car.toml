@@ -46,14 +46,16 @@ part = "SIM907000C"
 component = "SIM GATEWAY"
 installed = ["713", "70E"]
 
+[unit.did]
+# The car's stamp: what a unit that gives none of its own is checked against.
+02BD = "91 01 E2 40 00 00 69 F6 00 03"
+
+# The brakes refuse 02BD (7F 22 31), as many units do: their code is dated by the gateway's.
 [[unit]]
 request = "713"
 name = "brakes"
 part = "SIM614000D"
 component = "SIM ESC"
-
-[unit.did]
-02BD = "91 01 E2 40 00 00 69 F6 00 03"
 
 [[unit.fault]]
 code = "04 71 20"

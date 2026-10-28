@@ -68,9 +68,58 @@ pub fn fault_number(code: [u8; 3]) -> u32 {
 	u32::from_be_bytes([0, code[0], code[1], code[2]])
 }
 
-/// How long ago a fault happened, told against the unit's own counters.
+/// Whose `02BD` a unit's standard records are checked against ([`Stamp`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Whose {
+	/// The unit's own.
+	Unit,
+	/// The gateway's ([`gateway::GATEWAY`]): the unit gave none of its own.
+	Gateway,
+}
+
+/// The "now" a unit's stored codes are checked and aged against, and whose it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamp {
+	pub now: UnitStamp,
+	pub whose: Whose,
+}
+
+/// The stamp a unit's standard records are checked against: its own where it gave one, else
+/// the gateway's, else none — and with none, no record is read as a mileage or a date, as
+/// before ([`FaultContext::from_records`]).
 ///
-/// Both halves are differences taken on the same control unit, so neither
+/// **The gateway's is the car's stamp, not the unit's.** That is acceptable because the
+/// odometer and the clock in `02BD` are not kept per unit: in every run on the reference car,
+/// every unit that answers `02BD` answers the same odometer and the same clock, and the
+/// instrument cluster's own clock lands among them (`CarTime`'s evidence) — one car-wide
+/// stamp each unit carries. Many units refuse `02BD` (`7F 22 31`) yet store the same records,
+/// and without a fallback their codes lose mileage and date for no reason. The check stays
+/// the guard: a fault no further on than the car's odometer, and a clock that is a date. A
+/// unit whose records are laid out otherwise still fails it.
+pub fn pick_stamp(own: Option<UnitStamp>, gateway: Option<UnitStamp>) -> Option<Stamp> {
+	match (own, gateway) {
+		(Some(now), _) => Some(Stamp { now, whose: Whose::Unit }),
+		(None, Some(now)) => Some(Stamp { now, whose: Whose::Gateway }),
+		(None, None) => None,
+	}
+}
+
+/// The gateway's own `02BD`: the car's stamp, for a unit that gave none ([`pick_stamp`]).
+async fn read_gateway_stamp<L: UnitLink>(backend: L) -> (L, Option<UnitStamp>) {
+	let gw = UnitAddress::from_request(gateway::GATEWAY).expect("the gateway is in VW's block");
+	let mut uds = AsyncUdsClient::new(backend.to_unit(CanId::Standard(gw.request), CanId::Standard(gw.response)));
+	let stamp = uds
+		.read_data_by_identifier(UnitStamp::DID)
+		.await
+		.ok()
+		.and_then(|data| UnitStamp::parse(&data));
+	(L::release(uds.into_transport()), stamp)
+}
+
+/// How long ago a fault happened, told against the stamp its records were checked by: the
+/// unit's own, or the car's — the gateway's — where it gave none ([`pick_stamp`]).
+///
+/// Both halves are differences of one car-wide odometer and clock, so neither
 /// depends on the car's clock being set right: the stamp is a packed date
 /// (`vag_uds_client::dtc::CarTime`) and the difference between two of them is
 /// real elapsed time even when the date itself is days out, as it is here.
@@ -862,6 +911,8 @@ pub async fn run<L: UnitLink>(
 	// Units with a row whose ODIS variant was picked by family, and whether they answered F1A2.
 	let mut guessed_by_family: Vec<(u16, bool)> = Vec::new();
 	let mut read = 0usize;
+	// The gateway's `02BD` once asked: `Some(None)` when it gave none.
+	let mut gateway_stamp: Option<Option<UnitStamp>> = None;
 	let count = order.len();
 	let mut progress = crate::progress::Line::new();
 	for (at, request) in order.into_iter().enumerate() {
@@ -896,12 +947,19 @@ pub async fn run<L: UnitLink>(
 			all: listing.unwrap_or_default(),
 		};
 		// The unit's own "now": the same odometer and counter its faults are
-		// stamped with, so ages are differences rather than dates.
-		let now = uds
-			.read_data_by_identifier(UnitStamp::DID)
-			.await
-			.ok()
-			.and_then(|data| UnitStamp::parse(&data));
+		// stamped with, so ages are differences rather than dates. The gateway's, once read
+		// for a unit that gave none, is not asked for again when the walk reaches it.
+		let own = match (request == gateway::GATEWAY, gateway_stamp) {
+			(true, Some(read)) => read,
+			_ => uds
+				.read_data_by_identifier(UnitStamp::DID)
+				.await
+				.ok()
+				.and_then(|data| UnitStamp::parse(&data)),
+		};
+		if request == gateway::GATEWAY {
+			gateway_stamp = Some(own);
+		}
 		// A unit with no short number shows a dash rather than repeating
 		// its id, which reads as a rendering fault.
 		let number = crate::car::unit_number(vag_uds_client::address::short_number(request));
@@ -942,6 +1000,25 @@ pub async fn run<L: UnitLink>(
 		// Something failing right now outranks a code stored months ago.
 		show.sort_by_key(|d| (d.status & FAILED_NOW == 0, d.code));
 		if !show.is_empty() {
+			// A unit with no stamp of its own is checked against the car's: the gateway's, read
+			// here the first time one is needed and at most once a run (`pick_stamp`).
+			let gateway_now = match (own, gateway_stamp) {
+				(Some(_), _) => None,
+				(None, Some(read)) => read,
+				(None, None) => {
+					let (link, read) = read_gateway_stamp(L::release(uds.into_transport())).await;
+					uds = AsyncUdsClient::new(link.to_unit(CanId::Standard(address.request), CanId::Standard(address.response)));
+					gateway_stamp = Some(read);
+					read
+				}
+			};
+			let now = pick_stamp(own, gateway_now);
+			if now.is_some_and(|s| s.whose == Whose::Gateway) {
+				note!(
+					"{request:03X}  no stamp of its own: its codes are checked against the gateway's ({:03X})",
+					gateway::GATEWAY
+				);
+			}
 			// The unit names its own variant and description file, so they are
 			// read only once something has to be named out of them.
 			// What the unit answered for F1A2, for the line a guessed variant gets.
@@ -1019,7 +1096,7 @@ pub async fn run<L: UnitLink>(
 							fault_number(dtc.code),
 							describe_status(dtc.status),
 							marks::SEP,
-							describe_age(parsed, now.as_ref())
+							describe_age(parsed, now.as_ref().map(|s| &s.now))
 						);
 					}
 					context = context.or(parsed);
@@ -1319,6 +1396,42 @@ mod tests {
 		let alone = describe_age(&context, None);
 		assert!(alone.contains("212763 km"));
 		assert!(!alone.contains("ago"), "{alone}");
+	}
+
+	#[test]
+	fn a_units_own_stamp_wins_and_the_gateways_stands_in_only_for_none() {
+		let own = UnitStamp {
+			mileage_km: 1_000,
+			clock: 0x69F6_0003,
+		};
+		let gateways = UnitStamp {
+			mileage_km: 2_000,
+			clock: 0x69F6_1003,
+		};
+		let picked = |own, gateway| pick_stamp(own, gateway).map(|s| (s.now, s.whose));
+		assert_eq!(picked(Some(own), Some(gateways)), Some((own, Whose::Unit)));
+		assert_eq!(picked(Some(own), None), Some((own, Whose::Unit)));
+		assert_eq!(picked(None, Some(gateways)), Some((gateways, Whose::Gateway)));
+		// Neither: no stamp, and so no context — as before the fallback.
+		assert_eq!(picked(None, None), None);
+	}
+
+	#[test]
+	fn a_unit_that_refuses_02bd_is_dated_by_the_gateways_stamp() {
+		// Record 02 of a stored code on a unit that answered `7F 22 31` to 02BD, and the
+		// gateway's 02BD in the same run, verbatim from the reference car (2026-10-28).
+		// Record 01 (priority 2, once) is invented.
+		let data = vec![0x02, 0x01, 0x02, 0x8D, 0x03, 0x4A, 0x15, 0x00, 0x00, 0x6A, 0xB1, 0x5A, 0xA2];
+		let answer = vag_uds_client::dtc::DtcExtendedData { record: 0x01, data };
+		let gateways = UnitStamp::parse(&[0x66, 0x03, 0x4A, 0x16, 0x51, 0x00, 0x6A, 0xB1, 0x5E, 0xC3]);
+		assert!(gateways.is_some());
+		let now = pick_stamp(None, gateways).expect("the gateway's stamp stands in");
+		assert_eq!(now.whose, Whose::Gateway);
+		let context = FaultContext::parse(&answer, Some(&now.now)).expect("the records pass the car's stamp");
+		assert_eq!(context.mileage_km, 215_573);
+		assert_eq!(describe_when(&context).len(), 19, "a date: {}", describe_when(&context));
+		// Without either stamp the records stay unread, as before.
+		assert_eq!(FaultContext::parse(&answer, pick_stamp(None, None).as_ref().map(|s| &s.now)), None);
 	}
 
 	#[test]

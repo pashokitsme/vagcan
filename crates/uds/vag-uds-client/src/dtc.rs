@@ -282,15 +282,16 @@ pub fn seconds_between(earlier: u32, later: u32) -> Option<i64> {
 
 impl FaultContext {
 	/// Read the two standard records out of a split answer, checked against `now`, the unit's
-	/// own [`UnitStamp`].
+	/// own [`UnitStamp`] — or, where the unit gives none, the gateway's: the odometer and clock
+	/// in it are the car's, the same on every unit that answers (`vagcan faults` picks which).
 	///
 	/// Both records must be there and whole — a half-read record is rejected rather than
 	/// padded, since it would produce a mileage that is simply wrong. And the reading must
 	/// be possible: a fault is no further on than the unit's own odometer and its stamp is a
 	/// date. A unit whose record `0x02` is not the standard ten bytes in the standard order
 	/// (one rear-view camera variant of the reference project, twelve) otherwise reads
-	/// 12 059 455 km. **No stamp, no context:** without the unit's own "now" there is
-	/// nothing to check the reading against.
+	/// 12 059 455 km. **No stamp, no context:** without a "now" there is nothing to check
+	/// the reading against.
 	pub fn from_records(records: &[ExtendedRecord<'_>], now: Option<&UnitStamp>) -> Option<FaultContext> {
 		let whole = |n: u8| records.iter().find(|r| r.number == n && r.extent == Extent::Whole).map(|r| r.data);
 		let (info, frame) = (whole(STANDARD_DTC_INFORMATION)?, whole(STANDARD_FREEZE_FRAME)?);

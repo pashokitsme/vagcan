@@ -50,3 +50,28 @@ a stored code is a record that something happened once — not a diagnosis, and 
              Sim Terminal 30   12.3 V
 
 ```
+
+The brakes refuse their own stamp (`02BD`), so their code is checked against the gateway's,
+read once for it; `-v` says whose.
+
+```console
+$ vagcan -v faults --unit 713
+? success
+note: adapter from VAGCAN_DEVICE=[PORT]
+note: code names from ODIS SIM00-odis (eng)
+2 fault texts for 2 variants from /nowhere/SIM00-odis (en)
+a stored code is a record that something happened once — not a diagnosis, and not necessarily a fault now; `failing` is failing now
+713  1 code listed, 1 confirmed
+713  no stamp of its own: its codes are checked against the gateway's (710)
+713  the ODIS project has no fault table for this unit — codes only
+713  047120 (291104)  confirmed · 123392 km, 1×, 2 s ago, 64 km ago
+1 stored code on 1 of 1 unit
+
+713  SIM ESC  SIM614000D
+  · 047120
+             stored · 1 time · 123392 km · last 2026-07-27 00:00
+             priority       4
+             aging counter  32
+             record 70      AA BB (no layout for this variant, not decoded)
+
+```

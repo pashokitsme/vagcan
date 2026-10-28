@@ -25,7 +25,8 @@
 //! takes the rest of the answer and is shown as bytes; so is a field whose type has no
 //! decoding here (multiplexed, raw bytes) or whose layout [`RawForm`] cannot say. An answer
 //! that does not split on its description, or whose standard records fail the unit's own
-//! stamp, is shown as bytes after record `0x02` ([`Frame`]).
+//! stamp — or the gateway's, where the unit gives none ([`crate::faults::pick_stamp`]) — is
+//! shown as bytes after record `0x02` ([`Frame`]).
 //!
 
 use std::collections::BTreeMap;
@@ -34,9 +35,11 @@ use vag_data_db::FreezeField;
 use vag_data_labels::catalog::level_for;
 use vag_data_labels::measure::RawForm;
 use vag_uds_client::dtc::{
-	DYNAMIC_FREEZE_FRAME, DtcExtendedData, ExtendedRecord, Extent, FaultContext, STANDARD_DTC_INFORMATION, STANDARD_FREEZE_FRAME, UnitStamp,
-	split_records, standard_length,
+	DYNAMIC_FREEZE_FRAME, DtcExtendedData, ExtendedRecord, Extent, FaultContext, STANDARD_DTC_INFORMATION, STANDARD_FREEZE_FRAME, split_records,
+	standard_length,
 };
+
+use crate::faults::{Stamp, Whose};
 
 /// The key of a unit's default record: the layout of a record number it lists no rows for.
 pub const DEFAULT_RECORD: u32 = 999;
@@ -167,9 +170,11 @@ impl Line {
 #[derive(Debug, Clone)]
 pub struct Frame<'a> {
 	records: Vec<ExtendedRecord<'a>>,
-	/// The fault's context, where both standard records are whole and pass the unit's stamp
+	/// The fault's context, where both standard records are whole and pass the stamp
 	/// ([`FaultContext::from_records`]).
 	pub context: Option<FaultContext>,
+	/// Whose stamp the standard records were held against, `None` with no stamp at all.
+	checked_by: Option<Whose>,
 	/// The answer did not split on the unit's description: a record came out short, or the
 	/// standard records failed their check. Everything after record `0x02` is then bytes —
 	/// a default record that matches any number would otherwise read the rest of a
@@ -177,13 +182,15 @@ pub struct Frame<'a> {
 	misframed: Option<&'static str>,
 }
 
-/// Split an answer into its records and read the standard two, checked against `now`, the
-/// unit's own stamp.
+/// Split an answer into its records and read the standard two, checked against `now`: the
+/// unit's own stamp, or the gateway's where it gave none.
 ///
 /// With a layout, a split that ends short or standard records that fail their check mean
 /// the layout and the answer disagree, and the answer is split again on the standard
 /// records alone ([`Frame::misframed`]).
-pub fn split<'a>(answer: &'a DtcExtendedData, layout: Option<&Layout>, now: Option<&UnitStamp>) -> Frame<'a> {
+pub fn split<'a>(answer: &'a DtcExtendedData, layout: Option<&Layout>, stamp: Option<&Stamp>) -> Frame<'a> {
+	let now = stamp.map(|s| &s.now);
+	let checked_by = stamp.map(|s| s.whose);
 	let standard_only = || split_records(answer, standard_length);
 	let Some(layout) = layout else {
 		let records = standard_only();
@@ -191,6 +198,7 @@ pub fn split<'a>(answer: &'a DtcExtendedData, layout: Option<&Layout>, now: Opti
 		return Frame {
 			records,
 			context,
+			checked_by,
 			misframed: None,
 		};
 	};
@@ -214,10 +222,11 @@ pub fn split<'a>(answer: &'a DtcExtendedData, layout: Option<&Layout>, now: Opti
 		.any(|n| layout.own(*n).is_some() && layout.length_of(*n) != standard_length(*n));
 	let standard = |n: u8| matches!(n, STANDARD_DTC_INFORMATION | STANDARD_FREEZE_FRAME);
 	let tail_whole = records.iter().filter(|r| !standard(r.number)).all(|r| r.extent == Extent::Whole);
-	let why = match (short, standard_whole && context.is_none(), now) {
+	let why = match (short, standard_whole && context.is_none(), checked_by) {
 		(true, _, _) => Some("the answer does not split on this variant's layout"),
 		(_, true, None) => Some("the unit gave no stamp to check its standard records by"),
-		(_, true, Some(_)) => Some("its standard records fail the unit's own stamp"),
+		(_, true, Some(Whose::Unit)) => Some("its standard records fail the unit's own stamp"),
+		(_, true, Some(Whose::Gateway)) => Some("its standard records fail the gateway's stamp, the unit giving none"),
 		_ if redefined && !tail_whole => Some("the answer does not end where this variant's layout says"),
 		_ => None,
 	};
@@ -232,12 +241,14 @@ pub fn split<'a>(answer: &'a DtcExtendedData, layout: Option<&Layout>, now: Opti
 		return Frame {
 			records,
 			context,
+			checked_by,
 			misframed: why,
 		};
 	}
 	Frame {
 		records,
 		context,
+		checked_by,
 		misframed: None,
 	}
 }
@@ -263,7 +274,10 @@ pub fn lines(frame: &Frame<'_>, layout: Option<&Layout>, no_layout: &str) -> Vec
 		// standard, is read by that description; any other goes unread without the check.
 		let described_standard = standard && frame.misframed.is_none() && Some(record.data.len()) != standard_length(record.number);
 		if standard && !described_standard {
-			let why = "standard record, not checked against the unit's own stamp, not decoded";
+			let why = match frame.checked_by {
+				Some(Whose::Gateway) => "standard record, not confirmed by the gateway's stamp, not decoded",
+				_ => "standard record, not checked against the unit's own stamp, not decoded",
+			};
 			out.push(Line::new(format!("record {:02X}", record.number), raw(record.data, why)));
 			continue;
 		}
@@ -410,6 +424,7 @@ pub fn render(lines: &[Line], indent: &str, width: Option<usize>) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use vag_uds_client::dtc::UnitStamp;
 
 	/// A field the way the cache hands it over. Invented.
 	fn field(record: u32, lead: u32, kind: u8, bits: (u32, u32), scale: Option<(f64, f64)>, unit: &str, name: &str) -> FreezeField {
@@ -455,8 +470,20 @@ mod tests {
 	}
 
 	/// The unit's own stamp, 100 km on: what the standard records are checked against.
-	fn now() -> UnitStamp {
-		UnitStamp::parse(&[0x91, 0x00, 0x10, 0x64, 0x00, 0x00, 0x69, 0xF6, 0x10, 0x03]).unwrap()
+	fn now() -> Stamp {
+		own(UnitStamp::parse(&[0x91, 0x00, 0x10, 0x64, 0x00, 0x00, 0x69, 0xF6, 0x10, 0x03]).unwrap())
+	}
+
+	fn own(now: UnitStamp) -> Stamp {
+		Stamp { now, whose: Whose::Unit }
+	}
+
+	/// The same stamp, given by the gateway for a unit that gave none.
+	fn gateways() -> Stamp {
+		Stamp {
+			whose: Whose::Gateway,
+			..now()
+		}
 	}
 
 	fn keyed(lines: &[Line]) -> Vec<(&str, &str)> {
@@ -529,11 +556,36 @@ mod tests {
 		let answer = answer(&[0x70, 0x0B, 0xB8, 0x7B, 0x01]);
 		// A stamp behind the fault's mileage: the reading is impossible.
 		let behind = UnitStamp::parse(&[0x91, 0x00, 0x0F, 0x00, 0x00, 0x00, 0x69, 0xF6, 0x10, 0x03]).unwrap();
-		let frame = split(&answer, Some(&layout), Some(&behind));
+		let frame = split(&answer, Some(&layout), Some(&own(behind)));
 		assert!(frame.context.is_none());
 		let failed = lines(&frame, Some(&layout), "");
 		assert_eq!(failed.len(), 3, "{failed:?}");
 		assert!(failed[2].value.ends_with("(its standard records fail the unit's own stamp, not decoded)"));
+		// The gateway's stamp, behind the fault: said to be the gateway's, not the unit's.
+		let frame = split(
+			&answer,
+			Some(&layout),
+			Some(&Stamp {
+				now: behind,
+				whose: Whose::Gateway,
+			}),
+		);
+		assert!(frame.context.is_none());
+		let failed = lines(&frame, Some(&layout), "");
+		assert_eq!(
+			keyed(&failed),
+			vec![
+				("record 01", "02 05 (standard record, not confirmed by the gateway's stamp, not decoded)"),
+				(
+					"record 02",
+					"B4 00 10 00 00 00 69 F6 00 03 (standard record, not confirmed by the gateway's stamp, not decoded)"
+				),
+				(
+					"record 70",
+					"0B B8 7B 01 (its standard records fail the gateway's stamp, the unit giving none, not decoded)"
+				),
+			]
+		);
 		// No stamp at all: nothing to check by, said so.
 		let frame = split(&answer, Some(&layout), None);
 		let unchecked = lines(&frame, Some(&layout), "");
@@ -543,6 +595,19 @@ mod tests {
 				.value
 				.ends_with("(the unit gave no stamp to check its standard records by, not decoded)")
 		);
+	}
+
+	#[test]
+	fn standard_records_that_pass_the_gateways_stamp_read_as_with_the_units_own() {
+		// A unit that gave no stamp of its own, checked against the gateway's: the same
+		// context and the same lines as against an own stamp of the same odometer and clock.
+		let layout = layout();
+		let answer = answer(&[0x70, 0x0B, 0xB8, 0x7B, 0x01]);
+		let by_own = split(&answer, Some(&layout), Some(&now()));
+		let by_gateway = split(&answer, Some(&layout), Some(&gateways()));
+		assert!(by_gateway.context.is_some());
+		assert_eq!(by_gateway.context, by_own.context);
+		assert_eq!(lines(&by_gateway, Some(&layout), ""), lines(&by_own, Some(&layout), ""));
 	}
 
 	#[test]
