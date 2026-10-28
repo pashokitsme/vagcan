@@ -32,8 +32,24 @@ use vag_cli_core::{marks, note, out, say};
 use vag_uds_can::UnitLink;
 use vag_uds_client::address::UnitAddress;
 use vag_uds_client::dtc::{CONFIRMED, CarTime, FAILED_NOW, FaultContext, UnitStamp};
-use vag_uds_client::{AsyncUdsClient, RawDtc, gateway};
-use vag_uds_transport::CanId;
+use vag_uds_client::{AsyncUdsClient, RawDtc, UdsError, gateway};
+use vag_uds_transport::{CanId, TransportError};
+
+/// The lines for the units that answered nothing: a warning for units the run reads whatever
+/// the gateway says — those it was told to read, the engine, the gearbox, the gateway — and a
+/// note for ids off the gateway's list, which may be no unit at all.
+fn silent_lines(silent: &[u16], named_units: bool) -> Vec<String> {
+	let ids = |of: &[u16]| of.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(", ");
+	let (expected, listed): (Vec<u16>, Vec<u16>) = silent.iter().partition(|r| named_units || gateway::NOT_LISTED.contains(r));
+	let mut out = Vec::new();
+	if !expected.is_empty() {
+		out.push(format!("warning: no answer from {}", ids(&expected)));
+	}
+	if !listed.is_empty() {
+		out.push(format!("note: no answer from {}, listed by the gateway", ids(&listed)));
+	}
+	out
+}
 
 /// What one unit reported.
 #[derive(Debug, Clone, Default)]
@@ -862,6 +878,7 @@ pub async fn run<L: UnitLink>(
 		};
 	}
 
+	let named_units = requested.is_some();
 	let order = match requested {
 		Some(ids) => ids,
 		None => {
@@ -911,6 +928,8 @@ pub async fn run<L: UnitLink>(
 	// Units with a row whose ODIS variant was picked by family, and whether they answered F1A2.
 	let mut guessed_by_family: Vec<(u16, bool)> = Vec::new();
 	let mut read = 0usize;
+	// Units that answered neither their name nor their fault list.
+	let mut silent: Vec<u16> = Vec::new();
 	// The gateway's `02BD` once asked: `Some(None)` when it gave none.
 	let mut gateway_stamp: Option<Option<UnitStamp>> = None;
 	let count = order.len();
@@ -929,13 +948,22 @@ pub async fn run<L: UnitLink>(
 		}
 
 		// The unit names itself; nothing here maps an address to a name.
-		let component = uds
-			.read_data_by_identifier(0xF197)
-			.await
+		let named = uds.read_data_by_identifier(0xF197).await;
+		let no_name = matches!(named, Err(UdsError::Transport(TransportError::Timeout)));
+		let component = named
 			.ok()
 			.map(|b| String::from_utf8_lossy(&b).trim_end_matches(['\0', ' ']).to_string())
 			.filter(|s| !s.is_empty());
 		let listing = uds.read_dtcs_by_status_mask(0xFF).await;
+		// No answer to its name and none to its list: nothing there to read. It is asked nothing
+		// more and said once with the others after the walk — the gateway's list holds ids no
+		// unit answers on (`gateway::decode_installation_list`), and three timeouts a run each,
+		// warned one by one, said nothing the one line does not (2026-10-28).
+		if no_name && matches!(listing, Err(UdsError::Transport(TransportError::Timeout))) {
+			silent.push(request);
+			backend = L::release(uds.into_transport());
+			continue;
+		}
 		// A list that did not come back is not a clean unit: said at level 0, and the unit
 		// is not counted as read in the summary.
 		match &listing {
@@ -1132,6 +1160,9 @@ pub async fn run<L: UnitLink>(
 	// Every read is done: the link closes now, before the question below and the key
 	// search after it, and a `--slcan` board is out of adapter mode by then.
 	drop(backend);
+	for line in silent_lines(&silent, named_units) {
+		say!("{line}");
+	}
 
 	let width = vag_cli_core::table::terminal_width();
 	if supported {
@@ -1396,6 +1427,21 @@ mod tests {
 		let alone = describe_age(&context, None);
 		assert!(alone.contains("212763 km"));
 		assert!(!alone.contains("ago"), "{alone}");
+	}
+
+	#[test]
+	fn units_that_answered_nothing_are_one_line_a_kind() {
+		assert!(silent_lines(&[], false).is_empty());
+		assert_eq!(
+			silent_lines(&[0x700, 0x776, 0x777], false),
+			["note: no answer from 700, 776, 777, listed by the gateway"]
+		);
+		// Asked for by name, or read whatever the gateway lists, its silence is what the run found.
+		assert_eq!(silent_lines(&[0x713], true), ["warning: no answer from 713"]);
+		assert_eq!(
+			silent_lines(&[0x7E1, 0x70E], false),
+			["warning: no answer from 7E1", "note: no answer from 70E, listed by the gateway"]
+		);
 	}
 
 	#[test]

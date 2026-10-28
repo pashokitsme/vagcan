@@ -48,9 +48,9 @@ $ vagcan faults
 ? success
 note: adapter from VAGCAN_DEVICE=[PORT]
 note: code names from ODIS SIM00-odis (eng)
-warning: 7E1 fault list not read: transport: timeout
-warning: 70E fault list not read: transport: timeout
 warning: 713 fault list not read: transport: timeout
+warning: no answer from 7E1
+note: no answer from 70E, listed by the gateway
 no stored codes on the 2 units read
 
 ```
