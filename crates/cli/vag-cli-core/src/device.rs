@@ -490,12 +490,13 @@ fn choose_usb(listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) -> 
 	// Which boards would not open, kept apart from the silent ones: a busy port may well
 	// be a working board, and that wants different advice. Which answered Hello, because
 	// those are read through rather than opened as adapters.
-	let mut unopened: Vec<String> = Vec::new();
+	// Each board whose port did not open, and why.
+	let mut unopened: Vec<(String, String)> = Vec::new();
 	let mut dash: Vec<String> = Vec::new();
 	let found = probed(listing?, |path| {
 		let answer = probe(path);
-		match answer {
-			BoardAnswer::Unopened(_) => unopened.push(path.to_string()),
+		match &answer {
+			BoardAnswer::Unopened(why) => unopened.push((path.to_string(), why.clone())),
 			BoardAnswer::Dash { .. } => dash.push(path.to_string()),
 			BoardAnswer::Slcan | BoardAnswer::Silent => {}
 		}
@@ -533,7 +534,14 @@ fn choose_usb(listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) -> 
 		([], []) => Ok(Found::Nothing(no_adapter())),
 		([], boards) if boards.iter().any(|b| dash.contains(&b.path)) => Ok(Found::OnlyThroughTheBoard),
 		([], boards) => {
-			let (busy, silent): (Vec<&AdapterInfo>, Vec<&AdapterInfo>) = boards.iter().partition(|b| unopened.contains(&b.path));
+			let (busy, silent): (Vec<&AdapterInfo>, Vec<&AdapterInfo>) = boards.iter().partition(|b| unopened.iter().any(|(path, _)| *path == b.path));
+			// The one board, its port taken: an adapter that is there, not a missing one.
+			if let ([board], [], [(_, cause)]) = (busy.as_slice(), silent.as_slice(), unopened.as_slice()) {
+				return Ok(Found::Nothing(
+					anyhow!("the dash board at {} could not be opened: {cause}", board.path)
+						.help("close the program holding the port (a monitor, `dashsim`, another vagcan) and try again"),
+				));
+			}
 			let mut why = anyhow!("no USB-CAN adapter found, only a vag-dash board it cannot use");
 			for board in busy.iter().chain(&silent) {
 				why = why.note(format!("{}: {}", board.path, board.description));
@@ -894,7 +902,13 @@ mod tests {
 	#[test]
 	fn a_busy_board_says_so() {
 		let err = shown(&cable(None, Ok(vec![board()]), answering(BoardAnswer::Unopened("Resource busy".into()))).unwrap_err());
-		assert!(err.contains("Resource busy"), "{err}");
+		// The board is a usable adapter whose port is taken: the headline says that, not that
+		// there is no adapter (2026-10-28, two commands at once on the owner's board).
+		assert!(
+			err.starts_with(&format!("error: the dash board at {BOARD} could not be opened: Resource busy\n")),
+			"{err}"
+		);
+		assert!(!err.contains("no USB-CAN adapter"), "{err}");
 		// A busy slcan board is a working adapter; reflashing it is the wrong advice.
 		assert!(!err.contains("eflash"), "firmware advice for a busy port: {err}");
 		assert!(err.contains("close"), "say what to do about the port: {err}");
@@ -1203,13 +1217,13 @@ mod tests {
 	#[tokio::test]
 	async fn with_no_cable_nothing_is_scanned_and_the_error_says_how_to_ask_for_ble() {
 		let cases = [
-			(vec![], BoardAnswer::Silent),
-			(vec![board()], BoardAnswer::Silent),
-			(vec![board()], BoardAnswer::Unopened("Resource busy".into())),
+			(vec![], BoardAnswer::Silent, "error: no USB-CAN adapter found"),
+			(vec![board()], BoardAnswer::Silent, "error: no USB-CAN adapter found"),
+			(vec![board()], BoardAnswer::Unopened("Resource busy".into()), "error: the dash board at"),
 		];
-		for (listing, answer) in cases {
+		for (listing, answer, headline) in cases {
 			let err = refused(resolve_as(None, Ok(listing), answering(answer), no_scan(), true, &mut Scripted::new(vec![])).await);
-			assert!(err.contains("no USB-CAN adapter found"), "{err}");
+			assert!(err.starts_with(headline), "{err}");
 			assert!(err.ends_with("help: over Bluetooth, add `--ble`\n"), "{err}");
 		}
 	}
