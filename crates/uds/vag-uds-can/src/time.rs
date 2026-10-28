@@ -1,7 +1,8 @@
 //! One clock, two runtimes.
 //!
 //! `isotp.rs` needs exactly three things to hold a deadline: "now", "now plus a
-//! `Duration`", and "how much of that is left". On the host those come from
+//! `Duration`", and "how much of that is left" — and, for the one wait that is a
+//! transmit rather than a receive (its flow control), "this future, or give up after". On the host those come from
 //! `tokio::time`; on the board from `embassy_time`. Everything above this
 //! module speaks [`core::time::Duration`], which is the same type in both
 //! worlds, so the ISO-TP state machine never learns which runtime it is on.
@@ -9,7 +10,7 @@
 #[cfg(any(test, not(feature = "std")))]
 use core::time::Duration;
 
-pub use imp::{Instant, sleep};
+pub use imp::{Instant, sleep, within};
 
 /// Longest wait this module will represent, in microseconds — a bit over an
 /// hour. `embassy_time::Duration::from_micros` scales by the tick rate *before*
@@ -36,6 +37,11 @@ mod imp {
 
 	pub async fn sleep(d: Duration) {
 		tokio::time::sleep(d).await;
+	}
+
+	/// `fut`, or `None` once `d` has passed first (the future is dropped).
+	pub async fn within<F: Future>(d: Duration, fut: F) -> Option<F::Output> {
+		tokio::time::timeout(d, fut).await.ok()
 	}
 }
 
@@ -83,6 +89,11 @@ mod imp {
 
 	pub async fn sleep(d: Duration) {
 		embassy_time::Timer::after(to_embassy(d)).await;
+	}
+
+	/// `fut`, or `None` once `d` has passed first (the future is dropped).
+	pub async fn within<F: Future>(d: Duration, fut: F) -> Option<F::Output> {
+		embassy_time::with_timeout(to_embassy(d), fut).await.ok()
 	}
 }
 

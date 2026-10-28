@@ -1527,11 +1527,15 @@ const STALE: Duration = Duration::from_millis(STALE_MS);
 /// be stored, which is the same property `config.rs` has for cells.
 static VALUES: Mutex<CriticalSectionRawMutex, [Slot; CHANNEL_COUNT]> = Mutex::new([Slot::EMPTY; CHANNEL_COUNT]);
 
-/// How long one answer PDU may take to arrive, all its frames together. A unit
-/// that is there answers a read in milliseconds; this is also what a silent
-/// unit costs the bus per attempt, so it stays short. 500 ms rather than the
-/// 300 the round-robin used: a host's request may be a fault list of many
-/// frames from a unit behind the gateway.
+/// How long an answer may take to start: its single frame, or the first frame of a multi-frame
+/// answer. A unit that is there answers a read in milliseconds; this is also what a silent
+/// unit costs the bus per attempt, so it stays short. 500 ms rather than the 300 the
+/// round-robin used: room for a unit behind the gateway. The rest of a multi-frame answer is
+/// not in it: each consecutive frame has ISO 15765-2's N_Cr from the one before
+/// (`vag_uds_can::isotp`), all of them [`ANSWER_TAIL`]. Until 2026-10-28 this covered every
+/// frame together, and slow units' long fault lists — `19 02 FF` to a climate unit and an
+/// infotainment unit, 127 and 169 codes, 748 and 979 ms whole through a host's own ISO-TP —
+/// came back through the board as no answer.
 const RESPONSE_TIMEOUT: core::time::Duration = core::time::Duration::from_millis(vag_dash_core::exchange::RESPONSE_TIMEOUT_MS);
 // The stopwatch aborts a run whose speed has not answered for `SILENCE_MS`. Between two
 // speed answers two other reads may each hold the bus for a whole `RESPONSE_TIMEOUT` (the
@@ -1539,6 +1543,11 @@ const RESPONSE_TIMEOUT: core::time::Duration = core::time::Duration::from_millis
 // which goes ahead of a run's speed), and the speed may be read as slowly as
 // `SLOWEST_SPEED_PERIOD_MS`. A silence threshold under that aborts a run whose speed never
 // missed (PR #12 review): lengthening this timeout means lengthening that.
+//
+// The bound above is on reads that do not answer: a silent unit's read ends at this timeout.
+// An answer that started inside it runs to its end, as a `78` run does: the panel's own reads
+// are a frame or a few, done in milliseconds; a host's long fault list from a slow unit, asked
+// during a run, can hold the bus for up to a second and abort the run, as its `78` could.
 //
 // A speed read that ends busy (`Answer::Busy`: a late answer to an earlier request on its id,
 // and its own answer later than `RESPONSE_TIMEOUT`) is one of those two timeouts: it holds the
@@ -1578,11 +1587,17 @@ const PENDING_DEADLINE: Duration = Duration::from_secs(10);
 /// a transmit future is not this loop's to find out — so it gets one, and past
 /// it the request is dropped (which aborts the transmission).
 const SEND_DEADLINE: Duration = Duration::from_secs(1);
+/// How long an answer that started in time may run on, all its consecutive frames together.
+/// Each frame has N_Cr (1 s) on its own, so a whole 4095-byte answer at that pace would hold the
+/// bus for minutes; this caps one answer as [`PENDING_DEADLINE`] caps a run of `78`s — one unit's
+/// slow answer, not an open-ended one. A long fault list from a slow unit takes about a second.
+const ANSWER_TAIL: Duration = PENDING_DEADLINE;
 /// After a bus-off, before the restarted controller is asked anything.
 const BUS_OFF_GAP: Duration = Duration::from_secs(1);
 /// The waits above, as every exchange's [`Waits`] reads them.
 const TIMEOUTS: Timeouts = Timeouts {
 	answer_ms: RESPONSE_TIMEOUT.as_millis() as u64,
+	tail_ms: ANSWER_TAIL.as_millis(),
 	suppressed_ms: SUPPRESSED_WAIT.as_millis() as u64,
 	pending_wait_ms: PENDING_WAIT.as_millis(),
 	pending_deadline_ms: PENDING_DEADLINE.as_millis(),
@@ -1677,7 +1692,7 @@ async fn exchange<'a>(backend: &mut TwaiBackend<'static>, unit: Unit, pdu: &'a [
 	let swept = backend.drain().await;
 	let mut link = IsoTpCan::new(backend, CanId::Standard(unit.request), CanId::Standard(unit.response));
 	let mut waits = Waits::new(pdu, TIMEOUTS, limit_ms);
-	let result = transact(&mut link, pdu, limit_ms.is_some(), &mut waits).await;
+	let result = transact(&mut link, pdu, &mut waits).await;
 	Exchanged { result, swept, waits }
 }
 
@@ -1687,15 +1702,13 @@ type Link<'a> = IsoTpCan<&'a mut TwaiBackend<'static>>;
 /// Send, and wait as `waits` says ([`vag_dash_core::exchange`]): for the first answer, out a run
 /// of `7F xx 78`, and on past a late answer to another request, which is dropped.
 ///
-/// An exchange with a deadline of its own (`limited`) — the fault count's,
+/// An exchange with a deadline of its own (in its `waits`) — the fault count's,
 /// [`faults::DEADLINE_MS`] from the start, `78`s included (owner, 2026-09-27) — has every wait
-/// cut to it, the backstop too. Every other exchange keeps [`RESPONSE_TIMEOUT`] and
-/// [`PENDING_DEADLINE`] as they are.
-async fn transact(link: &mut Link<'_>, pdu: &[u8], limited: bool, waits: &mut Waits<'_>) -> Result<Vec<u8>, Stop> {
+/// cut to it, an answer's tail too ([`Waits::receive_bound`]). Every other exchange keeps
+/// [`RESPONSE_TIMEOUT`], [`ANSWER_TAIL`] and [`PENDING_DEADLINE`] as they are.
+async fn transact(link: &mut Link<'_>, pdu: &[u8], waits: &mut Waits<'_>) -> Result<Vec<u8>, Stop> {
 	let start = Instant::now();
 	let held = || start.elapsed().as_millis();
-	// An exchange with a deadline of its own gets no backstop past it.
-	let backstop = if limited { Duration::from_ticks(0) } else { SEND_DEADLINE };
 	let Some(send_ms) = waits.send_wait(SEND_DEADLINE.as_millis()) else {
 		return Err(Stop::Transport(TransportError::Timeout));
 	};
@@ -1705,10 +1718,11 @@ async fn transact(link: &mut Link<'_>, pdu: &[u8], limited: bool, waits: &mut Wa
 	}
 	waits.sent(held());
 	loop {
-		let Some(wait) = waits.next_wait(held()) else {
+		let now = held();
+		let (Some(wait), Some(bound)) = (waits.next_wait(now), waits.receive_bound(now)) else {
 			return Err(stopped(waits.ended()));
 		};
-		match receive(link, core::time::Duration::from_millis(wait), backstop).await {
+		match receive(link, core::time::Duration::from_millis(wait), Duration::from_millis(bound)).await {
 			Ok(answer) => match waits.heard(&answer, held()) {
 				Heard::Answer => return Ok(answer),
 				// Waited out here: the planner takes a `78` that reaches it as a refusal
@@ -1731,11 +1745,11 @@ fn stopped(ended: Ended) -> Stop {
 	}
 }
 
-/// One answer PDU within `timeout`, with a backstop `past` the transport's own deadline for
-/// the flow-control frame it may transmit.
-async fn receive(link: &mut Link<'_>, timeout: core::time::Duration, past: Duration) -> Result<Vec<u8>, TransportError> {
-	let backstop = Duration::from_millis(timeout.as_millis() as u64) + past;
-	with_timeout(backstop, link.recv(timeout)).await.unwrap_or(Err(TransportError::Timeout))
+/// One answer PDU that starts within `timeout` — the transport bounds the rest of it frame by
+/// frame (N_Ar for its flow control, N_Cr for each consecutive frame) — and is whole within
+/// `bound`: the answer's tail, cut to the exchange's own deadline.
+async fn receive(link: &mut Link<'_>, timeout: core::time::Duration, bound: Duration) -> Result<Vec<u8>, TransportError> {
+	with_timeout(bound, link.recv(timeout)).await.unwrap_or(Err(TransportError::Timeout))
 }
 
 /// What the planner is told about an exchange of `request`. Silence after a request

@@ -5,9 +5,10 @@
 
 use vag_dash_core::exchange::{self, Ended, Heard, Timeouts, Waits};
 
-/// The board's: `RESPONSE_TIMEOUT`, `SUPPRESSED_WAIT`, `PENDING_WAIT` (P2*), `PENDING_DEADLINE`.
+/// The board's: `RESPONSE_TIMEOUT`, `ANSWER_TAIL`, `SUPPRESSED_WAIT`, `PENDING_WAIT` (P2*), `PENDING_DEADLINE`.
 const BOARD: Timeouts = Timeouts {
 	answer_ms: exchange::RESPONSE_TIMEOUT_MS,
+	tail_ms: 10_000,
 	suppressed_ms: 150,
 	pending_wait_ms: 5_000,
 	pending_deadline_ms: 10_000,
@@ -152,4 +153,32 @@ fn a_send_that_used_the_whole_deadline_leaves_no_wait() {
 	assert_eq!(waits.ended(), Ended::Silent, "no 78 was heard");
 	let waits = Waits::new(FAULTS, BOARD, None);
 	assert_eq!(waits.send_wait(1_000), Some(1_000));
+}
+
+/// 2026-10-28: `19 02 FF` to two slow units came back whole through a host's own ISO-TP (748 and
+/// 979 ms) and as no answer through the board, whose 500 ms covered every frame of the answer.
+/// The 500 ms is the answer's start; the receive under it may run on for the answer's tail.
+#[test]
+fn a_receive_runs_past_the_first_answers_wait_for_the_answers_tail() {
+	let mut waits = Waits::new(FAULTS, BOARD, None);
+	waits.sent(2);
+	assert_eq!(waits.next_wait(2), Some(500), "the answer's start: the board's timeout");
+	assert_eq!(waits.receive_bound(2), Some(10_500), "the start, then the tail");
+	// A first frame at 100 ms and consecutive frames until 900 ms: inside the bound.
+	assert!(2 + waits.receive_bound(2).unwrap() > 900);
+	assert_eq!(waits.receive_bound(502), None, "nothing started: no answer");
+}
+
+/// The fault count's own deadline holds over the tail as over every wait: a slow unit's answer
+/// started at 100 ms and done at 900 ms fits its 2 s; one still under way at 2 s is cut there.
+#[test]
+fn the_counts_deadline_cuts_an_answers_tail_too() {
+	let mut waits = Waits::new(FAULTS, BOARD, COUNT);
+	waits.sent(2);
+	assert_eq!(waits.next_wait(2), Some(500));
+	assert_eq!(waits.receive_bound(2), Some(1_998), "what is left of 2 s, not 500 ms");
+	assert!(2 + waits.receive_bound(2).unwrap() > 900);
+	assert_eq!(waits.heard(&[0x7F, 0x19, 0x78], 40), Heard::Pending);
+	assert_eq!(waits.receive_bound(1_500), Some(500));
+	assert_eq!(waits.receive_bound(2_000), None);
 }

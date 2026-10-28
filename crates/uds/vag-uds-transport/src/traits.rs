@@ -52,6 +52,8 @@ pub trait IsoTpTransport {
 pub trait AsyncIsoTpTransport: MaybeSend {
 	/// Send one whole ISO-TP PDU.
 	async fn send(&mut self, pdu: &[u8]) -> Result<(), TransportError>;
-	/// Receive one whole ISO-TP PDU, waiting at most `timeout`.
+	/// Receive one whole ISO-TP PDU, waiting at most `timeout` for it to start. A link that
+	/// reassembles frames itself (`vag_uds_can::IsoTpCan`) bounds the rest of a multi-frame PDU
+	/// as ISO 15765-2 does, by N_Cr per consecutive frame.
 	async fn recv(&mut self, timeout: Duration) -> Result<Vec<u8>, TransportError>;
 }

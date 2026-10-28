@@ -5,8 +5,12 @@
 //! Pure, like [`crate::saving`]: the rules live here, where this crate's
 //! `tests/exchange_waits.rs` runs them on the host. Times are milliseconds from the exchange's start, before its send.
 //!
-//! * **The first answer** within [`Timeouts::answer_ms`] of the send, or
-//!   [`Timeouts::suppressed_ms`] for a request that suppressed its positive response.
+//! * **The first answer** starts within [`Timeouts::answer_ms`] of the send, or
+//!   [`Timeouts::suppressed_ms`] for a request that suppressed its positive response: its single
+//!   frame or first frame. A multi-frame answer under way then runs to its end as ISO 15765-2
+//!   bounds it, each consecutive frame within N_Cr of the one before (`vag_uds_can::isotp`), all
+//!   of it within [`Timeouts::tail_ms`] past the wait ([`Waits::receive_bound`]). A deadline over
+//!   every frame together cut slow units' long fault lists to no answer (2026-10-28).
 //! * **`7F sid 78`** (response pending) asks for more time: each one waits
 //!   [`Timeouts::pending_wait_ms`] more, all of them together no longer than
 //!   [`Timeouts::pending_deadline_ms`] from the first.
@@ -20,7 +24,7 @@
 //!   identifier this one asks — an identical request, or a single read of one of a batch's —
 //!   is still taken: nothing in it tells the two apart.
 //! * **An exchange with a deadline of its own** — the fault count's, 2 s from the exchange's
-//!   start, the send included, `78`s included — has every wait cut to it.
+//!   start, the send included, `78`s included — has every wait cut to it, an answer's tail too.
 //! * **How it ends without an answer** is what was heard on the unit's answer id, not what ended
 //!   the wait: nothing at all is [`Ended::Silent`], an absent unit; a `78`, or a late answer to
 //!   an earlier request, is [`Ended::Busy`] — the unit is there and busy. Its readers get
@@ -32,9 +36,10 @@
 
 use vag_uds_client::schedule::{answers, expects_no_answer};
 
-/// The board's answer timeout, in milliseconds: how long the first answer PDU may take, all its
-/// frames together. `RESPONSE_TIMEOUT` in `dash.rs`, where its reasons are, is this; it is here
-/// so the fault count's log can say the window it had ([`crate::faults`]).
+/// The board's answer timeout, in milliseconds: how long the first answer may take to start —
+/// its single frame or first frame; the rest of a multi-frame answer is not in it.
+/// `RESPONSE_TIMEOUT` in `dash.rs`, where its reasons are, is this; it is here so the fault
+/// count's log can say the window it had ([`crate::faults`]).
 pub const RESPONSE_TIMEOUT_MS: u64 = 500;
 
 /// ISO 14229-1: a negative response, and the NRC that asks for more time.
@@ -44,8 +49,12 @@ const RESPONSE_PENDING: u8 = 0x78;
 /// The board's waits, in milliseconds (`dash.rs` keeps them, with their reasons).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timeouts {
-	/// The first answer PDU, all its frames: `RESPONSE_TIMEOUT`.
+	/// The first answer PDU's start, its single or first frame: `RESPONSE_TIMEOUT`.
 	pub answer_ms: u64,
+	/// How long an answer that started within a wait may run on past it, all its consecutive
+	/// frames together: `ANSWER_TAIL`. Each frame has ISO 15765-2's N_Cr on its own; this bounds
+	/// the whole.
+	pub tail_ms: u64,
 	/// The refusal a request that suppressed its positive response may get: `SUPPRESSED_WAIT`.
 	pub suppressed_ms: u64,
 	/// The next answer after a `78`: `PENDING_WAIT`, ISO 14229-2's P2*.
@@ -131,6 +140,14 @@ impl<'a> Waits<'a> {
 	pub fn next_wait(&self, now_ms: u64) -> Option<u64> {
 		let wait = self.wait_end_ms.checked_sub(now_ms).filter(|w| *w > 0)?;
 		self.cut(now_ms, wait)
+	}
+
+	/// How long the receive that waits [`Waits::next_wait`] at `now_ms` may run in all: the wait
+	/// for the answer to start, and [`Timeouts::tail_ms`] for the rest of a multi-frame answer
+	/// that did — cut to the exchange's own deadline; `None` once the wait under way is over.
+	pub fn receive_bound(&self, now_ms: u64) -> Option<u64> {
+		let wait = self.wait_end_ms.checked_sub(now_ms).filter(|w| *w > 0)?;
+		self.cut(now_ms, wait.saturating_add(self.timeouts.tail_ms))
 	}
 
 	/// A PDU came at `now_ms`: what it is to this exchange.

@@ -39,6 +39,7 @@ const PART_NUMBER: u16 = 0xF187;
 const PERIOD_MS: u32 = 100;
 const TIMEOUTS: Timeouts = Timeouts {
 	answer_ms: RESPONSE_TIMEOUT_MS,
+	tail_ms: 10_000,
 	suppressed_ms: 150,
 	pending_wait_ms: 5_000,
 	pending_deadline_ms: 10_000,

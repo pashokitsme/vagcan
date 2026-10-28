@@ -5,12 +5,21 @@ use core::time::Duration;
 use vag_uds_transport::{AsyncIsoTpTransport, CanId, TransportError};
 
 use crate::backend::{CanBackend, to_raw_id};
-use crate::time::{Instant, sleep};
+use crate::time::{Instant, sleep, within};
 
 /// Frame padding byte (classic CAN diagnostic frames are padded to 8 bytes).
 const PAD: u8 = 0x00;
 /// N_Bs: how long to wait for the ECU's flow-control frame after a First Frame.
 const FC_TIMEOUT: Duration = Duration::from_millis(1000);
+/// N_Cr: how long a reception under way waits for its next consecutive frame — ISO 15765-2's
+/// network layer timing, N_Cr timeout 1000 ms. Counted from the previous frame, not from the
+/// start of the answer: a long answer from a slow unit is many short gaps (a climate unit's
+/// 127 stored codes took 748 ms whole, 2026-10-28).
+pub const N_CR: Duration = Duration::from_millis(1000);
+/// N_Ar: how long the receiver's own flow-control frame may take to go out — ISO 15765-2's
+/// N_Ar timeout, 1000 ms. The one transmit inside a receive, so the receive is bounded by its
+/// own deadlines alone.
+const N_AR: Duration = Duration::from_millis(1000);
 /// How many FC.WAIT frames we tolerate before giving up (ISO 15765-2 N_WFTmax).
 const MAX_FC_WAIT: usize = 8;
 
@@ -169,6 +178,12 @@ impl<B: CanBackend> AsyncIsoTpTransport for IsoTpCan<B> {
 		Ok(())
 	}
 
+	/// `timeout` bounds the wait for the answer to *start* — its single frame or its first frame.
+	/// A multi-frame answer under way is then bounded as ISO 15765-2 bounds it: the flow control
+	/// goes out within [`N_AR`], and each consecutive frame comes within [`N_CR`] of the one
+	/// before, however long the whole takes. A deadline of 500 ms over every frame together cut
+	/// slow units' long fault lists (127 and 169 codes, 748 and 979 ms whole) to no answer
+	/// through the dash board, which a host's own ISO-TP took whole (2026-10-28).
 	async fn recv(&mut self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
 		let deadline = Instant::now() + timeout;
 		// ISO 15765-2, unexpected arrival of an N_PDU: a consecutive frame, a flow control or an
@@ -200,11 +215,13 @@ impl<B: CanBackend> AsyncIsoTpTransport for IsoTpCan<B> {
 
 					// Flow Control: ContinueToSend, block size 0 (send all), STmin 0.
 					let fc = Self::pad8(vec![0x30, 0x00, 0x00]);
-					self.backend.send_frame(self.tx, &fc).await?;
+					within(N_AR, self.backend.send_frame(self.tx, &fc))
+						.await
+						.ok_or(TransportError::Timeout)??;
 
 					let mut expected_seq: u8 = 1;
 					while out.len() < len {
-						let cf = self.recv_own(deadline).await?;
+						let cf = self.recv_own(Instant::now() + N_CR).await?;
 						let cf_pci = *cf.first().ok_or_else(|| TransportError::Protocol("empty consecutive frame".into()))?;
 						if cf_pci >> 4 != 0x2 {
 							return Err(TransportError::Protocol("expected consecutive frame".into()));
@@ -447,6 +464,104 @@ mod tests {
 		let mut iso = channel(vec![(RX, vec![0x10, 0x0A, 0x50])]);
 		let err = iso.recv(Duration::from_millis(50)).await.unwrap_err();
 		assert!(matches!(err, TransportError::Protocol(_)), "got {err:?}");
+	}
+
+	/// Frames on a clock: when each arrives (ms from the start), its id, its data.
+	type Timeline = VecDeque<(u64, u32, Vec<u8>)>;
+
+	/// A unit on a clock: each frame arrives at its own millisecond from the mock's start
+	/// (tokio's paused clock), and a receive waits for it as long as its timeout allows.
+	struct TimedCan {
+		start: Instant,
+		sent: Vec<(u32, Vec<u8>)>,
+		frames: Timeline,
+	}
+
+	impl CanBackend for TimedCan {
+		async fn send_frame(&mut self, id: u32, data: &[u8]) -> Result<(), CanError> {
+			self.sent.push((id, data.to_vec()));
+			Ok(())
+		}
+		async fn recv_frame(&mut self, timeout: Duration) -> Result<(u32, Vec<u8>), CanError> {
+			let now = Instant::now();
+			match self.frames.front() {
+				Some((at_ms, _, _)) if self.start + Duration::from_millis(*at_ms) <= now + timeout => {
+					sleep((self.start + Duration::from_millis(*at_ms)).saturating_duration_since(now)).await;
+					let (_, id, data) = self.frames.pop_front().expect("peeked");
+					Ok((id, data))
+				}
+				_ => {
+					sleep(timeout).await;
+					Err(CanError::Timeout)
+				}
+			}
+		}
+	}
+
+	/// A 120-byte answer as a slow unit sends it: the first frame at `first_ms`, then its 17
+	/// consecutive frames `gap_ms` apart.
+	fn slow_answer(first_ms: u64, gap_ms: u64) -> (Vec<u8>, Timeline) {
+		let pdu: Vec<u8> = (0..120u8).collect();
+		let mut frames = VecDeque::new();
+		let mut ff = vec![0x10, pdu.len() as u8];
+		ff.extend_from_slice(&pdu[..6]);
+		frames.push_back((first_ms, RX, ff));
+		for (i, chunk) in pdu[6..].chunks(7).enumerate() {
+			let mut cf = vec![0x20 | ((i as u8 + 1) & 0x0F)];
+			cf.extend_from_slice(chunk);
+			cf.resize(8, PAD);
+			frames.push_back((first_ms + (i as u64 + 1) * gap_ms, RX, cf));
+		}
+		(pdu, frames)
+	}
+
+	fn timed(frames: Timeline) -> IsoTpCan<TimedCan> {
+		IsoTpCan::for_ecu(
+			TimedCan {
+				start: Instant::now(),
+				sent: Vec::new(),
+				frames,
+			},
+			0,
+		)
+	}
+
+	/// ISO 15765-2: the timeout bounds the answer's start; once its first frame is in, each
+	/// consecutive frame has N_Cr from the one before. A first frame at 100 ms and the rest
+	/// until 950 ms is taken whole under a 500 ms timeout — the 2026-10-28 fault lists of 748
+	/// and 979 ms, which a deadline over all the frames together cut to no answer.
+	#[tokio::test(start_paused = true)]
+	async fn a_long_answer_that_started_in_time_is_taken_whole() {
+		let (pdu, frames) = slow_answer(100, 50);
+		assert_eq!(frames.back().map(|f| f.0), Some(950), "the last frame lands past the timeout");
+		let mut iso = timed(frames);
+		let got = iso.recv(Duration::from_millis(500)).await.unwrap();
+		assert_eq!(got, pdu);
+		assert_eq!(iso.into_backend().sent.len(), 1, "one flow control");
+	}
+
+	/// The same answer whose consecutive frames stop for longer than N_Cr is no answer.
+	#[tokio::test(start_paused = true)]
+	async fn consecutive_frames_that_stop_for_longer_than_n_cr_are_no_answer() {
+		let (_, mut frames) = slow_answer(100, 50);
+		for frame in frames.iter_mut().skip(5) {
+			frame.0 += N_CR.as_millis() as u64 + 1;
+		}
+		let started = Instant::now();
+		let mut iso = timed(frames);
+		let err = iso.recv(Duration::from_millis(500)).await.unwrap_err();
+		assert!(matches!(err, TransportError::Timeout), "got {err:?}");
+		// Gave up N_Cr after the fourth consecutive frame (300 ms), not at the 500 ms timeout.
+		assert_eq!(started.elapsed(), Duration::from_millis(300) + N_CR);
+	}
+
+	/// An answer that has not started within the timeout is no answer, however close.
+	#[tokio::test(start_paused = true)]
+	async fn an_answer_that_starts_after_the_timeout_is_no_answer() {
+		let (_, frames) = slow_answer(501, 10);
+		let mut iso = timed(frames);
+		let err = iso.recv(Duration::from_millis(500)).await.unwrap_err();
+		assert!(matches!(err, TransportError::Timeout), "got {err:?}");
 	}
 
 	#[test]
