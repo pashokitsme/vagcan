@@ -194,11 +194,37 @@ impl Colour {
 	}
 }
 
-/// cargo's styles: `error` bold red, `note` bold green, `help` bold cyan.
+/// cargo's styles: `error` bold red, `warning` bold yellow, `note` bold green, `help` bold cyan.
 const RED: &str = "\x1b[1;31m";
+const YELLOW: &str = "\x1b[1;33m";
 const GREEN: &str = "\x1b[1;32m";
 const CYAN: &str = "\x1b[1;36m";
 const RESET: &str = "\x1b[0m";
+
+/// The labels a line on stderr may start with, and their styles.
+const LABELS: [(&str, &str); 4] = [("error", RED), ("warning", YELLOW), ("note", GREEN), ("help", CYAN)];
+
+/// `text` with the label each of its lines starts with — `warning: …`, `note: …` — drawn as
+/// [`render`] draws an error's: every labelled line on stderr looks the same, whichever
+/// command said it.
+pub fn paint(text: &str, colour: Colour) -> std::borrow::Cow<'_, str> {
+	let labelled = |line: &str| {
+		LABELS
+			.iter()
+			.find(|(label, _)| line.strip_prefix(label).is_some_and(|rest| rest.starts_with(": ")))
+	};
+	if colour == Colour::Never || !text.split_inclusive('\n').any(|l| labelled(l).is_some()) {
+		return text.into();
+	}
+	let mut out = String::with_capacity(text.len() + 16);
+	for line in text.split_inclusive('\n') {
+		match labelled(line) {
+			Some((label, style)) => out.push_str(&format!("{style}{label}:{RESET}{}", &line[label.len() + 1..])),
+			None => out.push_str(line),
+		}
+	}
+	out.into()
+}
 
 /// `label:` and `text` as one line or more, continuation lines indented under the text.
 fn line(out: &mut String, label: &str, style: &str, text: &str, colour: Colour) {
@@ -366,6 +392,20 @@ mod tests {
 			"\x1b[1;31merror:\x1b[0m x\n\n\x1b[1;32mnote:\x1b[0m why\n\x1b[1;36mhelp:\x1b[0m do\n"
 		);
 		assert!(!render(&err, 0, Colour::Never).contains('\x1b'));
+	}
+
+	#[test]
+	fn a_said_line_is_labelled_in_the_reports_colours() {
+		assert_eq!(
+			super::paint("warning: 713 not read\nnote: x\n", Colour::Always),
+			"\x1b[1;33mwarning:\x1b[0m 713 not read\n\x1b[1;32mnote:\x1b[0m x\n"
+		);
+		assert_eq!(
+			super::paint("  note: indented, not a label\n", Colour::Always),
+			"  note: indented, not a label\n"
+		);
+		assert_eq!(super::paint("notes: not a label\n", Colour::Always), "notes: not a label\n");
+		assert_eq!(super::paint("warning: x\n", Colour::Never), "warning: x\n");
 	}
 
 	#[test]

@@ -111,6 +111,7 @@ fn write(stream: Stream, text: &str) -> std::io::Result<()> {
 		result = match stream {
 			Stream::Out => to_stdout(&mut std::io::stdout().lock(), text),
 			Stream::Err => {
+				let text = crate::report::paint(text, crate::report::Colour::for_stderr());
 				let mut err = std::io::stderr().lock();
 				err.write_all(text.as_bytes()).and_then(|()| err.flush())
 			}
