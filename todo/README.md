@@ -173,9 +173,18 @@ temperatures (`02:102A`–`102C`) answer — outside the August survey's pages.
 10. **Freeze frames on the car** — the reading is built (2026-10-21, either source alone,
     `research/odis-dtc/freeze-frames.md`): `vagcan faults -v` beside a VCDS auto-scan, one
     code's frame field by field, once with `--source odis` and once with `--source vcds`.
-11. **The ESC's acceleration** — [`dash/17`](dash/17-bench-ble-usb.md) §4: if 8 still shows a
-    dash, the board's console on the car (USB plugged in before OBD power) says whether `713` is
-    polled and what `1822` answers; then `vagcan watch --did 713:1822` parked.
+11. **The ESC's acceleration** — off the DRIVE page since 2026-10-28 (owner; plan `76d4b42d0af5a787`,
+    built, not yet flashed). What the car showed that evening, unexplained: the ESC (`713`)
+    stops answering diagnostics altogether — every service, through the board and through
+    `--slcan` with a 2 s wait — and stays silent until the ignition has been off about a minute.
+    Other units on the same bus (`712`, `715`, `70C`) keep answering, so not the gateway. It went
+    silent about 10–60 s after ignition on, near the car's audible start-up buzz, with the board
+    on OBD and polling `1822` at 10 Hz — and with the engine running or not. With the board
+    plugged in only after the buzz the value showed, then went silent ~15 s later; a 3-minute
+    `watch --did 713:1822 --hz 10` across an ignition cycle got no answer at all. Ruled out by
+    test: `22 02BD`, `22 F187` (16 reads answered), `19 02 FF` alone (the ESC died whether it was
+    asked or not), the engine state, the board's reboot. Not tried: the ESC with no tester on the
+    bus for minutes, then one read; a listen-only capture of `77D` across the buzz.
 12. **Where "the car stands" comes from** — [`dash/26`](../.archive/tasks/done/dash/26-car-standing.md)
     (built: one fact of the plan, today the stopwatch's speed at 0):
     `vagcan watch --did 70A:25E0,01:414B` stopping and moving off (the parking aid's standstill
