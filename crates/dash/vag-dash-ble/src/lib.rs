@@ -63,9 +63,22 @@ pub struct Found {
 	pub manufacturer: BTreeMap<u16, Vec<u8>>,
 }
 
+/// The name the dash board advertises: `vag-dash-fw`'s `DEVICE_NAME`.
+pub const BOARD_NAME: &str = "vagcan-dash";
+
 impl Found {
 	pub fn speaks_nus(&self) -> bool {
 		self.services.contains(&NUS_SERVICE)
+	}
+
+	/// A dash board: the UART service heard, or the board's own name.
+	///
+	/// The service's UUID is in the board's scan response — the advertisement's 31 bytes hold
+	/// the name — and a scan does not always get the scan response: one in ten scans of six
+	/// seconds heard the board by name alone, and `vagcan --ble` then found nothing, a third of
+	/// its runs (2026-10-28). Connecting finds the service whichever way the board was heard.
+	pub fn is_board(&self) -> bool {
+		self.speaks_nus() || self.name.as_deref() == Some(BOARD_NAME)
 	}
 
 	/// A device with no name is not a broken device — plenty advertise only an
@@ -154,7 +167,7 @@ async fn listen_for_boards(adapter: &Adapter, cap: Duration) -> Result<Vec<Found
 	let mut first = None;
 	loop {
 		tokio::time::sleep(SCAN_LOOK).await;
-		let boards: Vec<Found> = heard(adapter).await?.into_iter().filter(Found::speaks_nus).collect();
+		let boards: Vec<Found> = heard(adapter).await?.into_iter().filter(Found::is_board).collect();
 		let elapsed = started.elapsed();
 		if first.is_none() && !boards.is_empty() {
 			first = Some(elapsed);
@@ -372,11 +385,26 @@ impl Pipe for NusPipe {
 		self.closed = chunk.is_none();
 		chunk
 	}
+
+	/// Disconnect now, awaited. The drop's disconnect is spawned, and a process that exits
+	/// right after may never run it: the board, which serves one central and does not
+	/// advertise while it does, then waits out the link's supervision timeout instead.
+	async fn close(&mut self) {
+		if self.closed {
+			return;
+		}
+		self.closed = true;
+		self.pump.abort();
+		self.peripheral.disconnect().await.ok();
+	}
 }
 
 impl Drop for NusPipe {
 	fn drop(&mut self) {
 		self.pump.abort();
+		if self.closed {
+			return;
+		}
 		let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
 		let peripheral = self.peripheral.clone();
 		runtime.spawn(async move {

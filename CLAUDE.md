@@ -252,7 +252,8 @@ research/        RE writeups + tooling (NOT shipped) for work still in progress:
                        hardware hand-off; `bench.sh` the one-command bench; `probes/` is
                        firmware that answered a question (wifi-ap, wifi-scan, wifi-sta,
                        ble-scan); `host/` is the bench rig — `dashsim` (be the panel
-                       and the buttons), `bleecho`, `bleuds` (one framed UDS request or
+                       and the buttons), `bleecho`, `bleadv` (a board's advertising on a
+                       clock: gone from the air, or unheard), `bleuds` (one framed UDS request or
                        subscription over BLE) and `benchecu` (the CANable answering as
                        a control unit; bench pair only, refuses on car traffic);
                        `layout-editor/` is notes only — the tool is `vagcan dev dash edit`

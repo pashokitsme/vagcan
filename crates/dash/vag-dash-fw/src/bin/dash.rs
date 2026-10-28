@@ -145,7 +145,8 @@ extern crate alloc;
 esp_bootloader_esp_idf::esp_app_desc!();
 
 /// The name the phone shows. Kept in sync with the Wi-Fi AP so one device is
-/// recognisable in both lists.
+/// recognisable in both lists, and with `vag_dash_ble::BOARD_NAME`, by which the laptop
+/// knows the board when its scan missed the scan response.
 #[cfg(feature = "ble")]
 const DEVICE_NAME: &str = "vagcan-dash";
 

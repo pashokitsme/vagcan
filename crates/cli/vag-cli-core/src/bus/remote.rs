@@ -268,32 +268,44 @@ async fn ready<F: Future>(future: F) -> Option<F::Output> {
 /// How long a bus over the cable waits to put its parting Hello on the pipe.
 const PART_WAIT: Duration = Duration::from_millis(100);
 
+/// How long a bus over BLE waits for its disconnect to be done.
+const CLOSE_WAIT: Duration = Duration::from_millis(1000);
+
 impl Remote {
 	/// The bus is ending with the link up — every handle dropped, a shutdown, or a
 	/// command dropped on Ctrl-C. Over the cable it says Hello once more: the board takes
 	/// a Hello as the start of a new session on that carrier and closes the old one, so a
 	/// host that exits with the cable in does not leave its subscriptions polling the car.
-	/// Best effort and bounded. Over BLE the disconnect itself closes the session. A host
-	/// killed outright (`kill -9`) sends nothing; its session lasts until the next host's
-	/// Hello, a stalled write on the board, or the cable.
+	/// Best effort and bounded. Over BLE the disconnect itself closes the session, and it is
+	/// made here, awaited: the board serves one central and cannot be found by the next run
+	/// until this one's link is gone. A host killed outright (`kill -9`) sends nothing; its
+	/// session lasts until the next host's Hello, a stalled write on the board, or the cable.
 	///
 	/// **Bounded without tokio's timer.** This runs as the process exits, when the runtime
 	/// may already have shut its timer down — and polling a tokio timer then panics
 	/// ("A Tokio 1.x context was found, but it is being shutdown"). The bound is a plain
 	/// thread that sleeps [`PART_WAIT`] and then answers a oneshot, which needs no driver.
 	async fn part<P: Pipe>(&self, pipe: &mut P) {
-		if self.carrier != Carrier::Usb {
-			return;
-		}
-		let Ok(hello) = link::encode(&Message::Hello) else { return };
+		let usb = self.carrier == Carrier::Usb;
+		let wait = if usb { PART_WAIT } else { CLOSE_WAIT };
 		let (waited, give_up) = tokio::sync::oneshot::channel::<()>();
 		std::thread::spawn(move || {
-			std::thread::sleep(PART_WAIT);
+			std::thread::sleep(wait);
 			let _ = waited.send(());
 		});
+		let parting = async {
+			match usb {
+				true => {
+					if let Ok(hello) = link::encode(&Message::Hello) {
+						let _ = pipe.write(&hello).await;
+					}
+				}
+				false => pipe.close().await,
+			}
+		};
 		tokio::select! {
 			biased;
-			_ = pipe.write(&hello) => {}
+			() = parting => {}
 			_ = give_up => {}
 		}
 	}

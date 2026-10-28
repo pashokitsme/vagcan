@@ -86,6 +86,11 @@ pub trait Pipe: MaybeSend {
 	/// Must be cancel-safe: a reader waits on it beside other work, and a chunk taken
 	/// by a future that is then dropped is a chunk lost.
 	async fn read(&mut self) -> Option<Vec<u8>>;
+
+	/// End the pipe from this side, for a carrier whose other end learns of it only from the
+	/// carrier itself — over BLE the board serves one central and is invisible to a scan until
+	/// that central's link is gone. Nothing to do on a pipe whose end is its owner's drop.
+	async fn close(&mut self) {}
 }
 
 #[cfg(all(feature = "std", any(test, feature = "test-util")))]
