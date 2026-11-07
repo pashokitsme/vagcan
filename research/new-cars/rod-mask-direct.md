@@ -214,6 +214,84 @@ These are strong offline interoperability checks, not evidence that a physical c
 
 ---
 
+## 5a. Live capture plan — debugger first (not yet performed)
+
+The first hardware experiment needs neither USB decryption nor RSA. With the interface connected to
+the computer, let VCDS make the `0x45` request and read the resulting eight-byte `D` from its process.
+This validates one file, not a whole platform or corpus. For a 2021+ test, choose an `SK38`/`SK38P`
+ROD; SK37X is Octavia III and is not evidence for the newer platform. No car is needed if VCDS opens
+the ROD offline. If the UI loads it only while connecting to a unit, that step needs a stationary car,
+not an identifier sweep.
+
+These offsets apply only to the ARM64 26.3 build identified above. Another build or architecture first
+needs the offsets re-derived with REA. The commands below run in the PoC branch/worktree named in §4,
+not on `master`.
+
+1. **Choose and fingerprint one target.** Pick a shifted `SK38`/`SK38P` file with a compressed `MWB`
+   or `DTC` section from the same VCDS installation that will be debugged. Use a local copy with an
+   unchanged basename, retain its SHA-256 and compute its expected gate and challenge:
+
+   ```bash
+   cd .worktrees/rod-shifted
+   ROD=/path/to/target_SK38.rod
+   shasum -a 256 "$ROD"
+   cargo run -p vag-data-labels --example rod-shifted -- challenge "$ROD"
+   ```
+
+   The command must print an eight-digit `gate` and a 32-byte `challenge`. A six-digit gate identifies
+   a classic file, not a shifted target.
+
+2. **Attach to VCDS and resolve ASLR.** Attach the debugger in the environment running VCDS and find
+   the loaded module's base `B`. The relevant addresses are:
+
+   | what | runtime address |
+   |---|---|
+   | gate `G`, little-endian `uint32` | `B + 0x1148f6e0` |
+   | mask `D`, eight bytes | `B + 0x1148f724` |
+   | `0x45` challenge/reply routine | `B + 0x73df8` |
+
+   In WinDbg, for example, replace `B` with its numeric value and set a write watchpoint on `D`; the
+   second breakpoint confirms entry into the `0x45` exchange:
+
+   ```text
+   ba w8 B+0x1148f724
+   bp B+0x73df8
+   ```
+
+3. **Open the selected ROD once in VCDS.** Opening a file first clears `G` and `D`, so the initial
+   zeroing is not the capture. Continue through the `0x45` exchange and stop on the write after the
+   interface's reply. Read the values with:
+
+   ```text
+   dd B+0x1148f6e0 L1
+   db B+0x1148f724 L8
+   ```
+
+   Check that `G` equals the target's gate (the debugger displays hex; the PoC prints decimal) and that
+   the capture belongs to the selected file. Copy the eight `D` bytes in memory order, **without
+   reversing them**. Reversal applies to the last eight bytes of the raw `0x45` reply, not to the
+   already extracted global `D`. Record the VCDS build, interface type, filename, file SHA-256, gate
+   and mask locally, outside the checkout. Reopen the same file and require the mask to reproduce.
+
+4. **Validate the capture offline.** Pass the captured bytes directly to the existing decoder:
+
+   ```bash
+   cargo run -p vag-data-labels --example rod-shifted -- \
+     open "$ROD" --mask MASK_HEX
+   ```
+
+   Success means a zero exit status, every section reports `Tea` or `Zlib`, and every compressed section
+   inflates to its declared length. If that fails, check the VCDS build, exact filename and file hash,
+   gate, and capture timing. Interface type `0x1236` also needs the clone-poison caveat from §1: VCDS
+   can flip bit 7 of `D[3]`, so such a capture is not automatically the clean mask.
+
+5. **Scale only after a modern-file success.** Automate capture for the required files, keyed by VCDS
+   release, filename and file hash, and keep the resulting mask cache under `~/.vagcan`. A mask is not
+   universal: it belongs to one file and data release. Capturing the genuine interface's USB init and
+   `0x45` traffic for a VCDS-independent transport remains a separate stage (§6).
+
+---
+
 ## 6. What remains for a live direct path
 
 1. Capture a genuine interface's init exchange: locate the cleartext 128-byte wrapped-key block,
